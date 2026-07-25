@@ -1,0 +1,126 @@
+.layer {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(43, 33, 39, 0.5);
+}
+
+.guide {
+  display: grid;
+  inline-size: min(32rem, 100%);
+  gap: 1.2rem;
+  padding: clamp(1.1rem, 4vw, 2rem);
+  border: 1px solid var(--rv-line);
+  border-radius: 1.4rem;
+  color: var(--rv-text);
+  background: var(--rv-paper-strong);
+  box-shadow: 0 28px 90px rgba(33, 23, 28, 0.28);
+}
+
+.guide header {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.guide header span {
+  color: var(--rv-accent-strong);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.guide h1 {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.copy {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.copy > strong {
+  font-size: 1.05rem;
+}
+
+.copy p {
+  margin: 0;
+  color: var(--rv-text-muted);
+  line-height: 1.6;
+}
+
+.retention,
+.tour {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.55rem;
+}
+
+.retention button,
+.tour span {
+  display: grid;
+  min-block-size: 64px;
+  place-items: center;
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 0.85rem;
+  color: var(--rv-text);
+  background: var(--rv-paper);
+}
+
+.retention button[data-active='true'] {
+  border-color: var(--rv-accent);
+  color: var(--rv-accent-strong);
+  background: var(--rv-accent-soft);
+}
+
+.tour span {
+  align-content: center;
+  gap: 0.3rem;
+}
+
+.guide footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+}
+
+.error {
+  margin: 0;
+  color: var(--rv-danger, #a23845);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.guide footer button {
+  display: inline-flex;
+  min-block-size: 44px;
+  align-items: center;
+  gap: 0.35rem;
+  padding-inline: 1rem;
+  border: 1px solid var(--rv-line);
+  border-radius: 0.75rem;
+  color: var(--rv-text);
+  background: var(--rv-paper);
+}
+
+.guide footer button:last-child {
+  color: #fff;
+  background: var(--rv-accent-strong);
+}
+
+@media (forced-colors: active) {
+  .layer {
+    background: Canvas;
+  }
+
+  .guide,
+  .retention button,
+  .tour span {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+}

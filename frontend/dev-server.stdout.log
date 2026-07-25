@@ -1,0 +1,40 @@
+
+> reverie-frontend@0.1.0 dev
+> node script/run-clean-tool.cjs vite --host 127.0.0.1 --port 5173
+
+
+  [DebugLog] Writing to: H:\My-soft\vibe-projects\Reverie\Reverie-project\Reverie-Windows\frontend\logs\debug-2026-07-14_15-05-46.log
+
+
+  [32m[1mVITE[22m v4.5.14[39m  [2mready in [0m[1m881[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m15:17:39[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/DreamRoom/MiniGamePanel.tsx[22m
+[2m15:24:05[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/DreamRoom/MiniGamePanel.tsx[22m
+[2m16:52:48[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/DreamRoom/MiniGamePanel.tsx[22m
+[2m16:52:48[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/DreamRoom/MiniGamePanel.tsx[22m
+[2m16:55:53[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+
+  [DebugLog] Writing to: H:\My-soft\vibe-projects\Reverie\Reverie-project\Reverie-Windows\frontend\logs\debug-2026-07-14_16-55-54.log
+
+[2m16:55:54[22m [36m[1m[vite][22m[39m server restarted.
+[2m17:05:25[22m [36m[1m[vite][22m[39m [32m.installer-resources\SOURCE_CODE\.env.example changed, restarting server...[39m
+
+  [DebugLog] Writing to: H:\My-soft\vibe-projects\Reverie\Reverie-project\Reverie-Windows\frontend\logs\debug-2026-07-14_17-05-28.log
+
+[2m17:05:28[22m [36m[1m[vite][22m[39m server restarted.
+[2m17:06:02[22m [36m[1m[vite][22m[39m [32m.installer-resources\SOURCE_CODE\.env.example changed, restarting server...[39m
+
+  [DebugLog] Writing to: H:\My-soft\vibe-projects\Reverie\Reverie-project\Reverie-Windows\frontend\logs\debug-2026-07-14_17-06-02.log
+
+[2m17:06:02[22m [36m[1m[vite][22m[39m server restarted.
+[2m17:07:33[22m [36m[1m[vite][22m[39m [32m.installer-resources\SOURCE_CODE\.env.example changed, restarting server...[39m
+
+  [DebugLog] Writing to: H:\My-soft\vibe-projects\Reverie\Reverie-project\Reverie-Windows\frontend\logs\debug-2026-07-14_17-07-37.log
+
+[2m17:07:37[22m [36m[1m[vite][22m[39m server restarted.
+[2m17:21:30[22m [36m[1m[vite][22m[39m [32m.installer-resources\SOURCE_CODE\.env.example changed, restarting server...[39m
+
+  [DebugLog] Writing to: H:\My-soft\vibe-projects\Reverie\Reverie-project\Reverie-Windows\frontend\logs\debug-2026-07-14_17-21-31.log
+
+[2m17:21:31[22m [36m[1m[vite][22m[39m server restarted.

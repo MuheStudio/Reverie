@@ -1,0 +1,321 @@
+.characterStage {
+  position: relative;
+  min-block-size: 0;
+  overflow: hidden;
+}
+
+.defaultAvatar {
+  position: absolute;
+  inset: 0 8% 4.5rem;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.defaultAvatar img {
+  inline-size: min(100%, 39rem);
+  block-size: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  filter: drop-shadow(0 18px 22px rgba(61, 57, 79, 0.16));
+  transform-origin: 50% 85%;
+  transition: transform 500ms ease, filter 500ms ease;
+}
+
+.defaultAvatar small {
+  position: absolute;
+  inset: auto 0 0.35rem auto;
+  border-radius: 999px;
+  padding: 0.28rem 0.5rem;
+  color: var(--rv-text-muted);
+  background: var(--rv-paper-strong);
+  font-size: 0.66rem;
+}
+
+.defaultAvatar[data-character-activity='chat.thinking'] img {
+  transform: translateY(0.3rem) rotate(-0.4deg);
+}
+
+.defaultAvatar[data-character-activity='chat.deliver'] img,
+.defaultAvatar[data-character-activity='attention'] img {
+  transform: translateY(-0.35rem) scale(1.012);
+  filter: drop-shadow(0 18px 28px rgba(103, 136, 187, 0.24));
+}
+
+.defaultAvatar[data-character-activity^='focus.'] img {
+  transform: translateY(0.2rem) scale(0.992);
+}
+
+.identity {
+  position: absolute;
+  inset: auto 1rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 1rem;
+  background: var(--rv-paper-strong);
+  box-shadow: var(--rv-shadow-soft);
+}
+
+.identity > div {
+  display: grid;
+  min-inline-size: 0;
+}
+
+.identity span {
+  color: var(--rv-text-muted);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.identity button,
+.dialog button,
+.importButton {
+  min-block-size: 44px;
+}
+
+.identity button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-inline: 0.8rem;
+  border: 1px solid var(--rv-line);
+  border-radius: 0.75rem;
+  color: var(--rv-text);
+  background: var(--rv-paper);
+}
+
+.dialogLayer {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  border: 0;
+  background: rgba(35, 27, 32, 0.45);
+}
+
+.dialog {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  inline-size: min(34rem, 100%);
+  max-block-size: min(42rem, 90vh);
+  gap: 1rem;
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid var(--rv-line);
+  border-radius: 1.25rem;
+  color: var(--rv-text);
+  background: var(--rv-paper-strong);
+  box-shadow: 0 24px 80px rgba(37, 26, 31, 0.25);
+}
+
+.dialog > header,
+.avatarRow,
+.confirmation > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.dialog > header > div {
+  display: grid;
+}
+
+.dialog > header small,
+.confirmation small {
+  color: var(--rv-text-muted);
+  line-height: 1.45;
+}
+
+.dialog button {
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 0.75rem;
+  color: inherit;
+  background: var(--rv-paper);
+}
+
+.importActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .defaultAvatar img {
+    transition: none;
+    transform: none !important;
+  }
+}
+
+.avatarList {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.avatarList > p {
+  margin: 0;
+  padding: 1rem;
+  border: 1px dashed var(--rv-line);
+  border-radius: 0.85rem;
+  color: var(--rv-text-muted);
+  line-height: 1.5;
+}
+
+.avatarRow {
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 0.85rem;
+  background: var(--rv-paper);
+}
+
+.avatarRow[data-active='true'] {
+  border-color: var(--rv-accent);
+}
+
+.avatarRow > button:first-child {
+  display: grid;
+  flex: 1;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.65rem;
+  border: 0;
+  text-align: start;
+}
+
+.avatarRow > button:first-child > span {
+  color: var(--rv-accent-strong);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.avatarRow > button:first-child > small {
+  color: var(--rv-text-muted);
+}
+
+.avatarRow > button:last-child {
+  inline-size: 44px;
+  padding: 0;
+}
+
+.confirmation {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem;
+  border: 1px solid var(--rv-accent);
+  border-radius: 0.9rem;
+  background: var(--rv-accent-soft);
+}
+
+.confirmation ul {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  color: var(--rv-text-muted);
+}
+
+.previewStage {
+  position: relative;
+  display: block !important;
+  inline-size: 100%;
+  block-size: clamp(12rem, 34vh, 18rem);
+  overflow: hidden;
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 0.75rem;
+  background: var(--rv-paper-strong);
+}
+
+.confirmation > p {
+  margin: 0;
+  color: var(--rv-text-muted);
+  line-height: 1.45;
+}
+
+.capabilityReport {
+  display: grid !important;
+  justify-content: stretch !important;
+  gap: 0.35rem !important;
+  padding: 0.65rem;
+  border-radius: 0.65rem;
+  background: var(--rv-paper);
+}
+
+.capabilityReport small {
+  overflow-wrap: anywhere;
+}
+
+.confirmation label {
+  display: grid;
+  grid-template-columns: 1.2rem 1fr;
+  align-items: start;
+  gap: 0.55rem;
+  line-height: 1.45;
+}
+
+.confirmation input {
+  inline-size: 1.15rem;
+  block-size: 1.15rem;
+}
+
+.confirmation button {
+  padding-inline: 0.9rem;
+}
+
+.importButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  inline-size: 100%;
+}
+
+.error {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  color: var(--rv-danger-text, #7b233a);
+  background: var(--rv-danger-soft, #fce8ed);
+}
+
+@media (forced-colors: active) {
+  .identity,
+  .dialog,
+  .confirmation,
+  .avatarRow {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+
+  .scrim {
+    background: transparent;
+  }
+}
+
+@media (max-width: 280px) {
+  .identity {
+    inset-inline: 0.4rem;
+    gap: 0.35rem;
+    padding-inline: 0.55rem;
+  }
+
+  .identity button {
+    box-sizing: border-box;
+    flex: 0 0 44px;
+    inline-size: 44px;
+    padding: 0;
+    justify-content: center;
+    font-size: 0;
+  }
+}

@@ -1,0 +1,258 @@
+.gameRoot {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 16px;
+  overflow: auto;
+  color: #20201f;
+  background: #f5f2ec;
+}
+
+.header {
+  width: min(100%, 560px);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.heading strong { font-size: 15px; }
+.heading span { color: #6c6963; font-size: 12px; }
+
+.headerActions,
+.inlineActions,
+.dpad,
+.tetrisControls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.headerActions button,
+.inlineActions button,
+.dpad button,
+.tetrisControls button {
+  min-width: 36px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid #cbc5ba;
+  border-radius: 6px;
+  color: #2e2d2a;
+  background: #fff;
+  cursor: pointer;
+}
+
+.headerActions button:disabled,
+.inlineActions button:disabled { opacity: 0.4; cursor: default; }
+
+.gomokuBoard,
+.goBoard {
+  width: min(100%, 540px);
+  aspect-ratio: 1;
+  display: grid;
+  padding: 18px;
+  background: #d6a85c;
+  box-shadow: inset 0 0 0 1px #9f793d;
+}
+
+.gomokuBoard { grid-template-columns: repeat(15, 1fr); }
+.goBoard { grid-template-columns: repeat(9, 1fr); }
+
+.gomokuBoard button,
+.goBoard button {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  background-image:
+    linear-gradient(#6f522c, #6f522c),
+    linear-gradient(90deg, #6f522c, #6f522c);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% 1px, 1px 100%;
+}
+
+.gomokuBoard button:not(:disabled),
+.goBoard button { cursor: pointer; }
+
+.blackStone,
+.whiteStone {
+  position: absolute;
+  z-index: 1;
+  inset: 11%;
+  border-radius: 50%;
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
+}
+
+.blackStone { background: radial-gradient(circle at 35% 30%, #555, #111 70%); }
+.whiteStone { background: radial-gradient(circle at 35% 30%, #fff, #d8d6d0 75%); }
+.lastMove::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  width: 5px;
+  height: 5px;
+  inset: 50% auto auto 50%;
+  border-radius: 50%;
+  background: #c44334;
+  transform: translate(-50%, -50%);
+}
+
+.chessBoard {
+  width: min(100%, 540px);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  border: 2px solid #4c4a44;
+}
+
+.chessBoard button {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #1c1b19;
+  background: #e7dfca;
+  font-family: 'Segoe UI Symbol', serif;
+  font-size: 40px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chessBoard button[data-dark='true'] { background: #87936f; }
+.selected { box-shadow: inset 0 0 0 3px #d29a27 !important; }
+.legalTarget::after {
+  content: '';
+  position: absolute;
+  width: 18%;
+  aspect-ratio: 1;
+  inset: 50% auto auto 50%;
+  border-radius: 50%;
+  background: rgba(24, 84, 54, 0.62);
+  transform: translate(-50%, -50%);
+}
+
+.xiangqiBoard {
+  width: min(100%, 500px);
+  aspect-ratio: 9 / 10;
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  padding: 12px;
+  background: #e2bd78;
+  border: 2px solid #79542c;
+}
+
+.xiangqiBoard button {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  background-image:
+    linear-gradient(#76542e, #76542e),
+    linear-gradient(90deg, #76542e, #76542e);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% 1px, 1px 100%;
+  cursor: pointer;
+}
+
+.xiangqiBoard button span {
+  position: absolute;
+  z-index: 1;
+  inset: 7%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  color: #9a2f26;
+  background: #f5d895;
+  box-shadow: 0 2px 3px rgba(63, 37, 14, 0.28);
+  font-family: serif;
+  font-size: 25px;
+  font-weight: 700;
+}
+
+.xiangqiBoard button span[data-color='black'] { color: #272522; }
+
+.snakeBoard {
+  --cols: 18;
+  width: min(100%, 500px, max(320px, calc(100dvh - 460px)));
+  aspect-ratio: 1;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), 1fr);
+  gap: 1px;
+  padding: 6px;
+  background: #202724;
+  border: 2px solid #4a5852;
+}
+
+.snakeBoard span { min-width: 0; min-height: 0; background: #29322e; }
+.snakeBoard span[data-snake='true'] { background: #67a66f; }
+.snakeBoard span[data-head='true'] { background: #b8d36c; }
+.snakeBoard span[data-food='true'] { border-radius: 50%; background: #e06053; }
+
+@media (max-width: 520px) {
+  .chessBoard button { font-size: 30px; }
+  .xiangqiBoard button span { font-size: 18px; }
+}
+
+.dpad {
+  width: 174px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.dpad button:first-child { grid-column: 2; }
+.dpad button:nth-child(2) { grid-column: 1; grid-row: 2; }
+.dpad button:nth-child(3) { grid-column: 2; grid-row: 2; }
+.dpad button:nth-child(4) { grid-column: 3; grid-row: 2; }
+.dpad button:nth-child(5) { grid-column: 2; grid-row: 3; }
+
+.tetrisBoard {
+  width: min(72%, 300px, max(180px, calc((100dvh - 370px) / 2)));
+  aspect-ratio: 1 / 2;
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 1px;
+  padding: 5px;
+  background: #161d22;
+  border: 2px solid #4c5961;
+}
+
+.tetrisBoard span { min-width: 0; min-height: 0; background: #202a31; }
+.tetrisBoard span[data-value='1'] { background: #e5c44a; box-shadow: inset 0 0 0 1px #f4df7c; }
+.tetrisBoard span[data-value='2'] { background: #55a5a0; box-shadow: inset 0 0 0 1px #82cbc5; }
+.tetrisControls { flex-wrap: wrap; width: min(100%, 360px); }
+
+@media (max-width: 560px) {
+  .gameRoot { padding-inline: 8px; }
+  .gomokuBoard, .goBoard { padding: 12px; }
+  .snakeBoard { width: min(100%, max(280px, calc(100dvh - 514px))); }
+  .header { align-items: flex-start; }
+  .heading span { max-width: 220px; }
+}

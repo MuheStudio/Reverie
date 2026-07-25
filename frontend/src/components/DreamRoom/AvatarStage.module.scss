@@ -1,0 +1,66 @@
+.stage {
+  position: relative;
+  inline-size: 100%;
+  block-size: 100%;
+  min-block-size: 280px;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.renderHost,
+.canvas {
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.canvas {
+  display: block;
+}
+
+.stageNotice {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  max-inline-size: min(82%, 22rem);
+  min-inline-size: 12rem;
+  translate: -50% -50%;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--rv-line-soft, rgba(84, 71, 72, 0.18));
+  border-radius: 1rem;
+  color: var(--rv-text, #30282b);
+  background: var(--rv-paper-strong, rgba(255, 250, 245, 0.9));
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(72, 52, 58, 0.12);
+}
+
+.stageNotice > span {
+  display: grid;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--rv-accent-strong, #8e5464);
+  background: var(--rv-accent-soft, #f6dce3);
+}
+
+.stageNotice small {
+  line-height: 1.5;
+}
+
+@media (max-width: 280px) {
+  .stageNotice {
+    box-sizing: border-box;
+    inline-size: calc(100% - 1rem);
+    min-inline-size: 0;
+  }
+}
+
+@media (forced-colors: active) {
+  .stageNotice {
+    border: 1px solid CanvasText;
+    background: Canvas;
+    box-shadow: none;
+  }
+}

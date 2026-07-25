@@ -1,0 +1,60 @@
+# ============================================================
+# Reverie — AI Companion System for Windows
+# Core dependencies
+# ============================================================
+
+# --- LLM API Adapters ---
+openai>=1.50.0
+ollama>=0.4.0
+httpx>=0.27.0
+
+# --- Vector Database & Embedding ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+sqlite-vec==0.1.9
+# Read-only compatibility for one-time migration from pre-sqlite-vec releases.
+lancedb>=0.12.0
+sentence-transformers>=3.0.0
+numpy>=1.26.0
+
+# --- UI (MVP: terminal TUI) ---
+textual>=0.70.0
+
+# --- Config & Data ---
+pydantic>=2.8.0
+python-dotenv>=1.0.0
+tzdata>=2026.1
+cryptography>=49.0.0
+Pillow>=12.3.0
+ImageHash>=4.3.0
+
+# --- Utilities ---
+setuptools>=83.0.0
+pyyaml>=6.0
+aiofiles>=24.0.0
+pytest>=8.0.0
+ormsgpack>=1.7.0
+pyzmq>=26.0.0
+cachetools>=5.0.0
+beautifulsoup4>=4.12.0
+jmespath>=1.0.0
+qrcode>=7.4.0
+
+# --- Optional test/runtime coverage ---
+hypothesis>=6.0.0
+playwright>=1.40.0
+pytest-playwright>=0.4.0
+
+# --- N.E.K.O Integration (Apache 2.0) ---
+# WebSocket bridge + memory interop
+websockets>=15.0.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+sqlalchemy>=2.0.0
+regex>=2024.0.0
+websocket-client>=1.8.0
+orjson>=3.10.0
+python-multipart>=0.0.9
+
+# --- Image Service (foxgirls.club) ---
+aiohttp>=3.9.0

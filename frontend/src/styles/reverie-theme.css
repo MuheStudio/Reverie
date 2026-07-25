@@ -1,0 +1,222 @@
+/* ═══════════════════════════════════════════════════════════
+   Reverie Design System — CSS Variables & Theme
+   参考: AIRI 暗色舞台 + N.E.K.O 温暖陪伴 + liquidglass-oss 玻璃拟态
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: light;
+  /* Night Dream: warm paper over a muted night room. These semantic tokens
+     are the only palette the DreamRoom shell consumes. */
+  --rv-text: #30282b;
+  --rv-text-muted: #71656a;
+  --rv-paper: rgba(255, 250, 246, 0.78);
+  --rv-paper-strong: rgba(255, 251, 247, 0.94);
+  --rv-surface-muted: rgba(109, 91, 100, 0.08);
+  --rv-line: rgba(82, 64, 72, 0.28);
+  --rv-line-soft: rgba(82, 64, 72, 0.16);
+  --rv-accent: #9f6172;
+  --rv-accent-strong: #784354;
+  --rv-accent-soft: #f3dce3;
+  --rv-accent-faint: rgba(184, 113, 132, 0.08);
+  --rv-success-text: #35634d;
+  --rv-success-soft: #e2f0e7;
+  --rv-danger-text: #7b233a;
+  --rv-danger-soft: #fce8ed;
+  --rv-scene-top: #d8d0db;
+  --rv-scene-bottom: #c8aea8;
+  --rv-shadow: 0 18px 55px rgba(51, 36, 43, 0.16);
+  --rv-shadow-soft: 0 8px 24px rgba(51, 36, 43, 0.11);
+  --rv-ink-opacity: 0.055;
+  --rv-grain-opacity: 0.045;
+  /* ── 主色调：深夜紫蓝 ─────────────────────────────── */
+  --rv-bg-deep:    #0d0f1a;   /* 最深背景（聊天区底色）*/
+  --rv-bg-primary: #141727;   /* 主背景（面板底色）*/
+  --rv-bg-surface: #1a1d30;   /* 表面层（卡片/输入框）*/
+  --rv-bg-elevated: #242840;  /* 悬浮层（hover/弹出）*/
+  --rv-bg-glass:   rgba(20, 23, 39, 0.85); /* 毛玻璃效果 */
+
+  /* ── 液态玻璃拟态 (inspired by liquidglass-oss) ──────── */
+  --rv-glass-blur:      18px;    /* 背景模糊量 */
+  --rv-glass-opacity:   0.55;    /* 玻璃面板透明度 */
+  --rv-glass-border:    rgba(255,255,255,0.08); /* 玻璃边框 */
+  --rv-glass-highlight: rgba(255,255,255,0.06); /* 顶部高光 */
+  --rv-glass-shadow:    0 8px 32px rgba(0,0,0,0.4); /* 玻璃阴影 */
+  --rv-glass-saturate:  1.2;     /* 背景饱和度增强 */
+  --rv-glass-bg:        rgba(20, 25, 45, 0.55); /* 玻璃面板底色 */
+
+  /* ── 强调色：温暖琥珀 ─────────────────────────────── */
+  --rv-accent:        #f0a050;  /* 主强调色 */
+  --rv-accent-soft:   #f0a05033; /* 半透明 */
+  --rv-accent-glow:   #f0a05066; /* 发光效果 */
+
+  /* ── 辅助色 ────────────────────────────────────────── */
+  --rv-rose:    #e87d8b;   /* 温柔粉（情绪-爱/感动）*/
+  --rv-sky:     #6db3d4;   /* 清冷蓝（情绪-平静）*/
+  --rv-leaf:    #7fb87f;   /* 柔和绿（情绪-开心）*/
+  --rv-ember:   #d48b6d;   /* 暖橙色（情绪-兴奋）*/
+  --rv-mist:    #8b8fa8;   /* 灰紫（情绪-失落）*/
+  --rv-warning: #d4a06d;   /* 警告色 */
+
+  /* ── 文字色（深色背景适配，全部偏白）───────────────── */
+  --rv-text-primary:   #f0f1f5;   /* 主文字 */
+  --rv-text-secondary: #c5c8d8;   /* 副文字 */
+  --rv-text-muted:     #8b8fa8;   /* 弱文字 */
+  --rv-text-accent:    #f0a050;   /* 强调文字 */
+
+  /* ── 边框与分割线 ──────────────────────────────────── */
+  --rv-border:       #2a2e42;
+  --rv-border-light: #353a52;
+
+  /* ── 消息气泡 ──────────────────────────────────────── */
+  --rv-bubble-user:    #2a3a5c;   /* 用户气泡 */
+  --rv-bubble-char:    #1e2538;   /* 角色气泡 */
+  --rv-bubble-system:  #1a1d3000; /* 系统消息（透明背景）*/
+
+  /* ── 阴影 ──────────────────────────────────────────── */
+  --rv-shadow-sm:  0 1px 3px rgba(0,0,0,0.4);
+  --rv-shadow-md:  0 4px 12px rgba(0,0,0,0.5);
+  --rv-shadow-lg:  0 8px 32px rgba(0,0,0,0.6);
+  --rv-shadow-glow: 0 0 20px var(--rv-accent-glow);
+
+  /* ── 圆角 ──────────────────────────────────────────── */
+  --rv-radius-sm: 6px;
+  --rv-radius-md: 10px;
+  --rv-radius-lg: 16px;
+  --rv-radius-xl: 24px;
+  --rv-radius-full: 999px;
+
+  /* ── 间距 ──────────────────────────────────────────── */
+  --rv-space-xs: 4px;
+  --rv-space-sm: 8px;
+  --rv-space-md: 16px;
+  --rv-space-lg: 24px;
+  --rv-space-xl: 32px;
+
+  /* ── 字体 ──────────────────────────────────────────── */
+  --rv-font-sans: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC',
+    'Noto Sans CJK SC', 'Noto Sans SC', system-ui, sans-serif;
+  --rv-font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
+  --rv-font-size-xs: 11px;
+  --rv-font-size-sm: 13px;
+  --rv-font-size-md: 15px;
+  --rv-font-size-lg: 18px;
+  --rv-font-size-xl: 22px;
+  --rv-font-size-2xl: 28px;
+
+  /* ── 动画 ──────────────────────────────────────────── */
+  --rv-transition-fast: 150ms ease;
+  --rv-transition-normal: 250ms ease;
+  --rv-transition-slow: 400ms ease;
+  --rv-ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── 滚动条 ────────────────────────────────────────── */
+  --rv-scrollbar-width: 4px;
+  --rv-scrollbar-track: transparent;
+  --rv-scrollbar-thumb: var(--rv-border-light);
+
+  /* Keep the DreamRoom semantic palette authoritative over the legacy
+     compatibility tokens declared above. */
+  --rv-text: #30282b;
+  --rv-text-muted: #71656a;
+  --rv-paper: rgba(255, 250, 246, 0.78);
+  --rv-paper-strong: rgba(255, 251, 247, 0.94);
+  --rv-surface-muted: rgba(109, 91, 100, 0.08);
+  --rv-line: rgba(82, 64, 72, 0.28);
+  --rv-line-soft: rgba(82, 64, 72, 0.16);
+  --rv-accent: #9f6172;
+  --rv-accent-strong: #784354;
+  --rv-accent-soft: #f3dce3;
+  --rv-accent-faint: rgba(184, 113, 132, 0.08);
+  --rv-success-text: #35634d;
+  --rv-success-soft: #e2f0e7;
+  --rv-danger-text: #7b233a;
+  --rv-danger-soft: #fce8ed;
+  --rv-scene-top: #d8d0db;
+  --rv-scene-bottom: #c8aea8;
+  --rv-shadow: 0 18px 55px rgba(51, 36, 43, 0.16);
+  --rv-shadow-soft: 0 8px 24px rgba(51, 36, 43, 0.11);
+  --rv-ink-opacity: 0.055;
+  --rv-grain-opacity: 0.045;
+}
+
+/* ── 全局基础样式 ─────────────────────────────────────── */
+body.reverie-dark {
+  background: #cfc4cb;
+  color: var(--rv-text);
+  font-family: var(--rv-font-sans);
+  font-size: var(--rv-font-size-md);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+  overflow: auto;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+label,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 3px solid #744456;
+  outline-offset: 3px;
+}
+
+button:focus,
+input:focus,
+textarea:focus,
+select:focus,
+[tabindex]:focus {
+  outline: 3px solid #744456;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --rv-text: CanvasText;
+    --rv-text-muted: CanvasText;
+    --rv-paper: Canvas;
+    --rv-paper-strong: Canvas;
+    --rv-line: CanvasText;
+    --rv-line-soft: CanvasText;
+    --rv-accent: Highlight;
+    --rv-accent-strong: HighlightText;
+  }
+
+  :focus-visible {
+    outline: 3px solid Highlight;
+  }
+}
+
+/* 滚动条样式 */
+.reverie-scroll::-webkit-scrollbar {
+  width: var(--rv-scrollbar-width);
+}
+.reverie-scroll::-webkit-scrollbar-track {
+  background: var(--rv-scrollbar-track);
+}
+.reverie-scroll::-webkit-scrollbar-thumb {
+  background: var(--rv-scrollbar-thumb);
+  border-radius: var(--rv-radius-full);
+}
+.reverie-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--rv-text-muted);
+}

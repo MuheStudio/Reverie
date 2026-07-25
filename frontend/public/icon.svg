@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Reverie">
+  <rect width="512" height="512" rx="96" fill="#12182b"/>
+  <path
+    d="M339 86c-81 18-137 91-137 175 0 75 45 141 111 169-19 7-40 11-62 11-102 0-184-83-184-185S149 71 251 71c31 0 61 8 88 15Z"
+    fill="#f5efdf"
+  />
+  <path d="m375 151 12 30 30 12-30 12-12 30-12-30-30-12 30-12 12-30Z" fill="#df6b62"/>
+  <circle cx="397" cy="300" r="20" fill="#7bb5a5"/>
+</svg>

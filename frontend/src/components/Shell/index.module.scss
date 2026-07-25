@@ -1,0 +1,552 @@
+.shell {
+  height: 100vh;
+  width: 100vw;
+  background-color: #121214;
+  background-repeat: no-repeat;
+  color: rgba(255, 255, 255, 0.9);
+  overflow: hidden;
+  position: relative;
+}
+
+.videoPip {
+  position: fixed;
+  bottom: 80px;
+  left: 16px;
+  width: 200px;
+  height: 280px;
+  border-radius: 16px;
+  overflow: hidden;
+  z-index: 100001;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(255, 255, 255, 0.12);
+  background: #000;
+  cursor: grab;
+  transition: box-shadow 0.2s;
+
+  &:hover {
+    box-shadow:
+      0 8px 40px rgba(0, 0, 0, 0.7),
+      0 0 0 1px rgba(255, 255, 255, 0.2);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    pointer-events: none;
+  }
+}
+
+.pipClose {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+
+  .videoPip:hover & {
+    opacity: 1;
+  }
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.7);
+    color: #fff;
+  }
+}
+
+.desktop {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: flex-start;
+  padding: 32px;
+  background: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0.7) 0%,
+    rgba(0, 0, 0, 0.3) 14%,
+    rgba(0, 0, 0, 0.05) 35%,
+    rgba(0, 0, 0, 0.05) 70%,
+    rgba(0, 0, 0, 0.3) 90%,
+    rgba(0, 0, 0, 0.65) 100%
+  );
+  z-index: 1;
+}
+
+.iconGrid {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: wrap;
+  gap: 16px;
+  max-height: calc(100vh - 64px);
+  align-content: flex-start;
+}
+
+.appIcon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.85);
+  transition: background 0.15s;
+  user-select: none;
+  width: 80px;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  &:active {
+    background: rgba(255, 255, 255, 0.1);
+  }
+}
+
+.iconCircle {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(16px);
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+.iconLabel {
+  font-size: 11px;
+  text-align: center;
+  line-height: 1.2;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.9),
+    0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+/* Bottom toolbar — horizontal bar below the character */
+.bottomBar {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  z-index: 99999;
+  padding: 8px 16px;
+  border-radius: 24px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  transition: transform 0.2s;
+
+  &.chatOpen {
+    /* Shift left to account for the chat panel (320px wide) */
+    transform: translateX(calc(-50% - 160px));
+  }
+}
+
+.barBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+
+  &:hover {
+    transform: scale(1.1);
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  &.liveOn {
+    background: rgba(139, 92, 246, 0.3);
+    color: #a78bfa;
+    border-color: rgba(139, 92, 246, 0.4);
+  }
+
+  &.liveOff {
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  &.reportOn {
+    background: rgba(46, 167, 255, 0.3);
+    color: #2ea7ff;
+    border-color: rgba(46, 167, 255, 0.35);
+    box-shadow: 0 0 8px rgba(46, 167, 255, 0.3);
+
+    svg {
+      animation: pulse-radio 1.5s ease-in-out infinite;
+    }
+  }
+
+  &.reportOff {
+    color: rgba(255, 255, 255, 0.5);
+  }
+}
+
+.langBtn {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  background: rgba(250, 234, 95, 0.2);
+  color: #faea5f;
+  border-color: rgba(250, 234, 95, 0.3);
+
+  &:hover {
+    background: rgba(250, 234, 95, 0.35);
+  }
+}
+
+.chatBtn {
+  width: 38px;
+  height: 38px;
+  background: #faea5f;
+  color: #121214;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+
+  &:hover {
+    transform: scale(1.1);
+    background: #faea5f;
+  }
+}
+
+@keyframes pulse-radio {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* Floating add button — positioned to the left of the bottom bar */
+.addBtn {
+  position: fixed;
+  bottom: 22px;
+  left: calc(50% - 140px);
+  transform: translateX(-50%);
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background: rgba(250, 234, 95, 0.9);
+  color: #121214;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s;
+
+  &:hover {
+    transform: translateX(-50%) scale(1.12);
+    background: #faea5f;
+  }
+
+  &.chatOpen {
+    left: calc(50% - 140px - 160px);
+  }
+}
+
+/* Upload overlay & modal */
+.uploadOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.uploadModal {
+  width: 400px;
+  max-width: 90vw;
+  background: #1c1d20;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.uploadHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.uploadClose {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+
+  &:hover {
+    color: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.1);
+  }
+}
+
+.uploadDropZone {
+  border: 2px dashed rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.5);
+  transition: all 0.15s;
+
+  &:hover {
+    border-color: rgba(250, 234, 95, 0.4);
+    color: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  p {
+    margin: 0;
+    font-size: 14px;
+  }
+}
+
+.uploadHint {
+  font-size: 12px !important;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.uploadedFileCenter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  position: relative;
+}
+
+.uploadFileName {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  text-align: center;
+}
+
+.analyzingCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  background: var(--bg-2, #1c1d20);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.analyzingSpinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #faea5f;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.uploadRemoveBtn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+
+  &:hover {
+    color: #ff3f4d;
+    background: rgba(255, 63, 77, 0.15);
+  }
+}
+
+.uploadSubmitBtn {
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.35);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+
+  &.active {
+    background: #faea5f;
+    color: #121214;
+    box-shadow: 0 0 12px rgba(250, 234, 95, 0.4);
+
+    &:hover {
+      background: #fffdbb;
+    }
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+  }
+}
+
+/* Generation progress panel */
+.genPanel {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 300px;
+  max-height: 400px;
+  background: var(--bg-2, #1c1d20);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  z-index: 10001;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.genHeader {
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-yellow, #faea5f);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.genList {
+  padding: 8px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.genItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.genDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.genName {
+  flex: 1;
+  color: rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.genStatus {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+}
+
+.gen_pending .genDot {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.gen_summarizing .genDot {
+  background: var(--color-purple, #7660ff);
+  box-shadow: 0 0 6px rgba(118, 96, 255, 0.5);
+  animation: pulse-radio 1.5s ease-in-out infinite;
+}
+
+.gen_generating .genDot {
+  background: var(--color-cyan, #2ea7ff);
+  box-shadow: 0 0 6px rgba(46, 167, 255, 0.5);
+  animation: pulse-radio 1.5s ease-in-out infinite;
+}
+
+.gen_completed .genDot {
+  background: #4ade80;
+}
+
+.gen_error .genDot {
+  background: var(--color-red, #ff3f4d);
+}
+
+.gen_error .genStatus {
+  color: var(--color-red, #ff3f4d);
+}
+
+.uploadError {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(255, 63, 77, 0.12);
+  color: #ff3f4d;
+  font-size: 13px;
+  line-height: 1.4;
+}

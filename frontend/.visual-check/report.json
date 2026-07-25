@@ -1,0 +1,1284 @@
+{
+  "report": [
+    {
+      "name": "room-desktop",
+      "layout": {
+        "viewport": {
+          "width": 1440,
+          "height": 1000
+        },
+        "bodyWidth": 1425,
+        "rootWidth": 1425,
+        "violations": [],
+        "scrollViolations": []
+      }
+    },
+    {
+      "name": "personality-desktop",
+      "layout": {
+        "viewport": {
+          "width": 1441,
+          "height": 1001
+        },
+        "bodyWidth": 1426,
+        "rootWidth": 1426,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "panel": {
+        "mounted": true,
+        "title": "人格设置",
+        "controls": 61,
+        "textLength": 984
+      }
+    },
+    {
+      "name": "group-desktop",
+      "layout": {
+        "viewport": {
+          "width": 1454,
+          "height": 1038
+        },
+        "bodyWidth": 1439,
+        "rootWidth": 1439,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "panel": {
+        "mounted": true,
+        "title": "群聊",
+        "notice": true,
+        "controls": 3
+      }
+    },
+    {
+      "name": "room-mobile",
+      "layout": {
+        "viewport": {
+          "width": 404,
+          "height": 882
+        },
+        "bodyWidth": 389,
+        "rootWidth": 389,
+        "violations": [],
+        "scrollViolations": []
+      }
+    },
+    {
+      "name": "personality-mobile",
+      "layout": {
+        "viewport": {
+          "width": 404,
+          "height": 882
+        },
+        "bodyWidth": 389,
+        "rootWidth": 389,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "panel": {
+        "mounted": true,
+        "title": "人格设置",
+        "controls": 61,
+        "textLength": 984
+      }
+    },
+    {
+      "name": "group-mobile",
+      "layout": {
+        "viewport": {
+          "width": 404,
+          "height": 882
+        },
+        "bodyWidth": 389,
+        "rootWidth": 389,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "panel": {
+        "mounted": true,
+        "title": "群聊",
+        "notice": true,
+        "controls": 3
+      }
+    },
+    {
+      "name": "matrix-800x600-100",
+      "layout": {
+        "viewport": {
+          "width": 814,
+          "height": 638
+        },
+        "bodyWidth": 799,
+        "rootWidth": 799,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 814,
+          "height": 638
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-800x600-125",
+      "layout": {
+        "viewport": {
+          "width": 651,
+          "height": 510
+        },
+        "bodyWidth": 639,
+        "rootWidth": 639,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 651,
+          "height": 510
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-800x600-150",
+      "layout": {
+        "viewport": {
+          "width": 542,
+          "height": 425
+        },
+        "bodyWidth": 532,
+        "rootWidth": 532,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 542,
+          "height": 425
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-800x600-200",
+      "layout": {
+        "viewport": {
+          "width": 407,
+          "height": 319
+        },
+        "bodyWidth": 399,
+        "rootWidth": 399,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 407,
+          "height": 319
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1024x768-100",
+      "layout": {
+        "viewport": {
+          "width": 1038,
+          "height": 806
+        },
+        "bodyWidth": 1023,
+        "rootWidth": 1023,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1038,
+          "height": 806
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1024x768-125",
+      "layout": {
+        "viewport": {
+          "width": 830,
+          "height": 645
+        },
+        "bodyWidth": 818,
+        "rootWidth": 818,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 830,
+          "height": 645
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1024x768-150",
+      "layout": {
+        "viewport": {
+          "width": 692,
+          "height": 537
+        },
+        "bodyWidth": 682,
+        "rootWidth": 682,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 692,
+          "height": 537
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1024x768-200",
+      "layout": {
+        "viewport": {
+          "width": 519,
+          "height": 403
+        },
+        "bodyWidth": 511,
+        "rootWidth": 511,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 519,
+          "height": 403
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1200x800-100",
+      "layout": {
+        "viewport": {
+          "width": 1214,
+          "height": 838
+        },
+        "bodyWidth": 1199,
+        "rootWidth": 1199,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1214,
+          "height": 838
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1200x800-125",
+      "layout": {
+        "viewport": {
+          "width": 971,
+          "height": 670
+        },
+        "bodyWidth": 959,
+        "rootWidth": 959,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 971,
+          "height": 670
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1200x800-150",
+      "layout": {
+        "viewport": {
+          "width": 809,
+          "height": 558
+        },
+        "bodyWidth": 799,
+        "rootWidth": 799,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 809,
+          "height": 558
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1200x800-200",
+      "layout": {
+        "viewport": {
+          "width": 607,
+          "height": 419
+        },
+        "bodyWidth": 599,
+        "rootWidth": 599,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 607,
+          "height": 419
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1366x768-100",
+      "layout": {
+        "viewport": {
+          "width": 1380,
+          "height": 806
+        },
+        "bodyWidth": 1365,
+        "rootWidth": 1365,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1380,
+          "height": 806
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1366x768-125",
+      "layout": {
+        "viewport": {
+          "width": 1104,
+          "height": 645
+        },
+        "bodyWidth": 1092,
+        "rootWidth": 1092,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1104,
+          "height": 645
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1366x768-150",
+      "layout": {
+        "viewport": {
+          "width": 920,
+          "height": 537
+        },
+        "bodyWidth": 910,
+        "rootWidth": 910,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 920,
+          "height": 537
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1366x768-200",
+      "layout": {
+        "viewport": {
+          "width": 690,
+          "height": 403
+        },
+        "bodyWidth": 682,
+        "rootWidth": 682,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 690,
+          "height": 403
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1440x900-100",
+      "layout": {
+        "viewport": {
+          "width": 1454,
+          "height": 938
+        },
+        "bodyWidth": 1439,
+        "rootWidth": 1439,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1454,
+          "height": 938
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1440x900-125",
+      "layout": {
+        "viewport": {
+          "width": 1163,
+          "height": 750
+        },
+        "bodyWidth": 1151,
+        "rootWidth": 1151,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1163,
+          "height": 750
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1440x900-150",
+      "layout": {
+        "viewport": {
+          "width": 969,
+          "height": 625
+        },
+        "bodyWidth": 959,
+        "rootWidth": 959,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 969,
+          "height": 625
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1440x900-200",
+      "layout": {
+        "viewport": {
+          "width": 727,
+          "height": 469
+        },
+        "bodyWidth": 719,
+        "rootWidth": 719,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 727,
+          "height": 469
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1920x1080-100",
+      "layout": {
+        "viewport": {
+          "width": 1934,
+          "height": 1118
+        },
+        "bodyWidth": 1919,
+        "rootWidth": 1919,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1934,
+          "height": 1118
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1920x1080-125",
+      "layout": {
+        "viewport": {
+          "width": 1547,
+          "height": 894
+        },
+        "bodyWidth": 1535,
+        "rootWidth": 1535,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1547,
+          "height": 894
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1920x1080-150",
+      "layout": {
+        "viewport": {
+          "width": 1289,
+          "height": 745
+        },
+        "bodyWidth": 1279,
+        "rootWidth": 1279,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 1289,
+          "height": 745
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-1920x1080-200",
+      "layout": {
+        "viewport": {
+          "width": 967,
+          "height": 559
+        },
+        "bodyWidth": 959,
+        "rootWidth": 959,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 967,
+          "height": 559
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-390x844-100",
+      "layout": {
+        "viewport": {
+          "width": 404,
+          "height": 882
+        },
+        "bodyWidth": 389,
+        "rootWidth": 389,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 404,
+          "height": 882
+        },
+        "zoom": 1.5,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-390x844-125",
+      "layout": {
+        "viewport": {
+          "width": 323,
+          "height": 705
+        },
+        "bodyWidth": 311,
+        "rootWidth": 311,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 323,
+          "height": 705
+        },
+        "zoom": 1.875,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-390x844-150",
+      "layout": {
+        "viewport": {
+          "width": 269,
+          "height": 588
+        },
+        "bodyWidth": 259,
+        "rootWidth": 259,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 269,
+          "height": 588
+        },
+        "zoom": 2.25,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "2.66667px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    },
+    {
+      "name": "matrix-390x844-200",
+      "layout": {
+        "viewport": {
+          "width": 202,
+          "height": 441
+        },
+        "bodyWidth": 194,
+        "rootWidth": 194,
+        "violations": [],
+        "scrollViolations": []
+      },
+      "shell": {
+        "viewport": {
+          "width": 202,
+          "height": 441
+        },
+        "zoom": 3,
+        "language": "en",
+        "actionCounts": {
+          "primary-chat-action": 1,
+          "primary-diary-action": 1,
+          "primary-phone-action": 1
+        },
+        "undersizedTargets": [],
+        "bodyHorizontalOverflow": false,
+        "bodyCanScrollVertically": true,
+        "atmospherePointerEvents": "none",
+        "decorativeAnimations": 0,
+        "focusOutline": {
+          "style": "solid",
+          "width": "3px"
+        },
+        "focusProbe": {
+          "activeIsChat": true,
+          "matchesFocus": true,
+          "documentHasFocus": true,
+          "shellInert": false
+        },
+        "sceneCenterCoveredByDock": false
+      }
+    }
+  ],
+  "rendererErrors": [],
+  "failures": []
+}

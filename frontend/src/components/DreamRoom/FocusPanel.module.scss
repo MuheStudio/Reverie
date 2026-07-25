@@ -1,0 +1,170 @@
+.focus {
+  display: grid;
+  gap: 0.9rem;
+  min-block-size: 0;
+  padding: 0.9rem;
+  color: var(--rv-text);
+}
+
+.focus > header,
+.sessionActions,
+.presets,
+.custom,
+.soundscape {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.focus > header {
+  justify-content: space-between;
+}
+
+.focus h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.05rem;
+}
+
+.focus header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--rv-accent-strong);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.focus header small,
+.notice {
+  color: var(--rv-text-muted);
+}
+
+.timer {
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(2.3rem, 8vw, 4rem);
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-align: center;
+}
+
+.presets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.focus button,
+.focus input,
+.focus select {
+  min-block-size: 44px;
+}
+
+.focus button,
+.focus select,
+.focus input[type='number'] {
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 0.75rem;
+  color: inherit;
+  background: var(--rv-paper);
+}
+
+.focus button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding-inline: 0.75rem;
+}
+
+.custom {
+  display: grid;
+  grid-template-columns: 1fr 5rem auto;
+}
+
+.custom > span {
+  color: var(--rv-text-muted);
+  font-size: 0.78rem;
+}
+
+.custom input {
+  min-inline-size: 0;
+  padding-inline: 0.5rem;
+}
+
+.sessionActions > button {
+  flex: 1;
+}
+
+.soundscape {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 0.85rem;
+}
+
+.soundscape legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-inline: 0.25rem;
+  color: var(--rv-text-muted);
+  font-size: 0.78rem;
+}
+
+.soundscape label {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.25rem;
+  color: var(--rv-text-muted);
+  font-size: 0.74rem;
+}
+
+.soundscape .autoStart {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.soundscape .autoStart input {
+  min-block-size: auto;
+}
+
+.soundscape input[type='range'] {
+  inline-size: 100%;
+}
+
+.notice,
+.error {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.error {
+  padding: 0.65rem;
+  border-radius: 0.65rem;
+  color: var(--rv-danger-text, #7b233a);
+  background: var(--rv-danger-soft, #fce8ed);
+}
+
+@media (max-width: 880px) {
+  .custom {
+    grid-template-columns: 1fr auto;
+  }
+
+  .custom > span {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (forced-colors: active) {
+  .focus button,
+  .focus select,
+  .focus input,
+  .soundscape {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+}

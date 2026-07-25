@@ -1,0 +1,123 @@
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,300;1,400;1,500;1,600;1,700;1,800&display=swap');
+
+* {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background-color: #161616;
+    min-height: 100vh;
+    color: #cccccc;
+    font-family: 'Open Sans', sans-serif;
+
+}
+
+.navbar {
+    position: sticky;
+    top: 0;
+    left: 0;
+    right: 0;
+    background-color: #2c2c2c;
+    height: 55px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    z-index: 100;
+}
+
+a {
+    text-decoration: none;
+    color: unset;
+}
+
+a.navmenuitem {
+    font-size: 20px;
+    margin-left: 15px;
+    transition: .2s;
+}
+
+a.navmenuitem:hover,
+.navbar h1:hover,
+.download:hover,
+.reload:hover,
+footer a:hover {
+    color: #de6161;
+}
+
+.navbar h1 {
+    font-weight: 300;
+    transition: .2s;
+}
+
+.navbar>.left {
+    margin-left: 15px;
+    display: flex;
+    align-items: center;
+}
+
+.navbar>.left img {
+    height: 30px;
+    margin-right: 10px;
+}
+
+.navbar>.right {
+    margin-right: 20px;
+}
+
+.container {
+    height: calc(100vh - 120px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    /* margin-top: 55px; */
+    flex-direction: column;
+    position: relative;
+    z-index: 1;
+}
+
+.btns {
+    display: flex;
+    align-items: center;
+    position: absolute;
+    bottom: 30px
+}
+
+div.image>img {
+    max-height: calc(100vh - 250px);
+    max-width: 80vw;
+    border-radius: 5px;
+}
+
+.download {
+    color: #7b7b7b;
+    transition: .2s;
+    margin-left: 5px;
+    font-size: 14px;
+}
+
+.reload {
+    float: right;
+    margin-right: 5px;
+    color: #7b7b7b;
+    transition: .2s;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+footer {
+    height: 50px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+}
+
+footer>span {
+    color: #7b7b7b;
+    transition: .2s;
+    font-size: 14px;
+}

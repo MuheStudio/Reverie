@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <filter id="g" x="-20%" y="-20%" width="140%" height="140%">
+    <feTurbulence type="fractalNoise" baseFrequency=".72" numOctaves="2" seed="163"/>
+    <feColorMatrix values="0 0 0 0 .39 0 0 0 0 .31 0 0 0 0 .34 0 0 0 .17 0"/>
+  </filter>
+  <rect width="160" height="160" filter="url(#g)" opacity=".34"/>
+</svg>

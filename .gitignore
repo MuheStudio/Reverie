@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+dist/
+build/
+*.spec
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# JavaScript package managers and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.vite/
+frontend/.vitest/
+*.tsbuildinfo
+
+# Project data (user-generated, local only)
+data/persona/*.json
+data/memory/*
+data/diary/*
+data/stickers/*
+data/backups/*
+data/config.json
+data/**/*.db
+data/**/*.db-*
+data/**/*.sqlite
+data/**/*.sqlite3
+data/**/*.sqlite3-*
+data/**/*.log
+data/assets/
+data/runtime/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Pytest cache
+.pytest_cache/
+pytest-cache-files-*/
+
+# Nuitka
+*.build/
+*.dist/
+
+# Generated Windows installer staging
+frontend/.installer-app/
+frontend/.installer-resources/

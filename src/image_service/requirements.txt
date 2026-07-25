@@ -1,0 +1,6 @@
+aiohttp==3.11.18
+aiohttp-jinja2==1.6
+Jinja2==3.1.2
+progress==1.6
+Requests==2.31.0
+tqdm==4.67.3

@@ -1,0 +1,10 @@
+借鉴或直接使用此项目：
+一个简单的 API + 网页查看器，提供随机狐娘图片。
+
+- 图片源来自 Danbooru 或 Gelbooru
+- 支持 SFW/NSFW 过滤，可选 loli 标签过滤
+- 图片通过服务器代理，不暴露源站 URL
+- Python (aiohttp) 后端，支持 Docker 自部署
+- 许可：MIT
+
+定位： 在Reverie中，用户需要情绪价时则需要这些图片来慰藉。关于SFW和NSFW的内容，应当给予用户选择的权利，如三个选择：获取SFW内容，获取NSFW内容，随机获取，这三项。

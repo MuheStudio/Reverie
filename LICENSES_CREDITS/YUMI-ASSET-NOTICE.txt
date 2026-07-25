@@ -1,0 +1,18 @@
+Yumi avatar preview asset notice
+
+Asset included in the application:
+  frontend/src/assets/dreamroom/yumi-default-transparent.png
+
+Source:
+  Supplied by the project owner from the local “皮套-yumi” model folder on
+  2026-07-25 and described by the project owner as a public avatar asset.
+
+Scope:
+  Only a transparent-background static preview derived from the supplied PNG
+  is included in ordinary builds. The .moc3 model, textures, expressions,
+  motions, and Live2D Cubism runtime are not copied into an unlicensed
+  distribution.
+
+Before public redistribution, the project owner must record the original
+creator, source URL, and the asset’s redistribution terms here. This notice is
+not a substitute for a Live2D Cubism application publication license.

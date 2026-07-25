@@ -1,0 +1,350 @@
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
+
+const frontendRoot = path.resolve(__dirname, '..');
+const projectRoot = path.resolve(frontendRoot, '..');
+const repoRoot = path.resolve(projectRoot, '..', '..');
+const outRoot = process.env.REVERIE_WINDOWS_OUT
+  ? path.resolve(process.env.REVERIE_WINDOWS_OUT)
+  : path.resolve(repoRoot, '将Reverie打包至各个平台', '半成品', 'Windows');
+const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+const packageName = `Reverie-Windows-Test-${timestamp}`;
+const packageDir = path.join(outRoot, packageName);
+const resourcesDir = path.join(packageDir, 'resources');
+const appDir = path.join(resourcesDir, 'app');
+const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
+const live2dLicenseSource = process.env.REVERIE_LIVE2D_LICENSE_PATH
+  ? path.resolve(process.env.REVERIE_LIVE2D_LICENSE_PATH)
+  : path.join(projectRoot, 'LICENSES_CREDITS', 'LIVE2D_PUBLICATION_LICENSE.json');
+
+function assertInside(parent, child) {
+  const parentResolved = path.resolve(parent);
+  const childResolved = path.resolve(child);
+  if (!childResolved.startsWith(parentResolved + path.sep)) {
+    throw new Error(`Refusing to write outside ${parentResolved}: ${childResolved}`);
+  }
+}
+
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function copyRecursive(src, dest, options = {}) {
+  const filter = options.filter || (() => true);
+  const stat = fs.lstatSync(src);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Refusing to copy symlink into test package: ${src}`);
+  }
+  if (!filter(src, stat)) {
+    return;
+  }
+  if (stat.isDirectory()) {
+    ensureDir(dest);
+    for (const entry of fs.readdirSync(src)) {
+      copyRecursive(path.join(src, entry), path.join(dest, entry), options);
+    }
+    return;
+  }
+  fs.copyFileSync(src, dest);
+}
+
+function removeIfExists(target) {
+  if (fs.existsSync(target)) {
+    fs.rmSync(target, { recursive: true, force: true });
+  }
+}
+
+function writeJson(target, payload) {
+  ensureDir(path.dirname(target));
+  fs.writeFileSync(target, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
+}
+
+function runElectronBuild() {
+  const result = spawnSync(
+    process.execPath,
+    [path.join(frontendRoot, 'script', 'run-clean-tool.cjs'), 'vite', 'build'],
+    {
+      cwd: frontendRoot,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        VITE_ELECTRON_BUILD: 'true',
+        VITE_LIVE2D_PUBLIC_ENABLED: live2dBuildEnabled ? 'true' : 'false',
+      },
+    },
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`Electron build failed with exit code ${result.status}`);
+  }
+}
+
+function shouldCopyElectronRuntime(src, stat) {
+  const name = path.basename(src);
+  if (stat.isDirectory()) {
+    return !['__fixtures__', 'fixtures', 'test', 'tests'].includes(name.toLowerCase());
+  }
+  return !/\.(?:test|spec|fixture)\.(?:c?js|mjs|json)$/i.test(name)
+    && !/(?:^|[-_.])test-fixture(?:[-_.]|$)/i.test(name);
+}
+
+function assertNoTestCode(root) {
+  if (!fs.existsSync(root)) return true;
+  const visit = (current) => {
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) throw new Error(`Test package contains a symlink: ${current}`);
+    const name = path.basename(current);
+    if ((!stat.isDirectory() && !shouldCopyElectronRuntime(current, stat))
+      || (stat.isDirectory() && ['__fixtures__', 'fixtures', 'test', 'tests'].includes(name.toLowerCase()))) {
+      throw new Error(`Test package contains test code or fixtures: ${current}`);
+    }
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(current)) visit(path.join(current, entry));
+    }
+  };
+  visit(root);
+  return true;
+}
+
+function enforceLive2DTestPackageBoundary(scanRoots) {
+  const license = assertLive2DReleaseGate({
+    buildEnabled: live2dBuildEnabled ? '1' : '0',
+    licensePath: live2dLicenseSource,
+    platform: 'win32',
+    scanRoots,
+  });
+  return license;
+}
+
+function createTestBuildMetadata() {
+  return {
+    schema: 'reverie.windows-test-build.v1',
+    product: 'Reverie',
+    publishable: false,
+    distribution: 'TEST_ONLY_DO_NOT_RELEASE',
+    live2dReleaseGate: live2dBuildEnabled ? 'licensed-test-runtime' : 'disabled-and-scanned',
+    generatedAtUtc: new Date().toISOString(),
+  };
+}
+
+function copyIfExists(src, dest) {
+  if (fs.existsSync(src)) {
+    copyRecursive(src, dest);
+  }
+}
+
+function copyDataSkeleton() {
+  const dataDir = path.join(resourcesDir, 'data');
+  const dirs = [
+    'backups',
+    'diary',
+    path.join('diary', 'keys'),
+    'interest',
+    'memory',
+    'persona',
+    'social',
+    'stickers',
+    'timeline',
+    'user',
+    'web_cache',
+  ];
+  for (const dir of dirs) {
+    ensureDir(path.join(dataDir, dir));
+  }
+
+  writeJson(path.join(dataDir, 'config.json'), {
+    llm: {
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      base_url: 'https://api.deepseek.com',
+      temperature: 0.82,
+      max_tokens: 2048,
+    },
+    memory: {
+      embedding_model: 'BAAI/bge-small-en-v1.5',
+      retention_days: 730,
+      forgetting_enabled: true,
+      long_term_forget_days: 90,
+      short_term_forget_days: 7,
+      forget_probability: 0.05,
+      decay_lambda: 0.0077,
+      recall_reinforcement_alpha: 0.12,
+      minimum_retrieval_retention: 0.05,
+      misremembering_enabled: false,
+      misremember_probability: 0.001,
+      long_term_misremember_probability: 0.001,
+      short_term_misremember_probability: 0.001,
+    },
+    chat: {
+      reply_delay_min: 3,
+      reply_delay_max: 25,
+      split_messages: true,
+      typing_indicator: true,
+    },
+    features: {
+      web_surfing_enabled: false,
+      web_disclaimer_acknowledged: false,
+      web_allowed_topics: ['热门梗', '新番/动漫资讯', '二次元内容', '游戏更新'],
+      web_refresh_interval_minutes: 180,
+      diary_enabled: false,
+      diary_privacy_enabled: true,
+      diary_peek_enabled: true,
+      timeline_enabled: false,
+      proactive_chat_enabled: false,
+      late_night_enabled: false,
+      late_night_probability: 0.1,
+      autonomous_memory_enabled: true,
+      autonomous_memory_llm_enabled: false,
+    },
+    cloud_mode: 'local',
+  });
+
+  copyIfExists(
+    path.join(projectRoot, 'data', 'persona', 'active.json'),
+    path.join(dataDir, 'persona', 'active.json'),
+  );
+  copyIfExists(
+    path.join(projectRoot, 'data', 'stickers', 'library.json'),
+    path.join(dataDir, 'stickers', 'library.json'),
+  );
+  writeJson(path.join(dataDir, 'user', 'profile.json'), {
+    name: '',
+    nickname: '',
+    birthday: '',
+    interests: [],
+    hobbies: [],
+    favorite_topics: [],
+    important_dates: {},
+    sticker_preferences: {},
+    long_term_goals: [],
+    habits: [],
+    historical_events: [],
+  });
+}
+
+function shouldCopyPythonRuntime(src, stat) {
+  const name = path.basename(src);
+  if (name === '__pycache__' || name === '.pytest_cache') return false;
+  if (!stat.isDirectory() && (name.endsWith('.pyc') || name.endsWith('.pyo'))) return false;
+  return true;
+}
+
+function shouldCopyProjectSource(src, stat) {
+  const name = path.basename(src);
+  if (name === '__pycache__' || name === '.pytest_cache') return false;
+  if (!stat.isDirectory() && (name.endsWith('.pyc') || name.endsWith('.pyo'))) return false;
+  return true;
+}
+
+function main() {
+  const electronExe = require('electron');
+  const electronDist = path.dirname(electronExe);
+
+  runElectronBuild();
+  enforceLive2DTestPackageBoundary([
+    path.join(projectRoot, 'src'),
+    path.join(projectRoot, 'data'),
+    path.join(frontendRoot, 'electron'),
+    path.join(frontendRoot, 'public'),
+    path.join(frontendRoot, 'dist'),
+  ]);
+
+  if (!fs.existsSync(path.join(frontendRoot, 'dist', 'index.html'))) {
+    throw new Error('frontend/dist/index.html not found. Run the desktop Vite build first.');
+  }
+  if (!fs.existsSync(path.join(projectRoot, 'venv', 'Scripts', 'python.exe'))) {
+    throw new Error('Bundled venv not found at projectRoot/venv/Scripts/python.exe.');
+  }
+
+  ensureDir(outRoot);
+  assertInside(outRoot, packageDir);
+  removeIfExists(packageDir);
+
+  copyRecursive(electronDist, packageDir);
+
+  const oldExe = path.join(packageDir, 'electron.exe');
+  const newExe = path.join(packageDir, 'Reverie.exe');
+  if (fs.existsSync(oldExe)) {
+    fs.renameSync(oldExe, newExe);
+  }
+
+  ensureDir(appDir);
+  copyRecursive(path.join(frontendRoot, 'dist'), path.join(appDir, 'dist'));
+  copyRecursive(path.join(frontendRoot, 'electron'), path.join(appDir, 'electron'), {
+    filter: shouldCopyElectronRuntime,
+  });
+  writeJson(path.join(appDir, 'package.json'), {
+    name: 'reverie-windows-test',
+    version: '0.1.0',
+    main: 'electron/main.js',
+    private: true,
+    reverieDistribution: 'TEST_ONLY_DO_NOT_RELEASE',
+  });
+
+  copyRecursive(path.join(projectRoot, 'src'), path.join(resourcesDir, 'src'), {
+    filter: shouldCopyProjectSource,
+  });
+  for (const compatDir of ['app', 'config', 'plugin', 'utils']) {
+    copyIfExists(path.join(projectRoot, compatDir), path.join(resourcesDir, compatDir));
+  }
+  for (const compatFile of ['charset_normalizer.py', 'msgpack.py', 'ormsgpack.py']) {
+    copyIfExists(path.join(projectRoot, compatFile), path.join(resourcesDir, compatFile));
+  }
+  for (const docFile of ['LICENSE', 'NOTICE', 'CREDITS.md', 'AGPL_EXCLUDED.md', 'requirements.txt']) {
+    copyIfExists(path.join(projectRoot, docFile), path.join(resourcesDir, docFile));
+  }
+  copyIfExists(path.join(projectRoot, 'LICENSES_CREDITS'), path.join(resourcesDir, 'LICENSES_CREDITS'));
+  copyRecursive(path.join(projectRoot, 'venv'), path.join(resourcesDir, 'venv'), {
+    filter: shouldCopyPythonRuntime,
+  });
+  copyDataSkeleton();
+  if (live2dBuildEnabled) {
+    copyRecursive(
+      live2dLicenseSource,
+      path.join(resourcesDir, 'LIVE2D_PUBLICATION_LICENSE.json'),
+    );
+    fs.writeFileSync(
+      path.join(resourcesDir, 'LIVE2D_RUNTIME_ENABLED'),
+      'Licensed Live2D runtime in a non-publishable test build.\r\n',
+      'utf8',
+    );
+  }
+  assertNoTestCode(path.join(appDir, 'electron'));
+  if (!live2dBuildEnabled) {
+    enforceLive2DTestPackageBoundary([appDir, resourcesDir]);
+  }
+  writeJson(path.join(packageDir, 'TEST-BUILD-DO-NOT-RELEASE.json'), createTestBuildMetadata());
+
+  fs.writeFileSync(
+    path.join(packageDir, 'PACKAGE-NOTES.txt'),
+    [
+      '*** TEST ONLY — NOT FOR RELEASE OR REDISTRIBUTION ***',
+      '*** 测试构建——不可发布、不可分发 ***',
+      '',
+      'Reverie Windows test package',
+      '',
+      'Run Reverie.exe to start the Electron desktop shell.',
+      'This is a portable test build generated without electron-builder/NSIS.',
+      'It includes a sanitized data skeleton and does not copy private diary keys or memory vectors.',
+      'For a formal installer, add electron-builder or another installer toolchain later.',
+      '',
+    ].join('\r\n'),
+    'utf-8',
+  );
+
+  console.log(`[TEST ONLY - NOT FOR RELEASE] ${packageDir}`);
+}
+
+if (require.main === module) main();
+
+module.exports = {
+  assertNoTestCode,
+  createTestBuildMetadata,
+  enforceLive2DTestPackageBoundary,
+  main,
+  shouldCopyElectronRuntime,
+};

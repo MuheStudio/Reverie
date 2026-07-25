@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fox Girls Club</title>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <link rel="stylesheet" href="/static/css/menu.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta property="og:title" content="Fox Girls Club" />
+    <meta name="twitter:description" content="Fox girls are just better :3">
+    <meta property="og:type" content="Fox girls are just better :3" />
+    <meta property="og:description" content="Fox girls are just better :3">
+    <meta property="og:url" content="https://foxgirls.club/" />
+    <meta property="og:image" content="https://foxgirls.club/static/images/baner.jpg" />
+    <meta name="twitter:image" content="https://foxgirls.club/static/images/baner.jpg">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Fox Girls Club">
+
+</head>
+
+<body>
+    <div class="navbar">
+        <div class="left">
+            <img src="/favicon.ico" alt="">
+            <a href="/">
+                <h1>FOXGIRLS.CLUB</h1>
+            </a>
+
+        </div>
+        <div class="right">
+            <input id="menu-toggle" type="checkbox" />
+            <label class='menu-button-container' for="menu-toggle">
+                <div class='menu-button'></div>
+            </label>
+            <ul class="menu">
+                <li><a class="navmenuitem" href="/{{r_link}}" title="{{r_link}} images"
+                        style="text-transform: uppercase;">{{r_link}}</a></li>
+                <li><a class="navmenuitem" href="/api/endpoints" target="_blank" title="API">API</a></li>
+                <li><a class="navmenuitem" href="#" onclick="alert('soon')" title="Telegram bot"><i
+                            class="fab fa-telegram-plane"></i></a></li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="image">
+            <img id="image" src="{{img_url}}" alt="" srcset="">
+            <br>
+
+
+        </div>
+        <div class=btns>
+            <a href="{{img_url}}" download class="download" id="download"><i class="fas fa-download"></i> Download
+                image</a>
+
+            <div style="display: flex; justify-content: center; align-items: center; margin-left: 30px;" class="reload">
+                <svg width="19" id="loader" style="opacity: 1; transition: .2s;" height="19" viewBox="0 0 19 19"
+                    xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient x1="8.042%" y1="0%" x2="65.682%" y2="23.865%" id="a">
+                            <stop stop-color="#de6161" stop-opacity="0" offset="0%" />
+                            <stop stop-color="#de6161" stop-opacity=".631" offset="63.146%" />
+                            <stop stop-color="#de6161" offset="100%" />
+                        </linearGradient>
+                    </defs>
+                    <g fill="none" fill-rule="evenodd">
+                        <g transform="translate(1 1)">
+                            <path d="M18 9c0-4.94-4.03-9-9-9" id="Oval-2" stroke="url(#a)" stroke-width="2">
+                                <animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9"
+                                    dur="0.9s" repeatCount="indefinite" />
+                            </path>
+                            <circle fill="#de6161" cx="18" cy="9" r="1">
+                                <animateTransform attributeName="transform" type="rotate" from="0 9 9" to="360 9 9"
+                                    dur="0.9s" repeatCount="indefinite" />
+                            </circle>
+                        </g>
+                    </g>
+                </svg>
+                <span class="reload" onclick="updateImage();" style="margin-left: 10px;"><i class="fas fa-sync-alt"></i>
+                    Reload</span>
+            </div>
+        </div>
+    </div>
+    <footer>
+        <span>Made by <a href="https://foxgirls.org" target="_blank">foxgirls.org</a></span>
+    </footer>
+    <script>
+        async function updateImage() {
+            var link = ("{{r_link}}" == "nsfw") ? "/api/sfw" : "/api/nsfw";
+            var loader = document.getElementById("loader");
+            const response = await fetch(link);
+            if (response.ok) {
+                loader.style.opacity = 1;
+                const data = await response.json();
+                var elem = document.getElementById("image");
+                var elem2 = document.getElementById("download");
+                elem.src = data['url'];
+                elem2.href = data['url']
+            }
+
+        }
+        document.getElementById("image").addEventListener("load", () => {
+            var loader = document.getElementById("loader");
+            loader.style.opacity = 0;
+        })
+    </script>
+</body>
+
+</html>

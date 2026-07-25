@@ -1,0 +1,74 @@
+{
+  "name": "@proj-airi/stage-ui-live2d",
+  "type": "module",
+  "private": true,
+  "description": "Live2D scene components and stores for Project AIRI",
+  "author": {
+    "name": "Moeru AI Project AIRI Team",
+    "email": "airi@moeru.ai",
+    "url": "https://github.com/moeru-ai"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moeru-ai/airi.git",
+    "directory": "packages/stage-ui-live2d"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./components": "./src/components/index.ts",
+    "./components/scenes": "./src/components/scenes/index.ts",
+    "./components/scenes/Live2D.vue": "./src/components/scenes/Live2D.vue",
+    "./components/scenes/live2d": "./src/components/scenes/live2d/index.ts",
+    "./composables/live2d": "./src/composables/live2d/index.ts",
+    "./constants/emotions": "./src/constants/emotions.ts",
+    "./stores": "./src/stores/index.ts",
+    "./stores/model-parameters": "./src/stores/model-parameters.ts",
+    "./stores/expression-store": "./src/stores/expression-store.ts",
+    "./tools/expression-tools": "./src/tools/expression-tools.ts",
+    "./utils/eye-motions": "./src/utils/eye-motions.ts",
+    "./utils/live2d-preview": "./src/utils/live2d-preview.ts",
+    "./utils/live2d-zip-loader": "./src/utils/live2d-zip-loader.ts",
+    "./utils/live2d-opfs-registration": "./src/utils/live2d-opfs-registration.ts",
+    "./utils/opfs-loader": "./src/utils/opfs-loader.ts"
+  },
+  "scripts": {
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@lemonneko/crop-empty-pixels": "catalog:",
+    "@pixi/app": "catalog:",
+    "@pixi/constants": "catalog:",
+    "@pixi/core": "catalog:",
+    "@pixi/display": "catalog:",
+    "@pixi/extensions": "catalog:",
+    "@pixi/interaction": "catalog:",
+    "@pixi/loaders": "catalog:",
+    "@pixi/math": "catalog:",
+    "@pixi/runner": "catalog:",
+    "@pixi/settings": "catalog:",
+    "@pixi/sprite": "catalog:",
+    "@pixi/ticker": "catalog:",
+    "@pixi/utils": "catalog:",
+    "@proj-airi/stage-shared": "workspace:^",
+    "@proj-airi/ui": "workspace:^",
+    "@vueuse/core": "catalog:",
+    "@xsai/tool": "catalog:",
+    "animejs": "catalog:",
+    "culori": "catalog:",
+    "es-toolkit": "catalog:",
+    "jszip": "catalog:",
+    "pinia": "catalog:",
+    "pixi-filters": "catalog:",
+    "pixi-live2d-display": "catalog:",
+    "three": "catalog:",
+    "vue": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/culori": "catalog:",
+    "@types/three": "catalog:",
+    "vitest": "catalog:vitest",
+    "vue-tsc": "catalog:"
+  }
+}

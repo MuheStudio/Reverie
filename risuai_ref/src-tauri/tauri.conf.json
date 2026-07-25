@@ -1,0 +1,78 @@
+{
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm tauribuild",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5174"
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "src-python/*"
+    ],
+    "targets": ["deb", "rpm", "appimage", "nsis", "app", "dmg"],
+    "createUpdaterArtifacts": true,
+    "fileAssociations": [
+      {
+        "ext": [
+          "risum", "risup", "charx"
+        ]
+      }
+    ]
+  },
+  "productName": "RisuAI",
+  "mainBinaryName": "RisuAI",
+  "version": "2026.6.210",
+  "identifier": "co.aiclient.risu",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2ODMzOTIxMDMxOTY1MUYKUldRZlpSa0RJVG1EVmx5Vm1WYlhFM29HMEJrUTRrYmg5dDQ0RFpvdUphNDdxQmVlWXJHVmV5TEYK",
+      "endpoints": [
+        "https://github.com/kwaroran/RisuAI/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["risuailocal"]
+      }
+    }
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "Risuai",
+        "width": 1024,
+        "height": 768,
+        "minWidth": 300,
+        "minHeight": 500,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "scope": [
+          "asset",
+          "$APPDATA",
+          "$APPDATA/*",
+          "$APPDATA/**/*",
+          "/data/**/*"
+        ],
+        "enable": true
+      },
+      "csp": null
+    }
+  }
+}

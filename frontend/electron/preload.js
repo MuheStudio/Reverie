@@ -1,0 +1,247 @@
+'use strict';
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+function subscribe(channel, callback) {
+  if (typeof callback !== 'function') return () => {};
+  let active = true;
+  const listener = (_event, payload) => {
+    if (active) callback(payload);
+  };
+  ipcRenderer.on(channel, listener);
+  return () => {
+    if (!active) return;
+    active = false;
+    ipcRenderer.removeListener(channel, listener);
+  };
+}
+
+function stringId(value, label) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 64) {
+    throw new TypeError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function boundedText(value, label, max) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > max
+    || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new TypeError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function finiteInteger(value, label) {
+  if (!Number.isInteger(value)) throw new TypeError(`${label} must be an integer`);
+  return value;
+}
+
+function credentialScope(value) {
+  if (!['llm', 'imageGen'].includes(value)) throw new TypeError('credential scope is invalid');
+  return value;
+}
+
+function credentialValue(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('credential value is invalid');
+  }
+  const result = {};
+  for (const field of ['apiKey', 'customHeaders']) {
+    if (value[field] == null || value[field] === '') continue;
+    if (typeof value[field] !== 'string' || value[field].length > 64 * 1024
+      || value[field].includes('\u0000')) {
+      throw new TypeError(`${field} is invalid`);
+    }
+    result[field] = value[field];
+  }
+  if (Object.keys(result).length === 0) {
+    throw new TypeError('at least one credential value is required');
+  }
+  return result;
+}
+
+function publicProviderConfig(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !value.llm || typeof value.llm !== 'object' || Array.isArray(value.llm)) {
+    throw new TypeError('provider config is invalid');
+  }
+  const llm = {
+    provider: boundedText(value.llm.provider, 'LLM provider', 32),
+    baseUrl: boundedText(value.llm.baseUrl, 'LLM base URL', 2048),
+    model: boundedText(value.llm.model, 'LLM model', 512),
+  };
+  if (value.llm.customProviderName) {
+    llm.customProviderName = boundedText(
+      value.llm.customProviderName,
+      'custom provider name',
+      160,
+    );
+  }
+  const result = { llm };
+  if (value.imageGen != null) {
+    if (!value.imageGen || typeof value.imageGen !== 'object' || Array.isArray(value.imageGen)) {
+      throw new TypeError('image provider config is invalid');
+    }
+    result.imageGen = {
+      provider: boundedText(value.imageGen.provider, 'image provider', 32),
+      baseUrl: boundedText(value.imageGen.baseUrl, 'image base URL', 2048),
+      model: boundedText(value.imageGen.model, 'image model', 512),
+    };
+  }
+  return result;
+}
+
+function previewReport(value = {}) {
+  const detected = value?.detected || {};
+  const normalizeNames = (items, label) => {
+    if (items == null) return [];
+    if (!Array.isArray(items) || items.length > 256) throw new TypeError(`${label} is invalid`);
+    return items.map((item) => boundedText(item, label, 110));
+  };
+  return {
+    detected: {
+      animationClips: normalizeNames(detected.animationClips, 'animation clip'),
+      expressions: normalizeNames(detected.expressions, 'expression'),
+    },
+    capabilities: {
+      expressionPlayback: value?.capabilities?.expressionPlayback === true,
+      embeddedAnimationPlayback: value?.capabilities?.embeddedAnimationPlayback === true,
+      vrmaPlayback: false,
+    },
+  };
+}
+
+function commitAvatar(importId, confirmation = {}) {
+  return ipcRenderer.invoke('avatar:commitImport', {
+    importId: stringId(importId, 'importId'),
+    rightsConfirmed: confirmation?.rightsConfirmed === true,
+    warningAccepted: confirmation?.warningsAccepted === true
+      || confirmation?.warningAccepted === true,
+  });
+}
+
+const api = Object.freeze({
+  platform: process.platform,
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  showNotification: (title, body) => ipcRenderer.invoke('notification:show', { title, body }),
+  getNotificationStatus: () => ipcRenderer.invoke('notification:status'),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  openLocationSettings: () => ipcRenderer.invoke('system:openLocationSettings'),
+  onAppLifecycle: (callback) => subscribe('app:lifecycle', callback),
+
+  bridge: Object.freeze({
+    getConnectionConfig: () => ipcRenderer.invoke('bridge:getConnectionConfig'),
+    onChanged: (callback) => subscribe('bridge:changed', callback),
+  }),
+
+  localMode: Object.freeze({
+    get: () => ipcRenderer.invoke('localMode:get'),
+    set: (enabled) => {
+      if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean');
+      return ipcRenderer.invoke('localMode:set', { enabled });
+    },
+    onChanged: (callback) => subscribe('localMode:changed', callback),
+  }),
+
+  credentials: Object.freeze({
+    status: () => ipcRenderer.invoke('credentials:status'),
+    set: (scope, value) => ipcRenderer.invoke('credentials:set', {
+      scope: credentialScope(scope),
+      value: credentialValue(value),
+    }),
+    clear: (scope) => ipcRenderer.invoke('credentials:clear', {
+      scope: credentialScope(scope),
+    }),
+    onChanged: (callback) => subscribe('credentials:changed', callback),
+  }),
+
+  providerConfig: Object.freeze({
+    get: () => ipcRenderer.invoke('providerConfig:get'),
+    set: (value) => ipcRenderer.invoke('providerConfig:set', publicProviderConfig(value)),
+  }),
+
+  backup: Object.freeze({
+    export: () => ipcRenderer.invoke('backup:exportNative'),
+    import: () => ipcRenderer.invoke('backup:importNative'),
+    onProgress: (callback) => subscribe('backup:progress', callback),
+  }),
+
+  files: Object.freeze({
+    saveJson: (suggestedName, payload) => ipcRenderer.invoke('file:saveJson', {
+      suggestedName: boundedText(suggestedName, 'suggested file name', 180),
+      payload,
+    }),
+  }),
+
+  avatar: Object.freeze({
+    list: () => ipcRenderer.invoke('avatar:list'),
+    beginImport: () => ipcRenderer.invoke('avatar:beginImport'),
+    beginImportFolder: () => ipcRenderer.invoke('avatar:beginImportFolder'),
+    confirmPreview: (importId, report) => ipcRenderer.invoke('avatar:confirmPreview', {
+      importId: stringId(importId, 'importId'),
+      report: previewReport(report),
+    }),
+    discardImport: (importId) => ipcRenderer.invoke('avatar:discardImport', {
+      importId: stringId(importId, 'importId'),
+    }),
+    failPreview: (importId) => ipcRenderer.invoke('avatar:previewFailed', {
+      importId: stringId(importId, 'importId'),
+    }),
+    commitImport: commitAvatar,
+    remove: (id) => ipcRenderer.invoke('avatar:remove', { id: stringId(id, 'avatar id') }),
+    setActive: (id) => ipcRenderer.invoke('avatar:setActive', {
+      id: id == null ? null : stringId(id, 'avatar id'),
+    }),
+    addMotion: (id) => ipcRenderer.invoke('avatar:addMotion', {
+      id: stringId(id, 'avatar id'),
+    }),
+    removeMotion: (id, motionId) => ipcRenderer.invoke('avatar:removeMotion', {
+      id: stringId(id, 'avatar id'),
+      motionId: stringId(motionId, 'motion id'),
+    }),
+    setMapping: (id, category, key, target) => {
+      if (!['expression', 'action'].includes(category)) {
+        throw new TypeError('mapping category is invalid');
+      }
+      return ipcRenderer.invoke('avatar:setMapping', {
+        id: stringId(id, 'avatar id'),
+        category,
+        key: stringId(key, 'mapping key'),
+        target: target == null ? null : boundedText(target, 'mapping target', 128),
+      });
+    },
+    onChanged: (callback) => subscribe('avatar:changed', callback),
+  }),
+
+  focusSound: Object.freeze({
+    list: () => ipcRenderer.invoke('focusSound:list'),
+    import: () => ipcRenderer.invoke('focusSound:import'),
+    open: (id) => ipcRenderer.invoke('focusSound:open', {
+      id: stringId(id, 'focus sound id'),
+    }),
+    remove: (id) => ipcRenderer.invoke('focusSound:remove', {
+      id: stringId(id, 'focus sound id'),
+    }),
+    onChanged: (callback) => subscribe('focusSound:changed', callback),
+  }),
+
+  focus: Object.freeze({
+    getState: () => ipcRenderer.invoke('focus:getState'),
+    start: (durationSeconds) => ipcRenderer.invoke('focus:start', {
+      durationSeconds: finiteInteger(durationSeconds, 'durationSeconds'),
+    }),
+    pause: (id) => ipcRenderer.invoke('focus:pause', { id: stringId(id, 'focus id') }),
+    resume: (id) => ipcRenderer.invoke('focus:resume', { id: stringId(id, 'focus id') }),
+    stop: (id) => ipcRenderer.invoke('focus:stop', { id: stringId(id, 'focus id') }),
+    acknowledgeAudioRearm: (id) => ipcRenderer.invoke('focus:ackAudioRearm', {
+      id: stringId(id, 'focus id'),
+    }),
+    onChanged: (callback) => subscribe('focus:changed', callback),
+    onCompleted: (callback) => subscribe('focus:completed', callback),
+    showNotification: (title, body) => ipcRenderer.invoke('notification:show', { title, body }),
+  }),
+});
+
+if (process.isMainFrame !== false) {
+  contextBridge.exposeInMainWorld('electronAPI', api);
+}

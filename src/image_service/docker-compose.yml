@@ -1,0 +1,9 @@
+services:
+  aibooru-bot:
+    container_name: foxgirls-club
+    restart: unless-stopped
+    build: .
+    ports:
+      - "3010:3010"
+    volumes:
+      - ./db.json:/usr/local/app/db.json:rw

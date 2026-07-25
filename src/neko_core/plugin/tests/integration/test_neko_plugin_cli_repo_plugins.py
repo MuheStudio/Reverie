@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from plugin.core.python_dependencies import collect_project_python_requirements, split_host_provided_requirements
+from plugin.neko_plugin_cli import cli as neko_plugin_cli
+from plugin.neko_plugin_cli.public import inspect_package, build_plugin, install_package
+from plugin.neko_plugin_cli.public.plugin_source import load_plugin_source
+
+REPO_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "plugins"
+
+
+def _repo_plugin_dirs() -> list[Path]:
+    return sorted(path.parent.resolve() for path in REPO_PLUGINS_ROOT.glob("*/plugin.toml") if path.is_file())
+
+
+def _repo_packable_plugin_dirs() -> list[Path]:
+    return [
+        plugin_dir
+        for plugin_dir in _repo_plugin_dirs()
+        if load_plugin_source(plugin_dir).package_type == "plugin" and _has_satisfied_dependency_layout(plugin_dir)
+    ]
+
+
+def _has_satisfied_dependency_layout(plugin_dir: Path) -> bool:
+    source = load_plugin_source(plugin_dir)
+    requirements = collect_project_python_requirements(source.pyproject_toml)
+    external_requirements, _host_requirements = split_host_provided_requirements(requirements)
+    if not external_requirements:
+        return not (plugin_dir / "requirements.txt").exists()
+    vendor_dir = plugin_dir / "vendor"
+    return vendor_dir.is_dir() and any(path.is_file() for path in vendor_dir.rglob("*"))
+
+
+@pytest.mark.plugin_integration
+def test_repo_plugins_can_be_loaded_and_classified() -> None:
+    plugin_dirs = _repo_plugin_dirs()
+    assert plugin_dirs, "expected plugin/plugins to contain repository plugins"
+
+    by_type: dict[str, list[str]] = {}
+    for plugin_dir in plugin_dirs:
+        source = load_plugin_source(plugin_dir)
+        by_type.setdefault(source.package_type, []).append(source.plugin_id)
+        assert source.plugin_id
+        assert source.name
+        assert source.version
+
+    assert "plugin" in by_type
+
+
+@pytest.mark.plugin_integration
+@pytest.mark.parametrize("plugin_dir", _repo_plugin_dirs(), ids=lambda path: path.name)
+def test_repo_plugin_build_matches_current_package_type_contract(tmp_path: Path, plugin_dir: Path) -> None:
+    source = load_plugin_source(plugin_dir)
+    package_path = tmp_path / f"{plugin_dir.name}.neko-plugin"
+
+    if source.package_type != "plugin":
+        with pytest.raises(ValueError, match="single-plugin build only supports package_type='plugin'"):
+            build_plugin(plugin_dir, package_path)
+        return
+
+    if not _has_satisfied_dependency_layout(plugin_dir):
+        with pytest.raises(ValueError, match="vendor/|requirements.txt"):
+            build_plugin(plugin_dir, package_path)
+        return
+
+    build_result = build_plugin(plugin_dir, package_path)
+    inspect_result = inspect_package(package_path)
+    install_result = install_package(
+        package_path,
+        plugins_root=tmp_path / "plugins",
+        profiles_root=tmp_path / "profiles",
+        on_conflict="rename",
+    )
+
+    assert build_result.plugin_id == source.plugin_id
+    assert inspect_result.package_id == source.plugin_id
+    assert inspect_result.package_type == "plugin"
+    assert inspect_result.payload_hash_verified is True
+    assert inspect_result.plugin_count == 1
+    assert install_result.payload_hash_verified is True
+    assert install_result.installed_plugin_count == 1
+    assert (install_result.installed_plugins[0].target_dir / "plugin.toml").is_file()
+
+
+@pytest.mark.plugin_integration
+def test_cli_batch_smoke_can_build_current_repo_plugin_packages(tmp_path: Path) -> None:
+    target_dir = tmp_path / "target"
+    packable_plugin_dirs = _repo_packable_plugin_dirs()
+
+    if not packable_plugin_dirs:
+        pytest.skip("no repository plugin currently has a complete vendored dependency layout")
+
+    for plugin_dir in packable_plugin_dirs:
+        exit_code = neko_plugin_cli.main(
+            ["build", str(plugin_dir), "--target-dir", str(target_dir)]
+        )
+        assert exit_code == 0
+
+        package_path = target_dir / f"{plugin_dir.name}.neko-plugin"
+        assert package_path.is_file()
+
+        inspect_result = inspect_package(package_path)
+        assert inspect_result.package_type == "plugin"
+        assert inspect_result.payload_hash_verified is True
