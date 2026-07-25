@@ -1,7 +1,7 @@
 import asyncio
 
 from src.config.settings import FeatureSettings
-from src.immersion import ImmersionManager, _load_lifekit_poi_config
+from src.immersion import ImmersionManager
 
 
 class FakePOIItem:
@@ -104,11 +104,20 @@ def test_nearby_context_falls_back_when_poi_adapter_fails() -> None:
     assert result["suggestions"][0]["ideas"]
 
 
-def test_lifekit_poi_config_reads_lifekit_section() -> None:
-    config = _load_lifekit_poi_config()
+def test_nearby_context_does_not_discover_an_undeclared_network_adapter() -> None:
+    manager = ImmersionManager(FeatureSettings(immersion_location_enabled=True))
 
-    assert "amap_key" in config
-    assert "baidu_map_key" in config
+    result = asyncio.run(
+        manager.nearby_life_context_async(
+            latitude=39.9042,
+            longitude=116.4074,
+            place_types=["restaurant"],
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["provider"] == "local-privacy-preserving"
+    assert result["poi_status"] == "unavailable"
 
 
 def test_closeups_and_smart_home_are_opt_in_dry_runs() -> None:

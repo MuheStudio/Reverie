@@ -404,6 +404,7 @@ def test_bridge_accepts_zai_alias_for_glm_settings(monkeypatch, tmp_path) -> Non
     settings = _Settings()
     adapter = DummyAdapter()
     config_path = tmp_path / "config.json"
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
     monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
     monkeypatch.setattr(ws_bridge.bridge_state, "adapter", adapter)
     monkeypatch.setattr("src.config.settings.CONFIG_FILE", config_path)
@@ -415,23 +416,23 @@ def test_bridge_accepts_zai_alias_for_glm_settings(monkeypatch, tmp_path) -> Non
                 "provider": "z.ai",
                 "model": "glm-5.2",
                 "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                "api_key": "glm-runtime-key",
             },
             ws,
         )
     )
 
     assert result["ok"] is True
-    assert result["model_epoch"] >= 1
+    assert result["llm"]["model_epoch"] >= 1
     assert result["llm"] == {
         "provider": "glm",
         "model": "glm-5.2",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "has_api_key": True,
+        "has_api_key": False,
+        "model_epoch": result["llm"]["model_epoch"],
     }
     assert settings.llm.provider == "glm"
     assert settings.llm.model == "glm-5.2"
-    assert settings.llm.api_key == "glm-runtime-key"
+    assert settings.llm.api_key == ""
     assert adapter.settings is settings.llm
     assert adapter.reset_count == 1
     assert "api_key" not in json.loads(config_path.read_text(encoding="utf-8"))["llm"]
@@ -454,7 +455,6 @@ def test_bridge_accepts_custom_openai_compatible_settings(monkeypatch, tmp_path)
                 "provider": "custom",
                 "model": "my-model",
                 "base_url": "https://gateway.example.test/v1",
-                "api_key": "runtime-key",
             },
             ws,
         )
@@ -465,12 +465,13 @@ def test_bridge_accepts_custom_openai_compatible_settings(monkeypatch, tmp_path)
         "provider": "custom",
         "model": "my-model",
         "base_url": "https://gateway.example.test/v1",
-        "has_api_key": True,
+        "has_api_key": False,
+        "model_epoch": result["llm"]["model_epoch"],
     }
     assert settings.llm.provider == "custom"
     assert settings.llm.model == "my-model"
     assert settings.llm.base_url == "https://gateway.example.test/v1"
-    assert settings.llm.api_key == "runtime-key"
+    assert settings.llm.api_key == ""
     assert adapter.reset_count == 1
 
 
@@ -577,13 +578,13 @@ def test_bridge_provider_change_without_base_url_resets_provider_defaults(monkey
     monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
     monkeypatch.setattr(ws_bridge.bridge_state, "adapter", adapter)
     monkeypatch.setattr("src.config.settings.CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-your-key-here")
 
     result = asyncio.run(
         ws_bridge.handle_settings_update(
             {
                 "section": "llm",
                 "provider": "openai",
-                "api_key": "runtime-openai-key",
             },
             ws,
         )
@@ -593,8 +594,31 @@ def test_bridge_provider_change_without_base_url_resets_provider_defaults(monkey
     assert settings.llm.provider == "openai"
     assert settings.llm.base_url == "https://api.openai.com/v1"
     assert settings.llm.model == "gpt-5.4"
-    assert settings.llm.api_key == "runtime-openai-key"
+    assert settings.llm.api_key == ""
     assert adapter.reset_count == 1
+
+
+def test_public_provider_update_rejects_credential_material(monkeypatch, tmp_path) -> None:
+    from src.config.settings import _Settings
+
+    settings = _Settings()
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+    monkeypatch.setattr("src.config.settings.CONFIG_FILE", tmp_path / "config.json")
+
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {
+            "section": "llm",
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "must-not-cross-public-protocol",
+        },
+        DummyWebSocket(),
+    ))
+
+    assert result["ok"] is False
+    assert "private Electron control channel" in result["error"]
+    assert settings.llm.api_key == ""
 
 
 def test_bridge_feature_settings_sync_work_manager(monkeypatch, tmp_path) -> None:
@@ -625,7 +649,9 @@ def test_bridge_feature_settings_sync_work_manager(monkeypatch, tmp_path) -> Non
         )
     )
 
-    assert result == {"ok": True}
+    assert result["ok"] is True
+    assert result["features"]["diary_enabled"] is True
+    assert result["features"]["late_night_probability"] == 0.27
     assert settings.features.diary_enabled is True
     assert settings.features.diary_privacy_enabled is False
     assert settings.features.late_night_enabled is True
@@ -810,12 +836,216 @@ def test_bridge_archive_social_sync_writes_permanent_memory(monkeypatch) -> None
     assert not any("星野幻月认识星野幻月" in fact for fact, _layer in memory.facts)
 
 
+def test_bridge_archive_is_authoritative_persona_scoped_and_conflict_safe(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.archive import ArchiveStore
+    from src.config.settings import _Settings
+
+    store = ArchiveStore(tmp_path / "archive.sqlite3")
+    settings = _Settings()
+    settings.features.group_social_enabled = False
+    archive = {
+        "characters": [{
+            "id": "friend-one",
+            "name": "Friend",
+            "alternateName": "",
+            "age": "",
+            "birthday": "",
+            "role": "friend",
+            "identity": "",
+            "schedule": "",
+            "likesDiary": False,
+            "values": "",
+            "catchphrases": [],
+            "neverSay": [],
+            "portraitUrl": "",
+            "description": "A local social card.",
+            "personality": "",
+            "speakingStyle": "",
+            "firstMessage": "",
+            "tags": [],
+            "createdAt": "2026-07-25T00:00:00+00:00",
+            "updatedAt": "2026-07-25T00:00:00+00:00",
+        }],
+        "activeCharacterIds": ["friend-one"],
+        "worldBooks": [],
+    }
+    monkeypatch.setattr(ws_bridge, "_active_persona_id", lambda: "persona-a")
+    monkeypatch.setattr(ws_bridge.bridge_state, "archive_store", store)
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+
+    migrated = asyncio.run(ws_bridge.handle_archive_migrate(
+        {"archive": archive, "expected_revision": 0},
+        DummyWebSocket(),
+    ))
+    assert migrated["ok"] is True
+    assert migrated["revision"] == 1
+    assert migrated["social_sync"] == {"ok": True, "synced": 0}
+
+    conflict = asyncio.run(ws_bridge.handle_archive_put(
+        {"archive": archive, "expected_revision": 0},
+        DummyWebSocket(),
+    ))
+    assert conflict["ok"] is False
+    assert conflict["code"] == "conflict"
+    assert conflict["revision"] == 1
+    assert asyncio.run(ws_bridge.handle_archive_get({}, DummyWebSocket()))[
+        "archive"
+    ] == archive
+    store.close()
+
+
 def test_electron_runtime_args_enable_bridge_mode() -> None:
     args = parse_runtime_args(["--bridge", "--host", "127.0.0.1", "--port", "49999"])
 
     assert args.bridge is True
     assert args.host == "127.0.0.1"
     assert args.port == 49999
+
+
+def test_bridge_module_control_disables_archive_without_touching_kernel(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.archive import ArchiveStore
+    from src.kernel.modules import ModuleRegistry
+    from src.kernel.storage import KernelStore
+
+    kernel = KernelStore(tmp_path / "kernel.sqlite3")
+    archive = ArchiveStore(tmp_path / "archive.sqlite3")
+    registry = ModuleRegistry(kernel)
+    registry.register(archive)
+    registry.start("archive")
+    monkeypatch.setattr(ws_bridge.bridge_state, "module_registry", registry)
+    monkeypatch.setattr(ws_bridge.bridge_state, "archive_store", archive)
+    monkeypatch.setattr(ws_bridge, "_active_persona_id", lambda: "persona-a")
+
+    before = kernel.integrity_check()
+    disabled = asyncio.run(ws_bridge.handle_module_control(
+        {"module_id": "archive", "action": "disable"},
+        DummyWebSocket(),
+    ))
+    assert disabled["ok"] is True
+    assert disabled["module"]["state"] == "disabled"
+    unavailable = asyncio.run(ws_bridge.handle_archive_get({}, DummyWebSocket()))
+    assert unavailable["ok"] is False
+    assert unavailable["module"]["state"] == "disabled"
+    assert kernel.integrity_check() == before == "ok"
+
+    enabled = asyncio.run(ws_bridge.handle_module_control(
+        {"module_id": "archive", "action": "enable"},
+        DummyWebSocket(),
+    ))
+    assert enabled["module"]["state"] == "running"
+    assert asyncio.run(ws_bridge.handle_archive_get({}, DummyWebSocket()))["ok"] is True
+    archive.close()
+    kernel.close()
+
+
+def test_bridge_game_state_is_persona_scoped_conflict_safe_and_optional(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from src.games import GameStateStore
+    from src.kernel.modules import ModuleRegistry
+    from src.kernel.storage import KernelStore
+
+    kernel = KernelStore(tmp_path / "kernel.sqlite3")
+    games = GameStateStore(tmp_path / "games.sqlite3")
+    registry = ModuleRegistry(kernel)
+    registry.register(games)
+    registry.start("games")
+    monkeypatch.setattr(ws_bridge.bridge_state, "module_registry", registry)
+    monkeypatch.setattr(ws_bridge.bridge_state, "game_state_store", games)
+    monkeypatch.setattr(ws_bridge, "_active_persona_id", lambda: "persona-a")
+
+    created = asyncio.run(ws_bridge.handle_game_state_put(
+        {
+            "game_id": "gomoku",
+            "state": {"moves": [1, 2, 3]},
+            "expected_revision": 0,
+        },
+        DummyWebSocket(),
+    ))
+    assert created["ok"] is True
+    assert created["revision"] == 1
+
+    conflict = asyncio.run(ws_bridge.handle_game_state_put(
+        {
+            "game_id": "gomoku",
+            "state": {"moves": []},
+            "expected_revision": 0,
+        },
+        DummyWebSocket(),
+    ))
+    assert conflict["ok"] is False
+    assert conflict["code"] == "conflict"
+    assert conflict["state"] == {"moves": [1, 2, 3]}
+
+    before = kernel.integrity_check()
+    disabled = asyncio.run(ws_bridge.handle_module_control(
+        {"module_id": "games", "action": "disable"},
+        DummyWebSocket(),
+    ))
+    assert disabled["module"]["state"] == "disabled"
+    unavailable = asyncio.run(ws_bridge.handle_game_state_get(
+        {"game_id": "gomoku"},
+        DummyWebSocket(),
+    ))
+    assert unavailable["ok"] is False
+    assert unavailable["code"] == "module_unavailable"
+    assert kernel.integrity_check() == before == "ok"
+
+    games.close()
+    kernel.close()
+
+
+def test_onboarding_completion_is_authoritative_and_durable(monkeypatch, tmp_path) -> None:
+    from src.config.settings import _Settings
+
+    settings = _Settings()
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+    monkeypatch.setattr("src.config.settings.CONFIG_FILE", config_path)
+
+    before = asyncio.run(ws_bridge.handle_settings_get({}, DummyWebSocket()))
+    assert before["ui"]["onboarding_completed"] is False
+
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {"section": "onboarding", "completed": True},
+        DummyWebSocket(),
+    ))
+    assert result["ok"] is True
+    assert result["ui"]["onboarding_completed"] is True
+    assert result["ui"]["onboarding_completed_at_utc"]
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["ui"]["onboarding_completed"] is True
+    assert persisted["ui"]["onboarding_completed_at_utc"]
+
+
+def test_legacy_lorebook_write_is_rejected_without_creating_a_second_fact_source(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr("src.config.settings.DATA_DIR", tmp_path)
+
+    result = asyncio.run(
+        ws_bridge.handle_settings_update(
+            {"section": "lorebook", "entries": [{"key": "unsafe-second-source"}]},
+            DummyWebSocket(),
+        )
+    )
+
+    assert result == {
+        "ok": False,
+        "code": "retired_fact_source",
+        "error": "World books are owned by the persona-scoped archive module",
+        "retryable": False,
+    }
+    assert not (tmp_path / "lorebook.json").exists()
 
 
 def test_degraded_persona_kernel_fails_feature_operations_closed(monkeypatch) -> None:

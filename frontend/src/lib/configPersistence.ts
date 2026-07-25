@@ -9,9 +9,12 @@
 import type { LLMConfig, LLMProvider } from './llmModels';
 import type { ImageGenConfig, ImageGenProvider } from './imageGenClient';
 
+export type PublicLLMConfig = Omit<LLMConfig, 'apiKey' | 'customHeaders'>;
+export type PublicImageGenConfig = Omit<ImageGenConfig, 'apiKey' | 'customHeaders'>;
+
 export interface PersistedConfig {
-  llm: LLMConfig;
-  imageGen?: ImageGenConfig;
+  llm: PublicLLMConfig;
+  imageGen?: PublicImageGenConfig;
 }
 
 const LLM_PROVIDERS = new Set<LLMProvider>([
@@ -45,7 +48,7 @@ export function containsCredentialMaterial(value: unknown): boolean {
     || (typeof value.customHeaders === 'string' && value.customHeaders.length > 0);
 }
 
-export function sanitizeLLMConfig(value: unknown): LLMConfig | null {
+export function sanitizeLLMConfig(value: unknown): PublicLLMConfig | null {
   if (!isRecord(value) || !LLM_PROVIDERS.has(value.provider as LLMProvider)) return null;
   const baseUrl = cleanString(value.baseUrl);
   const model = cleanString(value.model, 512);
@@ -53,21 +56,19 @@ export function sanitizeLLMConfig(value: unknown): LLMConfig | null {
   const customProviderName = cleanString(value.customProviderName, 160);
   return {
     provider: value.provider as LLMProvider,
-    apiKey: '',
     baseUrl,
     model,
     ...(customProviderName ? { customProviderName } : {}),
   };
 }
 
-export function sanitizeImageGenConfig(value: unknown): ImageGenConfig | null {
+export function sanitizeImageGenConfig(value: unknown): PublicImageGenConfig | null {
   if (!isRecord(value) || !IMAGE_PROVIDERS.has(value.provider as ImageGenProvider)) return null;
   const baseUrl = cleanString(value.baseUrl);
   const model = cleanString(value.model, 512);
   if (!baseUrl || !model) return null;
   return {
     provider: value.provider as ImageGenProvider,
-    apiKey: '',
     baseUrl,
     model,
   };

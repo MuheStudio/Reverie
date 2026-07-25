@@ -16,23 +16,18 @@ const outputRoot = process.env.REVERIE_WINDOWS_OUT
 const stagingResources = path.join(frontendRoot, '.installer-resources');
 const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
 
-const runtimeFilter = [
-  '**/*',
-  '!**/__pycache__/**',
-  '!**/.pytest_cache/**',
-  '!**/*.pyc',
-  '!**/*.pyo',
-];
-
 const extraResources = [
-  { from: path.join(projectRoot, 'src'), to: 'src', filter: runtimeFilter },
-  { from: path.join(projectRoot, 'app'), to: 'app', filter: runtimeFilter },
-  { from: path.join(projectRoot, 'config'), to: 'config', filter: runtimeFilter },
-  { from: path.join(projectRoot, 'plugin'), to: 'plugin', filter: runtimeFilter },
-  { from: path.join(projectRoot, 'utils'), to: 'utils', filter: runtimeFilter },
-  { from: path.join(projectRoot, 'venv'), to: 'venv', filter: runtimeFilter },
+  { from: path.join(stagingResources, 'src'), to: 'src' },
+  { from: path.join(stagingResources, 'python'), to: 'python' },
   { from: path.join(stagingResources, 'data'), to: 'data' },
-  { from: path.join(stagingResources, 'SOURCE_CODE'), to: 'SOURCE_CODE' },
+  {
+    from: path.join(stagingResources, 'PRODUCTION-INVENTORY.json'),
+    to: 'PRODUCTION-INVENTORY.json',
+  },
+  {
+    from: path.join(projectRoot, 'requirements-runtime.lock'),
+    to: 'requirements-runtime.lock',
+  },
   { from: path.join(stagingResources, 'THIRD_PARTY_LICENSES'), to: 'THIRD_PARTY_LICENSES' },
   { from: path.join(projectRoot, 'LICENSES_CREDITS'), to: 'LICENSES_CREDITS' },
 ];
@@ -55,13 +50,7 @@ if (live2dBuildEnabled) {
   });
 }
 
-for (const name of fs.readdirSync(projectRoot)) {
-  if (name.endsWith('.py')) {
-    extraResources.push({ from: path.join(projectRoot, name), to: name });
-  }
-}
-
-for (const name of ['LICENSE', 'NOTICE', 'CREDITS.md', 'AGPL_EXCLUDED.md', 'requirements.txt']) {
+for (const name of ['LICENSE', 'NOTICE', 'CREDITS.md', 'AGPL_EXCLUDED.md']) {
   extraResources.push({ from: path.join(projectRoot, name), to: name });
 }
 
@@ -79,7 +68,8 @@ module.exports = {
     enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false,
     // Renderer/Electron entrypoints are integrity-checked in app.asar. GPL
-    // corresponding source remains separately available in SOURCE_CODE.
+    // corresponding source is emitted beside the installer, never inside the
+    // executable production payload.
     enableEmbeddedAsarIntegrityValidation: true,
     onlyLoadAppFromAsar: true,
     grantFileProtocolExtraPrivileges: false,

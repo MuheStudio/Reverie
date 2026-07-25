@@ -22,6 +22,14 @@ class CoordinatorStub:
         self.resumes.append(scope)
 
 
+class CapturingEndpoint:
+    def __init__(self) -> None:
+        self.frames: list[dict] = []
+
+    async def send(self, serialized: str) -> None:
+        self.frames.append(json.loads(serialized))
+
+
 def auth(secret: str, *, client_id: str = "desktop_controller_01") -> str:
     return json.dumps(
         {
@@ -94,7 +102,9 @@ async def test_bridge_authenticates_one_controller_and_rejects_second(monkeypatc
         assert closed.value.code == 4009
         await second.close()
         await first.close()
-    assert len(stub.resumes) == 1
+    # Authentication must not revive or redispatch any old paid operation when
+    # no active backend session exists.
+    assert stub.resumes == []
 
 
 @pytest.mark.asyncio
@@ -148,6 +158,67 @@ async def test_direct_response_echoes_only_its_valid_request_id(monkeypatch) -> 
             assert error["type"] == ws_bridge.MsgType.ERROR
             assert "request_id" not in error
             assert error["payload"]["message"] == "invalid request_id"
+
+
+@pytest.mark.asyncio
+async def test_production_dispatch_rejects_stale_persona_before_module_handler(
+    monkeypatch,
+) -> None:
+    endpoint = CapturingEndpoint()
+    context = ws_bridge.BridgeClientContext(
+        client_id="electron_stdio_test",
+        protocol_version=3,
+        authenticated=True,
+    )
+    monkeypatch.setitem(ws_bridge._client_contexts, endpoint, context)
+    monkeypatch.setattr(
+        ws_bridge,
+        "_active_persona_scope",
+        lambda: {
+            "persona_id": "persona-current",
+            "persona_epoch": 9,
+            "persona_fingerprint": "a" * 64,
+        },
+    )
+    called = 0
+
+    async def game_get(_payload, _endpoint):
+        nonlocal called
+        called += 1
+        return {"ok": True}
+
+    monkeypatch.setitem(ws_bridge._handlers, ws_bridge.MsgType.GAME_STATE_GET, game_get)
+    await ws_bridge.dispatch_authenticated_message(
+        {
+            "type": ws_bridge.MsgType.GAME_STATE_GET,
+            "request_id": "request_scope_01",
+            "payload": {
+                "game_id": "gomoku",
+                "expected_persona_id": "persona-old",
+                "expected_persona_epoch": 8,
+                "expected_persona_fingerprint": "b" * 64,
+            },
+        },
+        endpoint,
+    )
+    assert called == 0
+    assert endpoint.frames[-1]["payload"]["code"] == "stale_persona"
+
+    await ws_bridge.dispatch_authenticated_message(
+        {
+            "type": ws_bridge.MsgType.GAME_STATE_GET,
+            "request_id": "request_scope_02",
+            "payload": {
+                "game_id": "gomoku",
+                "expected_persona_id": "persona-current",
+                "expected_persona_epoch": 9,
+                "expected_persona_fingerprint": "a" * 64,
+            },
+        },
+        endpoint,
+    )
+    assert called == 1
+    assert endpoint.frames[-1]["payload"]["ok"] is True
 
 
 @pytest.mark.asyncio

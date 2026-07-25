@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AmbientLight,
@@ -23,38 +23,15 @@ import {
   VRMAnimationLoaderPlugin,
   type VRMAnimation,
 } from '@pixiv/three-vrm-animation';
+import { Live2DCanvas, type Live2DState } from '../AvatarView/Live2DAdapter';
+import {
+  AVATAR_ACTION_KEYS,
+  AVATAR_EXPRESSION_KEYS,
+  type AvatarDetectedCapabilities,
+  type AvatarExpressionKey,
+  type CharacterActivity,
+} from './avatarContracts';
 import styles from './AvatarStage.module.scss';
-
-export const AVATAR_ACTION_KEYS = [
-  'idle.default',
-  'chat.thinking',
-  'chat.ready',
-  'chat.deliver',
-  'focus.enter',
-  'focus.loop',
-  'focus.complete',
-  'attention',
-] as const;
-
-export const AVATAR_EXPRESSION_KEYS = [
-  'neutral',
-  'joy',
-  'sad',
-  'angry',
-  'surprised',
-  'calm',
-] as const;
-
-export type CharacterActivity = typeof AVATAR_ACTION_KEYS[number];
-export type AvatarExpressionKey = typeof AVATAR_EXPRESSION_KEYS[number];
-
-export interface AvatarDetectedCapabilities {
-  animationClips: string[];
-  expressions: string[];
-  actionMatches: Partial<Record<CharacterActivity, string>>;
-  expressionMatches: Partial<Record<AvatarExpressionKey, string>>;
-  vrmaPlayback: boolean;
-}
 
 interface AvatarStageProps {
   avatar: AvatarRecord | null;
@@ -154,6 +131,37 @@ export default function AvatarStage({
     avatar ? 'loading' : 'empty',
   );
   const [message, setMessage] = useState('');
+  const live2dGate = live2dRuntime?.live2d;
+  const live2dAllowed = avatar?.kind === 'live2d'
+    && Boolean(live2dGate?.available)
+    && Boolean(live2dGate?.licenseAccepted || live2dGate?.developmentOnly);
+  const live2dCapabilities = useMemo<AvatarDetectedCapabilities>(() => {
+    const animationClips = avatar?.detected?.animationClips ?? [];
+    const expressions = avatar?.detected?.expressions ?? [];
+    return {
+      animationClips,
+      expressions,
+      actionMatches: Object.fromEntries(
+        AVATAR_ACTION_KEYS
+          .map((key) => [
+            key,
+            autoMatch(animationClips, ACTION_PATTERNS[key], avatar?.mapping?.actions?.[key]),
+          ])
+          .filter((entry): entry is [CharacterActivity, string] => Boolean(entry[1])),
+      ),
+      expressionMatches: Object.fromEntries(
+        AVATAR_EXPRESSION_KEYS
+          .map((key) => [
+            key,
+            autoMatch(expressions, EXPRESSION_PATTERNS[key], avatar?.mapping?.expressions?.[key]),
+          ])
+          .filter((entry): entry is [AvatarExpressionKey, string] => Boolean(entry[1])),
+      ),
+      vrmaPlayback: false,
+    };
+  }, [avatar]);
+  const live2dExpressionKey = expressionOverride || ACTION_EXPRESSION[activity];
+  const live2dExpression = live2dCapabilities.expressionMatches[live2dExpressionKey] || 'neutral';
 
   useEffect(() => {
     activityRef.current = activity;
@@ -183,15 +191,17 @@ export default function AvatarStage({
       return undefined;
     }
     if (avatar.kind === 'live2d') {
-      const gate = live2dRuntime?.live2d;
-      report(
-        'error',
-        !gate?.licenseAccepted
-          ? t('dream.live2dLicenseMissing')
-          : !gate.available
-            ? gate.reason || t('dream.live2dRuntimeUnavailable')
-            : t('dream.live2dBuildUnavailable'),
-      );
+      if (!live2dAllowed || !avatar.entryUrl) {
+        report(
+          'error',
+          live2dGate?.reason
+            || (!live2dGate?.licenseAccepted && !live2dGate?.developmentOnly
+              ? t('dream.live2dLicenseMissing')
+              : t('dream.live2dRuntimeUnavailable')),
+        );
+      } else {
+        report('loading');
+      }
       return undefined;
     }
     if (!avatar.entryUrl) {
@@ -531,7 +541,21 @@ export default function AvatarStage({
       activeAnimation = null;
       animationClips = [];
     };
-  }, [avatar, live2dRuntime, lowPower, t]);
+  }, [avatar, live2dAllowed, live2dGate, live2dRuntime, lowPower, t]);
+
+  const handleLive2DState = useCallback((next: Live2DState, detail: string | null) => {
+    const mapped = {
+      pending: 'loading',
+      loading: 'loading',
+      mounted: 'ready',
+      suspended: 'paused',
+      error: 'error',
+    }[next] as typeof status;
+    setStatus(mapped);
+    setMessage(detail || '');
+    statusCallbackRef.current?.(mapped);
+    if (mapped === 'ready') capabilitiesCallbackRef.current?.(live2dCapabilities);
+  }, [live2dCapabilities]);
 
   return (
     <div
@@ -542,7 +566,16 @@ export default function AvatarStage({
         ? t('dream.avatarStageNamed', { name: avatar.name })
         : t('dream.avatarStageGeneric')}
     >
-      <div ref={hostRef} className={styles.renderHost} />
+      <div ref={hostRef} className={styles.renderHost} hidden={avatar?.kind === 'live2d'} />
+      {avatar?.kind === 'live2d' && live2dAllowed && avatar.entryUrl && (
+        <Live2DCanvas
+          className={styles.canvas}
+          config={{ width: 640, height: 720, resolution: lowPower ? 1 : 1.5, maxFps: lowPower ? 15 : 30 }}
+          modelUrl={avatar.entryUrl}
+          expression={live2dExpression}
+          onStateChange={handleLive2DState}
+        />
+      )}
       {status !== 'ready' && status !== 'paused' && (
         <div className={styles.stageNotice} role={status === 'error' ? 'alert' : 'status'}>
           <span aria-hidden="true">{status === 'error' ? '!' : '✦'}</span>

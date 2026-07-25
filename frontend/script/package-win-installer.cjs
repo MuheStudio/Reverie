@@ -3,6 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
+const {
+  assertProductionPayload,
+  copyProductionPythonSource,
+  preparePythonRuntime,
+  writeProductionInventory,
+} = require('./production-runtime.cjs');
 
 const frontendRoot = path.resolve(__dirname, '..');
 const projectRoot = path.resolve(frontendRoot, '..');
@@ -17,7 +23,8 @@ const outputRoot = process.env.REVERIE_WINDOWS_OUT
     );
 const appStage = path.join(frontendRoot, '.installer-app');
 const resourceStage = path.join(frontendRoot, '.installer-resources');
-const sourceStage = path.join(resourceStage, 'SOURCE_CODE');
+const sourceStage = path.join(frontendRoot, '.installer-source');
+const sourceArchive = path.join(outputRoot, 'Reverie-0.1.0-Corresponding-Source.zip');
 const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
 const live2dLicenseSource = process.env.REVERIE_LIVE2D_LICENSE_PATH
   ? path.resolve(process.env.REVERIE_LIVE2D_LICENSE_PATH)
@@ -150,6 +157,7 @@ function prepareDesktopApp() {
       if (stat.isDirectory()) {
         return !['__fixtures__', 'fixtures', 'test', 'tests'].includes(name.toLowerCase());
       }
+      if (name.toLowerCase() === 'bridge-supervisor.cjs') return false;
       return !/\.(?:test|spec|fixture)\.(?:c?js|mjs|json)$/i.test(name);
     },
   );
@@ -221,12 +229,12 @@ function prepareSeedData() {
 }
 
 function prepareSourceBundle() {
-  const sourceRoots = ['src', 'app', 'config', 'plugin', 'utils', 'tests', 'docs'];
-  for (const name of sourceRoots) {
-    const source = path.join(projectRoot, name);
-    assertInside(projectRoot, source, 'Reverie source');
-    copyIfExists(source, path.join(sourceStage, name));
-  }
+  copyProductionPythonSource(
+    path.join(projectRoot, 'src'),
+    path.join(sourceStage, 'src'),
+    sourceStage,
+  );
+  copyIfExists(path.join(projectRoot, 'docs'), path.join(sourceStage, 'docs'));
 
   for (const name of ['src', 'electron', 'script']) {
     const source = path.join(frontendRoot, name);
@@ -242,14 +250,11 @@ function prepareSourceBundle() {
     copyIfExists(path.join(frontendRoot, name), path.join(sourceStage, 'frontend', name));
   }
 
-  for (const name of fs.readdirSync(projectRoot)) {
-    if (name.endsWith('.py')) {
-      copyIfExists(path.join(projectRoot, name), path.join(sourceStage, name));
-    }
-  }
   for (const name of [
     'LICENSE', 'NOTICE', 'CREDITS.md', 'AGPL_EXCLUDED.md', 'CONTRIBUTING.md',
-    'README.md', 'requirements.txt', 'pytest.ini', '.env.example',
+    'README.md', 'pyproject.toml', 'requirements-runtime.txt',
+    'requirements-runtime.lock', 'requirements-migration.txt', 'requirements-dev.txt',
+    '.env.example',
   ]) {
     copyIfExists(path.join(projectRoot, name), path.join(sourceStage, name));
   }
@@ -264,7 +269,8 @@ function prepareSourceBundle() {
       'Reverie source code corresponding to this Windows build.',
       'License: GNU GPL version 3.',
       'The Electron application is packaged in integrity-checked app.asar.',
-      'Renderer source maps and original TypeScript/Python sources are included.',
+      'Original TypeScript/Python production sources and locked build inputs are included.',
+      'Reference projects, tests, local data, caches and virtual environments are omitted.',
       'Build entry: frontend/script/package-win-installer.cjs',
       '',
     ].join('\r\n'),
@@ -330,11 +336,28 @@ function collectFrontendLicenses() {
 }
 
 function collectPythonLicenses() {
-  const python = path.join(projectRoot, 'venv', 'Scripts', 'python.exe');
+  const python = path.join(resourceStage, 'python', 'python.exe');
   run(python, [
     path.join(frontendRoot, 'script', 'collect-python-licenses.py'),
     path.join(resourceStage, 'THIRD_PARTY_LICENSES', 'python'),
   ]);
+}
+
+function compressSourceBundle() {
+  fs.rmSync(sourceArchive, { force: true });
+  run('powershell.exe', [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    "Compress-Archive -Path (Join-Path $env:REVERIE_SOURCE_STAGE '*') -DestinationPath $env:REVERIE_SOURCE_ARCHIVE -CompressionLevel Optimal -Force",
+  ], {
+    REVERIE_SOURCE_STAGE: sourceStage,
+    REVERIE_SOURCE_ARCHIVE: sourceArchive,
+  });
+  if (!fs.existsSync(sourceArchive) || fs.statSync(sourceArchive).size < 1024) {
+    throw new Error('Corresponding source archive was not created');
+  }
 }
 
 function buildInstaller() {
@@ -350,11 +373,19 @@ function writeArtifactHash() {
   const installer = path.join(outputRoot, 'Reverie-Setup-0.1.0-x64.exe');
   if (!fs.existsSync(installer)) throw new Error(`Installer not found: ${installer}`);
   const hash = crypto.createHash('sha256').update(fs.readFileSync(installer)).digest('hex');
+  if (!fs.existsSync(sourceArchive)) throw new Error(`Source archive not found: ${sourceArchive}`);
+  const sourceHash = crypto.createHash('sha256').update(fs.readFileSync(sourceArchive)).digest('hex');
   fs.writeFileSync(`${installer}.sha256`, `${hash}  ${path.basename(installer)}\r\n`, 'ascii');
+  fs.writeFileSync(
+    `${sourceArchive}.sha256`,
+    `${sourceHash}  ${path.basename(sourceArchive)}\r\n`,
+    'ascii',
+  );
   writeJson(path.join(outputRoot, 'Reverie-Setup-0.1.0-build-info.json'), {
     product: 'Reverie', version: '0.1.0', architecture: 'x64',
     installer: path.basename(installer), sha256: hash,
-    license: 'GPL-3.0-only', asar: true, sourceIncluded: true,
+    license: 'GPL-3.0-only', asar: true, sourceIncludedInRuntime: false,
+    correspondingSource: path.basename(sourceArchive), correspondingSourceSha256: sourceHash,
     sourceRoot: projectRoot,
   });
   console.log(installer);
@@ -365,14 +396,32 @@ function main() {
   ensureDir(outputRoot);
   removeStage(appStage);
   removeStage(resourceStage);
+  removeStage(sourceStage);
   try {
     buildRenderer();
     enforceLive2DReleaseBoundary();
     prepareDesktopApp();
     prepareSeedData();
+    copyProductionPythonSource(
+      path.join(projectRoot, 'src'),
+      path.join(resourceStage, 'src'),
+      resourceStage,
+    );
+    const runtime = preparePythonRuntime({
+      projectRoot,
+      frontendRoot,
+      destination: path.join(resourceStage, 'python'),
+      stagingRoot: resourceStage,
+    });
     prepareSourceBundle();
     collectFrontendLicenses();
     collectPythonLicenses();
+    writeProductionInventory({
+      resourceRoot: resourceStage,
+      appRoot: appStage,
+      runtime,
+    });
+    assertProductionPayload(resourceStage, appStage);
     // Scan the exact staged payload as the final release gate. This catches a
     // dependency or build step that introduced Cubism Core/models after the
     // source-input scan.
@@ -383,10 +432,12 @@ function main() {
       });
     }
     buildInstaller();
+    compressSourceBundle();
     writeArtifactHash();
   } finally {
     removeStage(appStage);
     removeStage(resourceStage);
+    removeStage(sourceStage);
   }
 }
 

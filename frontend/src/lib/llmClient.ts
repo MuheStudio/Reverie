@@ -10,62 +10,72 @@ import {
   sanitizeImageGenConfig,
   sanitizeLLMConfig,
   savePersistedConfig,
+  type PublicLLMConfig,
 } from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-llm-config';
 
-function writePublicConfig(config: LLMConfig): LLMConfig {
-  const sanitized = sanitizeLLMConfig(config);
-  if (!sanitized) throw new TypeError('LLM configuration metadata is invalid');
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(sanitized));
-  return sanitized;
-}
+export type CredentialStorageMode = 'persistent' | 'session';
 
-async function storeCredential(
-  scope: 'llm' | 'imageGen',
-  value: { apiKey?: string; customHeaders?: string },
-): Promise<void> {
-  const nonEmpty = {
-    ...(value.apiKey ? { apiKey: value.apiKey } : {}),
-    ...(value.customHeaders ? { customHeaders: value.customHeaders } : {}),
-  };
-  if (Object.keys(nonEmpty).length === 0) return;
-  const api = globalThis.window?.electronAPI?.credentials;
-  if (!api?.set) {
-    const error = new Error('Secure operating-system credential storage is unavailable');
-    (error as Error & { code?: string }).code = 'REVERIE_SECURE_STORAGE_UNAVAILABLE';
-    throw error;
-  }
-  const status = await api.set(scope, nonEmpty);
-  if (!status.available || status.corrupted) {
-    throw new Error('Secure credential storage did not confirm the write');
+export class CredentialWriteError extends Error {
+  readonly code: string;
+  readonly canUseSessionStorage: boolean;
+
+  constructor(
+    message: string,
+    code = 'REVERIE_SECURE_STORAGE_UNAVAILABLE',
+    canUseSessionStorage = true,
+  ) {
+    super(message);
+    this.name = 'CredentialWriteError';
+    this.code = code;
+    this.canUseSessionStorage = canUseSessionStorage;
   }
 }
 
-export async function loadConfig(): Promise<LLMConfig | null> {
+function readLegacyPublicConfig(): PublicLLMConfig | null {
   try {
-    const persisted = await loadPersistedConfig();
-    if (persisted?.llm) {
-      const sanitized = writePublicConfig(persisted.llm);
-      return sanitized;
-    }
-  } catch {
-    // API not available (production / network error)
-  }
-
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    const sanitized = raw ? sanitizeLLMConfig(JSON.parse(raw)) : null;
-    if (sanitized) localStorage.setItem(CONFIG_KEY, JSON.stringify(sanitized));
-    return sanitized;
+    const raw = globalThis.localStorage?.getItem(CONFIG_KEY);
+    return raw ? sanitizeLLMConfig(JSON.parse(raw)) : null;
   } catch {
     return null;
   }
 }
 
+function removeLegacyPublicConfig(): void {
+  try {
+    globalThis.localStorage?.removeItem(CONFIG_KEY);
+  } catch {
+    // A blocked legacy cache is inert; it is never used after migration.
+  }
+}
+
+export async function loadConfig(): Promise<LLMConfig | null> {
+  const persisted = await loadPersistedConfig();
+  if (persisted?.llm) {
+    removeLegacyPublicConfig();
+    return { ...persisted.llm, apiKey: '' };
+  }
+
+  // One-way migration only. The renderer cache is never a runtime fallback:
+  // return the value only after the authoritative Electron store confirms it.
+  const legacy = readLegacyPublicConfig();
+  if (legacy) {
+    try {
+      await savePersistedConfig({ llm: legacy });
+      removeLegacyPublicConfig();
+      return { ...legacy, apiKey: '' };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export async function saveConfig(
   config: LLMConfig,
   imageGenConfig?: import('./imageGenClient').ImageGenConfig | null,
+  options: { credentialStorage?: CredentialStorageMode } = {},
 ): Promise<void> {
   const publicConfig = sanitizeLLMConfig(config);
   if (!publicConfig) throw new TypeError('LLM configuration metadata is invalid');
@@ -78,25 +88,66 @@ export async function saveConfig(
     persisted.imageGen = publicImageConfig;
   }
 
-  await savePersistedConfig(persisted);
-  await storeCredential('llm', {
+  const credentialStorage = options.credentialStorage ?? 'persistent';
+  const credential = {
     apiKey: config.apiKey.trim(),
     customHeaders: config.customHeaders?.trim(),
-  });
+  };
+  const api = globalThis.window?.electronAPI?.providerConfig;
+  if (!api?.commit) {
+    throw new CredentialWriteError(
+      '供应商设置权威通道不可用，配置和密钥均未提交。',
+      'REVERIE_DESKTOP_CONFIG_UNAVAILABLE',
+      false,
+    );
+  }
+  const result = await api.commit(persisted, credential, credentialStorage);
+  const status = result.status;
+  if (status.writeError) {
+    throw new CredentialWriteError(
+      status.writeError.message,
+      status.writeError.code,
+      credentialStorage === 'persistent',
+    );
+  }
+  const hasSubmittedCredential = Boolean(credential.apiKey || credential.customHeaders);
+  const confirmed = Boolean(status.llm.hasApiKey || status.llm.hasCustomHeaders);
+  if (hasSubmittedCredential && (
+    !status.available
+    || status.corrupted
+    || !confirmed
+    || status.bindingMismatch?.llm === true
+  )) {
+    throw new CredentialWriteError(
+      credentialStorage === 'session'
+        ? '会话内凭据未与当前供应商端点完成绑定。'
+        : 'Windows 安全凭据未与当前供应商端点完成绑定；不会发送旧密钥。',
+      status.lastErrorCode || 'REVERIE_CREDENTIAL_WRITE_UNCONFIRMED',
+      credentialStorage === 'persistent',
+    );
+  }
   if (imageGenConfig) {
-    await storeCredential('imageGen', {
+    const imageCredential = {
       apiKey: imageGenConfig.apiKey.trim(),
       customHeaders: imageGenConfig.customHeaders?.trim(),
-    });
+    };
+    if (imageCredential.apiKey || imageCredential.customHeaders) {
+      const credentialApi = globalThis.window?.electronAPI?.credentials;
+      const setter = credentialStorage === 'session'
+        ? credentialApi?.setSession
+        : credentialApi?.set;
+      if (!setter) throw new Error('图片生成凭据安全通道不可用');
+      await setter('imageGen', imageCredential);
+    }
   }
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(publicConfig));
+  removeLegacyPublicConfig();
 }
 
 export async function saveConfigMetadata(config: LLMConfig): Promise<void> {
   const publicConfig = sanitizeLLMConfig(config);
   if (!publicConfig) throw new TypeError('LLM configuration metadata is invalid');
   await savePersistedConfig({ llm: publicConfig });
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(publicConfig));
+  removeLegacyPublicConfig();
 }
 
 export async function clearConfigCredentials(): Promise<void> {
@@ -108,14 +159,10 @@ export async function clearConfigCredentials(): Promise<void> {
 }
 
 export function loadConfigSync(): LLMConfig | null {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    const sanitized = raw ? sanitizeLLMConfig(JSON.parse(raw)) : null;
-    if (sanitized) localStorage.setItem(CONFIG_KEY, JSON.stringify(sanitized));
-    return sanitized;
-  } catch {
-    return null;
-  }
+  // Authoritative desktop metadata is asynchronous by design. Keeping this
+  // compatibility function fail-closed prevents old views from reviving a
+  // browser cache as a second source of truth.
+  return null;
 }
 
 export interface ChatMessage {

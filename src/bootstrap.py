@@ -22,9 +22,6 @@ OPTIONAL_CAPABILITY_MODULES: dict[str, str] = {
     "diary": "src.diary",
     "timeline": "src.timeline",
     "web": "src.web",
-    "image_service": "src.image_service.app",
-    "avatar_interaction": "src.neko_core.main_routers.avatar_drop_router",
-    "focus": "src.neko_core.main_logic.activity.focus_scorer",
 }
 
 

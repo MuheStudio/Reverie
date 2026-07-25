@@ -49,13 +49,16 @@ function pendingRequests(states: Record<string, ChatRequestState>): ChatRequestS
 
 export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
   const { t } = useTranslation();
-  const [input, setInput] = useState(loadReverieChatDraft);
+  const [input, setInput] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const [sendError, setSendError] = useState('');
   const [announcement, setAnnouncement] = useState('');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const previousTerminals = useRef(new Set<string>());
   const connected = ws.connState === 'connected';
+  const draftSessionId = ws.personaScope?.persona_id
+    ? `${ws.personaScope.persona_id}:dream-room`
+    : '';
   const requests = useMemo(() => pendingRequests(ws.chatRequestStates), [ws.chatRequestStates]);
   const deliveryLabel = useCallback(
     (state: ChatRequestState['state']) => t(`dream.state.${state}`),
@@ -65,6 +68,11 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: 'end' });
   }, [ws.chatMessages.length, requests.length]);
+
+  useEffect(() => {
+    if (!draftSessionId) return;
+    setInput((current) => current || loadReverieChatDraft(draftSessionId));
+  }, [draftSessionId]);
 
   useEffect(() => {
     Object.values(ws.chatRequestStates).forEach((request) => {
@@ -90,35 +98,33 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
     }
     ws.addUserMessage(value, sticker, requestId);
     setInput('');
-    saveReverieChatDraft('');
+    saveReverieChatDraft('', draftSessionId);
     setSendError('');
     return true;
-  }, [connected, t, ws]);
+  }, [connected, draftSessionId, t, ws]);
 
   const submitSticker = (sticker: StickerItem) => {
     const text = sticker.text.trim() || t('dream.sentSticker');
     if (submit(text, sticker)) setShowStickers(false);
   };
 
-  const uploadSticker = (file?: File) => {
-    if (!file) return;
-    if (!file.type.startsWith('image/') || file.size > 1_800_000) {
-      setSendError(t('dream.stickerSizeLimit'));
+  const uploadSticker = async () => {
+    const importer = window.electronAPI?.stickers?.importFile;
+    if (!importer) {
+      setSendError(t('dream.stickerReadFailed'));
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== 'string') return;
+    try {
+      const result = await importer({ styleTags: ['用户导入'] });
+      if (result.canceled || !result.item) return;
+      ws.refreshStickers();
       submitSticker({
-        id: '',
-        text: file.name.replace(/\.[^.]+$/, '').slice(0, 80),
-        emotions: [],
+        ...result.item,
         source: 'collected',
-        image_data_url: reader.result,
       });
-    };
-    reader.onerror = () => setSendError(t('dream.stickerReadFailed'));
-    reader.readAsDataURL(file);
+    } catch {
+      setSendError(t('dream.stickerReadFailed'));
+    }
   };
 
   const toggleLocalMode = async (enabled: boolean) => {
@@ -226,17 +232,13 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
 
       {showStickers && (
         <div className={styles.stickers} aria-label={t('dream.localStickers')}>
-          <label title={t('dream.selectLocalImage')}>
+          <button
+            type="button"
+            title={t('dream.selectLocalImage')}
+            onClick={() => void uploadSticker()}
+          >
             <ImagePlus size={18} />
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(event) => {
-                uploadSticker(event.target.files?.[0]);
-                event.target.value = '';
-              }}
-            />
-          </label>
+          </button>
           {ws.stickers.slice(0, 18).map((sticker) => (
             <button key={sticker.id} type="button" onClick={() => submitSticker(sticker)}>
               {sticker.image_data_url
@@ -272,7 +274,7 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
           placeholder={!connected ? t('dream.draftOffline') : ws.localMode ? t('dream.localModeOn') : t('dream.writeMessage')}
           onChange={(event) => {
             setInput(event.target.value);
-            saveReverieChatDraft(event.target.value);
+            saveReverieChatDraft(event.target.value, draftSessionId);
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {

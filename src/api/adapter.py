@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,92 @@ if TYPE_CHECKING:
     from .budget import ApiBudgetTracker
 
 logger = logging.getLogger("reverie.api")
+
+
+class ProviderRequestError(RuntimeError):
+    """Sanitized provider failure safe for ledgers and technical UI."""
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        retryable: bool,
+        outcome_unknown: bool,
+        status_code: int | None = None,
+    ) -> None:
+        self.code = code
+        self.retryable = retryable
+        self.outcome_unknown = outcome_unknown
+        self.status_code = status_code
+        messages = {
+            "PROVIDER_UNAUTHORIZED": "供应商拒绝了凭据，请检查 API 密钥。",
+            "PROVIDER_RATE_LIMITED": "供应商暂时限流；Reverie 不会自动重试。",
+            "PROVIDER_TIMEOUT": "供应商请求超时；结果未知，Reverie 不会自动重试。",
+            "PROVIDER_CONNECTION_FAILED": "供应商连接中断；结果未知，Reverie 不会自动重试。",
+            "PROVIDER_INVALID_RESPONSE": "供应商返回了无法解析的响应。",
+            "PROVIDER_EMPTY_RESPONSE": "供应商返回了空响应。",
+            "PROVIDER_REJECTED": "供应商拒绝了本次请求。",
+            "PROVIDER_FAILURE": "供应商请求失败。",
+        }
+        super().__init__(messages.get(code, messages["PROVIDER_FAILURE"]))
+
+
+def normalize_provider_error(error: BaseException) -> ProviderRequestError:
+    """Map SDK/vendor failures without exposing their raw body or headers."""
+    if isinstance(error, ProviderRequestError):
+        return error
+    status = getattr(error, "status_code", None)
+    if not isinstance(status, int):
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+    name = error.__class__.__name__.lower()
+    if status in {401, 403}:
+        return ProviderRequestError(
+            "PROVIDER_UNAUTHORIZED",
+            retryable=False,
+            outcome_unknown=False,
+            status_code=status,
+        )
+    if status == 429:
+        return ProviderRequestError(
+            "PROVIDER_RATE_LIMITED",
+            retryable=True,
+            outcome_unknown=False,
+            status_code=status,
+        )
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)) or "timeout" in name:
+        return ProviderRequestError(
+            "PROVIDER_TIMEOUT",
+            retryable=True,
+            outcome_unknown=True,
+            status_code=status,
+        )
+    if isinstance(error, (ConnectionError, httpx.NetworkError)) or "connection" in name:
+        return ProviderRequestError(
+            "PROVIDER_CONNECTION_FAILED",
+            retryable=True,
+            outcome_unknown=True,
+            status_code=status,
+        )
+    if isinstance(error, (json.JSONDecodeError, UnicodeError)) or "json" in name:
+        return ProviderRequestError(
+            "PROVIDER_INVALID_RESPONSE",
+            retryable=False,
+            outcome_unknown=False,
+            status_code=status,
+        )
+    if isinstance(status, int):
+        return ProviderRequestError(
+            "PROVIDER_REJECTED",
+            retryable=status >= 500,
+            outcome_unknown=status >= 500,
+            status_code=status,
+        )
+    return ProviderRequestError(
+        "PROVIDER_FAILURE",
+        retryable=False,
+        outcome_unknown=True,
+    )
 
 
 @dataclass
@@ -134,21 +221,30 @@ class LLMAdapter:
                     response = await self._anthropic_chat(messages, temperature, max_tokens, selected_model)
                 else:
                     response = await self._openai_chat(messages, temperature, max_tokens, selected_model)
-                # A response generated under revoked consent is never returned
-                # to a caller that could persist or display it.
-                self.usage_policy.validate(usage_lease)
-            except BaseException as exc:
+                if not isinstance(response.content, str) or not response.content.strip():
+                    raise ProviderRequestError(
+                        "PROVIDER_EMPTY_RESPONSE",
+                        retryable=False,
+                        outcome_unknown=False,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                normalized = normalize_provider_error(exc)
                 if self.budget_tracker is not None:
                     try:
-                        self.budget_tracker.fail(call_id, exc)
+                        self.budget_tracker.fail(call_id, normalized)
                     except Exception:
                         logger.exception("API failure could not be written to budget ledger")
-                raise
+                raise normalized from exc
             if self.budget_tracker is not None:
                 try:
                     self.budget_tracker.complete(call_id, response.usage)
                 except Exception:
                     logger.exception("API usage could not be written to budget ledger")
+            # A response generated under revoked consent is accounted for but
+            # never returned to a caller that could persist or display it.
+            self.usage_policy.validate(usage_lease)
             return response
         finally:
             self.usage_policy.finish(usage_lease)
@@ -292,6 +388,10 @@ class LLMAdapter:
             self._client = AsyncOpenAI(
                 api_key=self.settings.api_key or "ollama",
                 base_url=self.settings.base_url,
+                # The SDK otherwise retries 408/409/429/5xx and connection
+                # errors automatically. Reverie cannot prove those retries are
+                # free or idempotent after dispatch.
+                max_retries=0,
             )
             self._client_signature = signature
         return self._client

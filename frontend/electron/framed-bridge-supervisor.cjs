@@ -1,0 +1,483 @@
+'use strict';
+
+const crypto = require('crypto');
+const { EventEmitter } = require('events');
+
+const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+const READY_SCHEMA = 'reverie.bridge.stdio.ready.v3';
+const CONTROL_SCHEMA = 'reverie.bridge.stdio.control.v3';
+
+function secretHash(secret) {
+  return crypto.createHash('sha256').update(secret, 'utf8').digest('hex');
+}
+
+class LineDecoder {
+  constructor(onLine, maxBuffered = 256 * 1024) {
+    this.buffer = '';
+    this.onLine = onLine;
+    this.maxBuffered = maxBuffered;
+  }
+
+  push(chunk) {
+    this.buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    if (this.buffer.length > this.maxBuffered) {
+      this.buffer = this.buffer.slice(-this.maxBuffered);
+      throw new Error('Bridge emitted an overlong line');
+    }
+    let newline;
+    while ((newline = this.buffer.indexOf('\n')) >= 0) {
+      const line = this.buffer.slice(0, newline).replace(/\r$/, '');
+      this.buffer = this.buffer.slice(newline + 1);
+      this.onLine(line);
+    }
+  }
+}
+
+function encodeFrame(value) {
+  const body = Buffer.from(JSON.stringify(value), 'utf8');
+  if (body.length < 2 || body.length > MAX_FRAME_BYTES) {
+    throw new RangeError('Framed bridge payload is outside the safe range');
+  }
+  const header = Buffer.allocUnsafe(4);
+  header.writeUInt32BE(body.length, 0);
+  return Buffer.concat([header, body]);
+}
+
+class FrameDecoder {
+  constructor(onFrame, maxFrameBytes = MAX_FRAME_BYTES) {
+    this.onFrame = onFrame;
+    this.maxFrameBytes = maxFrameBytes;
+    this.buffer = Buffer.alloc(0);
+  }
+
+  push(chunk) {
+    const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, incoming]) : incoming;
+    while (this.buffer.length >= 4) {
+      const size = this.buffer.readUInt32BE(0);
+      if (size < 2 || size > this.maxFrameBytes) {
+        throw new Error('Bridge emitted an invalid frame length');
+      }
+      if (this.buffer.length < size + 4) return;
+      const body = this.buffer.subarray(4, size + 4);
+      this.buffer = this.buffer.subarray(size + 4);
+      let value;
+      try { value = JSON.parse(body.toString('utf8')); } catch {
+        throw new Error('Bridge emitted invalid framed JSON');
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Bridge frame root must be an object');
+      }
+      this.onFrame(value);
+    }
+  }
+}
+
+function validateReady(value, expected) {
+  if (value?.kind !== 'ready' || value.schema !== READY_SCHEMA
+    || value.transport !== 'stdio-framed' || value.protocolVersion !== 3) {
+    throw new Error('Invalid framed bridge ready record');
+  }
+  if (value.pid !== expected.pid) throw new Error('Bridge PID mismatch');
+  if (String(value.secretSha256 || '').toLowerCase()
+    !== String(expected.secretSha256 || '').toLowerCase()) {
+    throw new Error('Bridge secret digest mismatch');
+  }
+  if (value.localModeEpoch !== expected.localModeEpoch
+    || (value.localModeSessionId || null) !== (expected.localModeSessionId || null)) {
+    throw new Error('Bridge local-mode startup state mismatch');
+  }
+  if (typeof value.personaId !== 'string' || value.personaId.length < 1
+    || !Number.isInteger(value.personaEpoch) || value.personaEpoch < 1
+    || !/^[a-f0-9]{64}$/i.test(String(value.personaFingerprint || ''))) {
+    throw new Error('Bridge persona proof is invalid');
+  }
+  return Object.freeze({
+    transport: 'stdio-framed',
+    protocolVersion: 3,
+    personaId: value.personaId,
+    personaEpoch: value.personaEpoch,
+    personaFingerprint: value.personaFingerprint.toLowerCase(),
+    runtimeDegraded: value.runtimeDegraded === true,
+    runtimeUnavailable: Array.isArray(value.runtimeUnavailable)
+      ? value.runtimeUnavailable.filter((item) => typeof item === 'string').slice(0, 128)
+      : [],
+  });
+}
+
+class FramedBridgeSupervisor extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    if (typeof options.spawnChild !== 'function') {
+      throw new TypeError('FramedBridgeSupervisor requires spawnChild');
+    }
+    this.transport = 'stdio-framed';
+    this.spawnChild = options.spawnChild;
+    this.readyTimeoutMs = options.readyTimeoutMs || 20_000;
+    this.controlTimeoutMs = options.controlTimeoutMs || 8_000;
+    this.child = null;
+    this.ready = null;
+    this.secret = null;
+    this.generation = 0;
+    this.pendingControls = new Map();
+    this.readyPromise = null;
+    this.stopping = false;
+  }
+
+  start(context = {}) {
+    if (this.child) return this.readyPromise;
+    this.stopping = false;
+    this.secret = crypto.randomBytes(32).toString('base64url');
+    this.generation += 1;
+    const generation = this.generation;
+    const localMode = context.localMode || { active: false, epoch: 0, sessionId: null };
+    const child = this.spawnChild({
+      secret: this.secret,
+      secretSha256: secretHash(this.secret),
+      generation,
+      localMode,
+      transport: this.transport,
+    });
+    if (!child?.stdout || !child?.stderr || !child?.stdin) {
+      throw new Error('Bridge child must expose stdin, stdout, and stderr');
+    }
+    this.child = child;
+    this.ready = null;
+    this.readyPromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('Framed bridge ready handshake timed out'));
+        void this.stopAndWait('SIGKILL').catch(() => undefined);
+      }, this.readyTimeoutMs);
+      timer.unref?.();
+      this._readyResolve = (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      this._readyReject = (error) => {
+        clearTimeout(timer);
+        reject(error);
+      };
+    });
+    const decoder = new FrameDecoder((frame) => {
+      try {
+        this._handleFrame(frame, child, generation, localMode);
+      } catch (error) {
+        this._fail(error, child);
+      }
+    });
+    child.stdout.on('data', (chunk) => {
+      try { decoder.push(chunk); } catch (error) { this._fail(error, child); }
+    });
+    const stderr = new LineDecoder((line) => this.emit('log', { stream: 'stderr', line }));
+    child.stderr.on('data', (chunk) => {
+      try { stderr.push(chunk); } catch (error) { this._fail(error, child); }
+    });
+    child.once('error', (error) => this._handleExit(child, error));
+    child.once('close', (code, signal) => {
+      this._handleExit(
+        child,
+        new Error(`Bridge exited (${code ?? 'null'}/${signal || 'none'})`),
+      );
+    });
+    return this.readyPromise;
+  }
+
+  _handleFrame(frame, child, generation, localMode) {
+    if (child !== this.child || generation !== this.generation) return;
+    if (!this.ready) {
+      this.ready = validateReady(frame, {
+        pid: child.pid,
+        secretSha256: secretHash(this.secret),
+        localModeEpoch: Number.isInteger(localMode.epoch) ? localMode.epoch : 0,
+        localModeSessionId: localMode.sessionId || null,
+      });
+      this._readyResolve?.(this.getHostTransportConfig());
+      this._readyResolve = null;
+      this._readyReject = null;
+      this.emit('ready', { ...this.ready, generation });
+      return;
+    }
+    if (frame.kind === 'event') {
+      if (!frame.frame || typeof frame.frame !== 'object' || Array.isArray(frame.frame)) {
+        throw new Error('Invalid business event frame');
+      }
+      this.emit('message', frame.frame);
+      return;
+    }
+    if (frame.kind === 'control_result') {
+      this._handleControlResult(frame);
+      return;
+    }
+    if (frame.kind === 'fatal_error') {
+      throw new Error(String(frame.error || frame.code || 'Bridge protocol failure'));
+    }
+    throw new Error('Unsupported framed bridge message');
+  }
+
+  _handleControlResult(frame) {
+    const pending = this.pendingControls.get(frame.requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingControls.delete(frame.requestId);
+    if (frame.ok !== true) {
+      const error = new Error(String(frame.error || 'Bridge rejected the control request'));
+      error.code = typeof frame.code === 'string' ? frame.code : 'REVERIE_CONTROL_REJECTED';
+      pending.reject(error);
+      return;
+    }
+    try {
+      pending.resolve(pending.validate(frame));
+    } catch (error) {
+      pending.reject(error);
+    }
+  }
+
+  _fail(error, child) {
+    if (child !== this.child) return;
+    this._readyReject?.(error);
+    this._readyResolve = null;
+    this._readyReject = null;
+    void this.stopAndWait('SIGKILL').catch(() => undefined);
+  }
+
+  _handleExit(child, error) {
+    if (child !== this.child) return;
+    this._readyReject?.(error);
+    this._readyResolve = null;
+    this._readyReject = null;
+    for (const pending of this.pendingControls.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pendingControls.clear();
+    this.child = null;
+    this.ready = null;
+    this.secret = null;
+    if (!this.stopping) this.emit('exit', error);
+  }
+
+  async waitUntilReady() {
+    if (!this.readyPromise) throw new Error('Bridge is not running');
+    await this.readyPromise;
+    return this.getHostTransportConfig();
+  }
+
+  getHostTransportConfig() {
+    if (!this.child || !this.ready) {
+      const error = new Error('The framed bridge is not ready');
+      error.code = 'REVERIE_BRIDGE_NOT_READY';
+      throw error;
+    }
+    return Object.freeze({
+      ...this.ready,
+      clientId: `electron_stdio_${this.child.pid}`,
+      generation: this.generation,
+    });
+  }
+
+  sendBusinessFrame(frame) {
+    if (!this.ready) throw new Error('The framed bridge is not ready');
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
+      throw new TypeError('Business frame must be an object');
+    }
+    const requestId = frame.request_id
+      ? String(frame.request_id)
+      : `ipc_${crypto.randomBytes(12).toString('hex')}`;
+    const payload = {
+      ...(frame.payload || {}),
+      // Renderer values are descriptive. The trusted host stamps the persona
+      // generation that was proven by the V3 startup handshake.
+      expected_persona_id: this.ready.personaId,
+      expected_persona_epoch: this.ready.personaEpoch,
+      expected_persona_fingerprint: this.ready.personaFingerprint,
+    };
+    const idempotencyKey = String(
+      payload.idempotency_key
+      || payload.client_request_id
+      || requestId,
+    );
+    this._write({
+      kind: 'renderer_command',
+      schema: 'reverie.command.v3',
+      envelope: {
+        protocol_version: 3,
+        request_id: requestId,
+        idempotency_key: idempotencyKey,
+        command: String(frame.type || ''),
+        persona: {
+          persona_id: this.ready.personaId,
+          epoch: this.ready.personaEpoch,
+          fingerprint: this.ready.personaFingerprint,
+        },
+        payload,
+        created_at_utc: new Date().toISOString(),
+      },
+    });
+    return { accepted: true };
+  }
+
+  setLocalMode({ active, epoch, sessionId }) {
+    return this._sendControl('local_mode:set', { active, epoch, sessionId }, (frame) => ({
+      active: Boolean(frame.active),
+      epoch: frame.epoch,
+      sessionId: frame.sessionId || null,
+    }));
+  }
+
+  setCredentials(credentials) {
+    return this._sendControl('credentials:set', { credentials }, (frame) => ({
+      applied: {
+        llm: frame.applied?.llm === true,
+        imageGen: frame.applied?.imageGen === true,
+      },
+    }));
+  }
+
+  getProviderConfig() {
+    return this._sendControl('provider:get', {}, (frame) => {
+      const llm = frame.llm;
+      if (!llm || typeof llm !== 'object' || Array.isArray(llm)
+        || typeof llm.provider !== 'string'
+        || typeof llm.model !== 'string'
+        || typeof llm.base_url !== 'string') {
+        throw new Error('Bridge returned invalid provider metadata');
+      }
+      return {
+        provider: llm.provider,
+        model: llm.model,
+        baseUrl: llm.base_url,
+        hasApiKey: llm.has_api_key === true,
+        modelEpoch: Number.isInteger(llm.model_epoch) ? llm.model_epoch : 0,
+      };
+    });
+  }
+
+  configureProvider(llm) {
+    return this._sendControl('provider:configure', { llm }, (frame) => {
+      const configured = frame.llm;
+      if (!configured || typeof configured !== 'object' || Array.isArray(configured)
+        || typeof configured.provider !== 'string'
+        || typeof configured.model !== 'string'
+        || typeof configured.base_url !== 'string') {
+        throw new Error('Bridge returned invalid configured provider metadata');
+      }
+      return {
+        provider: configured.provider,
+        model: configured.model,
+        baseUrl: configured.base_url,
+        hasApiKey: configured.has_api_key === true,
+        modelEpoch: Number.isInteger(configured.model_epoch)
+          ? configured.model_epoch
+          : 0,
+        optionalAiConsentsRevoked: frame.optional_ai_consents_revoked === true,
+        cancelledOptionalAiTasks: Number.isInteger(frame.cancelled_optional_ai_tasks)
+          ? frame.cancelled_optional_ai_tasks
+          : 0,
+      };
+    });
+  }
+
+  backupToFile(filePath) {
+    return this._sendControl(
+      'backup:file:export',
+      { path: String(filePath) },
+      () => ({ operation: 'export', completed: true }),
+      15 * 60 * 1000,
+    );
+  }
+
+  restoreFromFile(filePath) {
+    return this._sendControl(
+      'backup:file:import',
+      { path: String(filePath) },
+      (frame) => ({
+        operation: 'import',
+        completed: true,
+        result: frame.result && typeof frame.result === 'object' ? { ...frame.result } : {},
+      }),
+      0,
+    );
+  }
+
+  importStickerFile(filePath, metadata) {
+    return this._sendControl(
+      'sticker:file:import',
+      { path: String(filePath), metadata },
+      (frame) => ({
+        item: frame.item && typeof frame.item === 'object' ? { ...frame.item } : null,
+        items: Array.isArray(frame.items) ? frame.items : [],
+      }),
+      30_000,
+    );
+  }
+
+  _sendControl(type, fields, validate, timeoutMs = this.controlTimeoutMs) {
+    if (!this.ready) return Promise.reject(new Error('The framed bridge is not ready'));
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = timeoutMs === 0 ? null : setTimeout(() => {
+        this.pendingControls.delete(requestId);
+        reject(new Error('Bridge control acknowledgement timed out'));
+      }, timeoutMs);
+      timer?.unref?.();
+      this.pendingControls.set(requestId, { resolve, reject, validate, timer });
+      try {
+        this._write({
+          kind: 'control',
+          schema: CONTROL_SCHEMA,
+          type,
+          requestId,
+          ...fields,
+        });
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingControls.delete(requestId);
+        reject(error);
+      }
+    });
+  }
+
+  _write(value) {
+    if (!this.child?.stdin || this.child.stdin.destroyed) {
+      throw new Error('Bridge stdin is unavailable');
+    }
+    this.child.stdin.write(encodeFrame(value));
+  }
+
+  async stopAndWait(signal = 'SIGKILL', timeoutMs = 5000) {
+    const child = this.child;
+    if (!child || child.exitCode !== null) return;
+    this.stopping = true;
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        finish();
+      }, timeoutMs);
+      timer.unref?.();
+      child.once('close', finish);
+      try { child.kill(signal); } catch { finish(); }
+    });
+    if (this.child === child) {
+      this.child = null;
+      this.ready = null;
+      this.secret = null;
+    }
+  }
+}
+
+module.exports = {
+  CONTROL_SCHEMA,
+  FrameDecoder,
+  FramedBridgeSupervisor,
+  MAX_FRAME_BYTES,
+  READY_SCHEMA,
+  encodeFrame,
+  validateReady,
+};

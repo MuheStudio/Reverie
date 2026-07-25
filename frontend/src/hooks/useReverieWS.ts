@@ -5,7 +5,6 @@
  * 提供连接管理、自动重连、消息收发、状态订阅。
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadReverieChatMessages, saveReverieChatMessages } from '@/lib/reverieChatStorage';
 import {
   markRevealSent,
   migrateChatMessages,
@@ -14,85 +13,20 @@ import {
   type ChatMessageV2,
   type ChatRequestState,
 } from '@/components/DreamRoom/chatDeliveryMachine';
-
-// ── 消息类型（与 ws_bridge.py MsgType 同步）───────────
-
-export const WSMsgType = {
-  // 前端 → 后端
-  CHAT_SEND: 'chat:send',
-  CHAT_CANCEL: 'chat:cancel',
-  CHAT_REVEAL: 'chat:reveal',
-  CHAT_STOP: 'chat:stop',
-  BRIDGE_AUTH: 'bridge:auth',
-  MEMORY_QUERY: 'memory:query',
-  MEMORY_SETTINGS_GET: 'memory:settings:get',
-  MEMORY_STORE: 'memory:store',
-  EMOTION_GET: 'emotion:get',
-  PERSONA_GET: 'persona:get',
-  PERSONA_IMPORT: 'persona:import',
-  PERSONA_LIST: 'persona:list',
-  PERSONA_ACTIVATE: 'persona:activate',
-  RELATIONSHIP_GET: 'relationship:get',
-  DIARY_REQUEST: 'diary:request',
-  TIMELINE_REQUEST: 'timeline:request',
-  AMBIENT_GET: 'ambient:get',
-  API_BUDGET_GET: 'api:budget:get',
-  GROUP_REQUEST: 'group:request',
-  GROUP_SEND: 'group:send',
-  IMAGE_RANDOM: 'image:random',
-  SETTINGS_UPDATE: 'settings:update',
-  AI_USAGE_GET: 'ai_usage:get',
-  AI_USAGE_GRANT: 'ai_usage:grant',
-  AI_USAGE_REVOKE: 'ai_usage:revoke',
-  USER_PROFILE_GET: 'user:profile:get',
-  USER_PROFILE_UPDATE: 'user:profile:update',
-  KEEPSAKE_LIST: 'keepsake:list',
-  KEEPSAKE_ADD: 'keepsake:add',
-  BACKUP_EXPORT: 'backup:export',
-  BACKUP_IMPORT: 'backup:import',
-  STICKER_LIST: 'sticker:list',
-  STICKER_COLLECT: 'sticker:collect',
-  STICKER_REACT: 'sticker:react',
-  ANTI_AI_STATUS: 'anti_ai:status',
-  IMMERSION_NEARBY: 'immersion:nearby',
-  IMMERSION_CLOSEUP: 'immersion:closeup',
-  IMMERSION_SMART_HOME: 'immersion:smart_home',
-  // 后端 → 前端
-  CHAT_CHUNK: 'chat:chunk',
-  CHAT_BUBBLE: 'chat:bubble',
-  CHAT_DONE: 'chat:done',
-  CHAT_TYPING: 'chat:typing',
-  CHAT_STATE: 'chat:state',
-  CHAT_ERROR: 'chat:error',
-  BRIDGE_AUTH_OK: 'bridge:auth_ok',
-  BRIDGE_AUTH_ERROR: 'bridge:auth_error',
-  CHAT_RETRACT: 'chat:retract',
-  PROACTIVE_MESSAGE: 'proactive:message',
-  PROACTIVE_NOTIFY: 'proactive:notify',
-  EMOTION_UPDATE: 'emotion:update',
-  MEMORY_RESULT: 'memory:result',
-  MEMORY_SETTINGS_RESULT: 'memory:settings:result',
-  PERSONA_DATA: 'persona:data',
-  PERSONA_IMPORT_RESULT: 'persona:import:result',
-  RELATIONSHIP_DATA: 'relationship:data',
-  DIARY_RESULT: 'diary:result',
-  TIMELINE_RESULT: 'timeline:result',
-  AMBIENT_RESULT: 'ambient:result',
-  API_BUDGET_RESULT: 'api:budget:result',
-  GROUP_RESULT: 'group:result',
-  IMAGE_RESULT: 'image:result',
-  USER_PROFILE_RESULT: 'user:profile:result',
-  KEEPSAKE_RESULT: 'keepsake:result',
-  BACKUP_RESULT: 'backup:result',
-  SETTINGS_UPDATE_RESULT: 'settings:update:result',
-  AI_USAGE_RESULT: 'ai_usage:result',
-  RUNTIME_ACTIVITY: 'runtime:activity',
-  STICKER_DATA: 'sticker:data',
-  ANTI_AI_STATUS_RESULT: 'anti_ai:status:result',
-  IMMERSION_RESULT: 'immersion:result',
-  ERROR: 'error',
-  HEARTBEAT: 'heartbeat',
-} as const;
+import { WSMsgType } from '@/contracts/protocolV3.generated';
+import {
+  ElectronBridgeSocket,
+  isElectronIpcBridge,
+  type BridgeSocketLike,
+} from '@/lib/electronBridgeSocket';
+export {
+  PROTOCOL_VERSION,
+  WSMsgType,
+  type CommandEnvelopeV3,
+  type CommandResultV3,
+  type DomainEventV3,
+  type PersonaScopeV3,
+} from '@/contracts/protocolV3.generated';
 
 export const WS_RESPONSE_ALIASES: Record<string, string[]> = {
   [WSMsgType.MEMORY_RESULT]: ['memory_query_result', 'memory_store_result'],
@@ -125,6 +59,7 @@ export function responseTypesFor(canonicalType: string): string[] {
 }
 
 export const INITIAL_STATE_REQUEST_TYPES = [
+  WSMsgType.CHAT_HISTORY,
   WSMsgType.EMOTION_GET,
   WSMsgType.PERSONA_GET,
   WSMsgType.RELATIONSHIP_GET,
@@ -138,6 +73,7 @@ export const INITIAL_STATE_REQUEST_TYPES = [
   WSMsgType.STICKER_LIST,
   WSMsgType.ANTI_AI_STATUS,
   WSMsgType.AI_USAGE_GET,
+  WSMsgType.SETTINGS_GET,
 ] as const;
 
 // ── 类型 ──────────────────────────────────────────────
@@ -213,6 +149,21 @@ export interface EmotionState { emotions: Record<string, number>; }
 export interface RuntimeActivity {
   diary_writing: boolean;
   timeline_revision: string;
+}
+export interface AuthoritativeSettingsSnapshot {
+  chat?: Record<string, unknown>;
+  memory?: Record<string, unknown>;
+  features?: Record<string, unknown>;
+  ui?: {
+    onboarding_completed?: boolean;
+    onboarding_completed_at_utc?: string;
+  };
+  llm?: {
+    provider?: string;
+    model?: string;
+    base_url?: string;
+    has_api_key?: boolean;
+  };
 }
 export interface PersonaScope {
   persona_id: string;
@@ -525,6 +476,19 @@ export function enrichPersonaActivationPayload(
   };
 }
 
+export function enrichPersonaScopedPayload(
+  payload: unknown,
+  scope: PersonaScope | null,
+): Record<string, unknown> | null {
+  if (!isRecord(payload) || !scope) return null;
+  return {
+    ...payload,
+    expected_persona_id: scope.persona_id,
+    expected_persona_epoch: scope.persona_epoch,
+    expected_persona_fingerprint: scope.persona_fingerprint,
+  };
+}
+
 function optionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value
@@ -793,41 +757,6 @@ function coerceSticker(payload: unknown): StickerItem | null {
   return coerceStickers({ items: [payload] })[0] ?? null;
 }
 
-const DIARY_CACHE_KEY = 'reverie:dream-room:diary:v1';
-const TIMELINE_CACHE_KEY = 'reverie:dream-room:timeline:v1';
-
-function getLocalStorage(): Storage | null {
-  try {
-    if (typeof window === 'undefined') return null;
-    return window.localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function readCachedArray<T>(key: string, coerce: (payload: unknown) => T[]): T[] {
-  const storage = getLocalStorage();
-  if (!storage) return [];
-
-  try {
-    const raw = storage.getItem(key);
-    return raw ? coerce(JSON.parse(raw)) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeCachedArray<T>(key: string, items: T[]): void {
-  const storage = getLocalStorage();
-  if (!storage) return;
-
-  try {
-    storage.setItem(key, JSON.stringify(items));
-  } catch {
-    // Cache failures must never break the room.
-  }
-}
-
 // ── Hook ──────────────────────────────────────────────
 
 function showBrowserNotification(text: string): void {
@@ -855,7 +784,7 @@ function showBrowserNotification(text: string): void {
 }
 
 export function useReverieWS(wsUrl?: string) {
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<BridgeSocketLike | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const mountedRef = useRef(false);
   const connectAttemptRef = useRef(0);
@@ -957,7 +886,7 @@ export function useReverieWS(wsUrl?: string) {
     try {
       if (window.electronAPI?.bridge?.getConnectionConfig) {
         connection = await window.electronAPI.bridge.getConnectionConfig();
-      } else if (wsUrl) {
+      } else if (import.meta.env.DEV && wsUrl) {
         // Explicit URLs are reserved for isolated browser tests/development.
         connection = { url: wsUrl, secret: '', protocolVersion: 2 };
       }
@@ -969,7 +898,15 @@ export function useReverieWS(wsUrl?: string) {
       setConnState('unavailable');
       return;
     }
-    const ws = new WebSocket(connection.url);
+    let ws: BridgeSocketLike;
+    if (isElectronIpcBridge(connection) && window.electronAPI?.bridge) {
+      ws = new ElectronBridgeSocket(window.electronAPI.bridge, connection);
+    } else if (import.meta.env.DEV) {
+      ws = new WebSocket(connection.url);
+    } else {
+      setConnState('unavailable');
+      return;
+    }
     wsRef.current = ws;
     authenticatedRef.current = false;
     authPhaseRef.current = 'idle';
@@ -1119,6 +1056,18 @@ export function useReverieWS(wsUrl?: string) {
     };
   }, [connect, rejectPendingRequests]);
 
+  useEffect(() => {
+    const api = window.electronAPI?.bridge;
+    if (!api?.onChanged) return undefined;
+    return api.onChanged((state) => {
+      if (state?.ready === true) {
+        void connect();
+        return;
+      }
+      wsRef.current?.close(1011, 'bridge unavailable');
+    });
+  }, [connect]);
+
   // ── 发送消息 ──────────────────────────────────────
 
   const sendEnvelope = useCallback((
@@ -1133,6 +1082,9 @@ export function useReverieWS(wsUrl?: string) {
       let outboundPayload = payload;
       if (type === WSMsgType.PERSONA_ACTIVATE) {
         outboundPayload = enrichPersonaActivationPayload(payload, personaScopeRef.current);
+        if (!outboundPayload) return false;
+      } else if (type !== WSMsgType.BRIDGE_AUTH && personaScopeRef.current) {
+        outboundPayload = enrichPersonaScopedPayload(payload, personaScopeRef.current);
         if (!outboundPayload) return false;
       }
       try {
@@ -1294,9 +1246,7 @@ export function useReverieWS(wsUrl?: string) {
   const [emotions, setEmotions] = useState<Record<string, number>>({});
   const [persona, setPersona] = useState<any>(null);
   const [relationship, setRelationship] = useState<RelationshipData>({ intimacy: 0, stage: '初识期' });
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() =>
-    migrateChatMessages(loadReverieChatMessages<unknown>()) as ChatMessage[],
-  );
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatRequestStates, setChatRequestStates] = useState<Record<string, ChatRequestState>>({});
   const v2RequestsSeenRef = useRef(new Set<string>());
   const revealSentRef = useRef(new Set<string>());
@@ -1307,12 +1257,8 @@ export function useReverieWS(wsUrl?: string) {
     label: '在线',
     is_available: true,
   });
-  const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>(() =>
-    readCachedArray(DIARY_CACHE_KEY, coerceDiaryEntries),
-  );
-  const [timelinePosts, setTimelinePosts] = useState<TimelinePost[]>(() =>
-    readCachedArray(TIMELINE_CACHE_KEY, coerceTimelinePosts),
-  );
+  const [diaryEntries, setDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [timelinePosts, setTimelinePosts] = useState<TimelinePost[]>([]);
   const [ambient, setAmbient] = useState<AmbientState>(() => coerceAmbientState({}));
   const [apiBudget, setApiBudget] = useState<ApiBudgetState>(() => coerceApiBudget({}));
   const [groupState, setGroupState] = useState<GroupState>(() => coerceGroupState({}));
@@ -1324,6 +1270,7 @@ export function useReverieWS(wsUrl?: string) {
     diary_writing: false,
     timeline_revision: '',
   });
+  const [settingsSnapshot, setSettingsSnapshot] = useState<AuthoritativeSettingsSnapshot>({});
 
   useEffect(() => {
     if (connState === 'disconnected') {
@@ -1349,6 +1296,10 @@ export function useReverieWS(wsUrl?: string) {
       rememberPersonaScope(p);
     });
     subscribeResult(WSMsgType.RELATIONSHIP_DATA, (p: RelationshipData) => setRelationship(p));
+    subscribeResult(WSMsgType.CHAT_HISTORY_RESULT, (payload: unknown) => {
+      const items = extractArrayPayload(payload, ['items', 'messages', 'data']);
+      setChatMessages(migrateChatMessages(items) as ChatMessage[]);
+    });
     subscribeResult(WSMsgType.DIARY_RESULT, (p: unknown) => {
       const error = payloadError(p);
       setDiaryError(error);
@@ -1359,7 +1310,6 @@ export function useReverieWS(wsUrl?: string) {
         setDiaryEntries((current) => {
           const remaining = current.filter((entry) => entry.date !== directEntry.date);
           const next = [...remaining, directEntry];
-          writeCachedArray(DIARY_CACHE_KEY, next);
           return next;
         });
         window.setTimeout(() => send(WSMsgType.DIARY_REQUEST, {}), 0);
@@ -1368,7 +1318,6 @@ export function useReverieWS(wsUrl?: string) {
       const entries = coerceDiaryEntries(p);
       if (entries.length || !error) {
         setDiaryEntries(entries);
-        writeCachedArray(DIARY_CACHE_KEY, entries);
       }
       if (isRecord(p) && typeof p.writing === 'boolean') {
         setRuntimeActivity((current) => ({ ...current, diary_writing: p.writing as boolean }));
@@ -1380,7 +1329,6 @@ export function useReverieWS(wsUrl?: string) {
       const posts = coerceTimelinePosts(p);
       if (posts.length || !error) {
         setTimelinePosts(posts);
-        writeCachedArray(TIMELINE_CACHE_KEY, posts);
       }
     });
     subscribeResult(WSMsgType.AMBIENT_RESULT, (p: unknown) => setAmbient(coerceAmbientState(p)));
@@ -1391,6 +1339,31 @@ export function useReverieWS(wsUrl?: string) {
     });
     subscribeResult(WSMsgType.STICKER_DATA, (p: unknown) => {
       setStickers(coerceStickers(p));
+    });
+    subscribeResult(WSMsgType.SETTINGS_GET_RESULT, (payload: unknown) => {
+      if (!isRecord(payload) || payload.ok === false) return;
+      setSettingsSnapshot({
+        chat: isRecord(payload.chat) ? payload.chat : undefined,
+        memory: isRecord(payload.memory) ? payload.memory : undefined,
+        features: isRecord(payload.features) ? payload.features : undefined,
+        ui: isRecord(payload.ui)
+          ? payload.ui as AuthoritativeSettingsSnapshot['ui']
+          : undefined,
+        llm: isRecord(payload.llm)
+          ? payload.llm as AuthoritativeSettingsSnapshot['llm']
+          : undefined,
+      });
+    });
+    subscribeResult(WSMsgType.SETTINGS_UPDATE_RESULT, (payload: unknown) => {
+      if (!isRecord(payload) || payload.ok !== true) return;
+      setSettingsSnapshot((current) => ({
+        ...current,
+        ...(isRecord(payload.chat) ? { chat: payload.chat } : {}),
+        ...(isRecord(payload.settings) ? { memory: payload.settings } : {}),
+        ...(isRecord(payload.features) ? { features: payload.features } : {}),
+        ...(isRecord(payload.ui) ? { ui: payload.ui as AuthoritativeSettingsSnapshot['ui'] } : {}),
+        ...(isRecord(payload.llm) ? { llm: payload.llm as AuthoritativeSettingsSnapshot['llm'] } : {}),
+      }));
     });
     unsubs.push(subscribe(WSMsgType.RUNTIME_ACTIVITY, (payload: unknown) => {
       if (!isRecord(payload)) return;
@@ -1441,7 +1414,6 @@ export function useReverieWS(wsUrl?: string) {
             ...(payload.error ? { error: payload.error } : {}),
           };
         });
-        if (changed) saveReverieChatMessages(next);
         return changed ? next : current;
       });
     }));
@@ -1503,7 +1475,6 @@ export function useReverieWS(wsUrl?: string) {
           deliveryId: payload.delivery_id,
           bubbleIndex: payload.index,
         }];
-        saveReverieChatMessages(next);
         return next;
       });
     }));
@@ -1558,7 +1529,6 @@ export function useReverieWS(wsUrl?: string) {
                 bubbleIndex: -1,
               }] : []),
             ];
-            saveReverieChatMessages(next);
             return next;
           });
         }
@@ -1590,7 +1560,6 @@ export function useReverieWS(wsUrl?: string) {
         if (payload?.replacement?.trim()) {
           next.push(makeChatMessage('assistant', payload.replacement.trim(), nextMessageId('fix')));
         }
-        saveReverieChatMessages(next);
         return next;
       });
     }));
@@ -1609,7 +1578,6 @@ export function useReverieWS(wsUrl?: string) {
             { source: 'proactive' },
           )),
         ];
-        saveReverieChatMessages(next);
         return next;
       });
       if (p.notify) {
@@ -1632,7 +1600,6 @@ export function useReverieWS(wsUrl?: string) {
         conversation_id: 'dream-room',
         delivery_state: requestId ? 'queued' : undefined,
       })];
-      saveReverieChatMessages(next);
       return next;
     });
   }, [nextMessageId]);
@@ -1649,7 +1616,6 @@ export function useReverieWS(wsUrl?: string) {
         conversation_id: 'dream-room',
         delivery_state: 'done',
       })];
-      saveReverieChatMessages(next);
       return next;
     });
   }, [nextMessageId]);
@@ -1687,6 +1653,7 @@ export function useReverieWS(wsUrl?: string) {
     chatPresence,
     diaryEntries, timelinePosts, ambient, apiBudget, groupState,
     runtimeActivity,
+    settingsSnapshot,
     keepsakes, stickers,
     diaryError, timelineError,
     chatMessages, setChatMessages, chatRequestStates,

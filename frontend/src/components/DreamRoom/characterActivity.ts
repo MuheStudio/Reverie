@@ -1,5 +1,5 @@
 import type { ChatDeliveryState } from './chatDeliveryMachine';
-import type { CharacterActivity } from './AvatarStage';
+import type { CharacterActivity } from './avatarContracts';
 
 interface CharacterActivityInput {
   focusActive: boolean;

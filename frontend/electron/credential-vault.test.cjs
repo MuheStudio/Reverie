@@ -25,7 +25,12 @@ test('credential vault stores only OS-encrypted bytes and exposes status without
     customHeaders: 'Authorization: second-canary',
   });
 
-  assert.deepEqual(status.llm, { hasApiKey: true, hasCustomHeaders: true });
+  assert.deepEqual(status.llm, {
+    hasApiKey: true,
+    hasCustomHeaders: true,
+    sessionOnly: false,
+    bindingKnown: false,
+  });
   assert.equal(JSON.stringify(status).includes('canary'), false);
   const raw = fs.readFileSync(path.join(root, 'credentials.vault'));
   assert.equal(raw.includes(Buffer.from('sk-canary-never-plaintext')), false);
@@ -44,6 +49,54 @@ test('credential vault has no plaintext fallback when OS encryption is unavailab
     (error) => error?.code === 'REVERIE_SECURE_STORAGE_UNAVAILABLE',
   );
   assert.equal(fs.existsSync(path.join(root, 'credentials.vault')), false);
+});
+
+test('explicit session-only credentials work without OS encryption and never touch disk', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage(false) });
+  const status = vault.setSession('llm', { apiKey: 'session-secret' });
+
+  assert.equal(status.available, true);
+  assert.equal(status.persistentAvailable, false);
+  assert.equal(status.llm.sessionOnly, true);
+  assert.deepEqual(vault.readForRuntime().llm, { apiKey: 'session-secret' });
+  assert.equal(fs.existsSync(path.join(root, 'credentials.vault')), false);
+});
+
+test('Windows encryption failure preserves an existing credential and returns a stable code', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const safeStorage = fakeSafeStorage();
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  vault.set('llm', { apiKey: 'old-secret' });
+  const oldBytes = fs.readFileSync(path.join(root, 'credentials.vault'));
+  safeStorage.encryptString = () => {
+    const error = new Error('The requested local operation could not be completed');
+    error.code = 'UNKNOWN_WINDOWS_ERROR';
+    throw error;
+  };
+
+  assert.throws(
+    () => vault.set('llm', { apiKey: 'new-secret' }),
+    (error) => error?.code === 'REVERIE_OS_ENCRYPTION_FAILED',
+  );
+  assert.deepEqual(fs.readFileSync(path.join(root, 'credentials.vault')), oldBytes);
+  assert.equal(vault.status().lastErrorCode, 'REVERIE_OS_ENCRYPTION_FAILED');
+});
+
+test('ciphertext read-back mismatch is rejected before replacing the old vault', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const safeStorage = fakeSafeStorage();
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  vault.set('llm', { apiKey: 'old-secret' });
+  const oldBytes = fs.readFileSync(path.join(root, 'credentials.vault'));
+  safeStorage.decryptString = () => '{"schema":"wrong"}';
+
+  assert.throws(
+    () => vault.set('llm', { apiKey: 'new-secret' }),
+    (error) => error?.code === 'REVERIE_VAULT_CORRUPT'
+      || error?.code === 'REVERIE_OS_ENCRYPTION_VERIFY_FAILED',
+  );
+  assert.deepEqual(fs.readFileSync(path.join(root, 'credentials.vault')), oldBytes);
 });
 
 test('credential vault fails closed on corrupt ciphertext and never silently replaces it', () => {
@@ -77,4 +130,42 @@ test('credential vault rejects symlinks, oversized secrets, and header injection
     fs.symlinkSync(target, path.join(root, 'credentials.vault'));
     assert.throws(() => vault.readForRuntime(), /regular file|read/);
   }
+});
+
+test('provider-bound credentials never cross an endpoint boundary', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-binding-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  const deepseekBinding = 'a'.repeat(64);
+  const openaiBinding = 'b'.repeat(64);
+  vault.set('llm', { apiKey: 'deepseek-only' }, { binding: deepseekBinding });
+
+  assert.deepEqual(
+    vault.readForRuntime({ bindings: { llm: deepseekBinding } }).llm,
+    { apiKey: 'deepseek-only' },
+  );
+  assert.equal(
+    vault.readForRuntime({ bindings: { llm: openaiBinding } }).llm,
+    undefined,
+  );
+  assert.equal(vault.status().llm.bindingKnown, true);
+});
+
+test('legacy unbound vaults remain readable but fail closed when an endpoint binding is required', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-legacy-'));
+  const safeStorage = fakeSafeStorage();
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'credentials.vault'),
+    safeStorage.encryptString(JSON.stringify({
+      schema: 'reverie.credential-vault.v1',
+      credentials: { llm: { apiKey: 'legacy-key' }, imageGen: {} },
+    })),
+  );
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  assert.deepEqual(vault.readForRuntime().llm, { apiKey: 'legacy-key' });
+  assert.equal(
+    vault.readForRuntime({ bindings: { llm: 'c'.repeat(64) } }).llm,
+    undefined,
+  );
+  assert.equal(vault.status().llm.bindingKnown, false);
 });

@@ -12,12 +12,20 @@ const {
 } = require('../script/package-win-test.cjs');
 const { assertLive2DReleaseGate } = require('./live2d-release-gate.cjs');
 const installerConfig = require('../electron-builder.config.cjs');
+const {
+  PYTHON_RUNTIME,
+  assertProductionPayload,
+  shouldCopyProductionPythonSource,
+} = require('../script/production-runtime.cjs');
 
 test('portable package filter excludes tests and fixture directories', () => {
   const file = { isDirectory: () => false };
   const directory = { isDirectory: () => true };
   assert.equal(shouldCopyElectronRuntime('avatar-manager.cjs', file), true);
   assert.equal(shouldCopyElectronRuntime('avatar-manager.test.cjs', file), false);
+  assert.equal(shouldCopyElectronRuntime('bridge-supervisor.cjs', file), false);
+  assert.equal(shouldCopyElectronRuntime('framed-bridge-supervisor.cjs', file), true);
+  assert.equal(shouldCopyElectronRuntime('protocol-v3.generated.cjs', file), true);
   assert.equal(shouldCopyElectronRuntime('payload.fixture.json', file), false);
   assert.equal(shouldCopyElectronRuntime('fixtures', directory), false);
   assert.equal(shouldCopyElectronRuntime('runtime', directory), true);
@@ -43,6 +51,45 @@ test('release package seals Electron entrypoints in integrity-checked ASAR', () 
   assert.equal(installerConfig.electronFuses.onlyLoadAppFromAsar, true);
   assert.equal(installerConfig.electronFuses.runAsNode, false);
   assert.equal(installerConfig.electronFuses.enableNodeOptionsEnvironmentVariable, false);
+});
+
+test('release resources use a verified portable runtime and never the development venv', () => {
+  const resources = installerConfig.extraResources.map((entry) => ({
+    from: path.normalize(entry.from),
+    to: path.normalize(entry.to),
+  }));
+  assert.equal(resources.some((entry) => entry.to === 'venv'), false);
+  assert.equal(resources.some((entry) => entry.to === 'SOURCE_CODE'), false);
+  assert.equal(resources.some((entry) => entry.to === 'python'), true);
+  assert.equal(PYTHON_RUNTIME.version, '3.12.10');
+  assert.match(PYTHON_RUNTIME.sha256, /^[a-f0-9]{64}$/);
+});
+
+test('production Python filter removes reference projects and tests', () => {
+  const root = path.join('C:', 'reverie', 'src');
+  const file = { isDirectory: () => false };
+  const directory = { isDirectory: () => true };
+  assert.equal(
+    shouldCopyProductionPythonSource(path.join(root, 'chat', 'session.py'), file, root),
+    true,
+  );
+  assert.equal(
+    shouldCopyProductionPythonSource(path.join(root, 'neko_core'), directory, root),
+    false,
+  );
+  assert.equal(
+    shouldCopyProductionPythonSource(path.join(root, 'tests', 'test_chat.py'), file, root),
+    false,
+  );
+});
+
+test('production payload audit rejects a reintroduced virtual environment', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-production-audit-'));
+  fs.mkdirSync(path.join(root, 'python'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'python', 'python.exe'), 'runtime');
+  assert.equal(assertProductionPayload(root), true);
+  fs.mkdirSync(path.join(root, 'venv'));
+  assert.throws(() => assertProductionPayload(root), /forbidden|virtual environment/i);
 });
 
 test('an unlicensed Live2D payload cannot pass the shared package gate', () => {

@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import base64
 import colorsys
+import hashlib
 import io
 import json
 import logging
+import os
 import random
 import re
+import stat as stat_module
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,8 +36,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("reverie.stickers")
 
-MAX_STICKER_DATA_URL_BYTES = 2_500_000
-ALLOWED_STICKER_IMAGE_TYPES = {"png", "jpeg", "jpg", "webp", "gif"}
+MAX_STICKER_DATA_URL_BYTES = 7_000_000
+MAX_STICKER_RAW_BYTES = 5_000_000
+MAX_STICKER_PIXELS = 25_000_000
+MAX_STICKER_DIMENSION = 8192
+MAX_GIF_FRAMES = 300
+MAX_GIF_DURATION_MS = 120_000
+ALLOWED_STICKER_IMAGE_TYPES = {"png", "jpeg", "jpg", "webp", "gif", "bmp"}
+STICKER_PROTOCOL = "reverie-sticker://asset"
+STICKER_ASSET_RE = re.compile(r"^[a-f0-9]{64}\.(?:png|jpg|webp|gif|bmp)$")
 
 _EMOTION_COMPANIONS = {
     "joy": "excitement",
@@ -64,13 +75,13 @@ def _safe_string_list(value: object, *, limit: int = 12) -> list[str]:
     return items
 
 
-def _validate_image_data_url(value: str) -> str:
+def _decode_sticker_image(value: str) -> tuple[str, bytes, dict[str, int]]:
     text = value.strip()
     if not text:
-        return ""
+        return "", b"", {}
     match = re.fullmatch(r"data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)", text)
     if not match or match.group(1).lower() not in ALLOWED_STICKER_IMAGE_TYPES:
-        raise ValueError("表情包图片仅支持 PNG、JPEG、WebP 或 GIF")
+        raise ValueError("表情包图片仅支持 PNG、JPEG、WebP、BMP 或 GIF")
     if len(text.encode("utf-8")) > MAX_STICKER_DATA_URL_BYTES:
         raise ValueError("表情包图片过大")
     try:
@@ -78,16 +89,71 @@ def _validate_image_data_url(value: str) -> str:
     except Exception as exc:
         raise ValueError("表情包图片数据无效") from exc
     declared = match.group(1).lower()
+    if len(raw) < 16 or len(raw) > MAX_STICKER_RAW_BYTES:
+        raise ValueError("表情包图片大小超出限制")
     signatures = {
         "png": raw.startswith(b"\x89PNG\r\n\x1a\n"),
         "jpeg": raw.startswith(b"\xff\xd8\xff"),
         "jpg": raw.startswith(b"\xff\xd8\xff"),
         "gif": raw.startswith((b"GIF87a", b"GIF89a")),
         "webp": len(raw) >= 12 and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP",
+        "bmp": raw.startswith(b"BM"),
     }
     if not signatures.get(declared, False):
         raise ValueError("表情包图片内容与声明格式不一致")
-    return text
+    canonical = "jpg" if declared in {"jpeg", "jpg"} else declared
+    try:
+        from PIL import Image
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw)) as image:
+                width, height = image.size
+                if (
+                    width < 1
+                    or height < 1
+                    or width > MAX_STICKER_DIMENSION
+                    or height > MAX_STICKER_DIMENSION
+                    or width * height > MAX_STICKER_PIXELS
+                ):
+                    raise ValueError("表情包图片像素尺寸超出限制")
+                detected = (image.format or "").lower()
+                expected = {
+                    "jpg": "jpeg",
+                    "png": "png",
+                    "webp": "webp",
+                    "gif": "gif",
+                    "bmp": "bmp",
+                }[canonical]
+                if detected != expected:
+                    raise ValueError("表情包图片解码格式与声明不一致")
+                frame_count = int(getattr(image, "n_frames", 1) or 1)
+                if frame_count > MAX_GIF_FRAMES:
+                    raise ValueError("GIF 帧数超出限制")
+                duration_ms = 0
+                if canonical == "gif":
+                    for frame_index in range(frame_count):
+                        image.seek(frame_index)
+                        duration_ms += max(0, int(image.info.get("duration", 0) or 0))
+                        if duration_ms > MAX_GIF_DURATION_MS:
+                            raise ValueError("GIF 播放时长超出限制")
+                image.seek(0)
+                image.load()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("表情包图片无法安全解码") from exc
+    return canonical, raw, {
+        "width": width,
+        "height": height,
+        "frames": frame_count,
+        "duration_ms": duration_ms,
+    }
+
+
+def _validate_image_data_url(value: str) -> str:
+    _decode_sticker_image(value)
+    return value.strip()
 
 
 def _expand_emotion_tags(tags: list[str]) -> list[str]:
@@ -120,6 +186,9 @@ class Sticker:
         return bool(self.image_path or self.image_data_url)
 
     def to_dict(self) -> dict:
+        image_url = self.image_data_url
+        if self.image_path:
+            image_url = f"{STICKER_PROTOCOL}/{self.image_path}"
         d = {
             "id": self.id,
             "text": self.text,
@@ -127,12 +196,18 @@ class Sticker:
             "source": self.source,
             "usage_count": self.usage_count,
             "last_used": self.last_used,
-            "image_path": self.image_path,
-            "image_data_url": self.image_data_url,
+            "image_path": "",
+            "image_data_url": image_url,
             "style_tags": self.style_tags,
             "favorite_score": self.favorite_score,
         }
         return d
+
+    def to_storage_dict(self) -> dict:
+        data = self.to_dict()
+        data["image_path"] = self.image_path
+        data["image_data_url"] = self.image_data_url
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "Sticker":
@@ -211,6 +286,8 @@ class StickerManager:
         self.user_manager = user_manager
         self.data_dir = data_dir or STICKERS_DIR
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.assets_dir = self.data_dir / "assets"
+        self.assets_dir.mkdir(parents=True, exist_ok=True)
         self._stickers: dict[str, Sticker] = {}
         self._style_preferences: dict[str, float] = {}
         self._load_defaults()
@@ -281,6 +358,7 @@ class StickerManager:
         sid = f"col_{int(datetime.now().timestamp() * 1000)}_{len(self._stickers)}"
         clean_text = text.strip()[:120]
         clean_image = _validate_image_data_url(image_data_url)
+        image_path = self._store_image_asset(clean_image) if clean_image else ""
         inferred_emotions = self._infer_emotions(clean_text, fallback=not bool(emotions))
         image_emotions = self._infer_image_emotions(clean_image) if clean_image else []
         clean_emotions = _expand_emotion_tags([*(emotions or []), *inferred_emotions, *image_emotions])
@@ -292,13 +370,51 @@ class StickerManager:
             text=clean_text,
             emotions=clean_emotions or ["joy"],
             source="collected",
-            image_data_url=clean_image,
+            image_path=image_path,
             style_tags=clean_styles,
         )
         self._stickers[sid] = sticker
         self._save()
         logger.info("Collected sticker: %s", clean_text[:30])
         return sticker
+
+    def collect_from_file(
+        self,
+        source_path: str | Path,
+        *,
+        text: str = "",
+        emotions: list[str] | None = None,
+        style_tags: list[str] | None = None,
+    ) -> Sticker:
+        """Import through the native owner path without exposing bytes to React."""
+        candidate = Path(source_path)
+        if not candidate.is_absolute():
+            raise ValueError("表情文件路径必须是绝对路径")
+        source_stat = candidate.lstat()
+        if (
+            candidate.is_symlink()
+            or not stat_module.S_ISREG(source_stat.st_mode)
+            or source_stat.st_size < 16
+            or source_stat.st_size > MAX_STICKER_RAW_BYTES
+        ):
+            raise ValueError("表情文件必须是安全的本地普通文件")
+        extension = candidate.suffix.lower().lstrip(".")
+        if extension not in ALLOWED_STICKER_IMAGE_TYPES:
+            raise ValueError("表情文件扩展名不受支持")
+        raw = candidate.read_bytes()
+        if len(raw) != source_stat.st_size:
+            raise ValueError("表情文件在导入过程中发生变化")
+        declared = "jpeg" if extension in {"jpg", "jpeg"} else extension
+        image_data_url = (
+            f"data:image/{declared};base64,"
+            + base64.b64encode(raw).decode("ascii")
+        )
+        return self.collect(
+            text=text or candidate.stem[:120],
+            emotions=emotions,
+            image_data_url=image_data_url,
+            style_tags=style_tags,
+        )
 
     def record_user_sent(self, payload: dict) -> Sticker:
         """Collect or reuse a sticker sent by the user and learn from that act."""
@@ -361,6 +477,16 @@ class StickerManager:
                     data = json.load(f)
                 for s_data in data:
                     s = Sticker.from_dict(s_data)
+                    if s.image_path and not STICKER_ASSET_RE.fullmatch(s.image_path):
+                        logger.warning("Discarded unsafe sticker asset reference: %s", s.id)
+                        s.image_path = ""
+                    if s.image_data_url:
+                        try:
+                            s.image_path = self._store_image_asset(s.image_data_url)
+                            s.image_data_url = ""
+                        except ValueError:
+                            logger.warning("Discarded unsafe legacy sticker image: %s", s.id)
+                            s.image_data_url = ""
                     s.emotions = _expand_emotion_tags(s.emotions)
                     self._stickers[s.id] = s
                 self._save()
@@ -384,8 +510,37 @@ class StickerManager:
 
     def _save(self) -> None:
         filepath = self.data_dir / "library.json"
-        data = [s.to_dict() for s in self._stickers.values()]
+        data = [s.to_storage_dict() for s in self._stickers.values()]
         _atomic_write_json(filepath, data)
+
+    def _store_image_asset(self, image_data_url: str) -> str:
+        extension, raw, _metadata = _decode_sticker_image(image_data_url)
+        if not raw:
+            return ""
+        digest = hashlib.sha256(raw).hexdigest()
+        filename = f"{digest}.{extension}"
+        target = self.assets_dir / filename
+        if target.exists():
+            asset_stat = target.lstat()
+            if (
+                not stat_module.S_ISREG(asset_stat.st_mode)
+                or target.is_symlink()
+                or asset_stat.st_size != len(raw)
+            ):
+                raise ValueError("表情包资源库中存在不安全的同名文件")
+            if hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+                raise ValueError("表情包资源完整性校验失败")
+            return filename
+        temporary = self.assets_dir / f".{digest}.{random.getrandbits(64):016x}.tmp"
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return filename
 
     def _load_preferences(self) -> None:
         filepath = self.data_dir / "preferences.json"

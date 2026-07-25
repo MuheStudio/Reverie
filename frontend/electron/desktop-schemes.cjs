@@ -34,6 +34,28 @@ const SCHEMES = Object.freeze([
       bypassCSP: false,
     },
   },
+  {
+    scheme: 'reverie-sticker',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      bypassCSP: false,
+    },
+  },
+  {
+    scheme: 'reverie-live2d-core',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: false,
+      stream: true,
+      bypassCSP: false,
+    },
+  },
 ]);
 
 function registerDesktopSchemes(protocol) {

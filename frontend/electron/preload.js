@@ -1,6 +1,7 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
+const { COMMAND_NAMES } = require('./protocol-v3.generated.cjs');
 
 function subscribe(channel, callback) {
   if (typeof callback !== 'function') return () => {};
@@ -58,6 +59,52 @@ function credentialValue(value = {}) {
     throw new TypeError('at least one credential value is required');
   }
   return result;
+}
+
+function optionalCredentialValue(value = {}) {
+  if (value == null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('credential value is invalid');
+  }
+  const result = {};
+  for (const field of ['apiKey', 'customHeaders']) {
+    if (value[field] == null || value[field] === '') continue;
+    if (typeof value[field] !== 'string' || value[field].length > 64 * 1024
+      || value[field].includes('\u0000')) {
+      throw new TypeError(`${field} is invalid`);
+    }
+    result[field] = value[field];
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+function bridgeFrame(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('bridge frame is invalid');
+  }
+  const type = boundedText(value.type, 'bridge frame type', 80);
+  if (!/^[A-Za-z0-9:_-]+$/.test(type) || type.startsWith('bridge:auth')) {
+    throw new TypeError('bridge frame type is forbidden');
+  }
+  if (!COMMAND_NAMES.has(type)) {
+    throw new TypeError('bridge frame command is not declared by protocol V3');
+  }
+  if (!value.payload || typeof value.payload !== 'object' || Array.isArray(value.payload)) {
+    throw new TypeError('bridge frame payload is invalid');
+  }
+  const requestId = value.request_id == null ? '' : boundedText(
+    value.request_id,
+    'bridge request id',
+    128,
+  );
+  if (requestId && !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)) {
+    throw new TypeError('bridge request id is invalid');
+  }
+  return {
+    type,
+    payload: value.payload,
+    ...(requestId ? { request_id: requestId } : {}),
+  };
 }
 
 function publicProviderConfig(value = {}) {
@@ -127,11 +174,37 @@ const api = Object.freeze({
   getNotificationStatus: () => ipcRenderer.invoke('notification:status'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   openLocationSettings: () => ipcRenderer.invoke('system:openLocationSettings'),
+  getCurrentWindowsLocation: () => ipcRenderer.invoke('location:getCurrent'),
   onAppLifecycle: (callback) => subscribe('app:lifecycle', callback),
 
   bridge: Object.freeze({
     getConnectionConfig: () => ipcRenderer.invoke('bridge:getConnectionConfig'),
+    send: (frame) => ipcRenderer.invoke('bridge:send', bridgeFrame(frame)),
+    onMessage: (callback) => subscribe('bridge:message', callback),
     onChanged: (callback) => subscribe('bridge:changed', callback),
+  }),
+
+  stickers: Object.freeze({
+    importFile: (value = {}) => ipcRenderer.invoke('sticker:importFile', {
+      text: typeof value.text === 'string' ? value.text.slice(0, 120) : '',
+      emotions: Array.isArray(value.emotions) ? value.emotions.slice(0, 12) : [],
+      styleTags: Array.isArray(value.styleTags) ? value.styleTags.slice(0, 12) : [],
+    }),
+  }),
+
+  companionPreferences: Object.freeze({
+    get: () => ipcRenderer.invoke('companionPreferences:get'),
+    set: (value = {}) => {
+      if (typeof value.volume !== 'number' || !Number.isFinite(value.volume)
+        || typeof value.autoStart !== 'boolean') {
+        throw new TypeError('companion preferences are invalid');
+      }
+      return ipcRenderer.invoke('companionPreferences:set', {
+        sound: boundedText(value.sound, 'companion sound', 64),
+        volume: value.volume,
+        autoStart: value.autoStart,
+      });
+    },
   }),
 
   localMode: Object.freeze({
@@ -149,6 +222,10 @@ const api = Object.freeze({
       scope: credentialScope(scope),
       value: credentialValue(value),
     }),
+    setSession: (scope, value) => ipcRenderer.invoke('credentials:setSession', {
+      scope: credentialScope(scope),
+      value: credentialValue(value),
+    }),
     clear: (scope) => ipcRenderer.invoke('credentials:clear', {
       scope: credentialScope(scope),
     }),
@@ -158,6 +235,16 @@ const api = Object.freeze({
   providerConfig: Object.freeze({
     get: () => ipcRenderer.invoke('providerConfig:get'),
     set: (value) => ipcRenderer.invoke('providerConfig:set', publicProviderConfig(value)),
+    commit: (value, credential, mode = 'persistent') => {
+      if (!['persistent', 'session'].includes(mode)) {
+        throw new TypeError('credential storage mode is invalid');
+      }
+      return ipcRenderer.invoke('providerConfig:commit', {
+        config: publicProviderConfig(value),
+        credential: optionalCredentialValue(credential),
+        mode,
+      });
+    },
   }),
 
   backup: Object.freeze({

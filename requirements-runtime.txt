@@ -1,0 +1,33 @@
+# Exact Windows production closure for the Python persona/domain host.
+#
+# This intentionally excludes development tools, reference-project
+# dependencies, legacy LanceDB migration readers, Torch, Playwright and
+# sentence-transformers.  The steady-state memory index uses sqlite-vec and
+# deterministic local hash embeddings when no separately managed model exists.
+annotated-types==0.7.0
+anyio==4.13.0
+certifi==2026.5.20
+cffi==2.0.0
+colorama==0.4.6
+cryptography==49.0.0
+distro==1.9.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+jiter==0.15.0
+numpy==2.4.6
+ollama==0.6.2
+openai==2.41.1
+pillow==12.3.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+python-dotenv==1.2.2
+sniffio==1.3.1
+sqlite-vec==0.1.9
+tqdm==4.68.2
+typing-extensions==4.15.0
+typing-inspection==0.4.2
+tzdata==2026.3
+websockets==16.0

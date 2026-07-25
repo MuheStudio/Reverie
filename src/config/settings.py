@@ -170,7 +170,7 @@ class LLMSettings(_ValidatedSettingsModel):
         # Always read API key from env if available (never trust cached config.json)
         env_key = info.get("env_key")
         if env_key:
-            env_val = os.getenv(env_key, "")
+            env_val = environment_api_key(str(env_key))
             if env_val:
                 self.api_key = env_val
         # Ollama needs no API key.  An environment override remains subject to
@@ -180,6 +180,26 @@ class LLMSettings(_ValidatedSettingsModel):
                 "ollama",
                 os.getenv("OLLAMA_BASE_URL", self.base_url),
             )
+
+
+_PLACEHOLDER_API_KEYS = {
+    "changeme",
+    "replace-me",
+    "replace_me",
+    "sk-your-key-here",
+    "your-api-key",
+    "your_api_key",
+    "your_api_key_here",
+}
+
+
+def environment_api_key(variable: str) -> str:
+    """Return a usable environment credential, never a template placeholder."""
+
+    value = str(os.getenv(variable, "") or "").strip()
+    if not value or value.lower() in _PLACEHOLDER_API_KEYS:
+        return ""
+    return value
 
 
 class MemorySettings(_ValidatedSettingsModel):
@@ -357,12 +377,20 @@ class FeatureSettings(_ValidatedSettingsModel):
         return self
 
 
+class UISettings(_ValidatedSettingsModel):
+    """Durable non-secret renderer preferences owned by the Python host."""
+
+    onboarding_completed: bool = Field(default=False)
+    onboarding_completed_at_utc: str = Field(default="", max_length=64)
+
+
 class _Settings(_ValidatedSettingsModel):
     """Top-level settings container."""
     llm: LLMSettings = Field(default_factory=LLMSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
     features: FeatureSettings = Field(default_factory=FeatureSettings)
+    ui: UISettings = Field(default_factory=UISettings)
     ai_usage: AIUsageSettings = Field(default_factory=AIUsageSettings)
     # Cloud service mode: "local" (default) or "cloud" (future)
     cloud_mode: Literal["local", "cloud"] = Field(default="local")

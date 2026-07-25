@@ -94,6 +94,10 @@ function minimalGlb(extra = {}) {
 }
 
 function live2dEntries() {
+  const pixel = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4wAAAABJRU5ErkJggg==',
+    'base64',
+  );
   return [
     {
       name: 'model/model.model3.json',
@@ -106,7 +110,7 @@ function live2dEntries() {
       }),
     },
     { name: 'model/model.moc3', data: 'MOC3test' },
-    { name: 'model/textures/texture.png', data: 'png' },
+    { name: 'model/textures/texture.png', data: pixel },
   ];
 }
 
@@ -126,6 +130,33 @@ test('valid Live2D ZIP verifies references and extracts only regular allowlisted
   assert.equal(result.entryRelative, 'model/model.model3.json');
   assert.equal(result.files.length, 3);
   assert.equal(fs.readFileSync(path.join(root, 'model', 'model.moc3'), 'utf8'), 'MOC3test');
+});
+
+test('Live2D import safely discovers unreferenced expression and motion files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-test-'));
+  const entries = [
+    ...live2dEntries(),
+    {
+      name: 'model/开心.exp3.json',
+      data: JSON.stringify({ Type: 'Live2D Expression', Parameters: [] }),
+    },
+    {
+      name: 'model/wave.motion3.json',
+      data: JSON.stringify({
+        Version: 3,
+        Meta: { Duration: 1.5 },
+        Curves: [],
+      }),
+    },
+  ];
+  const result = validateLive2DPackage(makeZip(entries), root);
+  assert.deepEqual(result.stats.detected.expressions, ['开心']);
+  assert.deepEqual(result.stats.detected.animationClips, ['wave']);
+  const model = JSON.parse(
+    fs.readFileSync(path.join(root, 'model', 'model.model3.json'), 'utf8'),
+  );
+  assert.equal(model.FileReferences.Expressions[0].File, '开心.exp3.json');
+  assert.equal(model.FileReferences.Motions.wave[0].File, 'wave.motion3.json');
 });
 
 test('ZIP parser rejects traversal, case collisions, encryption, symlinks, and CRC lies', () => {
@@ -257,7 +288,13 @@ test('Live2D folder import enforces the same closed-world package rules', () => 
     FileReferences: { Moc: 'avatar.moc3', Textures: ['textures/texture.png'] },
   }));
   fs.writeFileSync(path.join(source, 'avatar.moc3'), 'MOC3folder');
-  fs.writeFileSync(path.join(source, 'textures', 'texture.png'), 'png');
+  fs.writeFileSync(
+    path.join(source, 'textures', 'texture.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
   const output = path.join(root, 'output');
   fs.mkdirSync(output);
   const validated = validateLive2DDirectory(source, output);

@@ -25,7 +25,6 @@ import {
   Music,
   Radio,
   RefreshCw,
-  Save,
   Send,
   Settings as SettingsIcon,
   ShieldCheck,
@@ -49,18 +48,6 @@ import {
   type GroupThread,
 } from '@/hooks/useReverieWS';
 import {
-  AiSettingsPanel,
-  AntiAiSettingsPanel,
-  ArchiveManagerPanel,
-  BackupPanel,
-  ChatSettingsPanel,
-  DiarySettingsPanel,
-  MemorySettingsPanel,
-  PersonalitySettingsPanel,
-  ImmersionSettingsPanel,
-  UserProfilePanel,
-} from './ArchivePanels';
-import {
   formatDiaryPreview,
   formatEvidenceConnectionLine,
   formatRecentInterest,
@@ -76,13 +63,44 @@ import {
   type RoomPanelId,
 } from './roomState';
 import { loadReverieChatDraft, saveReverieChatDraft } from '@/lib/reverieChatStorage';
-import MiniGamePanel from './MiniGamePanel';
 import RoomScene from './RoomScene';
 import CompanionDock, { type DockTab } from './CompanionDock';
-import FirstRunGuide, { isFirstRunGuideDone } from './FirstRunGuide';
-import { type CharacterActivity } from './AvatarStage';
+import FirstRunGuide from './FirstRunGuide';
+import { type CharacterActivity } from './avatarContracts';
 import { deriveCharacterActivity } from './characterActivity';
 import styles from './index.module.scss';
+
+const MiniGamePanel = React.lazy(() => import('./MiniGamePanel'));
+const AiSettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.AiSettingsPanel }),
+));
+const AntiAiSettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.AntiAiSettingsPanel }),
+));
+const ArchiveManagerPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.ArchiveManagerPanel }),
+));
+const BackupPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.BackupPanel }),
+));
+const ChatSettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.ChatSettingsPanel }),
+));
+const DiarySettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.DiarySettingsPanel }),
+));
+const MemorySettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.MemorySettingsPanel }),
+));
+const PersonalitySettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.PersonalitySettingsPanel }),
+));
+const ImmersionSettingsPanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.ImmersionSettingsPanel }),
+));
+const UserProfilePanel = React.lazy(() => import('./ArchivePanels').then(
+  (module) => ({ default: module.UserProfilePanel }),
+));
 
 type PanelMeta = {
   title: string;
@@ -127,7 +145,7 @@ const PANEL_META: Record<RoomPanelId, PanelMeta> = {
   },
   stickers: {
     title: '表情',
-    subtitle: '导入 PNG、JPEG、WebP 或 GIF，保存在本机表情库。',
+    subtitle: '导入 PNG、JPEG、WebP、BMP 或 GIF，保存在本机表情库。',
     icon: ImagePlus,
   },
   video: {
@@ -291,31 +309,6 @@ function readDataUrlFile(file: File): Promise<string> {
   });
 }
 
-const STICKER_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-};
-
-async function readStickerImage(file: File): Promise<{ dataUrl: string; mime: string }> {
-  const extension = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-  const inferredMime = STICKER_MIME_BY_EXTENSION[extension] ?? '';
-  const mime = Object.values(STICKER_MIME_BY_EXTENSION).includes(file.type)
-    ? file.type
-    : inferredMime;
-  if (!mime) throw new Error('unsupported-sticker-format');
-
-  // Windows may provide an empty or generic MIME type for otherwise valid
-  // local files. Normalise it here; the Python boundary still verifies the
-  // decoded file signature before persistence.
-  const readable = file.type === mime
-    ? file
-    : new File([file], file.name, { type: mime, lastModified: file.lastModified });
-  return { dataUrl: await readDataUrlFile(readable), mime };
-}
-
 function formatTimelinePreview(post?: TimelinePost): string {
   if (!post) return '手机屏幕还暗着，等她生活里发生一点小事。';
   if (post.content?.trim()) return post.content.trim();
@@ -401,7 +394,10 @@ export function PhoneChatPanel({
   personaName: string;
   onClose: () => void;
 }) {
-  const [input, setInput] = useState(() => loadReverieChatDraft());
+  const draftSessionId = ws.personaScope?.persona_id
+    ? `${ws.personaScope.persona_id}:dream-room`
+    : '';
+  const [input, setInput] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const [stickerError, setStickerError] = useState('');
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -412,14 +408,19 @@ export function PhoneChatPanel({
       ? ws.chatPresence.label || '在线'
       : '离线';
 
+  useEffect(() => {
+    if (!draftSessionId) return;
+    setInput((current) => current || loadReverieChatDraft(draftSessionId));
+  }, [draftSessionId]);
+
   const sendMessage = useCallback(() => {
     const text = input.trim();
     if (!text || !connected) return;
     ws.addUserMessage(text);
     ws.sendChat(text);
     setInput('');
-    saveReverieChatDraft('');
-  }, [connected, input, ws]);
+    saveReverieChatDraft('', draftSessionId);
+  }, [connected, draftSessionId, input, ws]);
 
   const saveBubbleMemory = useCallback((content: string, layer: 'long_term' | 'short_term') => {
     const text = content.trim();
@@ -436,26 +437,25 @@ export function PhoneChatPanel({
     setStickerError('');
   }, [connected, ws]);
 
-  const uploadSticker = useCallback(async (file?: File) => {
-    if (!file || !connected) return;
-    if (file.size < 1 || file.size > 1_800_000) {
-      setStickerError('请选择不超过 1.8 MB 的图片');
+  const uploadSticker = useCallback(async () => {
+    if (!connected) return;
+    const importer = window.electronAPI?.stickers?.importFile;
+    if (!importer) {
+      setStickerError('本地表情导入模块不可用');
       return;
     }
     try {
-      const { dataUrl } = await readStickerImage(file);
+      const result = await importer({ styleTags: ['用户导入'] });
+      if (result.canceled || !result.item) return;
+      ws.refreshStickers();
       sendSticker({
-        id: '',
-        text: file.name.replace(/\.[^.]+$/, '').slice(0, 80),
-        emotions: [],
+        ...result.item,
         source: 'collected',
-        image_data_url: dataUrl,
-        style_tags: [],
       });
     } catch {
-      setStickerError('仅支持 PNG、JPEG、WebP 与 GIF 图片');
+      setStickerError('仅支持有效且不超过 5 MB 的 PNG、JPEG、WebP、BMP 与 GIF');
     }
-  }, [connected, sendSticker]);
+  }, [connected, sendSticker, ws]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: 'end' });
@@ -531,17 +531,14 @@ export function PhoneChatPanel({
       <div className={styles.phoneComposer}>
         {showStickers && (
           <div className={styles.stickerTray} aria-label="已收藏表情包">
-            <label className={styles.stickerUpload} title="收藏并发送本地表情包">
+            <button
+              type="button"
+              className={styles.stickerUpload}
+              title="导入并发送本地表情"
+              onClick={() => void uploadSticker()}
+            >
               <ImagePlus size={18} />
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
-                onChange={(event) => {
-                  uploadSticker(event.target.files?.[0]);
-                  event.target.value = '';
-                }}
-              />
-            </label>
+            </button>
             {ws.stickers.slice(0, 24).map((sticker) => (
               <button
                 key={sticker.id}
@@ -576,7 +573,7 @@ export function PhoneChatPanel({
             onChange={(event) => {
               const draft = event.target.value;
               setInput(draft);
-              saveReverieChatDraft(draft);
+              saveReverieChatDraft(draft, draftSessionId);
             }}
             onKeyDown={(event) => {
               if (event.key === 'Enter') sendMessage();
@@ -753,53 +750,37 @@ function StickerLibraryPanel({
   connected: boolean;
 }) {
   const [caption, setCaption] = useState('');
-  const [imageDataUrl, setImageDataUrl] = useState('');
-  const [fileName, setFileName] = useState('');
   const [status, setStatus] = useState('');
 
   useEffect(() => {
     if (connected) ws.refreshStickers();
   }, [connected, ws.refreshStickers]);
 
-  const selectImage = async (file?: File) => {
-    if (!file) return;
-    if (file.size < 1 || file.size > 1_800_000) {
-      setStatus('图片需小于 1.8 MB，避免本地表情库过快膨胀。');
-      return;
-    }
-    try {
-      const { dataUrl: next, mime } = await readStickerImage(file);
-      setImageDataUrl(next);
-      setFileName(file.name);
-      setCaption((current) => current || file.name.replace(/\.[^.]+$/, '').slice(0, 80));
-      setStatus(mime === 'image/gif' ? 'GIF 已读取，动画会原样保留。' : '图片已读取，等待保存。');
-    } catch {
-      setStatus('仅支持有效的 PNG、JPEG、WebP 与 GIF 图片。');
-    }
-  };
-
-  const saveSticker = () => {
+  const saveSticker = async () => {
     if (!connected) {
       setStatus('本地服务尚未连接，连接恢复后再保存。');
       return;
     }
-    if (!imageDataUrl) {
-      setStatus('请先选择一张图片或 GIF。');
+    const importer = window.electronAPI?.stickers?.importFile;
+    if (!importer) {
+      setStatus('本地表情导入模块不可用。');
       return;
     }
-    const sent = ws.collectSticker({
-      text: caption.trim().slice(0, 120),
-      image_data_url: imageDataUrl,
-      style_tags: ['用户导入'],
-    });
-    if (!sent) {
-      setStatus('保存请求未送达本地服务，请稍后重试。');
-      return;
+    try {
+      const result = await importer({
+        text: caption.trim().slice(0, 120),
+        styleTags: ['用户导入'],
+      });
+      if (result.canceled) {
+        setStatus('已取消导入。');
+        return;
+      }
+      setCaption('');
+      setStatus(`${result.fileName || '表情'} 已安全保存到本地表情库。`);
+      ws.refreshStickers();
+    } catch {
+      setStatus('导入失败：请检查格式、像素尺寸、GIF 时长与文件完整性。');
     }
-    setImageDataUrl('');
-    setFileName('');
-    setCaption('');
-    setStatus('已交给本地表情库保存。');
   };
 
   return (
@@ -807,23 +788,17 @@ function StickerLibraryPanel({
       <section className={styles.stickerImporter}>
         <div>
           <strong>导入表情</strong>
-          <small>文件仅保存在本机；支持 PNG、JPEG、WebP 与动态 GIF，单张不超过 1.8 MB。</small>
+          <small>文件仅保存在本机；支持 PNG、JPEG、WebP、BMP 与动态 GIF，单张不超过 5 MB。</small>
         </div>
-        <label className={styles.mediaImportButton}>
+        <button
+          type="button"
+          className={styles.mediaImportButton}
+          disabled={!connected}
+          onClick={() => void saveSticker()}
+        >
           <ImagePlus size={18} />
-          选择图片或 GIF
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
-            onChange={(event) => {
-              void selectImage(event.target.files?.[0]);
-              event.target.value = '';
-            }}
-          />
-        </label>
-        {imageDataUrl && (
-          <img className={styles.stickerImportPreview} src={imageDataUrl} alt={caption || fileName || '表情预览'} />
-        )}
+          选择图片或 GIF 并导入
+        </button>
         <label>
           <span>表情名称（可选）</span>
           <input
@@ -833,10 +808,6 @@ function StickerLibraryPanel({
             onChange={(event) => setCaption(event.target.value)}
           />
         </label>
-        <button type="button" disabled={!imageDataUrl || !connected} onClick={saveSticker}>
-          <Save size={16} />
-          保存到表情库
-        </button>
         {status && <small role="status">{status}</small>}
       </section>
       <section>
@@ -1222,17 +1193,91 @@ function AlbumPanel({
   );
 }
 
+interface CapabilityModuleStatus {
+  module_id: string;
+  state: 'registered' | 'running' | 'disabled' | 'degraded' | 'stopped' | string;
+  failures: number;
+  last_error_code: string;
+}
+
+function moduleStatuses(value: unknown): CapabilityModuleStatus[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.module_id !== 'string' || typeof record.state !== 'string') return [];
+    return [{
+      module_id: record.module_id,
+      state: record.state,
+      failures: Number(record.failures) || 0,
+      last_error_code: typeof record.last_error_code === 'string'
+        ? record.last_error_code
+        : '',
+    }];
+  });
+}
+
 function SettingsHubPanel({
+  ws,
   connected,
   onOpenPanel,
   onRefreshDiary,
   onRefreshTimeline,
 }: {
+  ws: ReturnType<typeof useReverieWS>;
   connected: boolean;
   onOpenPanel: (panel: RoomPanelId) => void;
   onRefreshDiary: () => void;
   onRefreshTimeline: () => void;
 }) {
+  const [modules, setModules] = useState<CapabilityModuleStatus[]>([]);
+  const [moduleStatus, setModuleStatus] = useState('');
+  const moduleRequest = ws.request;
+  const refreshModules = useCallback(async () => {
+    if (!connected) {
+      setModules([]);
+      setModuleStatus('模块状态仅从本地 Python 人格宿主读取。');
+      return;
+    }
+    try {
+      const response = await moduleRequest<Record<string, unknown>>(
+        WSMsgType.MODULE_LIST,
+        {},
+        { expectedType: WSMsgType.MODULE_RESULT, timeout: 8_000 },
+      );
+      setModules(moduleStatuses(response.modules));
+      setModuleStatus(
+        response.ok === true
+          ? '可选模块异常不会改变人格身份或聊天账本。'
+          : String(response.error || '模块状态不可用'),
+      );
+    } catch (error) {
+      setModuleStatus(error instanceof Error ? error.message : '模块状态不可用');
+    }
+  }, [connected, moduleRequest]);
+
+  useEffect(() => {
+    void refreshModules();
+  }, [refreshModules]);
+
+  const controlModule = async (moduleId: string, action: 'disable' | 'enable' | 'retry') => {
+    try {
+      const response = await moduleRequest<Record<string, unknown>>(
+        WSMsgType.MODULE_CONTROL,
+        { module_id: moduleId, action },
+        { expectedType: WSMsgType.MODULE_RESULT, timeout: 8_000 },
+      );
+      setModules(moduleStatuses(response.modules));
+      setModuleStatus(
+        response.ok === true
+          ? `模块 ${moduleId} 已切换；人格内核未重启。`
+          : String(response.error || '模块操作失败'),
+      );
+    } catch (error) {
+      setModuleStatus(error instanceof Error ? error.message : '模块操作失败');
+    }
+  };
+
   const settingPanels: Array<{
     id: RoomPanelId;
     title: string;
@@ -1284,6 +1329,41 @@ function SettingsHubPanel({
           <span>刷新动态</span>
         </button>
       </div>
+
+      <section className={styles.keepsakeList} aria-label="可选模块状态">
+        <div>
+          <strong>模块隔离</strong>
+          <small>{moduleStatus || '正在读取本地模块状态…'}</small>
+        </div>
+        {modules.map((module) => (
+          <article className={styles.keepsakeCard} key={module.module_id}>
+            <div>
+              <strong>{module.module_id}</strong>
+              <p>
+                {module.state}
+                {module.failures ? ` · ${module.failures} 次失败` : ''}
+                {module.last_error_code ? ` · ${module.last_error_code}` : ''}
+              </p>
+              <span className={styles.actionRow}>
+                {module.state === 'running' ? (
+                  <button type="button" onClick={() => void controlModule(module.module_id, 'disable')}>
+                    禁用
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => void controlModule(module.module_id, 'enable')}>
+                    启用
+                  </button>
+                )}
+                {module.state === 'degraded' && (
+                  <button type="button" onClick={() => void controlModule(module.module_id, 'retry')}>
+                    重试
+                  </button>
+                )}
+              </span>
+            </div>
+          </article>
+        ))}
+      </section>
     </div>
   );
 }
@@ -1708,7 +1788,7 @@ export default function DreamRoom() {
   const [phoneAttention, setPhoneAttention] = useState(false);
   const previousTimelineRevision = useRef('');
   const timelineTrackingReady = useRef(false);
-  const [onboardingDone, setOnboardingDone] = useState(isFirstRunGuideDone);
+  const [onboardingDone, setOnboardingDone] = useState(false);
 
   useEffect(() => {
     console.info('[DreamRoom] route hit', {
@@ -1719,6 +1799,7 @@ export default function DreamRoom() {
   }, []);
 
   const connected = ws.connState === 'connected';
+  const onboardingCompleted = ws.settingsSnapshot.ui?.onboarding_completed;
   const mood = useMemo(
     () => deriveRoomAtmosphere(ws.emotions, connected),
     [connected, ws.emotions],
@@ -1738,6 +1819,10 @@ export default function DreamRoom() {
   });
 
   useDiaryWritingSound(connected && ws.runtimeActivity.diary_writing);
+
+  useEffect(() => {
+    if (onboardingCompleted === true) setOnboardingDone(true);
+  }, [onboardingCompleted]);
 
   useEffect(() => {
     if (!connected) {
@@ -1845,6 +1930,12 @@ export default function DreamRoom() {
           onClose={closePanel}
           onRefresh={activePanel === 'diary' || activePanel === 'timeline' ? refreshActivePanel : undefined}
         >
+          <React.Suspense fallback={(
+            <div className={styles.emptyPanel}>
+              <RefreshCw size={24} />
+              <strong>正在加载本地模块…</strong>
+            </div>
+          )}>
           {activePanel === 'diary' && (
             <DiaryPanel
               entries={ws.diaryEntries}
@@ -1883,10 +1974,16 @@ export default function DreamRoom() {
             <EmbeddedGamePanel game={activePanel} connected={connected} onInviteAI={inviteGameCompanion} />
           )}
           {activePanel && isGamePanel(activePanel) && !isEmbeddedGamePanel(activePanel) && (
-            <MiniGamePanel game={activePanel} connected={connected} onInviteAI={inviteGameCompanion} />
+            <MiniGamePanel
+              game={activePanel}
+              connected={connected}
+              gameStateClient={ws}
+              onInviteAI={inviteGameCompanion}
+            />
           )}
           {activePanel === 'settings' && (
             <SettingsHubPanel
+              ws={ws}
               connected={connected}
               onOpenPanel={openPanel}
               onRefreshDiary={ws.refreshDiary}
@@ -1911,10 +2008,11 @@ export default function DreamRoom() {
           {activePanel === 'userProfile' && <UserProfilePanel ws={ws} />}
           {activePanel === 'archive' && <ArchiveManagerPanel ws={ws} />}
           {activePanel === 'backup' && <BackupPanel ws={ws} />}
+          </React.Suspense>
         </RoomDrawer>
       )}
 
-      {!onboardingDone && (
+      {connected && onboardingCompleted === false && !onboardingDone && (
         <FirstRunGuide ws={ws} onComplete={() => setOnboardingDone(true)} />
       )}
     </main>

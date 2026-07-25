@@ -8,37 +8,24 @@ import { translate } from '@/i18';
 
 export type { Soundscape } from './focusSoundRuntime';
 
-const SOUND_KEY = 'reverie:focus-sound:v1';
-
-function loadPreference(): { sound: Soundscape; volume: number; autoStart: boolean } {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SOUND_KEY) || '{}') as Partial<{
-      sound: Soundscape;
-      volume: number;
-      autoStart: boolean;
-    }>;
-    const candidate = String(parsed.sound || '');
-    const sound = ['rain', 'wind', 'fire', 'library', 'pink'].includes(candidate)
-      || /^custom:[0-9a-f-]{36}$/i.test(candidate)
-      ? candidate as Soundscape : 'rain';
-    const volume = typeof parsed.volume === 'number'
-      ? Math.min(1, Math.max(0, parsed.volume))
-      : 0.2;
-    return { sound, volume, autoStart: parsed.autoStart !== false };
-  } catch {
-    return { sound: 'rain', volume: 0.2, autoStart: true };
-  }
-}
+const DEFAULT_PREFERENCE: Readonly<{
+  sound: Soundscape;
+  volume: number;
+  autoStart: boolean;
+}> = Object.freeze({
+  sound: 'rain' as Soundscape,
+  volume: 0.2,
+  autoStart: true,
+});
 
 export function useFocusSoundscape(
   focusRunning: boolean,
   focusId?: string | null,
   requiresAudioRearm = false,
 ) {
-  const preference = loadPreference();
-  const [sound, setSoundState] = useState<Soundscape>(preference.sound);
-  const [volume, setVolumeState] = useState(preference.volume);
-  const [autoStart, setAutoStartState] = useState(preference.autoStart);
+  const [sound, setSoundState] = useState<Soundscape>(DEFAULT_PREFERENCE.sound);
+  const [volume, setVolumeState] = useState(DEFAULT_PREFERENCE.volume);
+  const [autoStart, setAutoStartState] = useState(DEFAULT_PREFERENCE.autoStart);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState('');
   const [customSounds, setCustomSounds] = useState<FocusSoundRecord[]>([]);
@@ -46,16 +33,27 @@ export function useFocusSoundscape(
   const operationRef = useRef(0);
 
   const persist = useCallback((nextSound: Soundscape, nextVolume: number, nextAutoStart = autoStart) => {
-    try {
-      localStorage.setItem(SOUND_KEY, JSON.stringify({
-        sound: nextSound,
-        volume: nextVolume,
-        autoStart: nextAutoStart,
-      }));
-    } catch {
-      // In-memory controls remain usable when storage is unavailable.
-    }
+    void window.electronAPI?.companionPreferences?.set({
+      sound: nextSound,
+      volume: nextVolume,
+      autoStart: nextAutoStart,
+    }).catch(() => setError(translate('dream.soundStartFailed')));
   }, [autoStart]);
+
+  useEffect(() => {
+    const api = window.electronAPI?.companionPreferences;
+    if (!api) return;
+    void api.get().then((value) => {
+      const candidate = String(value.sound || '');
+      const nextSound = ['rain', 'wind', 'fire', 'library', 'pink'].includes(candidate)
+        || /^custom:[0-9a-f-]{36}$/i.test(candidate)
+        ? candidate as Soundscape
+        : DEFAULT_PREFERENCE.sound;
+      setSoundState(nextSound);
+      setVolumeState(Math.min(1, Math.max(0, value.volume)));
+      setAutoStartState(value.autoStart !== false);
+    }).catch(() => setError(translate('dream.soundStartFailed')));
+  }, []);
 
   const fadeOut = useCallback(async () => {
     const graph = graphRef.current;

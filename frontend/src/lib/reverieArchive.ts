@@ -2,7 +2,6 @@ import type { LLMConfig } from './llmModels';
 import type { DiaryEntry, TimelinePost } from '@/hooks/useReverieWS';
 
 export const REVERIE_ARCHIVE_STORAGE_KEY = 'reverie:archive:v1';
-export const REVERIE_ONBOARDING_STORAGE_KEY = 'reverie:onboarding:v1';
 export const REVERIE_BACKUP_SCHEMA = 'reverie.backup.v1';
 export const REVERIE_CHARACTER_SCHEMA = 'reverie.character-card.v1';
 export const REVERIE_WORLDBOOK_SCHEMA = 'reverie.world-book.v1';
@@ -659,51 +658,29 @@ export function normalizeArchive(value: unknown): ReverieArchive {
   };
 }
 
-export function loadArchive(): ReverieArchive {
-  const storage = getStorage();
-  if (!storage) return createDefaultArchive();
-  try {
-    const raw = storage.getItem(REVERIE_ARCHIVE_STORAGE_KEY);
-    return raw ? normalizeArchive(JSON.parse(raw)) : createDefaultArchive();
-  } catch {
-    return createDefaultArchive();
-  }
-}
-
-export function saveArchive(archive: ReverieArchive): void {
-  const storage = getStorage();
-  if (!storage) return;
-  try {
-    storage.setItem(REVERIE_ARCHIVE_STORAGE_KEY, JSON.stringify(normalizeArchive(archive)));
-  } catch {
-    // Large imported portraits can exceed browser storage; keep the UI alive.
-  }
-}
-
-export function loadOnboardingPreferences(): OnboardingPreferences | null {
+/**
+ * Read the retired renderer archive solely for a one-way backend migration.
+ * Callers must not use this as a runtime fallback.
+ */
+export function loadLegacyArchiveForMigration(): ReverieArchive | null {
   const storage = getStorage();
   if (!storage) return null;
   try {
-    const raw = storage.getItem(REVERIE_ONBOARDING_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!isRecord(parsed) || parsed.completed !== true) return null;
-    const years = normalizeYears(parsed.memoryRetentionYears);
-    return {
-      completed: true,
-      memoryRetentionYears: years,
-      memoryRetentionDays: years * 365,
-      completedAt: asString(parsed.completedAt, nowIso()),
-    };
+    const raw = storage.getItem(REVERIE_ARCHIVE_STORAGE_KEY);
+    return raw ? normalizeArchive(JSON.parse(raw)) : null;
   } catch {
     return null;
   }
 }
 
-export function saveOnboardingPreferences(preferences: OnboardingPreferences): void {
+export function clearLegacyArchiveAfterMigration(): void {
   const storage = getStorage();
   if (!storage) return;
-  storage.setItem(REVERIE_ONBOARDING_STORAGE_KEY, JSON.stringify(preferences));
+  try {
+    storage.removeItem(REVERIE_ARCHIVE_STORAGE_KEY);
+  } catch {
+    // The stale cache remains inert because production reads only Python.
+  }
 }
 
 export function createCharacterCardExport(card: ReverieCharacterCard): CharacterCardExport {

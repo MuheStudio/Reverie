@@ -5,7 +5,7 @@ import inkRain from '@/assets/dreamroom/ink-rain.svg';
 import inkWarm from '@/assets/dreamroom/ink-warm.svg';
 import paperGrain from '@/assets/dreamroom/paper-grain.svg';
 import CharacterStage from './CharacterStage';
-import { type CharacterActivity } from './AvatarStage';
+import { type CharacterActivity } from './avatarContracts';
 import { type RoomAtmosphere } from './roomState';
 import styles from './RoomScene.module.scss';
 

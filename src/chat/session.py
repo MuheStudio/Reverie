@@ -48,6 +48,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger("reverie.chat.session")
 
 
+class ProviderCallFailed(RuntimeError):
+    """A possibly billable provider request failed outside persona dialogue."""
+
+    code = "PROVIDER_OUTCOME_UNKNOWN"
+
+    def __init__(self, cause: BaseException | None = None) -> None:
+        self.cause_type = cause.__class__.__name__ if cause is not None else "ProviderError"
+        super().__init__("供应商请求未完成；为避免重复计费，Reverie 不会自动重试。")
+
+
 class ChatSession:
     """Manages a single conversation with the AI companion.
 
@@ -409,7 +419,10 @@ class ChatSession:
 
         raw_reply = ""
         attempt = 0
-        max_retries = 2
+        # Once dispatch may have reached a paid provider, retrying cannot prove
+        # that it is free or idempotent. Continuity/output failures use local
+        # deterministic guards instead of hidden follow-up API calls.
+        max_retries = 0
         retry_prompt = ""
         degraded_provider_failure = False
 
@@ -430,30 +443,8 @@ class ChatSession:
                 # or a personality reflex that looks like a successful AI turn.
                 raise
             except Exception as exc:
-                logger.error("LLM call failed (attempt %d): %s", attempt + 1, exc)
-                if _is_timeout_exception(exc):
-                    return self._provider_timeout_result(
-                        exc,
-                        injection_detected,
-                        guard,
-                        user_message,
-                        defer_side_effects=defer_side_effects,
-                        request_id=request_id,
-                    )
-                if attempt >= max_retries:
-                    try:
-                        raw_reply = self.reflex.choose("timeout", context=exc.__class__.__name__) if self.reflex else ""
-                    except Exception:
-                        raw_reply = ""
-                    if not raw_reply:
-                        raw_reply = "唔，我这边突然有点接不上。让我缓一下，晚点回来找你。"
-                    if not defer_side_effects and hasattr(self.scheduler, "set_temporary_status"):
-                        self.scheduler.set_temporary_status("busy", 5 * 60)
-                    degraded_provider_failure = True
-                    break
-                attempt += 1
-                await asyncio.sleep(1)
-                continue
+                logger.exception("LLM provider request failed after dispatch")
+                raise ProviderCallFailed(exc) from exc
 
             # ── Step 6: Output filtering ──────────────────
             filtered = filter_output_detail(raw_reply)
@@ -1046,57 +1037,8 @@ class ChatSession:
         defer_side_effects: bool = False,
         request_id: str = "",
     ) -> dict:
-        """Keep a provider outage inside the character's local continuity boundary."""
-        try:
-            provider_text = self.reflex.choose("timeout", context=exc.__class__.__name__) if self.reflex else ""
-        except Exception:
-            logger.exception("Local reflex lookup failed")
-            provider_text = "唔，这边忽然有点接不上。让我缓一会儿，晚点回来认真回你。"
-        if not provider_text:
-            provider_text = "唔，这边忽然有点接不上。让我缓一会儿，晚点回来认真回你。"
-        provider_text = self._shape_reflex_text(provider_text)
-        try:
-            if not defer_side_effects and hasattr(self.scheduler, "set_temporary_status"):
-                self.scheduler.set_temporary_status("busy", 5 * 60)
-            messages = self.scheduler.split_message(provider_text)
-            typing_duration = self.scheduler.typing_duration(len(provider_text))
-        except Exception:
-            messages = [provider_text]
-            typing_duration = max(0.8, min(4.0, len(provider_text) / 18.0))
-        if user_message and not defer_side_effects:
-            self._history.append({"role": "user", "content": user_message})
-        if not defer_side_effects:
-            self._history.append({"role": "assistant", "content": provider_text})
-        result = {
-            "reply": provider_text,
-            "messages": messages,
-            "clean_messages": messages,
-            "sticker": None,
-            "delay": 0.0,
-            "typing_duration": typing_duration,
-            "scheduler_status": self._safe_scheduler_status(),
-            "emotion_changes": {},
-            "injection_detected": injection_detected,
-            "guarded": guard.guarded,
-            "guard_reasons": list(guard.reasons),
-            "provider_timeout": True,
-            "degraded_to_local_reflex": True,
-            "provider_error_type": exc.__class__.__name__,
-            "had_typo": False,
-            "typo_indices": [],
-        }
-        return self._with_deferred_commit(
-            result,
-            defer_side_effects=defer_side_effects,
-            request_id=request_id,
-            guard=guard,
-            memory_directive=self._parse_memory_directive(user_message),
-            web_item_id="",
-            thought_item_id="",
-            cross_character_event_id="",
-            emotions=dict(getattr(self.emotion, "values", {}) or self._last_safe_emotions),
-            emotion_intensity=0.0,
-        )
+        """Compatibility entry point: provider errors are never persona speech."""
+        raise ProviderCallFailed(exc) from exc
 
     def _local_personality_result(
         self,

@@ -15,7 +15,8 @@
     "electron": "electron .",
     "electron:dev": "npm run build && electron .",
     "package:win:test": "node script/package-win-test.cjs",
-    "package:win": "node script/package-win-installer.cjs"
+    "package:win": "node script/package-win-installer.cjs",
+    "smoke:package": "node script/smoke-packaged-bridge.cjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "3.5.5",
@@ -37,6 +38,8 @@
     "intl-pluralrules": "^2.0.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.563.0",
+    "pixi-live2d-display": "0.4.0",
+    "pixi.js": "6.5.10",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-i18next": "^14.1.1",
@@ -65,7 +68,8 @@
     "sass": "^1.75.0",
     "typescript": "^5.0.2",
     "vite": "^8.1.5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "ws": "8.18.3"
   },
   "browserslist": {
     "production": [

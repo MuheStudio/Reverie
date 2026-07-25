@@ -10,13 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback.
-    tomllib = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from ..config.settings import FeatureSettings
@@ -247,33 +241,11 @@ def _sanitize_place_types(place_types: list[str] | None) -> list[str]:
 
 
 def _make_poi_service(factory: Callable[[], Any] | None) -> Any | None:
-    if factory:
-        return factory()
-    try:
-        from src.neko_core.plugin.plugins.lifekit._poi import POIService
-    except Exception:
-        return None
-    return POIService(_load_lifekit_poi_config())
-
-
-def _load_lifekit_poi_config() -> dict[str, Any]:
-    if tomllib is None:
-        return {}
-    config_path = (
-        Path(__file__).resolve().parents[1]
-        / "neko_core"
-        / "plugin"
-        / "plugins"
-        / "lifekit"
-        / "plugin.toml"
-    )
-    try:
-        with config_path.open("rb") as file:
-            raw = tomllib.load(file)
-    except OSError:
-        return {}
-    config = raw.get("lifekit") or raw.get("config") or raw
-    return config if isinstance(config, dict) else {}
+    # POI is an explicit adapter port. The kernel must never discover or import
+    # a reference project behind the user's back: doing so reintroduces an
+    # undeclared network path and makes an optional module a startup dependency.
+    # Production currently injects no adapter and therefore remains local.
+    return factory() if factory else None
 
 
 async def _search_real_poi(

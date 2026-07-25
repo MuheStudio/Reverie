@@ -21,6 +21,7 @@ export function useFocusSession(onCompleted: (id: string, durationSeconds: numbe
   const [state, setState] = useState<FocusState>(IDLE_STATE);
   const [displayRemaining, setDisplayRemaining] = useState(0);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const completedRef = useRef(new Set<string>());
   const displayAnchorRef = useRef({ remaining: 0, monotonicMs: 0 });
 
@@ -75,16 +76,19 @@ export function useFocusSession(onCompleted: (id: string, durationSeconds: numbe
   }, [state.phase]);
 
   const run = useCallback(async (action: () => Promise<FocusState>) => {
-    if (!api) return false;
+    if (!api || busy) return false;
     setError('');
+    setBusy(true);
     try {
       acceptState(await action());
       return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : translate('dream.focusActionFailed'));
       return false;
+    } finally {
+      setBusy(false);
     }
-  }, [acceptState, api]);
+  }, [acceptState, api, busy]);
 
   const start = useCallback((minutes: number) => {
     const safeMinutes = clampDuration(minutes);
@@ -105,6 +109,7 @@ export function useFocusSession(onCompleted: (id: string, durationSeconds: numbe
     state,
     displayRemaining,
     error,
+    busy,
     start,
     pause,
     resume,

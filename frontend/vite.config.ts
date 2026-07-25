@@ -131,10 +131,13 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
           },
         },
       },
-      minify: isElectronBuild ? false : true,
+      minify: true,
       chunkSizeWarningLimit: 1500,
       cssTarget: 'chrome61',
-      sourcemap: isProd || isElectronBuild,
+      // Desktop builds ship a separate corresponding-source archive. Embedding
+      // source maps in the runtime duplicated ~8 MiB of source and exposed
+      // internal paths without helping crash recovery.
+      sourcemap: isElectronBuild ? false : isProd,
       manifest: true,
     },
   };

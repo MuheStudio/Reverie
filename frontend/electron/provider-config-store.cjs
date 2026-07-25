@@ -73,6 +73,21 @@ function normalizeProviderConfig(value) {
   return normalized;
 }
 
+function providerBinding(scope, value) {
+  const normalized = normalizeProviderConfig(value);
+  const config = scope === 'llm' ? normalized.llm : normalized.imageGen;
+  if (!config) throw new TypeError(`${scope} provider config is unavailable`);
+  const provider = {
+    'z.ai': 'glm',
+    zai: 'glm',
+    claude: 'anthropic',
+  }[config.provider] || config.provider;
+  return crypto.createHash('sha256').update(
+    `${scope}\0${provider}\0${config.baseUrl}`,
+    'utf8',
+  ).digest('hex');
+}
+
 class ProviderConfigStore {
   constructor(options = {}) {
     if (!options.storageDir) throw new TypeError('ProviderConfigStore requires storageDir');
@@ -106,19 +121,40 @@ class ProviderConfigStore {
       this.storageDir,
       `.providers.${process.pid}.${crypto.randomBytes(12).toString('hex')}.tmp`,
     );
+    const backup = path.join(
+      this.storageDir,
+      `.providers.${process.pid}.${crypto.randomBytes(12).toString('hex')}.backup`,
+    );
     let fd;
+    let previousMoved = false;
+    let committed = false;
     try {
       fd = fs.openSync(temporary, 'wx', 0o600);
       fs.writeFileSync(fd, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
       fs.fsyncSync(fd);
       fs.closeSync(fd);
       fd = undefined;
+      if (fs.existsSync(this.configPath)) {
+        fs.renameSync(this.configPath, backup);
+        previousMoved = true;
+      }
       fs.renameSync(temporary, this.configPath);
+      const readBack = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
+      if (readBack?.schema !== SCHEMA) throw new Error('provider config read-back failed');
+      committed = true;
+      if (previousMoved) fs.unlinkSync(backup);
     } finally {
       if (fd !== undefined) {
         try { fs.closeSync(fd); } catch {}
       }
       try { fs.unlinkSync(temporary); } catch {}
+      if (previousMoved && !committed) {
+        try { fs.unlinkSync(this.configPath); } catch {}
+        try { fs.renameSync(backup, this.configPath); } catch {}
+      }
+      if (committed) {
+        try { fs.unlinkSync(backup); } catch {}
+      }
     }
     const result = { ...normalized };
     delete result.schema;
@@ -131,5 +167,6 @@ module.exports = {
   ProviderConfigStore,
   SCHEMA,
   normalizeProviderConfig,
+  providerBinding,
   providerUrl,
 };

@@ -55,6 +55,7 @@ declare global {
       live2d?: {
         available: boolean;
         licenseAccepted: boolean;
+        developmentOnly?: boolean;
         reason?: string;
       };
     };
@@ -88,7 +89,7 @@ declare global {
     warningsAccepted: boolean;
   }
 
-  type FocusPhase = 'idle' | 'running' | 'paused' | 'completed';
+  type FocusPhase = 'idle' | 'starting' | 'running' | 'paused' | 'completed' | 'stopped';
 
   interface FocusState {
     phase: FocusPhase;
@@ -102,10 +103,18 @@ declare global {
   }
 
   interface BridgeConnectionConfig {
+    transport?: 'electron-ipc' | 'websocket';
     url: string;
     secret: string;
     origin?: string;
     protocolVersion: 2;
+    generation?: number;
+    clientId?: string;
+    personaId?: string;
+    personaEpoch?: number;
+    personaFingerprint?: string;
+    modelEpoch?: number;
+    restartRequired?: boolean;
   }
 
   interface LocalModeState {
@@ -121,17 +130,30 @@ declare global {
   interface CredentialScopeStatus {
     hasApiKey: boolean;
     hasCustomHeaders: boolean;
+    sessionOnly?: boolean;
+    bindingKnown?: boolean;
   }
 
   interface CredentialStatus {
     available: boolean;
+    persistentAvailable?: boolean;
     corrupted: boolean;
+    lastErrorCode?: string;
+    writeError?: {
+      code: string;
+      message: string;
+    };
+    sessionWarning?: string;
     llm: CredentialScopeStatus;
     imageGen: CredentialScopeStatus;
     stored?: boolean;
     runtimeApplied?: boolean;
     runtimePending?: boolean;
     runtimeAppliedScopes?: {
+      llm: boolean;
+      imageGen: boolean;
+    };
+    bindingMismatch?: {
       llm: boolean;
       imageGen: boolean;
     };
@@ -158,8 +180,68 @@ declare global {
         installedIdentity: boolean;
       }>;
       openLocationSettings?: () => Promise<{ opened: boolean }>;
+      getCurrentWindowsLocation?: () => Promise<
+        | {
+            ok: true;
+            code: 'REVERIE_LOCATION_OK';
+            status: string;
+            latitude: number;
+            longitude: number;
+            accuracy: number;
+            timestamp: string;
+            source: 'windows-winrt';
+          }
+        | {
+            ok: false;
+            code: string;
+            status: string;
+            source: 'windows-winrt';
+          }
+      >;
       bridge?: {
         getConnectionConfig: () => Promise<BridgeConnectionConfig>;
+        send: (frame: {
+          type: string;
+          payload: Record<string, unknown>;
+          request_id?: string;
+        }) => Promise<{ accepted: boolean }>;
+        onMessage: (callback: (frame: unknown) => void) => () => void;
+        onChanged: (callback: (state: { ready: boolean; generation?: number }) => void) => () => void;
+      };
+      stickers?: {
+        importFile: (value?: {
+          text?: string;
+          emotions?: string[];
+          styleTags?: string[];
+        }) => Promise<{
+          canceled: boolean;
+          fileName?: string;
+          item: {
+            id: string;
+            text: string;
+            emotions: string[];
+            image_data_url?: string;
+            image_path?: string;
+            style_tags?: string[];
+          } | null;
+          items: unknown[];
+        }>;
+      };
+      companionPreferences?: {
+        get: () => Promise<{
+          sound: string;
+          volume: number;
+          autoStart: boolean;
+        }>;
+        set: (value: {
+          sound: string;
+          volume: number;
+          autoStart: boolean;
+        }) => Promise<{
+          sound: string;
+          volume: number;
+          autoStart: boolean;
+        }>;
       };
       localMode?: {
         get: () => Promise<LocalModeState>;
@@ -169,6 +251,10 @@ declare global {
       credentials?: {
         status: () => Promise<CredentialStatus>;
         set: (
+          scope: 'llm' | 'imageGen',
+          value: { apiKey?: string; customHeaders?: string },
+        ) => Promise<CredentialStatus>;
+        setSession: (
           scope: 'llm' | 'imageGen',
           value: { apiKey?: string; customHeaders?: string },
         ) => Promise<CredentialStatus>;
@@ -202,6 +288,33 @@ declare global {
             model: string;
           };
         }) => Promise<unknown>;
+        commit: (
+          value: {
+            llm: {
+              provider: string;
+              baseUrl: string;
+              model: string;
+              customProviderName?: string;
+            };
+            imageGen?: {
+              provider: string;
+              baseUrl: string;
+              model: string;
+            };
+          },
+          credential?: { apiKey?: string; customHeaders?: string },
+          mode?: 'persistent' | 'session',
+        ) => Promise<{
+          config: {
+            llm: {
+              provider: string;
+              baseUrl: string;
+              model: string;
+              customProviderName?: string;
+            };
+          };
+          status: CredentialStatus;
+        }>;
       };
       backup?: {
         export: () => Promise<NativeBackupResult>;

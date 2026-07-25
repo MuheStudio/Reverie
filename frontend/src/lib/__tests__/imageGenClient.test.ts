@@ -81,10 +81,9 @@ describe('loadImageGenConfigSync()', () => {
     expect(loadImageGenConfigSync()).toBeNull();
   });
 
-  it('returns parsed config from localStorage', () => {
+  it('does not revive browser metadata as authoritative', () => {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_IG_CONFIG));
-    expect(loadImageGenConfigSync()).toEqual(PUBLIC_IG_CONFIG);
-    expect(localStorage.getItem(CONFIG_KEY)).not.toContain('sk-img-test');
+    expect(loadImageGenConfigSync()).toBeNull();
   });
 
   it('returns null on invalid JSON', () => {
@@ -94,13 +93,13 @@ describe('loadImageGenConfigSync()', () => {
 });
 
 describe('loadImageGenConfig()', () => {
-  it('loads imageGen from the Electron store and syncs its safe projection', async () => {
+  it('loads imageGen from the Electron store without making a browser copy', async () => {
     providerGet.mockResolvedValueOnce({ llm: MOCK_LLM_CONFIG, imageGen: MOCK_IG_CONFIG });
 
     const result = await loadImageGenConfig();
 
     expect(result).toEqual(PUBLIC_IG_CONFIG);
-    expect(localStorage.getItem(CONFIG_KEY)).toBe(JSON.stringify(PUBLIC_IG_CONFIG));
+    expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
   });
 
   it('returns null when Electron metadata contains only LLM settings', async () => {
@@ -112,13 +111,14 @@ describe('loadImageGenConfig()', () => {
     expect(result).toBeNull();
   });
 
-  it('falls back to localStorage when the Electron store is unavailable', async () => {
+  it('does not use image metadata when no authoritative LLM record is available', async () => {
     providerGet.mockRejectedValueOnce(new Error('Provider store unavailable'));
     localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_IG_CONFIG));
 
     const result = await loadImageGenConfig();
 
-    expect(result).toEqual(PUBLIC_IG_CONFIG);
+    expect(result).toBeNull();
+    expect(localStorage.getItem(CONFIG_KEY)).not.toBeNull();
   });
 
   it('returns null when both Electron metadata and localStorage have nothing', async () => {
@@ -140,8 +140,21 @@ describe('loadImageGenConfig()', () => {
 
 describe('saveImageGenConfig()', () => {
   it('writes only public metadata and sends the key to the secure vault', async () => {
+    providerGet.mockResolvedValueOnce({ llm: MOCK_LLM_CONFIG });
     await saveImageGenConfig(MOCK_IG_CONFIG);
-    expect(JSON.parse(localStorage.getItem(CONFIG_KEY)!)).toEqual(PUBLIC_IG_CONFIG);
+    expect(providerSet).toHaveBeenCalledWith({
+      llm: {
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com',
+        model: 'gpt-4',
+      },
+      imageGen: {
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com',
+        model: 'gpt-image-1.5',
+      },
+    });
+    expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
     expect(window.electronAPI?.credentials?.set).toHaveBeenCalledWith('imageGen', {
       apiKey: 'sk-img-test',
     });

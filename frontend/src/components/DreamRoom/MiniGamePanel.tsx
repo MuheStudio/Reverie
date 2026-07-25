@@ -18,6 +18,7 @@ import { squareFromCoords } from 'elephantops/util';
 import type { Move as XiangqiMove, Role, Square as XiangqiSquare } from 'elephantops/types';
 import { Engine, type TetrisState } from 'tetris-engine';
 import type { PhoneAppPanelId } from './roomState';
+import { WSMsgType, type WSRequestOptions } from '@/hooks/useReverieWS';
 import {
   GOMOKU_SIZE,
   chooseGomokuMove,
@@ -38,6 +39,13 @@ import styles from './MiniGamePanel.module.scss';
 interface MiniGamePanelProps {
   game: PhoneAppPanelId;
   connected: boolean;
+  gameStateClient: {
+    request<T = unknown>(
+      type: string,
+      payload: unknown,
+      options: WSRequestOptions,
+    ): Promise<T>;
+  };
   onInviteAI: (game: PhoneAppPanelId, stateLine?: string) => void;
 }
 
@@ -50,21 +58,174 @@ const TITLES: Partial<Record<PhoneAppPanelId, string>> = {
   go: '围棋',
 };
 
-function loadLocal<T>(key: string, fallback: T, valid: (value: unknown) => value is T): T {
+function readLegacyGameState<T>(key: string, valid: (value: unknown) => value is T): T | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(key) || 'null');
-    return valid(value) ? value : fallback;
+    return valid(value) ? value : null;
   } catch {
-    return fallback;
+    return null;
   }
 }
 
-function saveLocal(key: string, value: unknown): void {
+function clearLegacyGameState(key: string): void {
   try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    window.localStorage.removeItem(key);
   } catch {
-    // A full or unavailable localStorage must not stop a running game.
+    // The retired browser state remains inert after backend migration.
   }
+}
+
+function useAuthoritativeGameState<T>(
+  client: MiniGamePanelProps['gameStateClient'],
+  connected: boolean,
+  gameId: string,
+  legacyKey: string,
+  fallback: () => T,
+  valid: (value: unknown) => value is T,
+): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [state, setState] = useState<T>(fallback);
+  const revisionRef = useRef(0);
+  const hydratedRef = useRef(false);
+  const writeRunningRef = useRef(false);
+  const pendingRef = useRef<T | null>(null);
+  const committedJsonRef = useRef('');
+  const retryTimerRef = useRef<number | null>(null);
+  const flushRef = useRef<() => Promise<void>>(async () => undefined);
+  const validRef = useRef(valid);
+  const fallbackRef = useRef(fallback);
+  validRef.current = valid;
+  fallbackRef.current = fallback;
+  const request = client.request;
+
+  const flush = useCallback(async () => {
+    if (writeRunningRef.current || !hydratedRef.current) return;
+    writeRunningRef.current = true;
+    let inFlight: T | null = null;
+    try {
+      while (pendingRef.current !== null) {
+        const desired = pendingRef.current;
+        pendingRef.current = null;
+        inFlight = desired;
+        const response = await request<Record<string, unknown>>(
+          WSMsgType.GAME_STATE_PUT,
+          {
+            game_id: gameId,
+            state: desired,
+            expected_revision: revisionRef.current,
+          },
+          { expectedType: WSMsgType.GAME_STATE_RESULT, timeout: 8_000 },
+        );
+        if (response.ok !== true) {
+          if (response.code === 'conflict' && validRef.current(response.state)) {
+            revisionRef.current = Number(response.revision) || 0;
+            committedJsonRef.current = JSON.stringify(response.state);
+            setState(response.state);
+          } else {
+            pendingRef.current ??= desired;
+          }
+          break;
+        }
+        revisionRef.current = Number(response.revision) || revisionRef.current;
+        committedJsonRef.current = JSON.stringify(desired);
+        inFlight = null;
+      }
+    } catch {
+      // The game keeps running in memory. Module health exposes persistence
+      // failure without promoting renderer state to a second fact source.
+      if (inFlight !== null) pendingRef.current ??= inFlight;
+    } finally {
+      writeRunningRef.current = false;
+      if (
+        pendingRef.current !== null
+        && hydratedRef.current
+        && retryTimerRef.current === null
+      ) {
+        retryTimerRef.current = window.setTimeout(() => {
+          retryTimerRef.current = null;
+          void flushRef.current();
+        }, 1_500);
+      }
+    }
+  }, [gameId, request]);
+  flushRef.current = flush;
+
+  useEffect(() => {
+    let disposed = false;
+    hydratedRef.current = false;
+    pendingRef.current = null;
+    committedJsonRef.current = '';
+    if (!connected) return undefined;
+    const hydrate = async () => {
+      try {
+        let response = await request<Record<string, unknown>>(
+          WSMsgType.GAME_STATE_GET,
+          { game_id: gameId },
+          { expectedType: WSMsgType.GAME_STATE_RESULT, timeout: 8_000 },
+        );
+        if (response.ok !== true) return;
+        let loaded: T;
+        if (response.exists === true && validRef.current(response.state)) {
+          loaded = response.state;
+        } else {
+          const legacy = readLegacyGameState(legacyKey, validRef.current);
+          loaded = legacy ?? fallbackRef.current();
+          response = await request<Record<string, unknown>>(
+            WSMsgType.GAME_STATE_PUT,
+            { game_id: gameId, state: loaded, expected_revision: 0 },
+            { expectedType: WSMsgType.GAME_STATE_RESULT, timeout: 8_000 },
+          );
+          if (response.ok !== true) return;
+          if (legacy !== null) clearLegacyGameState(legacyKey);
+        }
+        if (disposed) return;
+        revisionRef.current = Number(response.revision) || 0;
+        committedJsonRef.current = JSON.stringify(loaded);
+        hydratedRef.current = true;
+        setState(loaded);
+      } catch {
+        // Optional persistence is isolated; gameplay remains available.
+      }
+    };
+    void hydrate();
+    return () => {
+      disposed = true;
+      hydratedRef.current = false;
+      if (retryTimerRef.current !== null) {
+        window.clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, [connected, gameId, legacyKey, request]);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    const serialized = JSON.stringify(state);
+    if (serialized === committedJsonRef.current) return;
+    pendingRef.current = state;
+    void flush();
+  }, [flush, state]);
+
+  return [state, setState];
+}
+
+function isGomokuState(value: unknown): value is GomokuState {
+  const item = value as GomokuState;
+  return Boolean(
+    item
+    && Array.isArray(item.board)
+    && item.board.length === 225
+    && Array.isArray(item.moves),
+  );
+}
+
+function isStoredXiangqiMoves(value: unknown): value is StoredXiangqiMove[] {
+  return Array.isArray(value)
+    && value.length <= 1000
+    && value.every((move) => Number.isInteger(move?.from) && Number.isInteger(move?.to));
+}
+
+function isNonNegativeScore(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function GameHeader({
@@ -107,18 +268,17 @@ function GameHeader({
   );
 }
 
-function GomokuGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
-  const [state, setState] = useState<GomokuState>(() => loadLocal(
+function GomokuGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
+  const [state, setState] = useAuthoritativeGameState(
+    gameStateClient,
+    connected,
+    'gomoku',
     'reverie:game:gomoku:v2',
-    newGomokuState(),
-    (value): value is GomokuState => {
-      const item = value as GomokuState;
-      return Boolean(item && Array.isArray(item.board) && item.board.length === 225 && Array.isArray(item.moves));
-    },
-  ));
+    newGomokuState,
+    isGomokuState,
+  );
   const [thinking, setThinking] = useState(false);
 
-  useEffect(() => saveLocal('reverie:game:gomoku:v2', state), [state]);
   useEffect(() => {
     if (state.turn !== 2 || state.winner || state.draw) return;
     setThinking(true);
@@ -199,10 +359,15 @@ function chooseChessMove(chess: Chess): ChessMove | null {
   return best;
 }
 
-function ChessGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
-  const [pgn, setPgn] = useState(() => loadLocal(
-    'reverie:game:chess:v2', '', (value): value is string => typeof value === 'string',
-  ));
+function ChessGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
+  const [pgn, setPgn] = useAuthoritativeGameState(
+    gameStateClient,
+    connected,
+    'chess',
+    'reverie:game:chess:v2',
+    () => '',
+    (value): value is string => typeof value === 'string' && value.length <= 200_000,
+  );
   const [selected, setSelected] = useState<Square | null>(null);
   const [thinking, setThinking] = useState(false);
   const chess = useMemo(() => chessFromPgn(pgn), [pgn]);
@@ -210,7 +375,6 @@ function ChessGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) 
     ? chess.moves({ square: selected, verbose: true }).map((move) => move.to)
     : [], [chess, selected]);
 
-  useEffect(() => saveLocal('reverie:game:chess:v2', pgn), [pgn]);
   useEffect(() => {
     if (chess.turn() !== 'b' || chess.isGameOver()) return;
     setThinking(true);
@@ -328,18 +492,20 @@ function chooseXiangqiMove(position: Xiangqi): XiangqiMove | null {
   return best;
 }
 
-function XiangqiGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
-  const [moves, setMoves] = useState<StoredXiangqiMove[]>(() => loadLocal(
-    'reverie:game:xiangqi:v2', [],
-    (value): value is StoredXiangqiMove[] => Array.isArray(value)
-      && value.every((move) => Number.isInteger(move?.from) && Number.isInteger(move?.to)),
-  ));
+function XiangqiGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
+  const [moves, setMoves] = useAuthoritativeGameState(
+    gameStateClient,
+    connected,
+    'xiangqi',
+    'reverie:game:xiangqi:v2',
+    () => [] as StoredXiangqiMove[],
+    isStoredXiangqiMoves,
+  );
   const [selected, setSelected] = useState<XiangqiSquare | null>(null);
   const [thinking, setThinking] = useState(false);
   const position = useMemo(() => xiangqiFromMoves(moves), [moves]);
   const targets = useMemo(() => selected === null ? [] : [...position.dests(selected)], [position, selected]);
 
-  useEffect(() => saveLocal('reverie:game:xiangqi:v2', moves), [moves]);
   useEffect(() => {
     if (position.turn !== 'black' || position.isEnd()) return;
     setThinking(true);
@@ -463,11 +629,15 @@ function chooseGoMove(board: GoBoard, sign: Sign): Vertex | null {
   return best;
 }
 
-function GoGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
-  const [stored, setStored] = useState<StoredGoState>(() => loadLocal(
-    'reverie:game:go:v2', { moves: [], ended: false },
+function GoGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
+  const [stored, setStored] = useAuthoritativeGameState(
+    gameStateClient,
+    connected,
+    'go',
+    'reverie:game:go:v2',
+    () => ({ moves: [], ended: false }),
     isStoredGoState,
-  ));
+  );
   const [thinking, setThinking] = useState(false);
   const board = useMemo(() => goFromMoves(stored.moves), [stored.moves]);
   const turn: Sign = stored.moves.length % 2 === 0 ? 1 : -1;
@@ -475,7 +645,6 @@ function GoGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
   const ended = stored.ended || consecutivePasses === 2;
   const score = useMemo(() => ended ? scoreChineseArea(board.signMap) : null, [board, ended]);
 
-  useEffect(() => saveLocal('reverie:game:go:v2', stored), [stored]);
   useEffect(() => {
     if (turn !== -1 || ended) return;
     setThinking(true);
@@ -538,11 +707,19 @@ function GoGame({ connected, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
   );
 }
 
-function SnakeGame() {
+function SnakeGame({
+  connected,
+  gameStateClient,
+}: Pick<MiniGamePanelProps, 'connected' | 'gameStateClient'>) {
   const [state, setState] = useState(() => newSnakeState());
-  const [highScore, setHighScore] = useState(() => loadLocal(
-    'reverie:game:snake:high', 0, (value): value is number => typeof value === 'number',
-  ));
+  const [highScore, setHighScore] = useAuthoritativeGameState(
+    gameStateClient,
+    connected,
+    'snake-high-score',
+    'reverie:game:snake:high',
+    () => 0,
+    isNonNegativeScore,
+  );
 
   const direct = useCallback((direction: SnakeDirection) => {
     setState((current) => queueSnakeDirection(current, direction));
@@ -555,7 +732,6 @@ function SnakeGame() {
   useEffect(() => {
     if (state.score <= highScore) return;
     setHighScore(state.score);
-    saveLocal('reverie:game:snake:high', state.score);
   }, [state.score, highScore]);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -612,12 +788,20 @@ const EMPTY_TETRIS_STATE: TetrisState = {
   },
 };
 
-function TetrisGame() {
+function TetrisGame({
+  connected,
+  gameStateClient,
+}: Pick<MiniGamePanelProps, 'connected' | 'gameStateClient'>) {
   const engineRef = useRef<Engine | null>(null);
   const [state, setState] = useState<TetrisState>(EMPTY_TETRIS_STATE);
-  const [highScore, setHighScore] = useState(() => loadLocal(
-    'reverie:game:tetris:high', 0, (value): value is number => typeof value === 'number',
-  ));
+  const [highScore, setHighScore] = useAuthoritativeGameState(
+    gameStateClient,
+    connected,
+    'tetris-high-score',
+    'reverie:game:tetris:high',
+    () => 0,
+    isNonNegativeScore,
+  );
   const score = state.statistic.countLinesReduced * 100 + state.statistic.countShapesFalled * 4;
 
   const reset = useCallback(() => {
@@ -636,7 +820,6 @@ function TetrisGame() {
   useEffect(() => {
     if (score <= highScore) return;
     setHighScore(score);
-    saveLocal('reverie:game:tetris:high', score);
   }, [score, highScore]);
 
   const hardDrop = useCallback(() => {
@@ -699,13 +882,18 @@ function TetrisGame() {
 }
 
 export default function MiniGamePanel(props: MiniGamePanelProps) {
+  const shared = {
+    connected: props.connected,
+    gameStateClient: props.gameStateClient,
+    onInviteAI: props.onInviteAI,
+  };
   switch (props.game) {
-    case 'gomoku': return <GomokuGame connected={props.connected} onInviteAI={props.onInviteAI} />;
-    case 'chess': return <ChessGame connected={props.connected} onInviteAI={props.onInviteAI} />;
-    case 'xiangqi': return <XiangqiGame connected={props.connected} onInviteAI={props.onInviteAI} />;
-    case 'go': return <GoGame connected={props.connected} onInviteAI={props.onInviteAI} />;
-    case 'snake': return <SnakeGame />;
-    case 'tetris': return <TetrisGame />;
+    case 'gomoku': return <GomokuGame {...shared} />;
+    case 'chess': return <ChessGame {...shared} />;
+    case 'xiangqi': return <XiangqiGame {...shared} />;
+    case 'go': return <GoGame {...shared} />;
+    case 'snake': return <SnakeGame connected={props.connected} gameStateClient={props.gameStateClient} />;
+    case 'tetris': return <TetrisGame connected={props.connected} gameStateClient={props.gameStateClient} />;
     default: return null;
   }
 }

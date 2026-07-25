@@ -8,7 +8,8 @@ import {
   createDefaultArchive,
   createOnboardingPreferences,
   createWorldBookExport,
-  loadArchive,
+  clearLegacyArchiveAfterMigration,
+  loadLegacyArchiveForMigration,
   normalizeArchive,
   parseBackupImport,
   parseCharacterCardBundleImport,
@@ -19,7 +20,6 @@ import {
   parseStrictJsonText,
   parseWorldBookImport,
   parseWorldBookImportText,
-  saveArchive,
 } from '../reverieArchive';
 
 beforeEach(() => {
@@ -110,15 +110,10 @@ describe('reverieArchive', () => {
     expect(archive.activeCharacterIds).toEqual(['a', 'b']);
   });
 
-  it('falls back to a safe default when persisted archive is malformed', () => {
+  it('does not treat a malformed retired renderer archive as a fact source', () => {
     localStorage.setItem('reverie:archive:v1', '{not-json');
 
-    const archive = loadArchive();
-
-    expect(archive.characters[0].name).toBe('星野幻月');
-    expect(archive.characters[0].alternateName).toBe('Hoshino Yumetsuki');
-    expect(archive.characters[0].portraitUrl).toBe('/characters/hoshino-yumetsuki.jpg');
-    expect(archive.worldBooks[0].name).toContain('世界书');
+    expect(loadLegacyArchiveForMigration()).toBeNull();
   });
 
   it('upgrades legacy Hoshino archives to the Yumetsuki preset', () => {
@@ -154,11 +149,13 @@ describe('reverieArchive', () => {
     expect(archive.worldBooks[0].entries.some((entry) => entry.id === 'entry-yumetsuki-profile')).toBe(true);
   });
 
-  it('persists normalized archive data', () => {
+  it('reads and clears the retired archive only for one-way migration', () => {
     const archive = createDefaultArchive();
-    saveArchive(archive);
+    localStorage.setItem('reverie:archive:v1', JSON.stringify(archive));
 
-    expect(loadArchive()).toEqual(archive);
+    expect(loadLegacyArchiveForMigration()).toEqual(archive);
+    clearLegacyArchiveAfterMigration();
+    expect(loadLegacyArchiveForMigration()).toBeNull();
   });
 
   it('exports and imports character cards and world books as json envelopes', () => {

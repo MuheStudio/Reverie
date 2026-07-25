@@ -20,14 +20,20 @@ const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const { installAppProtocol } = require('./app-protocol.cjs');
-const { BridgeSupervisor } = require('./bridge-supervisor.cjs');
+const { BridgeHostProxy } = require('./bridge-host-proxy.cjs');
+const { CompanionPreferencesStore } = require('./companion-preferences.cjs');
+const { FramedBridgeSupervisor } = require('./framed-bridge-supervisor.cjs');
 const { CredentialVault } = require('./credential-vault.cjs');
 const { registerDesktopSchemes } = require('./desktop-schemes.cjs');
 const { reconcileFocusNetworkGate } = require('./focus-gate-recovery.cjs');
 const { enterLocalModeWithDegradedBridge } = require('./focus-local-mode-transition.cjs');
 const { LocalNetworkGate } = require('./local-network-gate.cjs');
 const { parseNotificationTimestamp } = require('./notification-outbox.cjs');
-const { ProviderConfigStore } = require('./provider-config-store.cjs');
+const {
+  ProviderConfigStore,
+  normalizeProviderConfig,
+  providerBinding,
+} = require('./provider-config-store.cjs');
 const {
   assertPlainObject,
   boundedString,
@@ -56,6 +62,15 @@ const FocusSoundManager = optionalExport('./focus-sound-manager.cjs', 'FocusSoun
 const installFocusSoundProtocol = optionalExport('./focus-sound-protocol.cjs', 'installFocusSoundProtocol');
 const evaluateLive2DRuntime = optionalExport('./live2d-release-gate.cjs', 'evaluateLive2DRuntime');
 const stageNativeBackupSource = optionalExport('./backup-file-stage.cjs', 'stageNativeBackupSource');
+const WindowsLocationProvider = optionalExport('./windows-location.cjs', 'WindowsLocationProvider');
+const installStickerAssetProtocol = optionalExport(
+  './sticker-asset-protocol.cjs',
+  'installStickerAssetProtocol',
+);
+const installLive2DCoreProtocol = optionalExport(
+  './live2d-core-protocol.cjs',
+  'installLive2DCoreProtocol',
+);
 
 const FRONTEND_DEV_URL = 'http://localhost:5173';
 const IS_DEV = !app.isPackaged;
@@ -87,14 +102,22 @@ let logger = null;
 let restoreConsole = null;
 let networkGate = null;
 let bridge = null;
+let bridgeHostProxy = null;
 let credentialVault = null;
+let companionPreferencesStore = null;
 let providerConfigStore = null;
 let avatarManager = null;
 let focusManager = null;
 let focusSoundManager = null;
+let windowsLocationProvider = null;
 let unregisterAvatarProtocol = null;
 let unregisterFocusSoundProtocol = null;
 let unregisterAppProtocol = null;
+let unregisterStickerAssetProtocol = null;
+let unregisterLive2DCoreProtocol = null;
+let stickerAssetsRoot = null;
+let live2dCorePath = null;
+let live2dRuntimeAvailable = false;
 let ipcRegistrar = null;
 let notificationPollTimer = null;
 let inactivityTimer = null;
@@ -104,6 +127,7 @@ let isQuitting = false;
 let screenLocked = false;
 let avatarDialogPending = false;
 let focusSoundDialogPending = false;
+let stickerDialogPending = false;
 let backupDialogPending = false;
 let jsonSaveDialogPending = false;
 let localModeTransitionPending = false;
@@ -123,10 +147,14 @@ function isRegularUnlinkedFile(filePath) {
   }
 }
 
-function probeLive2DRuntime() {
-  const corePath = IS_DEV
+function getLive2DCorePath() {
+  return IS_DEV
     ? process.env.REVERIE_LIVE2D_CORE_PATH
     : path.join(process.resourcesPath, 'Live2DCubismCore.js');
+}
+
+function probeLive2DRuntime() {
+  const corePath = getLive2DCorePath();
   let rendererAvailable = false;
   try {
     require.resolve('pixi-live2d-display/cubism4', {
@@ -141,11 +169,22 @@ function probeLive2DRuntime() {
 }
 
 function getPythonCommand() {
-  const executable = process.platform === 'win32' ? 'python.exe' : 'python';
-  const scriptsDir = process.platform === 'win32' ? 'Scripts' : 'bin';
-  const bundled = path.join(getRuntimeRoot(), 'venv', scriptsDir, executable);
-  if (fs.existsSync(bundled)) return bundled;
-  if (!IS_DEV) throw new Error('Bundled Python runtime is missing');
+  if (!IS_DEV) {
+    const bundled = path.join(
+      getRuntimeRoot(),
+      'python',
+      process.platform === 'win32' ? 'python.exe' : 'python',
+    );
+    if (isRegularUnlinkedFile(bundled)) return bundled;
+    throw new Error('Verified bundled Python runtime is missing');
+  }
+  const developmentRuntime = path.join(
+    getRuntimeRoot(),
+    'venv',
+    process.platform === 'win32' ? 'Scripts' : 'bin',
+    process.platform === 'win32' ? 'python.exe' : 'python',
+  );
+  if (isRegularUnlinkedFile(developmentRuntime)) return developmentRuntime;
   return process.platform === 'win32' ? 'python' : 'python3';
 }
 
@@ -213,8 +252,9 @@ function publicCredentialStatus(extra = {}) {
   const status = credentialVault
     ? credentialVault.status()
     : {
-        available: false,
-        corrupted: false,
+      available: false,
+      persistentAvailable: false,
+      corrupted: false,
         llm: { hasApiKey: false, hasCustomHeaders: false },
         imageGen: { hasApiKey: false, hasCustomHeaders: false },
       };
@@ -234,6 +274,43 @@ function hasStoredCredentials(status) {
     || status?.imageGen?.hasApiKey
     || status?.imageGen?.hasCustomHeaders,
   );
+}
+
+function rendererProviderName(value) {
+  return {
+    glm: 'z.ai',
+  }[String(value || '').toLowerCase()] || String(value || '').toLowerCase();
+}
+
+function publicProviderFromRuntime(llm) {
+  return {
+    provider: rendererProviderName(llm.provider),
+    baseUrl: String(llm.baseUrl || ''),
+    model: String(llm.model || ''),
+  };
+}
+
+function readImageProviderCache() {
+  try {
+    return providerConfigStore?.get()?.imageGen || null;
+  } catch (error) {
+    console.error('[Electron] Image provider recovery cache is unavailable', error);
+    return null;
+  }
+}
+
+async function authoritativeProviderConfig() {
+  if (!bridge?.ready) {
+    const error = new Error('The Python settings authority is not ready');
+    error.code = 'REVERIE_BRIDGE_NOT_READY';
+    throw error;
+  }
+  const llm = publicProviderFromRuntime(await bridge.getProviderConfig());
+  const imageGen = readImageProviderCache();
+  return {
+    llm,
+    ...(imageGen ? { imageGen } : {}),
+  };
 }
 
 async function syncCredentialVault(options = {}) {
@@ -257,14 +334,36 @@ async function syncCredentialVault(options = {}) {
       runtimeAppliedScopes: { llm: false, imageGen: false },
     });
   }
-  const runtimeCredentials = credentialVault.readForRuntime();
+  const providers = await authoritativeProviderConfig();
+  const bindings = {
+    llm: providerBinding('llm', providers),
+    ...(providers.imageGen
+      ? { imageGen: providerBinding('imageGen', providers) }
+      : {}),
+  };
+  const runtimeCredentials = credentialVault.readForRuntime({ bindings });
   for (const scope of options.clearScopes || []) runtimeCredentials[scope] = null;
   const result = await bridge.setCredentials(runtimeCredentials);
+  const bindingMismatch = {
+    llm: Boolean(
+      (status.llm.hasApiKey || status.llm.hasCustomHeaders)
+      && !runtimeCredentials.llm,
+    ),
+    imageGen: Boolean(
+      (status.imageGen.hasApiKey || status.imageGen.hasCustomHeaders)
+      && !runtimeCredentials.imageGen,
+    ),
+  };
+  const applied = {
+    llm: result.applied.llm === true && !bindingMismatch.llm,
+    imageGen: result.applied.imageGen === true && !bindingMismatch.imageGen,
+  };
   return broadcastCredentialStatus({
     stored: hasStoredCredentials(status),
-    runtimeApplied: Object.values(result.applied).every((applied) => applied === true),
+    runtimeApplied: Object.values(applied).every((value) => value === true),
     runtimePending: false,
-    runtimeAppliedScopes: result.applied,
+    runtimeAppliedScopes: applied,
+    bindingMismatch,
   });
 }
 
@@ -411,9 +510,7 @@ function spawnBridgeChild(context) {
   const command = getPythonCommand();
   const args = [
     path.join(getRuntimeRoot(), 'src', 'main.py'),
-    '--bridge',
-    '--host=127.0.0.1',
-    '--port=0',
+    '--stdio-bridge',
   ];
   logger?.addSecret(context.secret);
   return spawn(command, args, {
@@ -423,8 +520,9 @@ function spawnBridgeChild(context) {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONUNBUFFERED: '1',
+      PYTHONDONTWRITEBYTECODE: '1',
       REVERIE_BRIDGE_MODE: '1',
-      REVERIE_BRIDGE_PROTOCOL_VERSION: '2',
+      REVERIE_BRIDGE_PROTOCOL_VERSION: '3',
       REVERIE_BRIDGE_SECRET: context.secret,
       REVERIE_PARENT_PID: String(process.pid),
       REVERIE_DATA_DIR: dataDir,
@@ -459,6 +557,7 @@ function startBridge() {
   }
   promise.then(async () => {
     backendRestartAttempts = 0;
+    await bridgeHostProxy.connect();
     try {
       await syncCredentialVault();
     } catch (error) {
@@ -466,10 +565,16 @@ function startBridge() {
       broadcastCredentialStatus({ runtimeApplied: false });
     }
     broadcast('bridge:changed', { ready: true, generation: bridge.generation });
-  }).catch((error) => scheduleBridgeRestart(error));
+  }).catch(async (error) => {
+    try {
+      await bridge.stopAndWait('SIGKILL');
+    } catch {}
+    scheduleBridgeRestart(error);
+  });
 }
 
 async function killBridgeFailClosed() {
+  bridgeHostProxy?.disconnect();
   await bridge?.stopAndWait('SIGKILL');
   broadcast('bridge:changed', { ready: false });
 }
@@ -596,6 +701,7 @@ async function setManualLocalMode(enabled) {
 
 function createRuntimeModules() {
   const runtimeDir = path.join(app.getPath('userData'), 'runtime');
+  stickerAssetsRoot = path.join(prepareWritableDataDir(), 'stickers', 'assets');
   networkGate = new LocalNetworkGate({ storageDir: path.join(runtimeDir, 'network') });
   networkGate.install(session.defaultSession);
   networkGate.installNodeGuards();
@@ -606,13 +712,33 @@ function createRuntimeModules() {
   providerConfigStore = new ProviderConfigStore({
     storageDir: path.join(runtimeDir, 'provider-config'),
   });
+  companionPreferencesStore = new CompanionPreferencesStore({
+    storageDir: path.join(runtimeDir, 'companion-preferences'),
+  });
+  if (WindowsLocationProvider) {
+    try {
+      windowsLocationProvider = new WindowsLocationProvider();
+    } catch (error) {
+      windowsLocationProvider = null;
+      console.error('[Electron] Windows location module initialization failed', error);
+    }
+  }
 
-  bridge = new BridgeSupervisor({ spawnChild: spawnBridgeChild });
+  bridge = new FramedBridgeSupervisor({ spawnChild: spawnBridgeChild });
+  bridgeHostProxy = new BridgeHostProxy({ supervisor: bridge, broadcast });
+  bridgeHostProxy.on('disconnect', (error) => {
+    if (isQuitting) return;
+    console.error('[Electron] Host-owned bridge transport disconnected', error);
+    void bridge.stopAndWait('SIGKILL').catch((stopError) => {
+      console.error('[Electron] Failed to stop disconnected bridge', stopError);
+    });
+  });
   bridge.on('log', ({ stream, line }) => {
     if (stream === 'stderr') console.warn('[Python]', line);
     else console.log('[Python]', line);
   });
   bridge.on('exit', (error) => {
+    bridgeHostProxy?.disconnect();
     broadcast('bridge:changed', { ready: false });
     scheduleBridgeRestart(error);
   });
@@ -639,10 +765,24 @@ function createRuntimeModules() {
             licenseAccepted: false,
             reason: 'Live2D release gate module is unavailable',
           };
+      live2dCorePath = getLive2DCorePath();
+      live2dRuntimeAvailable = live2dRuntime.available === true;
       avatarManager = new AvatarManager({
         storageDir: path.join(app.getPath('userData'), 'avatars'),
         live2dRuntime,
       });
+      if (IS_DEV && live2dRuntime.developmentOnly && live2dRuntime.available) {
+        const yumiSource = path.resolve(
+          process.env.REVERIE_YUMI_SOURCE
+            || path.join(getRuntimeRoot(), '..', '..', '皮套-yumi'),
+        );
+        if (fs.existsSync(yumiSource) && avatarManager.list().records.length === 0) {
+          avatarManager.installTrustedDefaultDirectory(yumiSource, {
+            name: 'Yumi',
+            trustedOwnerAsset: true,
+          });
+        }
+      }
     } catch (error) {
       avatarManager = null;
       console.error('[Electron] Avatar module initialization failed', error);
@@ -976,12 +1116,101 @@ async function saveRendererJson(input) {
   }
 }
 
+async function configureAuthoritativeProvider(input) {
+  const normalized = normalizeProviderConfig(input);
+  if (!bridge?.ready) {
+    if (!bridge?.child) startBridge();
+    const error = new Error('The Python settings authority is starting; retry after it connects');
+    error.code = 'REVERIE_BRIDGE_NOT_READY';
+    throw error;
+  }
+  const configured = await bridge.configureProvider({
+    provider: normalized.llm.provider,
+    model: normalized.llm.model,
+    base_url: normalized.llm.baseUrl,
+    ...(normalized.llm.customProviderName
+      ? { custom_provider_name: normalized.llm.customProviderName }
+      : {}),
+  });
+  const llm = publicProviderFromRuntime(configured);
+  const committed = {
+    llm: {
+      ...llm,
+      ...(normalized.llm.customProviderName
+        ? { customProviderName: normalized.llm.customProviderName }
+        : {}),
+    },
+    ...(normalized.imageGen ? { imageGen: normalized.imageGen } : {}),
+  };
+  try {
+    // Recovery/migration cache only. Reads shown to the renderer always come
+    // from Python's provider:get control.
+    providerConfigStore.set(committed);
+  } catch (error) {
+    console.error('[Electron] Provider recovery cache write failed', error);
+  }
+  return committed;
+}
+
+async function commitProviderConfiguration(input = {}) {
+  assertPlainObject(input, 'provider configuration commit');
+  const committed = await configureAuthoritativeProvider(input.config);
+  const credential = input.credential;
+  const mode = input.mode === 'session' ? 'session' : 'persistent';
+  let writeError = null;
+  if (credential != null) {
+    assertPlainObject(credential, 'provider credential');
+    const hasCredential = Boolean(credential.apiKey || credential.customHeaders);
+    if (hasCredential) {
+      const binding = providerBinding('llm', committed);
+      try {
+        if (mode === 'session') {
+          credentialVault.setSession('llm', credential, { binding });
+        } else {
+          credentialVault.set('llm', credential, { binding });
+        }
+      } catch (error) {
+        const code = String(error?.code || '');
+        if (!code.startsWith('REVERIE_')) throw error;
+        console.error('[Electron] Endpoint-bound credential write failed', code);
+        writeError = {
+          code,
+          message: 'Windows 安全存储未完成写入；供应商已切换，但未绑定任何旧密钥。',
+        };
+      }
+    }
+  }
+  let status;
+  try {
+    status = await syncCredentialVault();
+  } catch (error) {
+    console.error('[Electron] Provider commit runtime synchronization failed', error);
+    status = broadcastCredentialStatus({
+      stored: hasStoredCredentials(publicCredentialStatus()),
+      runtimeApplied: false,
+      runtimePending: true,
+      runtimeAppliedScopes: { llm: false, imageGen: false },
+    });
+  }
+  return {
+    config: committed,
+    status: {
+      ...status,
+      ...(writeError ? { writeError } : {}),
+      ...(mode === 'session' && !writeError
+        ? { sessionWarning: '凭据仅保存在本次运行的内存中，退出 Reverie 后会消失。' }
+        : {}),
+    },
+  };
+}
+
 function registerIpcHandlers() {
   if (ipcRegistrar) return;
   ipcRegistrar = createSecureIpcRegistrar(ipcMain, () => mainWindow, trustPolicy);
   const { handle } = ipcRegistrar;
 
-  handle('bridge:getConnectionConfig', () => bridge.getConnectionConfig());
+  handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
+  handle('bridge:send', (_event, frame) => bridgeHostProxy.sendFromRenderer(frame));
   handle('app:getVersion', () => app.getVersion());
   handle('localMode:get', () => publicLocalModeState());
   handle('localMode:set', async (_event, input = {}) => {
@@ -990,6 +1219,11 @@ function registerIpcHandlers() {
     return setManualLocalMode(input.enabled);
   });
   handle('credentials:status', () => publicCredentialStatus());
+  handle('companionPreferences:get', () => companionPreferencesStore.get());
+  handle('companionPreferences:set', (_event, input = {}) => {
+    assertPlainObject(input, 'companion preferences');
+    return companionPreferencesStore.set(input);
+  });
   handle('credentials:set', async (_event, input = {}) => {
     assertPlainObject(input, 'credentials');
     const scope = boundedString(input.scope, {
@@ -998,7 +1232,35 @@ function registerIpcHandlers() {
       max: 16,
     });
     assertPlainObject(input.value, 'credential value');
-    credentialVault.set(scope, input.value);
+    if (scope === 'llm') {
+      return broadcastCredentialStatus({
+        runtimeApplied: false,
+        runtimePending: false,
+        writeError: {
+          code: 'REVERIE_PROVIDER_COMMIT_REQUIRED',
+          message: '模型凭据必须与供应商端点一起保存，未执行独立写入。',
+        },
+      });
+    }
+    try {
+      const cached = providerConfigStore.get();
+      credentialVault.set(scope, input.value, {
+        binding: providerBinding(scope, cached),
+      });
+    } catch (error) {
+      const code = String(error?.code || '');
+      if (!code.startsWith('REVERIE_')) throw error;
+      console.error('[Electron] Persistent credential write failed', code);
+      return broadcastCredentialStatus({
+        stored: hasStoredCredentials(publicCredentialStatus()),
+        runtimeApplied: false,
+        runtimePending: false,
+        writeError: {
+          code,
+          message: 'Windows 安全存储未完成写入；原有密钥未被覆盖。',
+        },
+      });
+    }
     try {
       return await syncCredentialVault();
     } catch (error) {
@@ -1014,6 +1276,45 @@ function registerIpcHandlers() {
         runtimeApplied: false,
         runtimePending: true,
         runtimeAppliedScopes: { llm: false, imageGen: false },
+      });
+    }
+  });
+  handle('credentials:setSession', async (_event, input = {}) => {
+    assertPlainObject(input, 'session credentials');
+    const scope = boundedString(input.scope, {
+      label: 'credential scope',
+      min: 1,
+      max: 16,
+    });
+    assertPlainObject(input.value, 'credential value');
+    if (scope === 'llm') {
+      return broadcastCredentialStatus({
+        runtimeApplied: false,
+        runtimePending: false,
+        writeError: {
+          code: 'REVERIE_PROVIDER_COMMIT_REQUIRED',
+          message: '模型凭据必须与供应商端点一起保存，未执行独立写入。',
+        },
+      });
+    }
+    const cached = providerConfigStore.get();
+    credentialVault.setSession(scope, input.value, {
+      binding: providerBinding(scope, cached),
+    });
+    try {
+      const status = await syncCredentialVault();
+      return {
+        ...status,
+        sessionWarning: '凭据仅保存在本次运行的内存中，退出 Reverie 后会消失。',
+      };
+    } catch (error) {
+      console.error('[Electron] Session credential runtime synchronization failed', error);
+      if (!bridge?.child) startBridge();
+      return broadcastCredentialStatus({
+        stored: hasStoredCredentials(publicCredentialStatus()),
+        runtimeApplied: false,
+        runtimePending: true,
+        sessionWarning: '凭据仅保存在本次运行的内存中，退出 Reverie 后会消失。',
       });
     }
   });
@@ -1039,8 +1340,13 @@ function registerIpcHandlers() {
       });
     }
   });
-  handle('providerConfig:get', () => providerConfigStore.get());
-  handle('providerConfig:set', (_event, input) => providerConfigStore.set(input));
+  handle('providerConfig:get', () => authoritativeProviderConfig());
+  handle('providerConfig:set', async (_event, input) => {
+    const config = await configureAuthoritativeProvider(input);
+    await syncCredentialVault();
+    return config;
+  });
+  handle('providerConfig:commit', (_event, input) => commitProviderConfiguration(input));
   handle('backup:exportNative', () => exportNativeBackup());
   handle('backup:importNative', () => importNativeBackup());
   handle('file:saveJson', (_event, input) => saveRendererJson(input));
@@ -1069,6 +1375,17 @@ function registerIpcHandlers() {
     await shell.openExternal('ms-settings:privacy-location', { activate: true });
     return { opened: true };
   });
+  handle('location:getCurrent', async () => {
+    if (!windowsLocationProvider) {
+      return {
+        ok: false,
+        code: 'REVERIE_LOCATION_DEVICE_UNAVAILABLE',
+        status: 'ModuleUnavailable',
+        source: 'windows-winrt',
+      };
+    }
+    return windowsLocationProvider.requestCurrent();
+  });
   handle('shell:openExternal', async (_event, input) => {
     const value = boundedString(input, { label: 'URL', min: 1, max: 2048 });
     const url = new URL(value);
@@ -1093,6 +1410,53 @@ function registerIpcHandlers() {
           },
         },
       });
+
+  handle('sticker:importFile', async (_event, input = {}) => {
+    assertPlainObject(input, 'sticker import');
+    if (stickerDialogPending) {
+      const error = new Error('A sticker import is already in progress');
+      error.code = 'REVERIE_OPERATION_IN_PROGRESS';
+      throw error;
+    }
+    const text = typeof input.text === 'string' ? input.text.trim().slice(0, 120) : '';
+    const normalizeTags = (value) => Array.isArray(value)
+      ? value
+          .filter((item) => typeof item === 'string')
+          .map((item) => item.trim().slice(0, 32))
+          .filter(Boolean)
+          .slice(0, 12)
+      : [];
+    stickerDialogPending = true;
+    try {
+      const selected = await dialog.showOpenDialog(mainWindow, {
+        title: '导入本地表情',
+        properties: ['openFile', 'dontAddToRecent'],
+        filters: [
+          { name: '图片与 GIF', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] },
+        ],
+      });
+      if (selected.canceled || selected.filePaths.length !== 1) {
+        return { canceled: true, item: null, items: [] };
+      }
+      const source = path.resolve(selected.filePaths[0]);
+      const stat = fs.lstatSync(source);
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.size < 16 || stat.size > 5_000_000) {
+        throw new Error('Sticker file is not a safe regular image under 5 MB');
+      }
+      const result = await bridge.importStickerFile(source, {
+        text,
+        emotions: normalizeTags(input.emotions),
+        styleTags: normalizeTags(input.styleTags),
+      });
+      return {
+        canceled: false,
+        fileName: path.basename(source),
+        ...result,
+      };
+    } finally {
+      stickerDialogPending = false;
+    }
+  });
   handle('avatar:beginImport', async () => {
     if (!avatarManager) {
       const error = new Error('Avatar module is unavailable');
@@ -1486,10 +1850,22 @@ if (hasSingleInstanceLock) {
         allowedOrigins: [IS_DEV ? new URL(FRONTEND_DEV_URL).origin : 'reverie-app://app'],
       });
     }
+    if (live2dRuntimeAvailable && live2dCorePath && installLive2DCoreProtocol) {
+      unregisterLive2DCoreProtocol = installLive2DCoreProtocol(protocol, live2dCorePath);
+    }
     if (focusSoundManager && installFocusSoundProtocol) {
       unregisterFocusSoundProtocol = installFocusSoundProtocol(protocol, focusSoundManager, {
         allowedOrigins: [IS_DEV ? new URL(FRONTEND_DEV_URL).origin : 'reverie-app://app'],
       });
+    }
+    if (installStickerAssetProtocol && stickerAssetsRoot) {
+      unregisterStickerAssetProtocol = installStickerAssetProtocol(
+        protocol,
+        stickerAssetsRoot,
+        {
+          allowedOrigins: [IS_DEV ? new URL(FRONTEND_DEV_URL).origin : 'reverie-app://app'],
+        },
+      );
     }
     registerIpcHandlers();
     createWindow();
@@ -1529,6 +1905,7 @@ app.on('before-quit', (event) => {
     ipcRegistrar?.dispose();
     ipcRegistrar = null;
     focusManager?.dispose();
+    bridgeHostProxy?.disconnect();
     try {
       await bridge?.stopAndWait('SIGTERM', 5000);
     } catch (error) {
@@ -1543,6 +1920,10 @@ app.on('before-quit', (event) => {
     unregisterFocusSoundProtocol = null;
     unregisterAppProtocol?.();
     unregisterAppProtocol = null;
+    unregisterStickerAssetProtocol?.();
+    unregisterStickerAssetProtocol = null;
+    unregisterLive2DCoreProtocol?.();
+    unregisterLive2DCoreProtocol = null;
     tray?.destroy();
     tray = null;
     restoreConsole?.();

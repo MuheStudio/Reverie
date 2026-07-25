@@ -8,6 +8,57 @@
  * 适配修改: Muhe Studio 2026
  */
 import { useRef, useEffect, useCallback, useState } from 'react';
+import { Application, Ticker } from 'pixi.js';
+
+const LIVE2D_CORE_URL = 'reverie-live2d-core://runtime/core.js';
+let coreLoadPromise: Promise<void> | null = null;
+let live2DModulePromise: Promise<typeof import('pixi-live2d-display/cubism4')> | null = null;
+
+function ensureLive2DCore(): Promise<void> {
+  const runtime = window as Window & { Live2DCubismCore?: unknown };
+  if (runtime.Live2DCubismCore) return Promise.resolve();
+  if (coreLoadPromise) return coreLoadPromise;
+  coreLoadPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      `script[src="${LIVE2D_CORE_URL}"]`,
+    );
+    const script = existing ?? document.createElement('script');
+    const timer = window.setTimeout(() => {
+      coreLoadPromise = null;
+      reject(new Error('Live2D Cubism Core load timed out'));
+    }, 10_000);
+    const finish = () => {
+      window.clearTimeout(timer);
+      if (runtime.Live2DCubismCore) {
+        resolve();
+      } else {
+        coreLoadPromise = null;
+        reject(new Error('Live2D Cubism Core did not initialize'));
+      }
+    };
+    script.addEventListener('load', finish, { once: true });
+    script.addEventListener('error', () => {
+      window.clearTimeout(timer);
+      coreLoadPromise = null;
+      reject(new Error('Live2D Cubism Core is unavailable'));
+    }, { once: true });
+    if (!existing) {
+      script.src = LIVE2D_CORE_URL;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  });
+  return coreLoadPromise;
+}
+
+async function loadLive2DRuntime(): Promise<typeof import('pixi-live2d-display/cubism4')> {
+  await ensureLive2DCore();
+  live2DModulePromise ??= import('pixi-live2d-display/cubism4').catch((error) => {
+    live2DModulePromise = null;
+    throw error;
+  });
+  return live2DModulePromise;
+}
 
 // ── 类型定义 ──────────────────────────────────────────
 
@@ -57,24 +108,14 @@ class Live2DRenderer {
     this.suspended = false;
 
     try {
-      // 动态导入 PixiJS + Live2D（可选依赖，变量路径绕过 Rollup 静态分析）
-      const pixiApp = '@pixi/app';
-      const pixiExt = '@pixi/extensions';
-      const pixiTicker = '@pixi/ticker';
-      const live2dMod = 'pixi-live2d-display/cubism4';
-      const [{ Application }, { extensions }, { Ticker, TickerPlugin }, { Live2DModel }] =
-        await Promise.all([
-          import(/* @vite-ignore */ pixiApp),
-          import(/* @vite-ignore */ pixiExt),
-          import(/* @vite-ignore */ pixiTicker),
-          import(/* @vite-ignore */ live2dMod),
-        ]);
-
+      if (this.destroyed || token !== this.lifecycleToken) {
+        throw new Error('Live2D initialization was cancelled');
+      }
+      const { Live2DModel } = await loadLive2DRuntime();
       if (this.destroyed || token !== this.lifecycleToken) {
         throw new Error('Live2D initialization was cancelled');
       }
       Live2DModel.registerTicker(Ticker);
-      extensions.add(TickerPlugin);
 
       const res = this.config.resolution!;
       const app = new Application({
@@ -123,20 +164,23 @@ class Live2DRenderer {
     const token = ++this.modelToken;
     if (!this.app || this.destroyed || this.suspended) return false;
     this.destroyModel();
-    const live2dMod = 'pixi-live2d-display/cubism4';
-    const { Live2DModel, Live2DFactory } = await import(/* @vite-ignore */ live2dMod);
-    const model = new Live2DModel();
+    const { Live2DModel } = await loadLive2DRuntime();
+    const model = await Live2DModel.from(options.url, {
+      autoInteract: options.autoInteract ?? false,
+    });
     try {
-      await Live2DFactory.setupLive2DModel(
-        model,
-        { url: options.url, id: options.modelId },
-        { autoInteract: options.autoInteract ?? false }
-      );
       if (this.destroyed || this.suspended || token !== this.modelToken || !this.app) {
         this.destroyDetachedModel(model);
         return false;
       }
       this.model = model;
+      model.anchor.set(0.5, 0.5);
+      const fit = Math.min(
+        this.config.width / Math.max(1, model.width),
+        this.config.height / Math.max(1, model.height),
+      ) * 0.92;
+      model.scale.set(fit);
+      model.position.set(this.config.width / 2, this.config.height / 2);
       this.app.stage.addChild(model);
       return true;
     } catch (error) {
@@ -187,11 +231,7 @@ class Live2DRenderer {
   }
 
   setExpression(expression: string): void {
-    if (this.model?.internalModel?.motionManager) {
-      try {
-        this.model.internalModel.motionManager.expression = expression;
-      } catch {}
-    }
+    try { void this.model?.expression?.(expression); } catch {}
   }
 
   setMouthOpen(ratio: number): void {
@@ -209,6 +249,7 @@ class Live2DRenderer {
       const res = this.config.resolution!;
       this.app.renderer.resize(width * res, height * res);
       this.app.stage.scale.set(res);
+      this.model?.position?.set(width / 2, height / 2);
     }
   }
 
@@ -347,17 +388,27 @@ export function Live2DCanvas({
   expression = 'neutral',
   speaking = false,
   className,
+  onStateChange,
 }: {
   config: Live2DConfig;
   modelUrl?: string;
   expression?: string;
   speaking?: boolean;
   className?: string;
+  onStateChange?: (state: Live2DState, error: string | null) => void;
 }) {
   const { containerRef, state, error, loadModel, setExpression, setSpeaking } = useLive2D(config);
   const loadedModelUrlRef = useRef('');
   const loadingModelUrlRef = useRef('');
   const failedModelUrlRef = useRef('');
+  const [modelReadyUrl, setModelReadyUrl] = useState('');
+
+  useEffect(() => {
+    const publicState = state === 'mounted' && modelUrl && modelReadyUrl !== modelUrl
+      ? 'loading'
+      : state;
+    onStateChange?.(publicState, error);
+  }, [error, modelReadyUrl, modelUrl, onStateChange, state]);
 
   useEffect(() => {
     if (
@@ -371,8 +422,10 @@ export function Live2DCanvas({
       void loadModel({ url: modelUrl }).then((loaded) => {
         if (loaded) {
           loadedModelUrlRef.current = modelUrl;
+          setModelReadyUrl(modelUrl);
           failedModelUrlRef.current = '';
         } else {
+          setModelReadyUrl('');
           failedModelUrlRef.current = modelUrl;
         }
         if (loadingModelUrlRef.current === modelUrl) loadingModelUrlRef.current = '';
@@ -389,9 +442,9 @@ export function Live2DCanvas({
   }, [speaking, setSpeaking]);
 
   return (
-    <div className={className} style={{ position: 'relative', width: config.width, height: config.height }}>
+    <div className={className} style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
-      {state === 'loading' && (
+      {(state === 'loading' || (modelUrl && modelReadyUrl !== modelUrl && state !== 'error')) && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>
           Loading model...
         </div>

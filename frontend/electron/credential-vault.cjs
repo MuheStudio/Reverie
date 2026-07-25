@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VAULT_SCHEMA = 'reverie.credential-vault.v1';
+const VAULT_SCHEMA = 'reverie.credential-vault.v2';
+const LEGACY_VAULT_SCHEMA = 'reverie.credential-vault.v1';
 const MAX_SECRET_LENGTH = 16 * 1024;
 const MAX_VAULT_BYTES = 256 * 1024;
 const SCOPES = new Set(['llm', 'imageGen']);
@@ -50,6 +51,14 @@ function validateScope(scope) {
   return scope;
 }
 
+function normalizeBinding(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/i.test(value)) {
+    throw new TypeError('credential binding is invalid');
+  }
+  return value.toLowerCase();
+}
+
 class CredentialVault {
   constructor(options = {}) {
     if (!options.storageDir) throw new TypeError('CredentialVault requires storageDir');
@@ -59,6 +68,9 @@ class CredentialVault {
     this.safeStorage = options.safeStorage;
     this.fs = options.fs || fs;
     this.corrupted = false;
+    this.sessionCredentials = this._empty().credentials;
+    this.sessionBindings = this._empty().bindings;
+    this.lastErrorCode = '';
   }
 
   isAvailable() {
@@ -83,6 +95,10 @@ class CredentialVault {
       credentials: {
         llm: {},
         imageGen: {},
+      },
+      bindings: {
+        llm: null,
+        imageGen: null,
       },
     };
   }
@@ -113,13 +129,16 @@ class CredentialVault {
     try {
       const plaintext = this.safeStorage.decryptString(encrypted);
       const value = JSON.parse(plaintext);
-      if (value?.schema !== VAULT_SCHEMA || !value.credentials
+      if (![VAULT_SCHEMA, LEGACY_VAULT_SCHEMA].includes(value?.schema) || !value.credentials
         || typeof value.credentials !== 'object' || Array.isArray(value.credentials)) {
         throw new Error('invalid schema');
       }
       const result = this._empty();
       for (const scope of SCOPES) {
         result.credentials[scope] = normalizeSecretRecord(value.credentials[scope] || {});
+        result.bindings[scope] = value.schema === VAULT_SCHEMA
+          ? normalizeBinding(value.bindings?.[scope])
+          : null;
       }
       this.corrupted = false;
       return result;
@@ -135,35 +154,84 @@ class CredentialVault {
   _write(value) {
     this._requireAvailable();
     const plaintext = JSON.stringify(value);
-    const encrypted = this.safeStorage.encryptString(plaintext);
+    let encrypted;
+    try {
+      encrypted = this.safeStorage.encryptString(plaintext);
+    } catch (error) {
+      this.lastErrorCode = 'REVERIE_OS_ENCRYPTION_FAILED';
+      throw vaultError(
+        'Windows could not encrypt the credential; the previous credential was preserved',
+        'REVERIE_OS_ENCRYPTION_FAILED',
+      );
+    }
     if (!Buffer.isBuffer(encrypted) || encrypted.length < 1) {
-      throw vaultError('Operating-system encryption returned no ciphertext');
+      this.lastErrorCode = 'REVERIE_OS_ENCRYPTION_FAILED';
+      throw vaultError(
+        'Operating-system encryption returned no ciphertext',
+        'REVERIE_OS_ENCRYPTION_FAILED',
+      );
+    }
+    try {
+      const verified = JSON.parse(this.safeStorage.decryptString(encrypted));
+      if (verified?.schema !== VAULT_SCHEMA) throw new Error('schema mismatch');
+    } catch {
+      this.lastErrorCode = 'REVERIE_OS_ENCRYPTION_VERIFY_FAILED';
+      throw vaultError(
+        'Windows encrypted credential verification failed; nothing was replaced',
+        'REVERIE_OS_ENCRYPTION_VERIFY_FAILED',
+      );
     }
     this.fs.mkdirSync(this.storageDir, { recursive: true });
     const temporary = path.join(
       this.storageDir,
       `.credentials.${process.pid}.${crypto.randomBytes(12).toString('hex')}.tmp`,
     );
+    const backup = path.join(
+      this.storageDir,
+      `.credentials.${process.pid}.${crypto.randomBytes(12).toString('hex')}.backup`,
+    );
     let fd;
+    let previousMoved = false;
     try {
       fd = this.fs.openSync(temporary, 'wx', 0o600);
       this.fs.writeFileSync(fd, encrypted);
       this.fs.fsyncSync(fd);
       this.fs.closeSync(fd);
       fd = undefined;
+      if (this.fs.existsSync(this.vaultPath)) {
+        this.fs.renameSync(this.vaultPath, backup);
+        previousMoved = true;
+      }
       this.fs.renameSync(temporary, this.vaultPath);
+      try {
+        const committed = this.fs.readFileSync(this.vaultPath);
+        const verified = JSON.parse(this.safeStorage.decryptString(committed));
+        if (verified?.schema !== VAULT_SCHEMA) throw new Error('schema mismatch');
+      } catch {
+        throw vaultError(
+          'Committed credential verification failed',
+          'REVERIE_OS_ENCRYPTION_VERIFY_FAILED',
+        );
+      }
+      if (previousMoved) this.fs.unlinkSync(backup);
       this.corrupted = false;
+      this.lastErrorCode = '';
     } catch (error) {
       if (fd !== undefined) {
         try { this.fs.closeSync(fd); } catch {}
       }
       try { this.fs.unlinkSync(temporary); } catch {}
+      if (previousMoved) {
+        try { this.fs.unlinkSync(this.vaultPath); } catch {}
+        try { this.fs.renameSync(backup, this.vaultPath); } catch {}
+      }
       if (String(error?.code || '').startsWith('REVERIE_')) throw error;
+      this.lastErrorCode = 'REVERIE_VAULT_IO';
       throw vaultError('The encrypted credential vault could not be committed', 'REVERIE_VAULT_IO');
     }
   }
 
-  set(scope, value) {
+  set(scope, value, options = {}) {
     validateScope(scope);
     const normalized = normalizeSecretRecord(value);
     if (Object.keys(normalized).length === 0) {
@@ -174,12 +242,33 @@ class CredentialVault {
       ...vault.credentials[scope],
       ...normalized,
     };
+    if ('binding' in options) {
+      vault.bindings[scope] = normalizeBinding(options.binding);
+    }
     this._write(vault);
+    return this.status();
+  }
+
+  setSession(scope, value, options = {}) {
+    validateScope(scope);
+    const normalized = normalizeSecretRecord(value);
+    if (Object.keys(normalized).length === 0) {
+      throw new TypeError('at least one credential value is required');
+    }
+    this.sessionCredentials[scope] = {
+      ...this.sessionCredentials[scope],
+      ...normalized,
+    };
+    if ('binding' in options) {
+      this.sessionBindings[scope] = normalizeBinding(options.binding);
+    }
     return this.status();
   }
 
   clear(scope) {
     validateScope(scope);
+    this.sessionCredentials[scope] = {};
+    this.sessionBindings[scope] = null;
     let vault;
     let recoveredCorruptVault = false;
     try {
@@ -192,6 +281,7 @@ class CredentialVault {
       recoveredCorruptVault = true;
     }
     vault.credentials[scope] = {};
+    vault.bindings[scope] = null;
     this._write(vault);
     return { ...this.status(), recoveredCorruptVault };
   }
@@ -200,48 +290,90 @@ class CredentialVault {
    * Main-process-only runtime material. Never expose this return value through
    * contextBridge or IPC responses.
    */
-  readForRuntime() {
-    const vault = this._read();
+  readForRuntime(options = {}) {
+    let vault = this._empty();
+    try {
+      vault = this._read();
+    } catch (error) {
+      if (!Object.values(this.sessionCredentials).some(
+        (record) => Object.keys(record).length > 0,
+      )) throw error;
+    }
     const result = {};
     for (const scope of SCOPES) {
-      if (Object.keys(vault.credentials[scope]).length > 0) {
-        result[scope] = { ...vault.credentials[scope] };
+      const expectedBinding = normalizeBinding(options.bindings?.[scope]);
+      const persistentMatches = !expectedBinding
+        || vault.bindings[scope] === expectedBinding;
+      const sessionMatches = !expectedBinding
+        || this.sessionBindings[scope] === expectedBinding;
+      const merged = {
+        ...(persistentMatches ? vault.credentials[scope] : {}),
+        ...(sessionMatches ? this.sessionCredentials[scope] : {}),
+      };
+      if (Object.keys(merged).length > 0) {
+        result[scope] = merged;
       }
     }
     return result;
   }
 
   status() {
-    const available = this.isAvailable();
-    if (!available) {
+    const persistentAvailable = this.isAvailable();
+    if (!persistentAvailable) {
+      const sessionScope = (scope) => ({
+        hasApiKey: Boolean(this.sessionCredentials[scope]?.apiKey),
+        hasCustomHeaders: Boolean(this.sessionCredentials[scope]?.customHeaders),
+        sessionOnly: Object.keys(this.sessionCredentials[scope] || {}).length > 0,
+        bindingKnown: Boolean(this.sessionBindings[scope]),
+      });
       return {
-        available: false,
+        available: Object.values(this.sessionCredentials).some(
+          (record) => Object.keys(record).length > 0,
+        ),
+        persistentAvailable: false,
         corrupted: this.corrupted,
-        llm: { hasApiKey: false, hasCustomHeaders: false },
-        imageGen: { hasApiKey: false, hasCustomHeaders: false },
+        lastErrorCode: this.lastErrorCode || 'REVERIE_SECURE_STORAGE_UNAVAILABLE',
+        llm: sessionScope('llm'),
+        imageGen: sessionScope('imageGen'),
       };
     }
-    let credentials;
+    let vault;
     try {
-      credentials = this._read().credentials;
+      vault = this._read();
     } catch (error) {
-      if (error?.code !== 'REVERIE_VAULT_CORRUPT') throw error;
+      this.lastErrorCode = String(error?.code || 'REVERIE_VAULT_IO');
+      const sessionScope = (scope) => ({
+        hasApiKey: Boolean(this.sessionCredentials[scope]?.apiKey),
+        hasCustomHeaders: Boolean(this.sessionCredentials[scope]?.customHeaders),
+        sessionOnly: Object.keys(this.sessionCredentials[scope] || {}).length > 0,
+        bindingKnown: Boolean(this.sessionBindings[scope]),
+      });
       return {
-        available: true,
-        corrupted: true,
-        llm: { hasApiKey: false, hasCustomHeaders: false },
-        imageGen: { hasApiKey: false, hasCustomHeaders: false },
+        available: Object.values(this.sessionCredentials).some(
+          (record) => Object.keys(record).length > 0,
+        ),
+        persistentAvailable: true,
+        corrupted: error?.code === 'REVERIE_VAULT_CORRUPT',
+        lastErrorCode: this.lastErrorCode,
+        llm: sessionScope('llm'),
+        imageGen: sessionScope('imageGen'),
       };
     }
     const publicScope = (scope) => ({
-      hasApiKey: typeof credentials[scope]?.apiKey === 'string'
-        && credentials[scope].apiKey.length > 0,
-      hasCustomHeaders: typeof credentials[scope]?.customHeaders === 'string'
-        && credentials[scope].customHeaders.length > 0,
+      hasApiKey: Boolean(
+        this.sessionCredentials[scope]?.apiKey || vault.credentials[scope]?.apiKey,
+      ),
+      hasCustomHeaders: Boolean(
+        this.sessionCredentials[scope]?.customHeaders || vault.credentials[scope]?.customHeaders,
+      ),
+      sessionOnly: Object.keys(this.sessionCredentials[scope] || {}).length > 0,
+      bindingKnown: Boolean(this.sessionBindings[scope] || vault.bindings[scope]),
     });
     return {
       available: true,
+      persistentAvailable: true,
       corrupted: false,
+      lastErrorCode: this.lastErrorCode,
       llm: publicScope('llm'),
       imageGen: publicScope('imageGen'),
     };
@@ -253,6 +385,8 @@ module.exports = {
   MAX_SECRET_LENGTH,
   MAX_VAULT_BYTES,
   VAULT_SCHEMA,
+  LEGACY_VAULT_SCHEMA,
+  normalizeBinding,
   normalizeSecretRecord,
   validateScope,
 };

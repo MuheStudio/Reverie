@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from ..kernel.contracts import CommandEnvelopeV3, DomainEventV3, PersonaScopeV3
+from ..kernel.storage import KernelStore
 from ..local_mode import LocalModeBlocked, LocalModeGate, get_local_mode_gate
 from .pending import ACTIVE_STATES, PendingChatStore, epoch_to_utc, utc_to_epoch
 
@@ -139,6 +141,7 @@ class ChatDeliveryCoordinator:
         emit: EmitCallback,
         scope_is_current: ScopeValidator | None = None,
         local_mode_gate: LocalModeGate | None = None,
+        kernel_store: KernelStore | None = None,
         provider_timeout: float = 180.0,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
@@ -149,6 +152,7 @@ class ChatDeliveryCoordinator:
         self.emit = emit
         self.scope_is_current = scope_is_current or (lambda _item: True)
         self.local_mode_gate = local_mode_gate or get_local_mode_gate()
+        self.kernel_store = kernel_store
         self.provider_timeout = max(1.0, float(provider_timeout))
         self.clock = clock
         self.monotonic = monotonic
@@ -227,6 +231,18 @@ class ChatDeliveryCoordinator:
             return self._state_payload(existing)
 
         sent_at = _safe_utc(payload.get("sent_at_utc"), now=now)
+        kernel_command = self._kernel_command(
+            {
+                "request_id": request_id,
+                "text": text,
+                "conversation_id": conversation_id,
+                "persona_id": persona_id,
+                "persona_epoch": persona_epoch,
+                "persona_fingerprint": persona_fingerprint,
+            }
+        )
+        if kernel_command is not None:
+            self.kernel_store.begin_command(kernel_command)
         self.store.enqueue(
             text,
             due_at=now,
@@ -280,6 +296,15 @@ class ChatDeliveryCoordinator:
             task = self.tasks.get(request_id)
             if task and not task.done():
                 task.cancel()
+            if self.kernel_store is not None:
+                try:
+                    self.kernel_store.fail_command(
+                        request_id,
+                        error_code="CANCELLED",
+                        provider_outcome_unknown=provider_may_have_been_called,
+                    )
+                except Exception:
+                    logger.exception("Could not persist cancelled kernel command")
         current = self.store.get_item(request_id) or item
         await self._emit_state(
             current,
@@ -349,6 +374,15 @@ class ChatDeliveryCoordinator:
             if item and item.get("state") in ACTIVE_STATES:
                 uncertain = item.get("provider_state") == "started"
                 self.store.mark_failed(request_id, str(exc), uncertain=uncertain)
+                if self.kernel_store is not None:
+                    try:
+                        self.kernel_store.fail_command(
+                            request_id,
+                            error_code=exc.__class__.__name__,
+                            provider_outcome_unknown=uncertain,
+                        )
+                    except Exception:
+                        logger.exception("Could not persist failed kernel command")
                 await self._emit_state(self.store.get_item(request_id) or item)
 
     async def _generate(self, request_id: str) -> None:
@@ -372,6 +406,8 @@ class ChatDeliveryCoordinator:
                 self.store.mark_cancelled(request_id, reason="scope_changed")
                 return
             self.store.mark_generating(request_id)
+            if self.kernel_store is not None:
+                self.kernel_store.mark_provider_dispatched(request_id)
             item = self.store.get_item(request_id) or item
             if not await self._emit_state(item, label="她看见了，正在想怎么说"):
                 # Generation may continue without a renderer; the result will be
@@ -543,6 +579,7 @@ class ChatDeliveryCoordinator:
             return
         self.store.mark_commit_started(request_id)
         try:
+            self._commit_kernel_exchange(item, result)
             outcome = commit(
                 request_id=request_id,
                 user_message=str(item.get("text") or ""),
@@ -551,11 +588,87 @@ class ChatDeliveryCoordinator:
             if inspect.isawaitable(outcome):
                 await outcome
             self.store.mark_committed(request_id)
-        except BaseException as exc:
+        except asyncio.CancelledError as exc:
             self.store.mark_commit_uncertain(request_id, str(exc))
-            if isinstance(exc, asyncio.CancelledError):
-                raise
+            raise
+        except Exception as exc:
+            self.store.mark_commit_uncertain(request_id, str(exc))
             logger.exception("Chat side-effect commit failed for %s", request_id)
+
+    def _kernel_command(self, item: dict[str, Any]) -> CommandEnvelopeV3 | None:
+        if self.kernel_store is None:
+            return None
+        persona = PersonaScopeV3(
+            persona_id=str(item.get("persona_id") or ""),
+            epoch=int(item.get("persona_epoch") or 0),
+            fingerprint=str(item.get("persona_fingerprint") or ""),
+        )
+        request_id = str(item.get("request_id") or "")
+        return CommandEnvelopeV3(
+            request_id=request_id,
+            idempotency_key=request_id,
+            command="chat:send",
+            persona=persona,
+            payload={
+                "text": str(item.get("text") or ""),
+                "conversation_id": str(item.get("conversation_id") or "default"),
+            },
+        )
+
+    def _commit_kernel_exchange(
+        self,
+        item: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        command = self._kernel_command(item)
+        if command is None:
+            return
+        context = result.get("_commit_context")
+        if not isinstance(context, dict):
+            context = {}
+        events = [
+            DomainEventV3(
+                event_type="relationship.interaction.requested",
+                persona=command.persona,
+                causation_id=command.request_id,
+                payload={"request_id": command.request_id},
+            ),
+            DomainEventV3(
+                event_type="emotion.exchange.requested",
+                persona=command.persona,
+                causation_id=command.request_id,
+                payload={"request_id": command.request_id},
+            ),
+        ]
+        if bool(context.get("memory_safe")) and context.get("memory_directive") != "skip":
+            events.append(
+                DomainEventV3(
+                    event_type="memory.interaction.requested",
+                    persona=command.persona,
+                    causation_id=command.request_id,
+                    payload={
+                        "request_id": command.request_id,
+                        "directive": context.get("memory_directive"),
+                    },
+                )
+            )
+        clean_messages = _bounded_messages(
+            result.get("clean_messages")
+            or result.get("messages")
+            or [result.get("reply", "")]
+        )
+        self.kernel_store.commit_chat_exchange(
+            command,
+            conversation_id=str(item.get("conversation_id") or "default"),
+            user_text=str(item.get("text") or ""),
+            assistant_bubbles=clean_messages,
+            events=events,
+            result={
+                "conversation_id": str(item.get("conversation_id") or "default"),
+                "bubble_count": len(clean_messages),
+                "delivery_id": item.get("delivery_id"),
+            },
+        )
 
     async def _deliver(self, request_id: str, *, immediate: bool) -> None:
         item = self.store.get_item(request_id)

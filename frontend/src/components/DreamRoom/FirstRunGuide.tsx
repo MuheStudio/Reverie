@@ -1,25 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { BookOpen, Check, MessageCircle, Smartphone } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useReverieWS } from '@/hooks/useReverieWS';
-import {
-  saveOnboardingPreferences,
-  type MemoryRetentionYears,
-} from '@/lib/reverieArchive';
+import { useReverieWS, WSMsgType } from '@/hooks/useReverieWS';
+import { type MemoryRetentionYears } from '@/lib/reverieArchive';
 import { confirmMemoryRetention } from './retentionSetup';
 import styles from './FirstRunGuide.module.scss';
 
-const GUIDE_KEY = 'reverie:first-run-guide:v2';
-
 type ReverieWS = ReturnType<typeof useReverieWS>;
-
-export function isFirstRunGuideDone(): boolean {
-  try {
-    return localStorage.getItem(GUIDE_KEY) === 'done';
-  } catch {
-    return false;
-  }
-}
 
 function focusable(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(
@@ -37,35 +24,27 @@ export default function FirstRunGuide({ ws, onComplete }: { ws: ReverieWS; onCom
   const dialogRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
 
-  const markComplete = useCallback(() => {
-    try {
-      localStorage.setItem(GUIDE_KEY, 'done');
-    } catch {
-      // The guide may reappear if local storage is unavailable.
-    }
-    onComplete();
-  }, [onComplete]);
-
   const complete = useCallback(async (persistRetention: boolean) => {
     if (savingRef.current) return;
-    if (!persistRetention) {
-      markComplete();
-      return;
-    }
     savingRef.current = true;
     setSaving(true);
     setSaveError('');
     try {
-      const preferences = await confirmMemoryRetention(ws, years);
-      saveOnboardingPreferences(preferences);
-      markComplete();
+      if (persistRetention) await confirmMemoryRetention(ws, years);
+      const response = await ws.request<{ ok?: boolean; error?: string }>(
+        WSMsgType.SETTINGS_UPDATE,
+        { section: 'onboarding', completed: true },
+        { expectedType: WSMsgType.SETTINGS_UPDATE_RESULT, timeout: 8_000 },
+      );
+      if (response.ok !== true) throw new Error(response.error || 'onboarding update was rejected');
+      onComplete();
     } catch {
       setSaveError(t('dream.guideSaveFailed'));
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
-  }, [markComplete, t, ws, years]);
+  }, [onComplete, t, ws, years]);
 
   useEffect(() => {
     const shell = document.querySelector<HTMLElement>('[data-dream-shell-content]');

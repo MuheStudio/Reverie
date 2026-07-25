@@ -1,0 +1,147 @@
+schema: reverie.capability-manifest.v1
+source:
+  name: 2.Reverie功能清单.txt
+  immutable_reference: true
+fields:
+  - id
+  - title
+  - module
+  - default
+  - api_consumption
+  - data_owner
+  - acceptance
+allowed_values:
+  default: [enabled, disabled, conditional]
+  api_consumption: [none, interactive, automatic]
+capabilities:
+  - [1, 简体中文优先, presentation, enabled, none, presentation, CAP-001]
+  - [2, 跨重启草稿, conversation, enabled, none, kernel, CAP-002]
+  - [3, 网络冲浪安全主题, web_knowledge, disabled, automatic, web_knowledge, CAP-003]
+  - [4, 缺点与提示词防护, persona, enabled, none, kernel, CAP-004]
+  - [5, 行为受人格约束, persona, enabled, none, kernel, CAP-005]
+  - [6, 跨会话长期记忆, memory, enabled, none, memory, CAP-006]
+  - [7, 记忆库导入导出, backup, enabled, none, kernel, CAP-007]
+  - [8, 完整状态恢复, backup, enabled, none, kernel, CAP-008]
+  - [9, 用户档案长期保存, user_profile, enabled, none, kernel, CAP-009]
+  - [10, 用户长期信息字段, user_profile, enabled, none, kernel, CAP-010]
+  - [11, 事件与情感记忆分离, memory, enabled, none, memory, CAP-011]
+  - [12, 事实与情绪共同记录, memory, enabled, none, kernel, CAP-012]
+  - [13, 自主记忆决策, memory, enabled, interactive, memory, CAP-013]
+  - [14, 不强制记录全部聊天, memory, enabled, none, memory, CAP-014]
+  - [15, 记忆重要性评分, memory, enabled, none, memory, CAP-015]
+  - [16, 高价值记忆优先保留, memory, enabled, none, memory, CAP-016]
+  - [17, 记忆遗忘与强化, memory, enabled, none, memory, CAP-017]
+  - [18, 私人日记, diary, enabled, none, diary, CAP-018]
+  - [19, 日记独立存储, diary, enabled, none, diary, CAP-019]
+  - [20, 自主生成日记, diary, disabled, automatic, diary, CAP-020]
+  - [21, 日记历史一致性, diary, enabled, interactive, diary, CAP-021]
+  - [22, 情绪状态系统, emotion, enabled, none, emotion, CAP-022]
+  - [23, 八种基础情绪, emotion, enabled, none, emotion, CAP-023]
+  - [24, 多情绪并存, emotion, enabled, none, emotion, CAP-024]
+  - [25, 聊天影响情绪, emotion, enabled, none, emotion, CAP-025]
+  - [26, 记忆影响情绪, emotion, enabled, none, emotion, CAP-026]
+  - [27, 事件结果影响情绪, emotion, enabled, none, emotion, CAP-027]
+  - [28, 情绪影响角色行为, emotion, enabled, none, emotion, CAP-028]
+  - [29, 关系成长, relationship, enabled, none, relationship, CAP-029]
+  - [30, 动态关系等级, relationship, enabled, none, relationship, CAP-030]
+  - [31, 关系称呼差异, relationship, enabled, none, relationship, CAP-031]
+  - [32, 关系聊天风格, relationship, enabled, none, relationship, CAP-032]
+  - [33, 关系影响主动频率, relationship, disabled, automatic, relationship, CAP-033]
+  - [34, 消息调度, chat_delivery, enabled, none, kernel, CAP-034]
+  - [35, 非默认即时回复, chat_delivery, enabled, none, kernel, CAP-035]
+  - [36, 动态回复延迟, chat_delivery, enabled, none, kernel, CAP-036]
+  - [37, 随机时间波动, chat_delivery, enabled, none, kernel, CAP-037]
+  - [38, 四种生活状态, world, enabled, none, world, CAP-038]
+  - [39, 状态影响回复, chat_delivery, enabled, none, kernel, CAP-039]
+  - [40, 睡眠机制, world, enabled, none, world, CAP-040]
+  - [41, 睡眠不立即回复, chat_delivery, enabled, none, kernel, CAP-041]
+  - [42, 晚睡熬夜概率, world, conditional, none, world, CAP-042]
+  - [43, 输入中状态, chat_delivery, enabled, none, presentation, CAP-043]
+  - [44, 回复前输入状态, chat_delivery, enabled, none, presentation, CAP-044]
+  - [45, 输入时长关联内容, chat_delivery, enabled, none, kernel, CAP-045]
+  - [46, 消息分段, chat_delivery, enabled, none, kernel, CAP-046]
+  - [47, 非默认单气泡表达, chat_delivery, enabled, none, kernel, CAP-047]
+  - [48, 多气泡回复, chat_delivery, enabled, none, kernel, CAP-048]
+  - [49, 消息长度分布, chat_delivery, enabled, none, kernel, CAP-049]
+  - [50, 短消息为主, chat_delivery, enabled, none, kernel, CAP-050]
+  - [51, 复杂场景长消息, chat_delivery, enabled, none, kernel, CAP-051]
+  - [52, 语言口癖, speech_style, enabled, none, speech_style, CAP-052]
+  - [53, 长期表达习惯, speech_style, enabled, none, speech_style, CAP-053]
+  - [54, 情绪影响标点, speech_style, enabled, none, speech_style, CAP-054]
+  - [55, 错字机制, speech_style, conditional, none, speech_style, CAP-055]
+  - [56, 偶发轻微输入错误, speech_style, conditional, none, speech_style, CAP-056]
+  - [57, 消息撤回, chat_delivery, conditional, none, kernel, CAP-057]
+  - [58, 撤回并重新发送, chat_delivery, conditional, none, kernel, CAP-058]
+  - [59, 表情包管理, stickers, enabled, none, stickers, CAP-059]
+  - [60, 收藏用户表情包, stickers, enabled, none, stickers, CAP-060]
+  - [61, 表情情绪识别, stickers, disabled, automatic, stickers, CAP-061]
+  - [62, 多标签情绪索引, stickers, enabled, none, stickers, CAP-062]
+  - [63, 按情绪检索表情, stickers, enabled, none, stickers, CAP-063]
+  - [64, 重复使用表情, stickers, enabled, none, stickers, CAP-064]
+  - [65, 用户表情偏好, stickers, enabled, none, stickers, CAP-065]
+  - [66, 动态推荐权重, stickers, enabled, none, stickers, CAP-066]
+  - [67, 网络信息系统, web_knowledge, disabled, automatic, web_knowledge, CAP-067]
+  - [68, 定期获取授权主题, web_knowledge, disabled, automatic, web_knowledge, CAP-068]
+  - [69, 主动引用网络信息, proactive, disabled, automatic, proactive, CAP-069]
+  - [70, 网络内容人格化, web_knowledge, disabled, automatic, web_knowledge, CAP-070]
+  - [71, 主动聊天系统, proactive, disabled, automatic, proactive, CAP-071]
+  - [72, 非完全依赖用户发起, proactive, disabled, automatic, proactive, CAP-072]
+  - [73, 多条件主动消息, proactive, disabled, automatic, proactive, CAP-073]
+  - [74, 主动关心用户, proactive, disabled, automatic, proactive, CAP-074]
+  - [75, 主动提醒日期计划, proactive, disabled, automatic, proactive, CAP-075]
+  - [76, 主动表达需求情绪, proactive, disabled, automatic, proactive, CAP-076]
+  - [77, 朋友圈系统, timeline, enabled, none, timeline, CAP-077]
+  - [78, 自主发布动态, timeline, disabled, automatic, timeline, CAP-078]
+  - [79, 动态与记忆一致, timeline, enabled, interactive, timeline, CAP-079]
+  - [80, 动态事件连续发展, timeline, enabled, none, timeline, CAP-080]
+  - [81, 动态引用媒体成果, timeline, disabled, automatic, timeline, CAP-081]
+  - [82, 固定社交圈, social, enabled, none, social, CAP-082]
+  - [83, 长期社交角色, social, enabled, none, social, CAP-083]
+  - [84, 社交历史持续, social, enabled, none, social, CAP-084]
+  - [85, 社交影响情绪行为, social, enabled, none, social, CAP-085]
+  - [86, 角色个人事务, affairs, enabled, none, affairs, CAP-086]
+  - [87, 独立长期计划待办, affairs, enabled, none, affairs, CAP-087]
+  - [88, 主动提及个人事务, affairs, disabled, automatic, affairs, CAP-088]
+  - [89, 事务时间连续性, affairs, enabled, none, affairs, CAP-089]
+  - [90, 兴趣成长, interest, enabled, none, interest, CAP-090]
+  - [91, 长期兴趣培养, interest, enabled, none, interest, CAP-091]
+  - [92, 兴趣进度记录, interest, enabled, none, interest, CAP-092]
+  - [93, 兴趣成果复用, interest, enabled, none, interest, CAP-093]
+  - [94, 现实时间同步, world, enabled, none, world, CAP-094]
+  - [95, 日期节日计算, world, enabled, none, world, CAP-095]
+  - [96, 主动响应纪念日, proactive, disabled, automatic, proactive, CAP-096]
+  - [97, 世界状态持久化, kernel, enabled, none, kernel, CAP-097]
+  - [98, 多模块跨会话持续, kernel, enabled, none, kernel, CAP-098]
+  - [99, 不主动声明AI身份, continuity_guard, enabled, none, kernel, CAP-099]
+  - [100, 禁止破坏沉浸表达, continuity_guard, enabled, none, kernel, CAP-100]
+  - [101, 回复符合人格, continuity_guard, enabled, none, kernel, CAP-101]
+  - [102, 回复符合历史, continuity_guard, enabled, none, kernel, CAP-102]
+  - [103, 回复符合情绪, continuity_guard, enabled, none, kernel, CAP-103]
+  - [104, 回复符合关系, continuity_guard, enabled, none, kernel, CAP-104]
+  - [105, 回复符合时间状态, continuity_guard, enabled, none, kernel, CAP-105]
+  - [106, 禁止身份状态矛盾, continuity_guard, enabled, none, kernel, CAP-106]
+  - [107, 人格连续性最高优先, kernel, enabled, none, kernel, CAP-107]
+  - [108, 记忆连续性优先, kernel, enabled, none, kernel, CAP-108]
+  - [109, 真实性高于速度, kernel, enabled, none, kernel, CAP-109]
+  - [110, 模块异常不破坏连续性, kernel, enabled, none, kernel, CAP-110]
+extra_api_capabilities:
+  - id: image_generation
+    default: disabled
+    consent: per_feature
+  - id: automatic_diary
+    default: disabled
+    consent: per_feature
+  - id: proactive_chat
+    default: disabled
+    consent: per_feature
+  - id: web_search
+    default: disabled
+    consent: per_topic
+policy_defaults:
+  local_first: true
+  social_hotspots: locked
+  misremembering_enabled: false
+  misremember_probability_min: 0.001
+  misremember_probability_max: 0.01
+  permanent_or_sensitive_misremembering: false
+  memory_hard_capacity: null

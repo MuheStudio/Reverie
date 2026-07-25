@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bell,
@@ -32,8 +32,9 @@ import {
   Wifi,
 } from 'lucide-react';
 import {
+  CredentialWriteError,
   clearConfigCredentials,
-  loadConfigSync,
+  loadConfig,
   saveConfig,
   saveConfigMetadata,
 } from '@/lib/llmClient';
@@ -45,25 +46,23 @@ import {
   type LLMProvider,
 } from '@/lib/llmModels';
 import { useReverieWS, WSMsgType } from '@/hooks/useReverieWS';
-import { migrateChatMessages } from './chatDeliveryMachine';
 import {
   createCharacterCardExport,
+  createDefaultArchive,
   createDefaultWorldBook,
-  createOnboardingPreferences,
   createWorldBookExport,
-  loadArchive,
-  loadOnboardingPreferences,
+  clearLegacyArchiveAfterMigration,
+  loadLegacyArchiveForMigration,
   parseBackupImport,
   parseSillyTavernPngPayload,
   parseWorldBookImportText,
-  saveArchive,
-  saveOnboardingPreferences,
-  type MemoryRetentionYears,
+  normalizeArchive,
   type ReverieArchive,
   type ReverieCharacterCard,
   type ReverieWorldBook,
   type WorldBookEntry,
 } from '@/lib/reverieArchive';
+import { requestWindowsBrowserLocation } from '@/lib/windowsGeolocation';
 import styles from './index.module.scss';
 
 const REQUESTED_PROVIDER_ORDER: LLMProvider[] = [
@@ -78,14 +77,9 @@ const REQUESTED_PROVIDER_ORDER: LLMProvider[] = [
   'ollama',
 ];
 
-const DIARY_FEATURE_STORAGE_KEY = 'reverie:diary-feature-settings:v1';
-const CHAT_FEATURE_STORAGE_KEY = 'reverie:chat-feature-settings:v1';
-const PERSONALITY_FEATURE_STORAGE_KEY = 'reverie:personality-feature-settings:v1';
-const IMMERSION_FEATURE_STORAGE_KEY = 'reverie:immersion-feature-settings:v1';
 const FLAWS_DISCLAIMER = '因用户所设置的‘缺点’而引发的一系列问题由用户自行承担，与本项目及本项目的所有者将不承担任何责任。';
 const WEB_SURFING_DISCLAIMER = '因用户所设置的‘网络冲浪系统’而引发的一系列问题由用户自行承担，与本项目及本项目的所有者将不承担任何责任。';
 const SAFE_WEB_TOPICS = ['热门梗', '新番/动漫资讯', '二次元内容', '游戏更新', '科技趣闻', '猫咪/宠物', '美食/料理'];
-export const USER_PROFILE_STORAGE_KEY = 'reverie:user-profile:v1';
 
 interface DiaryFeatureSettings {
   diary_enabled: boolean;
@@ -581,23 +575,6 @@ function normalizeImmersionSettings(value: unknown): ImmersionFeatureSettings {
   };
 }
 
-function loadImmersionFeatureSettings(): ImmersionFeatureSettings {
-  try {
-    const raw = window.localStorage.getItem(IMMERSION_FEATURE_STORAGE_KEY);
-    return raw ? normalizeImmersionSettings(JSON.parse(raw)) : DEFAULT_IMMERSION_SETTINGS;
-  } catch {
-    return DEFAULT_IMMERSION_SETTINGS;
-  }
-}
-
-function saveImmersionFeatureSettings(settings: ImmersionFeatureSettings): void {
-  try {
-    window.localStorage.setItem(IMMERSION_FEATURE_STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // Local persistence failures must never block backend settings.
-  }
-}
-
 function normalizeWebTopics(value: unknown): string[] {
   const raw = safeStringArray(value);
   const filtered = raw.filter((item) => SAFE_WEB_TOPICS.includes(item));
@@ -624,7 +601,7 @@ function normalizeForgetProbability(value: unknown, fallback: number): number {
 function normalizeMisrememberProbability(value: unknown, fallback: number): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
-  return Math.min(0.1, Math.max(0.01, Math.round(numeric * 100) / 100));
+  return Math.min(0.01, Math.max(0.001, Math.round(numeric * 1000) / 1000));
 }
 
 function normalizeBoundedNumber(
@@ -905,65 +882,27 @@ function normalizePersonalitySettings(value: unknown): PersonalityFeatureSetting
   };
 }
 
-function loadPersonalityFeatureSettings(): PersonalityFeatureSettings {
-  try {
-    const raw = localStorage.getItem(PERSONALITY_FEATURE_STORAGE_KEY);
-    return raw ? normalizePersonalitySettings(JSON.parse(raw)) : DEFAULT_PERSONALITY_SETTINGS;
-  } catch {
-    return DEFAULT_PERSONALITY_SETTINGS;
-  }
-}
-
-function savePersonalityFeatureSettings(settings: PersonalityFeatureSettings): void {
-  try {
-    localStorage.setItem(PERSONALITY_FEATURE_STORAGE_KEY, JSON.stringify(normalizePersonalitySettings(settings)));
-  } catch {
-    // Runtime settings are still sent to the backend even if local storage is blocked.
-  }
-}
-
-function loadDiaryFeatureSettings(): DiaryFeatureSettings {
-  try {
-    const raw = localStorage.getItem(DIARY_FEATURE_STORAGE_KEY);
-    if (!raw) return DEFAULT_DIARY_FEATURE_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<DiaryFeatureSettings>;
-    return {
-      diary_enabled: parsed.diary_enabled ?? DEFAULT_DIARY_FEATURE_SETTINGS.diary_enabled,
-      diary_privacy_enabled: parsed.diary_privacy_enabled ?? DEFAULT_DIARY_FEATURE_SETTINGS.diary_privacy_enabled,
-      diary_peek_enabled: parsed.diary_peek_enabled ?? DEFAULT_DIARY_FEATURE_SETTINGS.diary_peek_enabled,
-      late_night_enabled: parsed.late_night_enabled ?? DEFAULT_DIARY_FEATURE_SETTINGS.late_night_enabled,
-      late_night_probability: normalizeProbability(parsed.late_night_probability),
-      late_night_message_enabled: parsed.late_night_message_enabled
-        ?? DEFAULT_DIARY_FEATURE_SETTINGS.late_night_message_enabled,
-    };
-  } catch {
-    return DEFAULT_DIARY_FEATURE_SETTINGS;
-  }
-}
-
-function saveDiaryFeatureSettings(settings: DiaryFeatureSettings): void {
-  try {
-    localStorage.setItem(DIARY_FEATURE_STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // Runtime settings are still sent to the backend even if local storage is blocked.
-  }
-}
-
-function loadChatFeatureSettings(): ChatFeatureSettings {
-  try {
-    const raw = localStorage.getItem(CHAT_FEATURE_STORAGE_KEY);
-    return raw ? normalizeChatSettings(JSON.parse(raw)) : DEFAULT_CHAT_FEATURE_SETTINGS;
-  } catch {
-    return DEFAULT_CHAT_FEATURE_SETTINGS;
-  }
-}
-
-function saveChatFeatureSettings(settings: ChatFeatureSettings): void {
-  try {
-    localStorage.setItem(CHAT_FEATURE_STORAGE_KEY, JSON.stringify(normalizeChatSettings(settings)));
-  } catch {
-    // Runtime settings are still sent to the backend even if local storage is blocked.
-  }
+function normalizeDiaryFeatureSettings(value: unknown): DiaryFeatureSettings {
+  const source = isRecord(value) && isRecord(value.features) ? value.features : value;
+  if (!isRecord(source)) return DEFAULT_DIARY_FEATURE_SETTINGS;
+  return {
+    diary_enabled: typeof source.diary_enabled === 'boolean'
+      ? source.diary_enabled
+      : DEFAULT_DIARY_FEATURE_SETTINGS.diary_enabled,
+    diary_privacy_enabled: typeof source.diary_privacy_enabled === 'boolean'
+      ? source.diary_privacy_enabled
+      : DEFAULT_DIARY_FEATURE_SETTINGS.diary_privacy_enabled,
+    diary_peek_enabled: typeof source.diary_peek_enabled === 'boolean'
+      ? source.diary_peek_enabled
+      : DEFAULT_DIARY_FEATURE_SETTINGS.diary_peek_enabled,
+    late_night_enabled: typeof source.late_night_enabled === 'boolean'
+      ? source.late_night_enabled
+      : DEFAULT_DIARY_FEATURE_SETTINGS.late_night_enabled,
+    late_night_probability: normalizeProbability(source.late_night_probability),
+    late_night_message_enabled: typeof source.late_night_message_enabled === 'boolean'
+      ? source.late_night_message_enabled
+      : DEFAULT_DIARY_FEATURE_SETTINGS.late_night_message_enabled,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1011,23 +950,6 @@ function normalizeUserProfile(value: unknown): EditableUserProfile {
         )
       : DEFAULT_USER_PROFILE.important_dates,
   };
-}
-
-export function loadUserProfileSnapshot(): EditableUserProfile {
-  try {
-    const raw = localStorage.getItem(USER_PROFILE_STORAGE_KEY);
-    return raw ? normalizeUserProfile(JSON.parse(raw)) : DEFAULT_USER_PROFILE;
-  } catch {
-    return DEFAULT_USER_PROFILE;
-  }
-}
-
-export function saveUserProfileSnapshot(profile: EditableUserProfile): void {
-  try {
-    localStorage.setItem(USER_PROFILE_STORAGE_KEY, JSON.stringify(normalizeUserProfile(profile)));
-  } catch {
-    // The backend remains authoritative when local storage is blocked.
-  }
 }
 
 function userProfilePayload(profile: EditableUserProfile): Record<string, unknown> {
@@ -1117,16 +1039,16 @@ function TextAreaField({
 }
 
 export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const initial = loadConfigSync();
   const fallback = getDefaultProviderConfig('openai');
-  const [provider, setProvider] = useState<LLMProvider>(initial?.provider ?? fallback.provider);
-  const [apiKey, setApiKey] = useState(initial?.apiKey ?? '');
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? fallback.baseUrl);
-  const [model, setModel] = useState(initial?.model ?? fallback.model);
-  const [customHeaders, setCustomHeaders] = useState(initial?.customHeaders ?? '');
-  const [customProviderName, setCustomProviderName] = useState(initial?.customProviderName ?? '');
+  const [provider, setProvider] = useState<LLMProvider>(fallback.provider);
+  const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState(fallback.baseUrl);
+  const [model, setModel] = useState(fallback.model);
+  const [customHeaders, setCustomHeaders] = useState('');
+  const [customProviderName, setCustomProviderName] = useState('');
   const [status, setStatus] = useState('');
   const [credentialStatus, setCredentialStatus] = useState<CredentialStatus | null>(null);
+  const [sessionFallbackConfig, setSessionFallbackConfig] = useState<LLMConfig | null>(null);
   const providerMeta = LLM_PROVIDER_CONFIGS[provider];
   const providerDisplayName = provider === 'custom'
     ? customProviderName.trim() || providerMeta.displayName
@@ -1137,6 +1059,20 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
     id,
     label: getProviderDisplayName(id),
   }));
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadConfig().then((config) => {
+      if (cancelled || !config) return;
+      setProvider(config.provider);
+      setBaseUrl(config.baseUrl);
+      setModel(config.model);
+      setCustomProviderName(config.customProviderName ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const unsubscribe = ws.subscribe(WSMsgType.SETTINGS_UPDATE_RESULT, (payload: unknown) => {
@@ -1188,6 +1124,7 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
     };
     try {
       await saveConfig(config);
+      setSessionFallbackConfig(null);
       setApiKey('');
       setCustomHeaders('');
       const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
@@ -1201,7 +1138,32 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
         ? '接口元数据已发送；密钥由系统加密金库通过私有通道同步'
         : '密钥已加密保存，但聊天后端当前未连接');
     } catch (error) {
+      if (error instanceof CredentialWriteError && error.canUseSessionStorage) {
+        setSessionFallbackConfig(config);
+        setStatus(`${error.message} 你可以明确选择“仅本次运行使用”，密钥不会写入磁盘。`);
+        return;
+      }
       setStatus(error instanceof Error ? error.message : '安全保存失败');
+    }
+  };
+
+  const saveForSession = async () => {
+    if (!sessionFallbackConfig) return;
+    try {
+      await saveConfig(sessionFallbackConfig, undefined, { credentialStorage: 'session' });
+      setApiKey('');
+      setCustomHeaders('');
+      setSessionFallbackConfig(null);
+      setStatus('密钥仅保存在本次 Reverie 运行的内存中，退出后会消失；没有明文落盘。');
+      ws.send(WSMsgType.SETTINGS_UPDATE, {
+        section: 'llm',
+        provider: backendProvider(sessionFallbackConfig.provider),
+        model: sessionFallbackConfig.model,
+        base_url: sessionFallbackConfig.baseUrl,
+        custom_provider_name: sessionFallbackConfig.customProviderName,
+      });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '会话内凭据保存失败');
     }
   };
 
@@ -1267,6 +1229,12 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
           <Save size={15} />
           保存接口
         </button>
+        {sessionFallbackConfig && (
+          <button type="button" onClick={saveForSession}>
+            <KeyRound size={15} />
+            仅本次运行使用
+          </button>
+        )}
         <button
           type="button"
           onClick={clearCredentials}
@@ -1285,11 +1253,16 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
     </div>
   );
 }
-
 export function DiarySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const [settings, setSettings] = useState<DiaryFeatureSettings>(() => loadDiaryFeatureSettings());
+  const [settings, setSettings] = useState<DiaryFeatureSettings>(DEFAULT_DIARY_FEATURE_SETTINGS);
   const [status, setStatus] = useState('');
   const probabilityPercent = Math.round(settings.late_night_probability * 100);
+
+  useEffect(() => {
+    if (ws.settingsSnapshot.features) {
+      setSettings(normalizeDiaryFeatureSettings(ws.settingsSnapshot.features));
+    }
+  }, [ws.settingsSnapshot.features]);
 
   const setFlag = (key: DiaryFeatureFlag, value: boolean) => {
     setSettings((current) => ({ ...current, [key]: value }));
@@ -1307,7 +1280,6 @@ export function DiarySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS>
       ...settings,
       late_night_probability: normalizeProbability(settings.late_night_probability),
     };
-    saveDiaryFeatureSettings(payload);
     setSettings(payload);
     const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
       section: 'features',
@@ -1315,9 +1287,9 @@ export function DiarySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS>
     });
     if (sent) {
       ws.refreshDiary();
-      setStatus('已保存');
+      setStatus('已提交保存');
     } else {
-      setStatus('后端未连接，已保存到本地');
+      setStatus('后端未连接，本次更改未保存');
     }
   };
 
@@ -1407,8 +1379,14 @@ export function DiarySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS>
 }
 
 export function ChatSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const [settings, setSettings] = useState<ChatFeatureSettings>(() => loadChatFeatureSettings());
+  const [settings, setSettings] = useState<ChatFeatureSettings>(DEFAULT_CHAT_FEATURE_SETTINGS);
   const [status, setStatus] = useState('');
+
+  useEffect(() => {
+    if (ws.settingsSnapshot.chat) {
+      setSettings(normalizeChatSettings(ws.settingsSnapshot.chat));
+    }
+  }, [ws.settingsSnapshot.chat]);
 
   const setField = <K extends keyof ChatFeatureSettings>(key: K, value: ChatFeatureSettings[K]) => {
     setSettings((current) => normalizeChatSettings({ ...current, [key]: value }));
@@ -1417,13 +1395,12 @@ export function ChatSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> 
 
   const save = () => {
     const payload = normalizeChatSettings(settings);
-    saveChatFeatureSettings(payload);
     setSettings(payload);
     const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
       section: 'chat',
       ...payload,
     });
-    setStatus(sent ? '已保存' : '后端未连接，已保存到本地');
+    setStatus(sent ? '已提交保存' : '后端未连接，本次更改未保存');
   };
 
   return (
@@ -1822,9 +1799,9 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           <span>长期混淆概率 {longTermMisrememberPercent}%</span>
           <input
             type="range"
-            min="0.01"
-            max="0.10"
-            step="0.01"
+            min="0.001"
+            max="0.01"
+            step="0.001"
             value={settings.long_term_misremember_probability}
             disabled={
               !settings.misremembering_enabled ||
@@ -1847,9 +1824,9 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           <span>短期混淆概率 {shortTermMisrememberPercent}%</span>
           <input
             type="range"
-            min="0.01"
-            max="0.10"
-            step="0.01"
+            min="0.001"
+            max="0.01"
+            step="0.001"
             value={settings.short_term_misremember_probability}
             disabled={
               !settings.misremembering_enabled ||
@@ -2033,7 +2010,7 @@ function AiUsageConsentPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
 }
 
 export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const [settings, setSettings] = useState<PersonalityFeatureSettings>(() => loadPersonalityFeatureSettings());
+  const [settings, setSettings] = useState<PersonalityFeatureSettings>(DEFAULT_PERSONALITY_SETTINGS);
   const [status, setStatus] = useState('');
   const [notificationStatus, setNotificationStatus] = useState('正在核对系统通知…');
   const inertiaPercent = Math.round(settings.emotion_inertia_factor * 100);
@@ -2048,24 +2025,16 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
     : 0;
 
   useEffect(() => {
-    const unsubscribe = ws.subscribe(WSMsgType.SETTINGS_UPDATE_RESULT, (payload: unknown) => {
-      if (!isRecord(payload)) return;
-      if (payload.error) {
-        setStatus(safeString(payload.error));
-        return;
-      }
-      if (!isRecord(payload.features)) return;
-      const next = normalizePersonalitySettings(payload);
-      setSettings(next);
-      savePersonalityFeatureSettings(next);
-      setStatus('已与运行时同步');
-    });
+    if (ws.settingsSnapshot.features) {
+      setSettings(normalizePersonalitySettings(ws.settingsSnapshot.features));
+    }
+  }, [ws.settingsSnapshot.features]);
+
+  useEffect(() => {
     if (ws.connState === 'connected') {
-      ws.send(WSMsgType.SETTINGS_UPDATE, { section: 'personality' });
       ws.refreshApiBudget();
     }
-    return unsubscribe;
-  }, [ws.connState, ws.refreshApiBudget, ws.send, ws.subscribe]);
+  }, [ws.connState, ws.refreshApiBudget]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2107,13 +2076,12 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
 
   const save = () => {
     const payload = normalizePersonalitySettings(settings);
-    savePersonalityFeatureSettings(payload);
     setSettings(payload);
     const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
       section: 'personality',
       ...payload,
     });
-    setStatus(sent ? '已保存' : '后端未连接，已保存到本地');
+    setStatus(sent ? '已提交保存' : '后端未连接，本次更改未保存');
   };
 
   const testNotification = async () => {
@@ -2743,11 +2711,12 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
 }
 
 export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const [settings, setSettings] = useState<ImmersionFeatureSettings>(() => loadImmersionFeatureSettings());
+  const [settings, setSettings] = useState<ImmersionFeatureSettings>(DEFAULT_IMMERSION_SETTINGS);
   const [status, setStatus] = useState('');
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [smartDevice, setSmartDevice] = useState('灯');
   const [smartAction, setSmartAction] = useState('打开');
+  const [locating, setLocating] = useState(false);
 
   useEffect(() => {
     const unsubscribe = ws.subscribe(WSMsgType.IMMERSION_RESULT, (payload: unknown) => {
@@ -2759,6 +2728,12 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
     return unsubscribe;
   }, [ws.subscribe]);
 
+  useEffect(() => {
+    if (ws.settingsSnapshot.features) {
+      setSettings(normalizeImmersionSettings(ws.settingsSnapshot.features));
+    }
+  }, [ws.settingsSnapshot.features]);
+
   const setField = <K extends keyof ImmersionFeatureSettings>(key: K, value: ImmersionFeatureSettings[K]) => {
     setSettings((current) => normalizeImmersionSettings({ ...current, [key]: value }));
   };
@@ -2766,45 +2741,72 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
 
   const save = () => {
     const payload = normalizeImmersionSettings(settings);
-    saveImmersionFeatureSettings(payload);
     setSettings(payload);
     const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
       section: 'immersion',
       ...payload,
     });
-    setStatus(sent ? '已保存' : '后端未连接，已保存到本地');
+    setStatus(sent ? '已提交保存' : '后端未连接，本次更改未保存');
   };
 
-  const requestNearby = () => {
+  const requestNearby = async () => {
     if (!settings.immersion_location_enabled) {
       setStatus('请先启用定位沉浸感');
       return;
     }
-    if (!navigator.geolocation) {
-      setStatus('当前环境不支持定位权限');
-      return;
+    setLocating(true);
+    setStatus('正在向 Windows 11 请求定位权限与当前位置…');
+    try {
+      // Electron's trusted main-frame permission policy lets Chromium call the
+      // Windows location broker while this user-initiated page is foreground.
+      // The hidden PowerShell adapter remains only a last-resort diagnostic for
+      // systems whose Chromium geolocation provider is unavailable.
+      let position: {
+        ok: boolean;
+        code: string;
+        status?: string;
+        latitude?: number;
+        longitude?: number;
+        accuracy?: number;
+      } = await requestWindowsBrowserLocation();
+      if (
+        !position.ok
+        && position.code === 'REVERIE_LOCATION_DEVICE_UNAVAILABLE'
+        && window.electronAPI?.getCurrentWindowsLocation
+      ) {
+        position = await window.electronAPI.getCurrentWindowsLocation();
+      }
+      if (!position.ok) {
+        const messages: Record<string, string> = {
+          REVERIE_LOCATION_PERMISSION_DENIED:
+            'Windows 已拒绝定位。请开启“定位服务”和“允许桌面应用访问你的位置”。',
+          REVERIE_LOCATION_ACCESS_UNSPECIFIED:
+            'Windows 没有返回明确的定位授权状态，请检查系统定位设置。',
+          REVERIE_LOCATION_SERVICE_DISABLED:
+            'Windows 定位服务已关闭，请先在系统设置中启用。',
+          REVERIE_LOCATION_DEVICE_UNAVAILABLE:
+            '此设备当前没有可用的 Windows 定位能力。',
+          REVERIE_LOCATION_TIMEOUT:
+            'Windows 定位响应超时，请确认定位服务已开启后重试。',
+          REVERIE_LOCATION_NO_DATA:
+            'Windows 定位服务已开启，但当前没有可用的位置数据。',
+        };
+        setStatus(messages[position.code] || 'Windows 原生定位调用失败，请检查系统定位设置。');
+        return;
+      }
+      const sent = ws.send(WSMsgType.IMMERSION_NEARBY, {
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracy_m: position.accuracy,
+        radius_m: settings.immersion_location_radius_m,
+        place_types: ['restaurant', 'shop', 'cafe', 'supermarket', 'park'],
+      });
+      setStatus(sent ? 'Windows 定位成功，已请求附近生活场景' : '定位成功，但后端未连接');
+    } catch {
+      setStatus('Windows 原生定位模块未能完成请求。');
+    } finally {
+      setLocating(false);
     }
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const sent = ws.send(WSMsgType.IMMERSION_NEARBY, {
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          radius_m: settings.immersion_location_radius_m,
-          place_types: ['restaurant', 'shop', 'cafe', 'supermarket', 'park'],
-        });
-        setStatus(sent ? '已请求附近生活场景' : '后端未连接');
-      },
-      (error) => {
-        if (error.code === error.PERMISSION_DENIED) {
-          setStatus('Windows 已拒绝定位。请在系统设置中开启“定位服务”和“允许桌面应用访问你的位置”。');
-        } else if (error.code === error.TIMEOUT) {
-          setStatus('Windows 定位响应超时，请确认定位服务已开启后重试。');
-        } else {
-          setStatus('Windows 暂时无法确定位置，请检查定位服务与网络。');
-        }
-      },
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 },
-    );
   };
 
   const openLocationSettings = async () => {
@@ -2893,9 +2895,13 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
           <Save size={15} />
           保存沉浸感设置
         </button>
-        <button type="button" onClick={requestNearby} disabled={!settings.immersion_location_enabled}>
+        <button
+          type="button"
+          onClick={requestNearby}
+          disabled={!settings.immersion_location_enabled || locating}
+        >
           <MapPin size={15} />
-          请求定位
+          {locating ? '定位中…' : '请求定位'}
         </button>
         <button type="button" onClick={openLocationSettings}>
           <Settings size={15} />
@@ -2934,7 +2940,7 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
 }
 
 export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const [profile, setProfile] = useState<EditableUserProfile>(() => loadUserProfileSnapshot());
+  const [profile, setProfile] = useState<EditableUserProfile>(DEFAULT_USER_PROFILE);
   const [memories, setMemories] = useState<EmotionalMemoryPreview[]>([]);
   const [status, setStatus] = useState('');
 
@@ -2944,7 +2950,6 @@ export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }
       if (payload.profile) {
         const nextProfile = normalizeUserProfile(payload.profile);
         setProfile(nextProfile);
-        saveUserProfileSnapshot(nextProfile);
       }
       if (Array.isArray(payload.emotional_memories)) {
         setMemories(
@@ -2971,12 +2976,11 @@ export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }
 
   const save = () => {
     const nextProfile = normalizeUserProfile(profile);
-    saveUserProfileSnapshot(nextProfile);
     setProfile(nextProfile);
     const sent = ws.send(WSMsgType.USER_PROFILE_UPDATE, {
       profile: userProfilePayload(nextProfile),
     });
-    setStatus(sent ? '已保存' : '后端未连接，已保存到本地');
+    setStatus(sent ? '已提交保存' : '后端未连接，本次更改未保存');
   };
 
   return (
@@ -3059,37 +3063,138 @@ export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }
 }
 
 export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
-  const [archive, setArchive] = useState(() => loadArchive());
+  const [archive, setArchive] = useState(() => createDefaultArchive());
   const [selectedCharacterId, setSelectedCharacterId] = useState(archive.characters[0]?.id ?? '');
   const [selectedWorldBookId, setSelectedWorldBookId] = useState(archive.worldBooks[0]?.id ?? '');
   const [characterImportStatus, setCharacterImportStatus] = useState('');
   const [characterCreatorNote, setCharacterCreatorNote] = useState('');
+  const [archiveStatus, setArchiveStatus] = useState('正在连接本地档案库…');
+  const archiveRevisionRef = useRef(0);
+  const archiveReadyRef = useRef(false);
+  const archiveWritePendingRef = useRef<ReverieArchive | null>(null);
+  const archiveWriteRunningRef = useRef(false);
+  const archiveRequest = ws.request;
   const selectedCharacter = archive.characters.find((item) => item.id === selectedCharacterId) ?? archive.characters[0];
   const selectedWorldBook = archive.worldBooks.find((item) => item.id === selectedWorldBookId) ?? archive.worldBooks[0];
 
-  const syncArchiveSocial = (nextArchive: ReverieArchive) => {
-    const active = nextArchive.characters
-      .filter((card) => nextArchive.activeCharacterIds.includes(card.id))
-      .map((card) => ({
-        id: card.id,
-        name: card.name,
-        role: card.role,
-        identity: card.identity,
-        description: card.description,
-        personality: card.personality,
-        tags: card.tags,
-      }));
-    ws.send(WSMsgType.SETTINGS_UPDATE, {
-      section: 'archive_social',
-      characters: active,
-    });
-  };
+  const flushArchiveWrites = useCallback(async () => {
+    if (archiveWriteRunningRef.current || !archiveReadyRef.current) return;
+    archiveWriteRunningRef.current = true;
+    try {
+      while (archiveWritePendingRef.current) {
+        const desired = archiveWritePendingRef.current;
+        archiveWritePendingRef.current = null;
+        try {
+          const response = await archiveRequest<Record<string, unknown>>(
+            WSMsgType.ARCHIVE_PUT,
+            {
+              archive: desired,
+              expected_revision: archiveRevisionRef.current,
+            },
+            { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 15_000 },
+          );
+          if (response.ok !== true) {
+            if (response.code === 'conflict' && response.archive) {
+              const authoritative = normalizeArchive(response.archive);
+              archiveRevisionRef.current = Number(response.revision) || 0;
+              setArchive(authoritative);
+              setArchiveStatus('档案已在别处变化；为避免覆盖，已重新载入本地权威版本。');
+            } else {
+              archiveWritePendingRef.current ??= desired;
+              setArchiveStatus(
+                safeString(response.error)
+                || '档案模块暂时不可用；人格和聊天未受影响，本次修改尚未落盘。',
+              );
+            }
+            break;
+          }
+          archiveRevisionRef.current = Number(response.revision) || archiveRevisionRef.current;
+          const committed = normalizeArchive(response.archive);
+          if (!archiveWritePendingRef.current) setArchive(committed);
+          setArchiveStatus('已保存到本地档案库');
+        } catch (error) {
+          archiveWritePendingRef.current ??= desired;
+          setArchiveStatus(
+            error instanceof Error
+              ? `档案尚未保存：${error.message}`
+              : '档案尚未保存；人格和聊天仍可继续使用。',
+          );
+          break;
+        }
+      }
+    } finally {
+      archiveWriteRunningRef.current = false;
+    }
+  }, [archiveRequest]);
 
   const persist = (nextArchive: ReverieArchive) => {
-    saveArchive(nextArchive);
-    setArchive(nextArchive);
-    syncArchiveSocial(nextArchive);
+    if (!archiveReadyRef.current || ws.connState !== 'connected') {
+      setArchiveStatus('本地档案库未连接；为避免制造第二事实源，本次修改未接受。');
+      return;
+    }
+    const normalized = normalizeArchive(nextArchive);
+    setArchive(normalized);
+    archiveWritePendingRef.current = normalized;
+    setArchiveStatus('正在保存到本地档案库…');
+    void flushArchiveWrites();
   };
+
+  useEffect(() => {
+    const personaId = safeString(ws.personaScope?.persona_id);
+    if (ws.connState !== 'connected' || !personaId) {
+      archiveReadyRef.current = false;
+      setArchiveStatus('本地档案库未连接；人格和聊天仍可使用。');
+      return undefined;
+    }
+    let disposed = false;
+    archiveReadyRef.current = false;
+    archiveWritePendingRef.current = null;
+    const hydrate = async () => {
+      try {
+        let response = await archiveRequest<Record<string, unknown>>(
+          WSMsgType.ARCHIVE_GET,
+          {},
+          { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 12_000 },
+        );
+        if (response.ok !== true) throw new Error(safeString(response.error) || '档案模块不可用');
+        if (response.exists !== true) {
+          const legacy = loadLegacyArchiveForMigration();
+          const seed = legacy ?? createDefaultArchive();
+          response = await archiveRequest<Record<string, unknown>>(
+            WSMsgType.ARCHIVE_MIGRATE,
+            { archive: seed, expected_revision: 0 },
+            { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 15_000 },
+          );
+          if (response.ok !== true) {
+            throw new Error(safeString(response.error) || '旧档案迁移失败');
+          }
+          if (legacy) clearLegacyArchiveAfterMigration();
+        }
+        if (disposed) return;
+        const authoritative = normalizeArchive(response.archive);
+        archiveRevisionRef.current = Number(response.revision) || 0;
+        archiveReadyRef.current = true;
+        setArchive(authoritative);
+        setSelectedCharacterId(authoritative.characters[0]?.id ?? '');
+        setSelectedWorldBookId(authoritative.worldBooks[0]?.id ?? '');
+        setArchiveStatus('已连接本地档案库');
+        void flushArchiveWrites();
+      } catch (error) {
+        if (disposed) return;
+        archiveReadyRef.current = false;
+        setArchiveStatus(
+          error instanceof Error
+            ? `档案模块已隔离：${error.message}`
+            : '档案模块已隔离；人格和聊天仍可使用。',
+        );
+      }
+    };
+    void hydrate();
+    return () => {
+      disposed = true;
+      archiveReadyRef.current = false;
+    };
+  }, [flushArchiveWrites, ws.connState, ws.personaScope?.persona_id]);
 
   const saveCharacterField = <K extends keyof ReverieCharacterCard>(field: K, value: ReverieCharacterCard[K]) => {
     if (!selectedCharacter) return;
@@ -3359,6 +3464,10 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           Live2D 动画渲染受 Cubism 应用级许可与运行库闸门约束；未满足时不会伪装成功，VRM/GLB 仍可独立使用。
         </small>
       </section>
+      <span className={styles.statusNote} role="status">
+        <HardDrive size={14} />
+        {archiveStatus}
+      </span>
       <div className={styles.archiveColumns}>
         <section className={styles.archiveColumn}>
           <div className={styles.managementHero}>
@@ -3640,30 +3749,85 @@ export function BackupPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
       setStatus('这不是可识别的旧版 Reverie 备份');
       return;
     }
-    saveArchive(backup.archive);
-    if (backup.onboarding) saveOnboardingPreferences(backup.onboarding);
+    let archiveSnapshot: Record<string, unknown>;
+    try {
+      archiveSnapshot = await ws.request<Record<string, unknown>>(
+        WSMsgType.ARCHIVE_GET,
+        {},
+        { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 12_000 },
+      );
+      if (archiveSnapshot.ok !== true) {
+        throw new Error(safeString(archiveSnapshot.error) || '本地档案模块不可用');
+      }
+      const archiveWrite = await ws.request<Record<string, unknown>>(
+        WSMsgType.ARCHIVE_PUT,
+        {
+          archive: backup.archive,
+          expected_revision: Number(archiveSnapshot.revision) || 0,
+        },
+        { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 15_000 },
+      );
+      if (archiveWrite.ok !== true) {
+        throw new Error(safeString(archiveWrite.error) || '旧档案未写入本地权威数据库');
+      }
+    } catch (error) {
+      setStatus(
+        error instanceof Error
+          ? `旧备份未导入：${error.message}`
+          : '旧备份未导入；现有数据保持不变。',
+      );
+      return;
+    }
+    if (backup.onboarding) {
+      const memoryResult = await ws.request<Record<string, unknown>>(
+        WSMsgType.SETTINGS_UPDATE,
+        {
+          section: 'memory',
+          retention_days: backup.onboarding.memoryRetentionDays,
+        },
+        { expectedType: WSMsgType.SETTINGS_UPDATE_RESULT, timeout: 8_000 },
+      );
+      if (memoryResult.ok !== true) {
+        setStatus(`旧备份的记忆期限未应用：${safeString(memoryResult.error) || '设置被拒绝'}`);
+        return;
+      }
+      const onboardingResult = await ws.request<Record<string, unknown>>(
+        WSMsgType.SETTINGS_UPDATE,
+        { section: 'onboarding', completed: true },
+        { expectedType: WSMsgType.SETTINGS_UPDATE_RESULT, timeout: 8_000 },
+      );
+      if (onboardingResult.ok !== true) {
+        setStatus(`旧备份的初始设置未完成：${safeString(onboardingResult.error) || '设置被拒绝'}`);
+        return;
+      }
+    }
     if (backup.llmConfig) {
       await saveConfigMetadata({ ...backup.llmConfig, apiKey: '' });
     }
     if (backup.userProfile) {
       const profile = normalizeUserProfile(backup.userProfile);
-      saveUserProfileSnapshot(profile);
       ws.send(WSMsgType.USER_PROFILE_UPDATE, { profile: userProfilePayload(profile) });
     }
-    ws.setChatMessages(migrateChatMessages(backup.evidence.chatMessages));
-    localStorage.setItem('reverie:dream-room:diary:v1', JSON.stringify(backup.evidence.diaryEntries));
-    localStorage.setItem('reverie:dream-room:timeline:v1', JSON.stringify(backup.evidence.timelinePosts));
     ws.refreshDiary();
     ws.refreshTimeline();
     ws.send(WSMsgType.EMOTION_GET, {});
     ws.send(WSMsgType.RELATIONSHIP_GET, {});
     const warnings = [...backup.securityWarnings];
+    if (
+      backup.evidence.chatMessages.length
+      || backup.evidence.diaryEntries.length
+      || backup.evidence.timelinePosts.length
+    ) {
+      warnings.push(
+        '旧版聊天、日记与动态没有写入浏览器缓存；请保留原文件，待通过内核迁移器验证后再恢复。',
+      );
+    }
     if (backup.worldState) {
       warnings.push('旧版内嵌世界状态未通过受限原生文件通道恢复；请保留原文件。');
     }
     setStatus(warnings.length
-      ? `旧版界面数据已导入。${warnings.join(' ')}`
-      : '旧版界面数据已导入');
+      ? `旧版档案数据已导入。${warnings.join(' ')}`
+      : '旧版档案数据已导入');
   };
 
   return (
@@ -3700,51 +3864,6 @@ export function BackupPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
           {status}
         </span>
       )}
-    </div>
-  );
-}
-
-export function OnboardingQuestionnaire({ onComplete }: { onComplete: () => void }) {
-  const [years, setYears] = useState<MemoryRetentionYears>(2);
-  const marks = useMemo<MemoryRetentionYears[]>(() => [1, 2, 3], []);
-
-  useEffect(() => {
-    if (loadOnboardingPreferences()) onComplete();
-  }, [onComplete]);
-
-  const submit = () => {
-    saveOnboardingPreferences(createOnboardingPreferences(years));
-    onComplete();
-  };
-
-  return (
-    <div className={styles.onboardingLayer} role="dialog" aria-modal="true">
-      <section className={styles.onboardingCard}>
-        <div className={styles.managementHero}>
-          <KeyRound size={24} />
-          <div>
-            <strong>初始问卷</strong>
-            <small>长期记忆</small>
-          </div>
-        </div>
-        <p>你希望你的AI伴侣的记忆保存多久？最低为一年，上限为3年，若储存时间过长则会则会占用大量储存空间。</p>
-        <div className={styles.retentionPicker}>
-          {marks.map((mark) => (
-            <button
-              type="button"
-              key={mark}
-              className={years === mark ? styles.retentionActive : ''}
-              onClick={() => setYears(mark)}
-            >
-              {mark} 年
-            </button>
-          ))}
-        </div>
-        <button type="button" className={styles.primaryWide} onClick={submit}>
-          <Check size={16} />
-          保存
-        </button>
-      </section>
     </div>
   );
 }

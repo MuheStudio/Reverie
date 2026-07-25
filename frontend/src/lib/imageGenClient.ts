@@ -18,15 +18,30 @@ export interface ImageGenResult {
   mimeType: string;
 }
 
-import { loadPersistedConfig, sanitizeImageGenConfig } from './configPersistence';
+import {
+  loadPersistedConfig,
+  sanitizeImageGenConfig,
+  savePersistedConfig,
+  type PublicImageGenConfig,
+} from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-imagegen-config';
 
-function writePublicConfig(config: ImageGenConfig): ImageGenConfig {
-  const sanitized = sanitizeImageGenConfig(config);
-  if (!sanitized) throw new TypeError('Image-generation configuration metadata is invalid');
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(sanitized));
-  return sanitized;
+function readLegacyPublicConfig(): PublicImageGenConfig | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(CONFIG_KEY);
+    return raw ? sanitizeImageGenConfig(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function removeLegacyPublicConfig(): void {
+  try {
+    globalThis.localStorage?.removeItem(CONFIG_KEY);
+  } catch {
+    // The legacy cache is never consulted as a runtime fallback.
+  }
 }
 
 const DEFAULT_CONFIGS: Record<ImageGenProvider, Omit<ImageGenConfig, 'apiKey'>> = {
@@ -49,35 +64,32 @@ export function getDefaultImageGenConfig(
 }
 
 /**
- * Load image gen config — priority: local file (~/.openroom/config.json) > localStorage.
- * Falls back gracefully if the dev server API is unavailable.
+ * Load image-generation metadata from the sender-validated Electron store.
+ * A legacy browser value is accepted only for a one-way confirmed migration.
  */
 export async function loadImageGenConfig(): Promise<ImageGenConfig | null> {
-  // 1. Try local file via dev-server API
-  try {
-    const persisted = await loadPersistedConfig();
-    if (persisted?.imageGen) {
-      const sanitized = writePublicConfig(persisted.imageGen);
-      return sanitized;
-    }
-  } catch {
-    // API not available — fall through
+  const persisted = await loadPersistedConfig();
+  if (persisted?.imageGen) {
+    removeLegacyPublicConfig();
+    return { ...persisted.imageGen, apiKey: '' };
   }
 
-  // 2. Fall back to localStorage
-  return loadImageGenConfigSync();
+  const legacy = readLegacyPublicConfig();
+  if (legacy && persisted?.llm) {
+    try {
+      await savePersistedConfig({ llm: persisted.llm, imageGen: legacy });
+      removeLegacyPublicConfig();
+      return { ...legacy, apiKey: '' };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
-/** Synchronous read from localStorage cache. */
+/** Compatibility boundary: browser storage is never authoritative. */
 export function loadImageGenConfigSync(): ImageGenConfig | null {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    const sanitized = raw ? sanitizeImageGenConfig(JSON.parse(raw)) : null;
-    if (sanitized) localStorage.setItem(CONFIG_KEY, JSON.stringify(sanitized));
-    return sanitized;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 export async function saveImageGenConfig(config: ImageGenConfig): Promise<void> {
@@ -87,6 +99,11 @@ export async function saveImageGenConfig(config: ImageGenConfig): Promise<void> 
   }
   const apiKey = config.apiKey.trim();
   const customHeaders = config.customHeaders?.trim();
+  const persisted = await loadPersistedConfig();
+  if (!persisted?.llm) {
+    throw new Error('请先保存主聊天模型配置，再保存图片生成配置');
+  }
+  await savePersistedConfig({ llm: persisted.llm, imageGen: publicConfig });
   if (apiKey || customHeaders) {
     const api = globalThis.window?.electronAPI?.credentials;
     if (!api?.set) {
@@ -100,7 +117,7 @@ export async function saveImageGenConfig(config: ImageGenConfig): Promise<void> 
       throw new Error('Secure credential storage did not confirm the write');
     }
   }
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(publicConfig));
+  removeLegacyPublicConfig();
 }
 
 export async function clearImageGenCredentials(): Promise<void> {

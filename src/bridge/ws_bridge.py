@@ -25,85 +25,17 @@ from weakref import WeakSet
 
 import websockets
 from websockets.server import WebSocketServerProtocol
+from ..kernel.contracts import LEGACY_MESSAGE_TYPES
 
 logger = logging.getLogger("reverie.bridge.ws")
 
-# 消息类型常量
 class MsgType:
-    # 前端 → 后端
-    CHAT_SEND = "chat:send"
-    CHAT_STOP = "chat:stop"
-    CHAT_CANCEL = "chat:cancel"
-    CHAT_REVEAL = "chat:reveal"
-    LOCAL_MODE_SET = "local_mode:set"
-    AI_USAGE_GET = "ai_usage:get"
-    AI_USAGE_GRANT = "ai_usage:grant"
-    AI_USAGE_REVOKE = "ai_usage:revoke"
-    MEMORY_QUERY = "memory:query"
-    MEMORY_SETTINGS_GET = "memory:settings:get"
-    MEMORY_STORE = "memory:store"
-    DIARY_REQUEST = "diary:request"
-    TIMELINE_REQUEST = "timeline:request"
-    AMBIENT_GET = "ambient:get"
-    API_BUDGET_GET = "api:budget:get"
-    GROUP_REQUEST = "group:request"
-    GROUP_SEND = "group:send"
-    EMOTION_GET = "emotion:get"
-    PERSONA_GET = "persona:get"
-    PERSONA_IMPORT = "persona:import"
-    PERSONA_LIST = "persona:list"
-    PERSONA_ACTIVATE = "persona:activate"
-    RELATIONSHIP_GET = "relationship:get"
-    STICKER_LIST = "sticker:list"
-    STICKER_COLLECT = "sticker:collect"
-    STICKER_REACT = "sticker:react"
-    STICKER_SEND = "sticker:send"
-    ANTI_AI_STATUS = "anti_ai:status"
-    IMMERSION_NEARBY = "immersion:nearby"
-    IMMERSION_CLOSEUP = "immersion:closeup"
-    IMMERSION_SMART_HOME = "immersion:smart_home"
-    IMAGE_RANDOM = "image:random"
-    SETTINGS_UPDATE = "settings:update"
-    AI_USAGE_RESULT = "ai_usage:result"
-    USER_PROFILE_GET = "user:profile:get"
-    USER_PROFILE_UPDATE = "user:profile:update"
-    KEEPSAKE_LIST = "keepsake:list"
-    KEEPSAKE_ADD = "keepsake:add"
-    BACKUP_EXPORT = "backup:export"
-    BACKUP_IMPORT = "backup:import"
+    """Legacy attribute facade generated from the canonical V3 contract."""
 
-    # 后端 → 前端
-    CHAT_CHUNK = "chat:chunk"
-    CHAT_BUBBLE = "chat:bubble"
-    CHAT_DONE = "chat:done"
-    CHAT_TYPING = "chat:typing"
-    CHAT_RETRACT = "chat:retract"
-    CHAT_STATE = "chat:state"
-    LOCAL_MODE_STATE = "local_mode:state"
-    PROACTIVE_MESSAGE = "proactive:message"
-    PROACTIVE_NOTIFY = "proactive:notify"
-    EMOTION_UPDATE = "emotion:update"
-    MEMORY_RESULT = "memory:result"
-    MEMORY_SETTINGS_RESULT = "memory:settings:result"
-    DIARY_RESULT = "diary:result"
-    TIMELINE_RESULT = "timeline:result"
-    AMBIENT_RESULT = "ambient:result"
-    API_BUDGET_RESULT = "api:budget:result"
-    GROUP_RESULT = "group:result"
-    PERSONA_DATA = "persona:data"
-    PERSONA_IMPORT_RESULT = "persona:import:result"
-    RELATIONSHIP_DATA = "relationship:data"
-    STICKER_DATA = "sticker:data"
-    ANTI_AI_STATUS_RESULT = "anti_ai:status:result"
-    IMMERSION_RESULT = "immersion:result"
-    IMAGE_RESULT = "image:result"
-    USER_PROFILE_RESULT = "user:profile:result"
-    KEEPSAKE_RESULT = "keepsake:result"
-    BACKUP_RESULT = "backup:result"
-    SETTINGS_UPDATE_RESULT = "settings:update:result"
-    RUNTIME_ACTIVITY = "runtime:activity"
-    ERROR = "error"
-    HEARTBEAT = "heartbeat"
+
+for _message_name, _message_value in LEGACY_MESSAGE_TYPES:
+    setattr(MsgType, _message_name, _message_value)
+del _message_name, _message_value
 
 
 class BridgeState:
@@ -139,6 +71,10 @@ class BridgeState:
         self.api_budget = None       # ApiBudgetTracker
         self.social_universe = None  # SocialUniverse
         self.phrase_alignment = None # UserPhraseAlignment
+        self.kernel_store = None      # KernelStore: canonical identity/chat/event ledger
+        self.archive_store = None     # Optional persona-scoped archive/world-book store
+        self.module_registry = None   # Failure isolation and user-visible module health
+        self.game_state_store = None  # Optional persona-scoped mini-game state
         self.persona_epoch = 0       # Incremented only by privileged activation.
         self.persona_restart_required = False  # Blocks mixed old-runtime/new-identity chat.
         self.model_epoch = 0         # Isolates replies from hot-swapped providers.
@@ -171,6 +107,7 @@ class BridgeClientContext:
 
 RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MEMORY_QUERY: MsgType.MEMORY_RESULT,
+    MsgType.CHAT_HISTORY: MsgType.CHAT_HISTORY_RESULT,
     MsgType.MEMORY_SETTINGS_GET: MsgType.MEMORY_SETTINGS_RESULT,
     MsgType.MEMORY_STORE: MsgType.MEMORY_RESULT,
     MsgType.EMOTION_GET: MsgType.EMOTION_UPDATE,
@@ -178,6 +115,13 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.PERSONA_IMPORT: MsgType.PERSONA_IMPORT_RESULT,
     MsgType.PERSONA_LIST: MsgType.PERSONA_IMPORT_RESULT,
     MsgType.PERSONA_ACTIVATE: MsgType.PERSONA_IMPORT_RESULT,
+    MsgType.ARCHIVE_GET: MsgType.ARCHIVE_RESULT,
+    MsgType.ARCHIVE_PUT: MsgType.ARCHIVE_RESULT,
+    MsgType.ARCHIVE_MIGRATE: MsgType.ARCHIVE_RESULT,
+    MsgType.MODULE_LIST: MsgType.MODULE_RESULT,
+    MsgType.MODULE_CONTROL: MsgType.MODULE_RESULT,
+    MsgType.GAME_STATE_GET: MsgType.GAME_STATE_RESULT,
+    MsgType.GAME_STATE_PUT: MsgType.GAME_STATE_RESULT,
     MsgType.RELATIONSHIP_GET: MsgType.RELATIONSHIP_DATA,
     MsgType.DIARY_REQUEST: MsgType.DIARY_RESULT,
     MsgType.TIMELINE_REQUEST: MsgType.TIMELINE_RESULT,
@@ -200,6 +144,7 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.IMMERSION_CLOSEUP: MsgType.IMMERSION_RESULT,
     MsgType.IMMERSION_SMART_HOME: MsgType.IMMERSION_RESULT,
     MsgType.SETTINGS_UPDATE: MsgType.SETTINGS_UPDATE_RESULT,
+    MsgType.SETTINGS_GET: MsgType.SETTINGS_GET_RESULT,
     MsgType.AI_USAGE_GET: MsgType.AI_USAGE_RESULT,
     MsgType.AI_USAGE_GRANT: MsgType.AI_USAGE_RESULT,
     MsgType.AI_USAGE_REVOKE: MsgType.AI_USAGE_RESULT,
@@ -223,6 +168,13 @@ _POST_PERSONA_SWITCH_ALLOWED = frozenset({
     MsgType.PERSONA_IMPORT,
     MsgType.PERSONA_LIST,
     MsgType.API_BUDGET_GET,
+    MsgType.ARCHIVE_GET,
+    MsgType.ARCHIVE_PUT,
+    MsgType.ARCHIVE_MIGRATE,
+    MsgType.MODULE_LIST,
+    MsgType.MODULE_CONTROL,
+    MsgType.GAME_STATE_GET,
+    MsgType.GAME_STATE_PUT,
 })
 
 
@@ -244,6 +196,13 @@ _DEGRADED_KERNEL_ALLOWED = frozenset({
     MsgType.PERSONA_IMPORT,
     MsgType.PERSONA_LIST,
     MsgType.PERSONA_ACTIVATE,
+    MsgType.ARCHIVE_GET,
+    MsgType.ARCHIVE_PUT,
+    MsgType.ARCHIVE_MIGRATE,
+    MsgType.MODULE_LIST,
+    MsgType.MODULE_CONTROL,
+    MsgType.GAME_STATE_GET,
+    MsgType.GAME_STATE_PUT,
 })
 
 
@@ -253,6 +212,53 @@ def degraded_runtime_blocks(msg_type: str) -> bool:
     return bool(
         bridge_state.runtime_unavailable
         and msg_type not in _DEGRADED_KERNEL_ALLOWED
+    )
+
+
+_PERSONA_SCOPED_COMMANDS = frozenset({
+    MsgType.CHAT_SEND,
+    MsgType.CHAT_CANCEL,
+    MsgType.CHAT_REVEAL,
+    MsgType.CHAT_STOP,
+    MsgType.CHAT_HISTORY,
+    MsgType.MEMORY_QUERY,
+    MsgType.MEMORY_SETTINGS_GET,
+    MsgType.MEMORY_STORE,
+    MsgType.EMOTION_GET,
+    MsgType.ARCHIVE_GET,
+    MsgType.ARCHIVE_PUT,
+    MsgType.ARCHIVE_MIGRATE,
+    MsgType.GAME_STATE_GET,
+    MsgType.GAME_STATE_PUT,
+    MsgType.RELATIONSHIP_GET,
+    MsgType.DIARY_REQUEST,
+    MsgType.TIMELINE_REQUEST,
+    MsgType.AMBIENT_GET,
+    MsgType.GROUP_REQUEST,
+    MsgType.GROUP_SEND,
+    MsgType.IMAGE_RANDOM,
+    MsgType.KEEPSAKE_LIST,
+    MsgType.KEEPSAKE_ADD,
+})
+
+
+def _matches_expected_persona(payload: dict[str, Any]) -> bool:
+    active = _active_persona_scope()
+    try:
+        epoch = int(payload.get("expected_persona_epoch"))
+    except (TypeError, ValueError):
+        return False
+    expected_id = str(payload.get("expected_persona_id") or "")
+    expected_fingerprint = str(payload.get("expected_persona_fingerprint") or "")
+    return bool(
+        expected_id
+        and expected_fingerprint
+        and expected_id == str(active["persona_id"])
+        and epoch == int(active["persona_epoch"])
+        and hmac.compare_digest(
+            expected_fingerprint,
+            str(active["persona_fingerprint"]),
+        )
     )
 
 
@@ -619,11 +625,98 @@ def _get_chat_coordinator():
             get_session=lambda: bridge_state.session,
             emit=_emit_chat_event,
             scope_is_current=_chat_scope_is_current,
+            kernel_store=bridge_state.kernel_store,
         )
     return _chat_coordinator
 
 
 # ── 消息处理器 ────────────────────────────────────────
+
+@register_handler(MsgType.CHAT_HISTORY)
+async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """Read authoritative, persona-scoped chat history from the kernel."""
+    store = bridge_state.kernel_store
+    if store is None:
+        return {
+            "items": [],
+            "has_more": False,
+            "next_cursor": None,
+            "error": "authoritative chat ledger is unavailable",
+        }
+    conversation_id = str(payload.get("conversation_id") or "dream-room")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", conversation_id):
+        raise ValueError("invalid conversation_id")
+    try:
+        limit = int(payload.get("limit") or 300)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid chat history limit") from exc
+    before_sequence = None
+    raw_cursor = payload.get("before")
+    if raw_cursor is not None:
+        if not isinstance(raw_cursor, dict):
+            raise ValueError("invalid chat history cursor")
+        raw_sequence = raw_cursor.get("sequence")
+        if isinstance(raw_sequence, bool):
+            raise ValueError("invalid chat history cursor")
+        try:
+            before_sequence = int(raw_sequence)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid chat history cursor") from exc
+        if before_sequence < 1:
+            raise ValueError("invalid chat history cursor")
+    persona_scope = _active_persona_scope()
+    page = store.message_page(
+        conversation_id,
+        limit=limit,
+        before_sequence=before_sequence,
+        persona_id=str(persona_scope["persona_id"]),
+    )
+    committed_request_ids = {
+        str(item.get("request_id") or "") for item in page["items"]
+    }
+    items = [
+        {
+            "id": item["message_id"],
+            "role": item["role"],
+            "content": item["content"],
+            "request_id": item["request_id"],
+            "conversation_id": conversation_id,
+            "persona_id": persona_scope["persona_id"],
+            "created_at_utc": item["created_at_utc"],
+            "timestamp_status": "known",
+            "source": item["role"],
+            "delivery_state": item["delivery_state"],
+            "bubble_index": item["bubble_index"],
+        }
+        for item in page["items"]
+    ]
+    if before_sequence is None:
+        for pending in _get_pending_chat_store().list_active():
+            request_id = str(pending.get("request_id") or "")
+            if (
+                request_id in committed_request_ids
+                or str(pending.get("conversation_id") or "") != conversation_id
+                or str(pending.get("persona_id") or "") != persona_scope["persona_id"]
+            ):
+                continue
+            items.append(
+                {
+                    "id": f"pending_user_{request_id}",
+                    "role": "user",
+                    "content": str(pending.get("text") or ""),
+                    "request_id": request_id,
+                    "conversation_id": conversation_id,
+                    "persona_id": persona_scope["persona_id"],
+                    "created_at_utc": str(pending.get("created_at_utc") or ""),
+                    "timestamp_status": "known",
+                    "source": str(pending.get("source") or "user"),
+                    "delivery_state": str(pending.get("state") or "queued"),
+                    "bubble_index": 0,
+                }
+            )
+    items.sort(key=lambda item: (item["created_at_utc"], item["id"]))
+    return {**page, "items": items}
+
 
 @register_handler(MsgType.CHAT_SEND)
 async def handle_chat_send(payload: dict, ws: WebSocketServerProtocol) -> dict | None:
@@ -1337,6 +1430,252 @@ async def handle_user_profile_update(payload: dict, _ws: WebSocketServerProtocol
         }
 
 
+def _module_status_payload(status: Any) -> dict[str, Any]:
+    state = getattr(status, "state", "")
+    return {
+        "module_id": str(getattr(status, "module_id", "")),
+        "state": str(getattr(state, "value", state)),
+        "failures": int(getattr(status, "failures", 0) or 0),
+        "last_error_code": str(getattr(status, "last_error_code", "") or ""),
+        "last_error_at_utc": str(getattr(status, "last_error_at_utc", "") or ""),
+        "details": dict(getattr(status, "details", {}) or {}),
+    }
+
+
+@register_handler(MsgType.MODULE_LIST)
+async def handle_module_list(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    registry = bridge_state.module_registry
+    if registry is None:
+        return {
+            "ok": False,
+            "code": "module_registry_unavailable",
+            "modules": [],
+            "error": "Module health registry is unavailable",
+        }
+    return {
+        "ok": True,
+        "modules": [_module_status_payload(status) for status in registry.statuses()],
+    }
+
+
+@register_handler(MsgType.MODULE_CONTROL)
+async def handle_module_control(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    registry = bridge_state.module_registry
+    if registry is None:
+        return {
+            "ok": False,
+            "code": "module_registry_unavailable",
+            "modules": [],
+            "error": "Module health registry is unavailable",
+        }
+    module_id = str(payload.get("module_id") or "")
+    action = str(payload.get("action") or "")
+    if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", module_id):
+        return {"ok": False, "code": "invalid_request", "error": "Invalid module id"}
+    try:
+        if action == "disable":
+            status = registry.stop(module_id, disable=True)
+        elif action == "stop":
+            status = registry.stop(module_id)
+        elif action in {"enable", "start"}:
+            status = registry.start(module_id)
+        elif action == "retry":
+            status = registry.retry(module_id)
+        else:
+            return {
+                "ok": False,
+                "code": "invalid_request",
+                "error": "Unsupported module action",
+            }
+    except KeyError:
+        return {"ok": False, "code": "module_unknown", "error": "Unknown module"}
+    return {
+        "ok": True,
+        "module": _module_status_payload(status),
+        "modules": [_module_status_payload(item) for item in registry.statuses()],
+    }
+
+
+def _optional_module_unavailable(module_id: str) -> dict[str, Any] | None:
+    registry = bridge_state.module_registry
+    if registry is None:
+        return None
+    try:
+        status = registry.status(module_id)
+    except KeyError:
+        return None
+    if str(getattr(status.state, "value", status.state)) == "running":
+        return None
+    return {
+        "ok": False,
+        "code": "module_unavailable",
+        "module": _module_status_payload(status),
+        "error": f"{module_id} module is not running; persona and chat remain active",
+    }
+
+
+@register_handler(MsgType.GAME_STATE_GET)
+async def handle_game_state_get(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    unavailable = _optional_module_unavailable("games")
+    if unavailable:
+        return unavailable
+    store = bridge_state.game_state_store
+    if store is None:
+        return {
+            "ok": False,
+            "code": "module_unavailable",
+            "error": "Game-state module is unavailable",
+        }
+    try:
+        return {
+            "ok": True,
+            **store.get(_active_persona_id(), str(payload.get("game_id") or "")),
+        }
+    except Exception as exc:
+        logger.exception("Game-state module read failed")
+        return {"ok": False, "code": "module_degraded", "error": str(exc)}
+
+
+@register_handler(MsgType.GAME_STATE_PUT)
+async def handle_game_state_put(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    unavailable = _optional_module_unavailable("games")
+    if unavailable:
+        return unavailable
+    store = bridge_state.game_state_store
+    if store is None:
+        return {
+            "ok": False,
+            "code": "module_unavailable",
+            "error": "Game-state module is unavailable",
+        }
+    raw_revision = payload.get("expected_revision", 0)
+    if isinstance(raw_revision, bool):
+        return {"ok": False, "code": "invalid_request", "error": "Invalid game revision"}
+    try:
+        expected_revision = int(raw_revision)
+        result = store.put(
+            _active_persona_id(),
+            str(payload.get("game_id") or ""),
+            payload.get("state"),
+            expected_revision=expected_revision,
+        )
+        return {"ok": True, **result}
+    except Exception as exc:
+        from src.games import GameStateConflict
+
+        if isinstance(exc, GameStateConflict):
+            current = await handle_game_state_get(payload, _ws)
+            return {**current, "ok": False, "code": "conflict", "error": str(exc)}
+        logger.exception("Game-state module write failed")
+        return {"ok": False, "code": "module_degraded", "error": str(exc)}
+
+
+def _archive_module_snapshot() -> dict[str, Any]:
+    unavailable = _optional_module_unavailable("archive")
+    if unavailable:
+        return unavailable
+    store = bridge_state.archive_store
+    if store is None:
+        return {
+            "ok": False,
+            "code": "module_unavailable",
+            "error": "Archive module is unavailable; persona and chat remain active",
+        }
+    try:
+        return {"ok": True, **store.get(_active_persona_id())}
+    except Exception as exc:
+        logger.exception("Archive module read failed")
+        return {
+            "ok": False,
+            "code": "module_degraded",
+            "error": str(exc),
+        }
+
+
+@register_handler(MsgType.ARCHIVE_GET)
+async def handle_archive_get(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    return _archive_module_snapshot()
+
+
+async def _commit_archive(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+    *,
+    migrate_only: bool,
+) -> dict:
+    availability = _archive_module_snapshot()
+    if availability.get("ok") is not True:
+        return availability
+    store = bridge_state.archive_store
+    if store is None:
+        return {
+            "ok": False,
+            "code": "module_unavailable",
+            "error": "Archive module is unavailable; persona and chat remain active",
+        }
+    raw_revision = payload.get("expected_revision", 0)
+    if isinstance(raw_revision, bool):
+        return {"ok": False, "code": "invalid_request", "error": "Invalid archive revision"}
+    try:
+        expected_revision = int(raw_revision)
+    except (TypeError, ValueError):
+        return {"ok": False, "code": "invalid_request", "error": "Invalid archive revision"}
+    try:
+        result = store.put(
+            _active_persona_id(),
+            payload.get("archive"),
+            expected_revision=expected_revision,
+            migrate_only=migrate_only,
+        )
+    except Exception as exc:
+        from src.archive import ArchiveConflict
+
+        if isinstance(exc, ArchiveConflict):
+            current = _archive_module_snapshot()
+            return {
+                **current,
+                "ok": False,
+                "code": "conflict",
+                "error": str(exc),
+            }
+        logger.exception("Archive module write failed")
+        return {
+            "ok": False,
+            "code": "module_degraded",
+            "error": str(exc),
+        }
+
+    active_ids = set(result["archive"].get("activeCharacterIds", []))
+    active_cards = [
+        card
+        for card in result["archive"].get("characters", [])
+        if card.get("id") in active_ids
+    ]
+    social = await handle_settings_update(
+        {"section": "archive_social", "characters": active_cards},
+        ws,
+    )
+    return {
+        "ok": True,
+        **result,
+        "social_sync": {
+            "ok": social.get("ok") is True,
+            "synced": int(social.get("synced") or 0),
+            **({"warning": str(social.get("error"))} if social.get("ok") is not True else {}),
+        },
+    }
+
+
+@register_handler(MsgType.ARCHIVE_PUT)
+async def handle_archive_put(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    return await _commit_archive(payload, ws, migrate_only=False)
+
+
+@register_handler(MsgType.ARCHIVE_MIGRATE)
+async def handle_archive_migrate(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    return await _commit_archive(payload, ws, migrate_only=True)
+
+
 @register_handler(MsgType.BACKUP_EXPORT)
 async def handle_backup_export(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """Export the complete local memory state as a JSON-safe payload."""
@@ -1499,101 +1838,142 @@ async def handle_immersion_smart_home(payload: dict, _ws: WebSocketServerProtoco
     )
 
 
+def _provider_settings_snapshot() -> dict[str, Any]:
+    settings = bridge_state.settings
+    if settings is None:
+        raise RuntimeError("Settings are not initialized")
+    return {
+        "provider": settings.llm.provider,
+        "model": settings.llm.model,
+        "base_url": settings.llm.base_url,
+        "has_api_key": bool(settings.llm.api_key),
+        "model_epoch": int(bridge_state.model_epoch or 0),
+    }
+
+
+async def _configure_runtime_provider(payload: Any) -> dict[str, Any]:
+    """Commit public provider metadata before accepting endpoint-bound secrets.
+
+    On a destination change the previous runtime key is deliberately cleared.
+    Electron applies only credentials cryptographically bound to the resulting
+    provider/origin after this durable settings commit succeeds.
+    """
+
+    if not isinstance(payload, dict):
+        raise ValueError("provider metadata must be an object")
+    credential_fields = {"api_key", "apiKey", "custom_headers", "customHeaders"}
+    if credential_fields.intersection(payload):
+        raise ValueError("credentials require the private Electron control channel")
+    provider = str(payload.get("provider", "openai")).strip().lower()
+    provider_aliases = {"z.ai": "glm", "zai": "glm", "claude": "anthropic"}
+    provider = provider_aliases.get(provider, provider)
+    from src.config.settings import (
+        PROVIDER_DEFAULTS,
+        environment_api_key,
+        normalize_provider_endpoint,
+        save_settings,
+    )
+
+    if provider not in PROVIDER_DEFAULTS:
+        raise ValueError(f"Unsupported provider: {provider}")
+    if not bridge_state.settings:
+        raise RuntimeError("Settings are not initialized")
+
+    previous_llm = bridge_state.settings.llm
+    candidate = previous_llm.model_copy(deep=True)
+    provider_changed = candidate.provider != provider
+    candidate.provider = provider
+    if "model" in payload and str(payload.get("model") or "").strip():
+        candidate.model = str(payload["model"]).strip()
+    elif provider_changed:
+        from src.api.providers import get_provider
+
+        provider_info = get_provider(provider)
+        if provider_info and provider_info.models:
+            candidate.model = provider_info.models[0]
+    if "base_url" in payload:
+        requested_base_url = str(payload.get("base_url") or "").strip()
+    elif provider_changed:
+        requested_base_url = ""
+    else:
+        requested_base_url = candidate.base_url
+
+    candidate.base_url = normalize_provider_endpoint(provider, requested_base_url)
+    candidate.resolve()
+    destination_changed = (
+        previous_llm.provider != candidate.provider
+        or previous_llm.base_url.rstrip("/") != candidate.base_url.rstrip("/")
+    )
+    if destination_changed:
+        # Never carry a credential across provider/origin boundaries. An
+        # explicitly configured provider environment variable may be loaded by
+        # resolve(); otherwise Electron must bind and re-apply a matching key.
+        provider_env_key = str(PROVIDER_DEFAULTS.get(provider, {}).get("env_key") or "")
+        candidate.api_key = environment_api_key(provider_env_key)
+
+    cancelled_optional = 0
+    adapter = bridge_state.adapter
+    policy = getattr(adapter, "usage_policy", None)
+    if destination_changed and policy is not None:
+        cancelled_optional = policy.revoke_all_for_provider_change()
+
+    bridge_state.settings.llm = candidate
+    try:
+        save_settings(bridge_state.settings)
+    except Exception:
+        bridge_state.settings.llm = previous_llm
+        raise
+    if adapter:
+        adapter.settings = candidate
+        reset_client = getattr(adapter, "reset_client", None)
+        if callable(reset_client):
+            reset_client()
+
+    await _get_chat_coordinator().cancel_all(reason="model_changed")
+    bridge_state.model_epoch = int(bridge_state.model_epoch or 0) + 1
+    return {
+        "ok": True,
+        "optional_ai_consents_revoked": destination_changed,
+        "cancelled_optional_ai_tasks": cancelled_optional,
+        "llm": _provider_settings_snapshot(),
+    }
+
+
+@register_handler(MsgType.SETTINGS_GET)
+async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """Return the public authoritative settings projection without secrets."""
+    settings = bridge_state.settings
+    if settings is None:
+        return {"ok": False, "error": "Settings are not initialized"}
+    return {
+        "ok": True,
+        "chat": settings.chat.model_dump(),
+        "memory": settings.memory.model_dump(
+            exclude={"lancedb_path", "sqlite_path"},
+        ),
+        "features": settings.features.model_dump(),
+        "ui": settings.ui.model_dump(),
+        "llm": _provider_settings_snapshot(),
+    }
+
+
 @register_handler(MsgType.SETTINGS_UPDATE)
 async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> dict:
     """更新设置（API Key、Lorebook 等）。"""
     section = payload.get("section", "")
     if section == "lorebook":
         # 保存世界书到文件
-        try:
-            import json
-            from src.config.settings import DATA_DIR
-            entries = payload.get("entries", [])
-            path = DATA_DIR / "lorebook.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"entries": entries}, ensure_ascii=False, indent=2), encoding="utf-8")
-            return {"ok": True}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        # Retired in V3. Accepting this legacy write would recreate a second
+        # world-book fact source beside the persona-scoped ArchiveStore.
+        return {
+            "ok": False,
+            "code": "retired_fact_source",
+            "error": "World books are owned by the persona-scoped archive module",
+            "retryable": False,
+        }
     elif section == "llm":
-        provider = str(payload.get("provider", "openai")).strip().lower()
-        provider_aliases = {"z.ai": "glm", "zai": "glm", "claude": "anthropic"}
-        provider = provider_aliases.get(provider, provider)
         try:
-            from src.config.settings import (
-                PROVIDER_DEFAULTS,
-                normalize_provider_endpoint,
-                save_settings,
-            )
-
-            if provider not in PROVIDER_DEFAULTS:
-                return {"ok": False, "error": f"Unsupported provider: {provider}"}
-            if not bridge_state.settings:
-                return {"ok": False, "error": "Settings are not initialized"}
-
-            previous_llm = bridge_state.settings.llm
-            candidate = previous_llm.model_copy(deep=True)
-            provider_changed = candidate.provider != provider
-            runtime_key_supplied = "api_key" in payload
-            runtime_key = str(payload.get("api_key") or "").strip()
-
-            candidate.provider = provider
-            if "model" in payload and str(payload.get("model") or "").strip():
-                candidate.model = str(payload["model"]).strip()
-            elif provider_changed:
-                from src.api.providers import get_provider
-
-                provider_info = get_provider(provider)
-                if provider_info and provider_info.models:
-                    candidate.model = provider_info.models[0]
-            if "base_url" in payload:
-                requested_base_url = str(payload.get("base_url") or "").strip()
-            elif provider_changed:
-                requested_base_url = ""
-            else:
-                requested_base_url = candidate.base_url
-
-            candidate.base_url = normalize_provider_endpoint(provider, requested_base_url)
-            candidate.resolve()
-            if runtime_key_supplied:
-                candidate.api_key = runtime_key
-
-            destination_changed = (
-                previous_llm.provider != candidate.provider
-                or previous_llm.base_url.rstrip("/") != candidate.base_url.rstrip("/")
-            )
-            cancelled_optional = 0
-            adapter = bridge_state.adapter
-            policy = getattr(adapter, "usage_policy", None)
-            if destination_changed and policy is not None:
-                cancelled_optional = policy.revoke_all_for_provider_change()
-
-            bridge_state.settings.llm = candidate
-            try:
-                save_settings(bridge_state.settings)
-            except BaseException:
-                bridge_state.settings.llm = previous_llm
-                raise
-            if adapter:
-                adapter.settings = candidate
-                reset_client = getattr(adapter, "reset_client", None)
-                if callable(reset_client):
-                    reset_client()
-
-            await _get_chat_coordinator().cancel_all(reason="model_changed")
-            bridge_state.model_epoch = int(bridge_state.model_epoch or 0) + 1
-            return {
-                "ok": True,
-                "model_epoch": bridge_state.model_epoch,
-                "optional_ai_consents_revoked": destination_changed,
-                "cancelled_optional_ai_tasks": cancelled_optional,
-                "llm": {
-                    "provider": candidate.provider,
-                    "model": candidate.model,
-                    "base_url": candidate.base_url,
-                    "has_api_key": bool(candidate.api_key),
-                },
-            }
+            return await _configure_runtime_provider(payload)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
     elif section == "features":
@@ -1644,7 +2024,31 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     bridge_state.work_manager.stop()
 
             save_settings(bridge_state.settings)
-            return {"ok": True}
+            return {
+                "ok": True,
+                "features": bridge_state.settings.features.model_dump(),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    elif section == "onboarding":
+        try:
+            from datetime import datetime, timezone
+            from src.config.settings import save_settings
+
+            if not bridge_state.settings:
+                return {"ok": False, "error": "Settings are not initialized"}
+            completed = payload.get("completed")
+            if not isinstance(completed, bool):
+                return {"ok": False, "error": "completed must be a boolean"}
+            bridge_state.settings.ui.onboarding_completed = completed
+            bridge_state.settings.ui.onboarding_completed_at_utc = (
+                datetime.now(timezone.utc).isoformat() if completed else ""
+            )
+            save_settings(bridge_state.settings)
+            return {
+                "ok": True,
+                "ui": bridge_state.settings.ui.model_dump(),
+            }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
     elif section == "memory":
@@ -2051,12 +2455,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             save_settings(bridge_state.settings)
             return {
                 "ok": True,
-                "features": {
-                    "immersion_location_enabled": features.immersion_location_enabled,
-                    "immersion_closeups_enabled": features.immersion_closeups_enabled,
-                    "immersion_smart_home_enabled": features.immersion_smart_home_enabled,
-                    "immersion_location_radius_m": features.immersion_location_radius_m,
-                },
+                "features": bridge_state.settings.features.model_dump(),
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -2482,6 +2881,103 @@ async def _authenticate_bridge_client(ws: WebSocketServerProtocol) -> BridgeClie
         persona_id=str(payload.get("persona_id") or _active_persona_id())[:160],
     )
 
+
+async def dispatch_authenticated_message(
+    message: Any,
+    endpoint: WebSocketServerProtocol,
+) -> None:
+    """Dispatch one already-owner-authenticated V2 compatibility frame.
+
+    Production stdio and the development WebSocket adapter share this exact
+    business dispatcher. Authentication and transport framing stay outside it.
+    """
+    request_id = ""
+    try:
+        if not isinstance(message, dict):
+            raise ValueError("message must be an object")
+        msg_type = message.get("type", "")
+        payload = message.get("payload", {})
+        if not isinstance(msg_type, str) or not re.fullmatch(r"[A-Za-z0-9:_-]{1,80}", msg_type):
+            raise ValueError("invalid message type")
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        raw_request_id = message.get("request_id", "")
+        if raw_request_id:
+            candidate_request_id = str(raw_request_id)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", candidate_request_id):
+                raise ValueError("invalid request_id")
+            request_id = candidate_request_id
+
+        handler = _handlers.get(msg_type)
+        if handler is None:
+            await send_to_frontend(
+                endpoint,
+                MsgType.ERROR,
+                {"message": f"未知消息类型: {msg_type}"},
+                request_id=request_id,
+            )
+            return
+        context = _client_contexts.get(endpoint)
+        persona_scoped = msg_type in _PERSONA_SCOPED_COMMANDS
+        if (
+            context is not None
+            and context.protocol_version >= 3
+            and persona_scoped
+            and not _matches_expected_persona(payload)
+        ):
+            result = {
+                "ok": False,
+                "error": "Persona changed before the command could run",
+                "code": "stale_persona",
+                "retryable": False,
+                **_active_persona_scope(),
+            }
+        elif degraded_runtime_blocks(msg_type):
+            result = {
+                "ok": False,
+                "error": "Capability modules are unavailable; the persona kernel remains active",
+                "code": "runtime_capability_unavailable",
+                "unavailable": list(bridge_state.runtime_unavailable),
+            }
+        elif persona_restart_blocks(msg_type):
+            result = {
+                "ok": False,
+                "error": "Persona changed; restart is required before this operation",
+                "code": "persona_restart_required",
+                "restart_required": True,
+            }
+        elif persona_scoped:
+            # Linearize persona-scoped local reads/writes against privileged
+            # identity activation. Chat generation itself remains asynchronous
+            # and carries its own epoch/fingerprint rejection barrier.
+            async with _persona_effect_lock:
+                result = await handler(payload, endpoint)
+        else:
+            result = await handler(payload, endpoint)
+        if result is not None:
+            await send_to_frontend(
+                endpoint,
+                response_type_for_request(msg_type),
+                result,
+                request_id=request_id,
+            )
+    except ValueError as exc:
+        await send_to_frontend(
+            endpoint,
+            MsgType.ERROR,
+            {"message": str(exc)},
+            request_id=request_id,
+        )
+    except Exception:
+        logger.exception("Authenticated bridge message failed")
+        await send_to_frontend(
+            endpoint,
+            MsgType.ERROR,
+            {"message": "内部错误"},
+            request_id=request_id,
+        )
+
+
 async def websocket_handler(ws: WebSocketServerProtocol):
     """Handle the sole authenticated desktop controller."""
     global _controller_ws
@@ -2686,9 +3182,12 @@ async def start_bridge(host: str = "127.0.0.1", port: int = 48913):
 
 def attach_bridge_state(**kwargs):
     """将 Reverie 子系统注入桥接状态。"""
+    global _chat_coordinator
     for name, obj in kwargs.items():
         if hasattr(bridge_state, name):
             setattr(bridge_state, name, obj)
             logger.info("桥接状态注入: %s", name)
         else:
             logger.warning("未知桥接状态字段: %s", name)
+    if "session" in kwargs or "kernel_store" in kwargs:
+        _chat_coordinator = None

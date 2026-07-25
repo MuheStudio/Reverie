@@ -13,10 +13,12 @@ test('application protocol maps only bundle paths and rejects traversal encoding
   assert.throws(() => parseBundleUrl('reverie-app://app/C:/secret'), /Unsafe/i);
 });
 
-test('production renderer CSP allows only loopback bridge and registered asset protocols', () => {
-  assert.match(PRODUCTION_CSP, /ws:\/\/127\.0\.0\.1:\*/);
+test('production renderer CSP blocks network transports and allows registered asset protocols', () => {
+  assert.doesNotMatch(PRODUCTION_CSP, /ws:/);
+  assert.doesNotMatch(PRODUCTION_CSP, /http:/);
   assert.match(PRODUCTION_CSP, /reverie-avatar:/);
   assert.match(PRODUCTION_CSP, /reverie-focus:/);
+  assert.match(PRODUCTION_CSP, /reverie-sticker:/);
   assert.doesNotMatch(PRODUCTION_CSP, /file:/);
   assert.doesNotMatch(PRODUCTION_CSP, /https:/);
   assert.doesNotMatch(PRODUCTION_CSP, /script-src[^;]*unsafe-inline/);

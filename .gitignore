@@ -67,3 +67,6 @@ pytest-cache-files-*/
 # Generated Windows installer staging
 frontend/.installer-app/
 frontend/.installer-resources/
+frontend/.installer-source/
+frontend/.runtime-cache/
+frontend/.package-smoke/

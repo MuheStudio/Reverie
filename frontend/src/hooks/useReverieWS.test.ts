@@ -13,6 +13,7 @@ import {
   coerceTimelinePosts,
   classifyCorrelatedResponse,
   enrichPersonaActivationPayload,
+  enrichPersonaScopedPayload,
   responseTypesFor,
   transitionBridgeAuth,
 } from './useReverieWS';
@@ -20,6 +21,7 @@ import {
 describe('useReverieWS protocol defaults', () => {
   it('requests all locally persistent room state after websocket connection opens', () => {
     expect(INITIAL_STATE_REQUEST_TYPES).toEqual([
+      WSMsgType.CHAT_HISTORY,
       WSMsgType.EMOTION_GET,
       WSMsgType.PERSONA_GET,
       WSMsgType.RELATIONSHIP_GET,
@@ -33,6 +35,7 @@ describe('useReverieWS protocol defaults', () => {
       WSMsgType.STICKER_LIST,
       WSMsgType.ANTI_AI_STATUS,
       WSMsgType.AI_USAGE_GET,
+      WSMsgType.SETTINGS_GET,
     ]);
     expect(INITIAL_STATE_REQUEST_TYPES).not.toContain(WSMsgType.SETTINGS_UPDATE);
   });
@@ -233,6 +236,15 @@ describe('useReverieWS protocol defaults', () => {
       profile_id: 'persona-next',
       identity_change_confirmed: false,
     }, scope)).toBeNull();
+    expect(enrichPersonaScopedPayload({
+      game_id: 'gomoku',
+      expected_persona_id: 'attacker-controlled',
+    }, scope)).toEqual({
+      game_id: 'gomoku',
+      expected_persona_id: 'persona-current',
+      expected_persona_epoch: 7,
+      expected_persona_fingerprint: fingerprint,
+    });
   });
 
   it('accepts only complete authoritative desktop local-mode states', () => {

@@ -53,6 +53,7 @@ const MOCK_TOOLS: ToolDef[] = [
 ];
 const providerGet = vi.fn();
 const providerSet = vi.fn();
+const providerCommit = vi.fn();
 
 // ─── Setup / Teardown ─────────────────────────────────────────────────────────
 
@@ -61,23 +62,54 @@ beforeEach(() => {
   vi.restoreAllMocks();
   providerGet.mockReset();
   providerSet.mockReset();
+  providerCommit.mockReset();
   providerGet.mockResolvedValue(null);
   providerSet.mockResolvedValue(undefined);
+  providerCommit.mockResolvedValue({
+    config: { llm: PUBLIC_OPENAI_CONFIG },
+    status: {
+      available: true,
+      corrupted: false,
+      llm: { hasApiKey: true, hasCustomHeaders: false, bindingKnown: true },
+      imageGen: { hasApiKey: false, hasCustomHeaders: false },
+      runtimeAppliedScopes: { llm: true, imageGen: false },
+      bindingMismatch: { llm: false, imageGen: false },
+    },
+  });
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       providerConfig: {
         get: providerGet,
         set: providerSet,
+        commit: providerCommit,
       },
       credentials: {
-        set: vi.fn().mockResolvedValue({
+        set: vi.fn().mockImplementation((scope: 'llm' | 'imageGen') => Promise.resolve({
           available: true,
           corrupted: false,
-          llm: { hasApiKey: true, hasCustomHeaders: false },
-          imageGen: { hasApiKey: false, hasCustomHeaders: false },
-          runtimeAppliedScopes: { llm: true, imageGen: false },
-        }),
+          llm: { hasApiKey: scope === 'llm', hasCustomHeaders: false },
+          imageGen: { hasApiKey: scope === 'imageGen', hasCustomHeaders: false },
+          runtimeAppliedScopes: {
+            llm: scope === 'llm',
+            imageGen: scope === 'imageGen',
+          },
+        })),
+        setSession: vi.fn().mockImplementation((scope: 'llm' | 'imageGen') => Promise.resolve({
+          available: true,
+          persistentAvailable: false,
+          corrupted: false,
+          llm: {
+            hasApiKey: scope === 'llm',
+            hasCustomHeaders: false,
+            sessionOnly: scope === 'llm',
+          },
+          imageGen: {
+            hasApiKey: scope === 'imageGen',
+            hasCustomHeaders: false,
+            sessionOnly: scope === 'imageGen',
+          },
+        })),
         clear: vi.fn(),
         status: vi.fn(),
         onChanged: vi.fn(() => () => {}),
@@ -190,10 +222,9 @@ describe('loadConfigSync()', () => {
     expect(loadConfigSync()).toBeNull();
   });
 
-  it('returns parsed config when localStorage has valid JSON', () => {
+  it('does not revive valid browser metadata as an authoritative config', () => {
     localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_OPENAI_CONFIG));
-    expect(loadConfigSync()).toEqual(PUBLIC_OPENAI_CONFIG);
-    expect(localStorage.getItem(CONFIG_KEY)).not.toContain('sk-test-key');
+    expect(loadConfigSync()).toBeNull();
   });
 
   it('returns null when localStorage contains invalid JSON', () => {
@@ -206,18 +237,16 @@ describe('loadConfigSync()', () => {
     expect(loadConfigSync()).toBeNull();
   });
 
-  it('purges optional customHeaders from renderer persistence', () => {
+  it('does not expose customHeaders from renderer persistence', () => {
     const cfg: LLMConfig = { ...MOCK_OPENAI_CONFIG, customHeaders: 'X-Foo: bar\nX-Baz: qux' };
     localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
-    expect(loadConfigSync()?.customHeaders).toBeUndefined();
-    expect(localStorage.getItem(CONFIG_KEY)).not.toContain('X-Foo');
+    expect(loadConfigSync()).toBeNull();
   });
 
-  it('preserves custom provider display name without changing provider id', () => {
+  it('does not use a legacy custom-provider value synchronously', () => {
     const cfg: LLMConfig = { ...MOCK_OPENAI_CONFIG, provider: 'custom', customProviderName: '我的网关' };
     localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
-    expect(loadConfigSync()?.provider).toBe('custom');
-    expect(loadConfigSync()?.customProviderName).toBe('我的网关');
+    expect(loadConfigSync()).toBeNull();
   });
 });
 
@@ -225,7 +254,7 @@ describe('loadConfigSync()', () => {
 
 describe('loadConfig()', () => {
   describe('Scenario A: Electron store returns the new format', () => {
-    it('returns LLM metadata from { llm, imageGen } and syncs its safe projection', async () => {
+    it('returns LLM metadata from { llm, imageGen } without making a browser copy', async () => {
       providerGet.mockResolvedValueOnce({
         llm: MOCK_OPENAI_CONFIG,
         imageGen: { provider: 'openai', apiKey: 'k', baseUrl: 'u', model: 'm' },
@@ -234,7 +263,7 @@ describe('loadConfig()', () => {
       const result = await loadConfig();
 
       expect(result).toEqual(PUBLIC_OPENAI_CONFIG);
-      expect(localStorage.getItem(CONFIG_KEY)).toBe(JSON.stringify(PUBLIC_OPENAI_CONFIG));
+      expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
       expect(globalThis.fetch).not.toHaveBeenCalled;
     });
   });
@@ -246,16 +275,18 @@ describe('loadConfig()', () => {
       const result = await loadConfig();
 
       expect(result).toEqual(PUBLIC_OPENAI_CONFIG);
-      expect(localStorage.getItem(CONFIG_KEY)).toBe(JSON.stringify(PUBLIC_OPENAI_CONFIG));
+      expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
     });
   });
 
   describe('Scenario B: Electron store has no file', () => {
-    it('falls back to localStorage when the store returns null', async () => {
+    it('migrates legacy browser metadata only after the Electron store confirms it', async () => {
       providerGet.mockResolvedValueOnce(null);
       localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_OPENAI_CONFIG));
 
       expect(await loadConfig()).toEqual(PUBLIC_OPENAI_CONFIG);
+      expect(providerSet).toHaveBeenCalled();
+      expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
     });
 
     it('returns null when the store is empty and localStorage is empty', async () => {
@@ -266,11 +297,13 @@ describe('loadConfig()', () => {
   });
 
   describe('Scenario C: Electron store is unavailable or corrupt', () => {
-    it('falls back to localStorage when the store rejects', async () => {
+    it('can migrate legacy metadata after an unavailable read when writing succeeds', async () => {
       providerGet.mockRejectedValueOnce(new Error('Provider store unavailable'));
       localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_ANTHROPIC_CONFIG));
 
       expect(await loadConfig()).toEqual(PUBLIC_ANTHROPIC_CONFIG);
+      expect(providerSet).toHaveBeenCalled();
+      expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
     });
 
     it('returns null when the store rejects and localStorage is empty', async () => {
@@ -279,7 +312,7 @@ describe('loadConfig()', () => {
       expect(await loadConfig()).toBeNull();
     });
 
-    it('resolves null when both the store and localStorage fail (does not throw)', async () => {
+    it('resolves null when both the store and legacy value fail (does not throw)', async () => {
       providerGet.mockRejectedValueOnce(new Error('Provider store unavailable'));
       localStorage.setItem(CONFIG_KEY, 'corrupted-json');
 
@@ -292,7 +325,7 @@ describe('loadConfig()', () => {
 
 describe('saveConfig()', () => {
   it('does not claim success when authoritative metadata persistence fails', async () => {
-    providerSet.mockRejectedValueOnce(new Error('disk full'));
+    providerCommit.mockRejectedValueOnce(new Error('disk full'));
 
     await expect(saveConfig(MOCK_OPENAI_CONFIG)).rejects.toThrow('disk full');
 
@@ -302,20 +335,20 @@ describe('saveConfig()', () => {
   it('writes closed-world metadata through Electron and never uses HTTP', async () => {
     await saveConfig(MOCK_OPENAI_CONFIG);
 
-    expect(providerSet).toHaveBeenCalledWith({
+    expect(providerCommit).toHaveBeenCalledWith({
       llm: {
         provider: 'openai',
         baseUrl: 'https://api.openai.com',
         model: 'gpt-4',
       },
-    });
+    }, { apiKey: 'sk-test-key', customHeaders: undefined }, 'persistent');
   });
 
   it('includes imageGen when provided', async () => {
     const igConfig = { provider: 'openai' as const, apiKey: 'k', baseUrl: 'u', model: 'm' };
     await saveConfig(MOCK_OPENAI_CONFIG, igConfig);
 
-    const body = providerSet.mock.calls[0][0];
+    const body = providerCommit.mock.calls[0][0];
     expect(body.llm).toEqual({
       provider: 'openai',
       baseUrl: 'https://api.openai.com',
@@ -343,9 +376,8 @@ describe('saveConfig()', () => {
     await saveConfig(MOCK_OPENAI_CONFIG);
     await saveConfig(MOCK_ANTHROPIC_CONFIG);
 
-    const stored = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? 'null');
-    expect(stored?.provider).toBe('anthropic');
-    expect(stored?.apiKey).toBe('');
+    expect(providerCommit.mock.calls.at(-1)?.[0].llm.provider).toBe('anthropic');
+    expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
   });
 
   it('does not call fetch while saving settings', async () => {
@@ -356,19 +388,67 @@ describe('saveConfig()', () => {
   });
 
   it('accepts an encrypted key while the replaceable backend is still starting', async () => {
-    vi.mocked(window.electronAPI!.credentials!.set).mockResolvedValueOnce({
-      available: true,
-      corrupted: false,
-      stored: true,
-      runtimeApplied: false,
-      runtimePending: true,
-      llm: { hasApiKey: true, hasCustomHeaders: false },
-      imageGen: { hasApiKey: false, hasCustomHeaders: false },
-      runtimeAppliedScopes: { llm: false, imageGen: false },
+    providerCommit.mockResolvedValueOnce({
+      config: { llm: PUBLIC_OPENAI_CONFIG },
+      status: {
+        available: true,
+        corrupted: false,
+        stored: true,
+        runtimeApplied: false,
+        runtimePending: true,
+        llm: { hasApiKey: true, hasCustomHeaders: false, bindingKnown: true },
+        imageGen: { hasApiKey: false, hasCustomHeaders: false },
+        runtimeAppliedScopes: { llm: false, imageGen: false },
+        bindingMismatch: { llm: false, imageGen: false },
+      },
     });
 
     await expect(saveConfig(MOCK_OPENAI_CONFIG)).resolves.toBeUndefined();
-    expect(JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}').provider).toBe('openai');
+    expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
+  });
+
+  it('surfaces a stable Windows vault error and allows an explicit session-only retry', async () => {
+    providerCommit.mockResolvedValueOnce({
+      config: { llm: PUBLIC_OPENAI_CONFIG },
+      status: {
+        available: true,
+        persistentAvailable: true,
+        corrupted: false,
+        writeError: {
+          code: 'REVERIE_OS_ENCRYPTION_FAILED',
+          message: 'Windows 安全存储未完成写入；原有密钥未被覆盖。',
+        },
+        llm: { hasApiKey: false, hasCustomHeaders: false },
+        imageGen: { hasApiKey: false, hasCustomHeaders: false },
+      },
+    });
+
+    await expect(saveConfig(MOCK_OPENAI_CONFIG)).rejects.toMatchObject({
+      code: 'REVERIE_OS_ENCRYPTION_FAILED',
+      canUseSessionStorage: true,
+    });
+
+    providerCommit.mockResolvedValueOnce({
+      config: { llm: PUBLIC_OPENAI_CONFIG },
+      status: {
+        available: true,
+        persistentAvailable: false,
+        corrupted: false,
+        llm: { hasApiKey: true, hasCustomHeaders: false, bindingKnown: true },
+        imageGen: { hasApiKey: false, hasCustomHeaders: false },
+        bindingMismatch: { llm: false, imageGen: false },
+      },
+    });
+    await expect(saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      { credentialStorage: 'session' },
+    )).resolves.toBeUndefined();
+    expect(providerCommit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ llm: expect.objectContaining({ provider: 'openai' }) }),
+      { apiKey: 'sk-test-key', customHeaders: undefined },
+      'session',
+    );
   });
 });
 

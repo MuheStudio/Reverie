@@ -379,6 +379,98 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
   }
   const modelDirectory = path.posix.dirname(modelEntry.path) === '.' ? '' : path.posix.dirname(modelEntry.path);
   const modelRootPrefix = modelDirectory ? `${modelDirectory}/` : '';
+  if (!model.FileReferences || typeof model.FileReferences !== 'object'
+    || Array.isArray(model.FileReferences)) {
+    throw avatarError('AVATAR_LIVE2D_MODEL', 'model3.json FileReferences is invalid');
+  }
+  const readJsonAsset = (descriptor, label) => {
+    if (descriptor.size > 8 * MiB) {
+      throw avatarError('AVATAR_LIVE2D_MODEL', `${label} is unexpectedly large`);
+    }
+    try {
+      return JSON.parse(fs.readFileSync(path.join(outputDir, ...descriptor.path.split('/')), 'utf8'));
+    } catch {
+      throw avatarError('AVATAR_LIVE2D_MODEL', `${label} is not valid JSON`);
+    }
+  };
+  const referencedExpressions = Array.isArray(model.FileReferences.Expressions)
+    ? model.FileReferences.Expressions
+    : [];
+  if (model.FileReferences.Expressions != null && !Array.isArray(model.FileReferences.Expressions)) {
+    throw avatarError('AVATAR_LIVE2D_MODEL', 'Live2D Expressions must be an array');
+  }
+  const referencedMotions = model.FileReferences.Motions == null
+    ? {}
+    : model.FileReferences.Motions;
+  if (!referencedMotions || typeof referencedMotions !== 'object' || Array.isArray(referencedMotions)) {
+    throw avatarError('AVATAR_LIVE2D_MODEL', 'Live2D Motions must be an object');
+  }
+  const expressionFiles = new Set(
+    referencedExpressions.map((entry) => String(entry?.File || '')),
+  );
+  const motionFiles = new Set(
+    Object.values(referencedMotions)
+      .flatMap((group) => Array.isArray(group) ? group : [])
+      .map((entry) => String(entry?.File || '')),
+  );
+  let modelAugmented = false;
+  for (const descriptor of fileDescriptors) {
+    if (descriptor.path === modelEntry.path
+      || (modelRootPrefix && !descriptor.path.startsWith(modelRootPrefix))) continue;
+    const relative = path.posix.relative(modelDirectory || '.', descriptor.path);
+    if (descriptor.path.toLowerCase().endsWith('.exp3.json') && !expressionFiles.has(relative)) {
+      const expression = readJsonAsset(descriptor, 'Live2D expression');
+      if (expression?.Type !== 'Live2D Expression' || !Array.isArray(expression.Parameters)
+        || expression.Parameters.length > 10_000) {
+        throw avatarError('AVATAR_LIVE2D_MODEL', `Invalid Live2D expression: ${relative}`);
+      }
+      referencedExpressions.push({
+        Name: safeDetectedName(
+          path.posix.basename(relative).replace(/\.exp3\.json$/i, ''),
+          'Expression',
+        ),
+        File: relative,
+      });
+      expressionFiles.add(relative);
+      modelAugmented = true;
+    }
+    if (descriptor.path.toLowerCase().endsWith('.motion3.json') && !motionFiles.has(relative)) {
+      const motion = readJsonAsset(descriptor, 'Live2D motion');
+      const duration = Number(motion?.Meta?.Duration);
+      if (Number(motion?.Version) !== 3 || !Array.isArray(motion.Curves)
+        || motion.Curves.length > 10_000 || !Number.isFinite(duration)
+        || duration < 0 || duration > 600) {
+        throw avatarError('AVATAR_LIVE2D_MODEL', `Invalid Live2D motion: ${relative}`);
+      }
+      const groupName = safeDetectedName(
+        path.posix.basename(relative).replace(/\.motion3\.json$/i, ''),
+        'Motion',
+      );
+      if (!Array.isArray(referencedMotions[groupName])) referencedMotions[groupName] = [];
+      referencedMotions[groupName].push({ File: relative });
+      motionFiles.add(relative);
+      modelAugmented = true;
+    }
+  }
+  if (referencedExpressions.length) model.FileReferences.Expressions = referencedExpressions;
+  if (Object.keys(referencedMotions).length) model.FileReferences.Motions = referencedMotions;
+  let normalizedExpandedBytes = expandedBytes;
+  if (modelAugmented) {
+    const modelPath = path.join(outputDir, ...modelEntry.path.split('/'));
+    const previousSize = modelEntry.size;
+    const normalizedModel = Buffer.from(`${JSON.stringify(model, null, 2)}\n`, 'utf8');
+    if (normalizedModel.length > 8 * MiB) {
+      throw avatarError('AVATAR_LIVE2D_MODEL', 'Augmented model3.json is unexpectedly large');
+    }
+    fs.writeFileSync(modelPath, normalizedModel);
+    fsyncFile(modelPath);
+    modelEntry.size = normalizedModel.length;
+    modelEntry.sha256 = crypto.createHash('sha256').update(normalizedModel).digest('hex');
+    normalizedExpandedBytes += normalizedModel.length - previousSize;
+    if (normalizedExpandedBytes > MAX_EXPANDED_BYTES) {
+      throw avatarError('AVATAR_ZIP_EXPANDED', 'Live2D package exceeds the expanded size limit');
+    }
+  }
   const exactNames = new Set(files.keys());
   const caseNames = new Map([...files.keys()].map((name) => [name.toLocaleLowerCase('en-US'), name]));
   for (const reference of collectLive2DReferences(model)) {
@@ -413,6 +505,38 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
   } finally {
     fs.closeSync(mocFd);
   }
+  let estimatedTextureBytes = 0;
+  const textureStats = [];
+  const textureReferences = Array.isArray(model.FileReferences?.Textures)
+    ? model.FileReferences.Textures
+    : [];
+  for (const reference of textureReferences) {
+    const resolved = safeModelReference(modelDirectory, reference);
+    const descriptor = files.get(resolved);
+    if (!descriptor) throw avatarError('AVATAR_LIVE2D_MISSING', `Live2D texture is missing: ${reference}`);
+    const extension = path.posix.extname(resolved).toLowerCase();
+    const mimeType = extension === '.png'
+      ? 'image/png'
+      : ['.jpg', '.jpeg'].includes(extension)
+        ? 'image/jpeg'
+        : extension === '.webp' ? 'image/webp' : '';
+    if (!mimeType) throw avatarError('AVATAR_LIVE2D_TEXTURE', 'Live2D texture format is unsupported');
+    const bytes = fs.readFileSync(path.join(outputDir, ...resolved.split('/')));
+    const dimensions = parseImageSize(bytes, mimeType);
+    if (!dimensions) throw avatarError('AVATAR_LIVE2D_TEXTURE', `Live2D texture is invalid: ${reference}`);
+    const [width, height] = dimensions;
+    if (width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION) {
+      throw avatarError(
+        'AVATAR_LIVE2D_TEXTURE_SIZE',
+        `Live2D texture exceeds ${MAX_TEXTURE_DIMENSION}×${MAX_TEXTURE_DIMENSION}`,
+      );
+    }
+    estimatedTextureBytes += Math.ceil(width * height * 4 * 4 / 3);
+    if (!Number.isSafeInteger(estimatedTextureBytes) || estimatedTextureBytes > MAX_ESTIMATED_VRAM) {
+      throw avatarError('AVATAR_LIVE2D_VRAM', 'Live2D textures exceed the estimated 1 GiB GPU memory limit');
+    }
+    textureStats.push({ width, height, mimeType });
+  }
   const expressionEntries = Array.isArray(model.FileReferences?.Expressions)
     ? model.FileReferences.Expressions
     : [];
@@ -421,13 +545,19 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
     && !Array.isArray(model.FileReferences.Motions)
     ? Object.keys(model.FileReferences.Motions)
     : [];
+  const warnings = [];
+  if (estimatedTextureBytes > WARN_ESTIMATED_VRAM) {
+    warnings.push(`high_estimated_vram:${estimatedTextureBytes}`);
+  }
   return {
     entryRelative: modelEntry.path,
     files: [...files.values()],
     stats: {
       fileCount: files.size,
-      expandedBytes,
+      expandedBytes: normalizedExpandedBytes,
       modelVersion: version,
+      textures: textureStats,
+      estimatedVramBytes: estimatedTextureBytes,
       detected: {
         animationClips: motionGroups.map((name) => safeDetectedName(name, 'Motion')).slice(0, 256),
         expressions: expressionEntries.map((entry, index) => safeDetectedName(
@@ -436,7 +566,7 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
         )).slice(0, 256),
       },
     },
-    warnings: [],
+    warnings,
   };
 }
 
@@ -1061,6 +1191,7 @@ class AvatarManager {
       coreAvailable: Boolean(options.live2dRuntime?.coreAvailable),
       rendererAvailable: Boolean(options.live2dRuntime?.rendererAvailable),
       licenseAccepted: Boolean(options.live2dRuntime?.licenseAccepted),
+      developmentOnly: Boolean(options.live2dRuntime?.developmentOnly),
       reason: options.live2dRuntime?.available && !options.live2dRuntime?.coreAvailable
         ? 'Live2D Cubism Core is missing'
         : options.live2dRuntime?.reason || '',
@@ -1276,7 +1407,7 @@ class AvatarManager {
       const candidate = {
         schema: CANDIDATE_SCHEMA,
         importId,
-        name: safeDisplayName(path.basename(source, extension)),
+        name: safeDisplayName(options.displayName || path.basename(source, extension)),
         kind,
         entryRelative: validation.entryRelative,
         files: validation.files,
@@ -1399,6 +1530,38 @@ class AvatarManager {
       detected: cloneJson(candidate.detected),
       capabilities: { ...candidate.capabilities },
     };
+  }
+
+  installTrustedDefaultDirectory(sourcePath, options = {}) {
+    if (options.trustedOwnerAsset !== true) {
+      throw avatarError('AVATAR_RIGHTS_REQUIRED', 'Trusted default avatar installation requires owner confirmation');
+    }
+    const current = this.list();
+    if (current.records.length > 0) {
+      return current.records.find((record) => record.id === current.activeId) || current.records[0];
+    }
+    const candidate = this.beginImportDirectory(sourcePath, {
+      displayName: options.name || 'Yumi',
+    });
+    try {
+      this.markPreviewReady(candidate.importId, {
+        detected: candidate.detected,
+        capabilities: {
+          expressionPlayback: candidate.detected.expressions.length > 0,
+          embeddedAnimationPlayback: candidate.detected.animationClips.length > 0,
+        },
+      });
+      const record = this.commitImport({
+        importId: candidate.importId,
+        rightsConfirmed: true,
+        warningAccepted: true,
+      });
+      this.setActive(record.id);
+      return record;
+    } catch (error) {
+      this.discardImport(candidate.importId);
+      throw error;
+    }
   }
 
   discardImport(importId) {

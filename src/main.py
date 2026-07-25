@@ -59,7 +59,12 @@ def parse_runtime_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--bridge",
         action="store_true",
-        help="Run the WebSocket bridge for the Electron desktop shell instead of the TUI.",
+        help="Run the development-only WebSocket bridge instead of the TUI.",
+    )
+    parser.add_argument(
+        "--stdio-bridge",
+        action="store_true",
+        help="Run the production Electron framed-stdio bridge instead of the TUI.",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bridge host.")
     parser.add_argument("--port", type=int, default=48913, help="Bridge port.")
@@ -109,14 +114,15 @@ async def memory_reembedding_loop(
 async def main():
     """Initialize all systems and launch the chat interface."""
     runtime_args = parse_runtime_args()
+    desktop_bridge = runtime_args.bridge or runtime_args.stdio_bridge
 
     # Desktop starts fail-closed before any proactive/background subsystem is
     # constructed.  Electron persists and re-declares the authoritative epoch.
     from src.local_mode import get_local_mode_gate, install_desktop_socket_guard
 
     local_mode_gate = get_local_mode_gate()
-    local_mode_gate.configure_desktop(runtime_args.bridge)
-    if runtime_args.bridge:
+    local_mode_gate.configure_desktop(desktop_bridge)
+    if desktop_bridge:
         initial_active = os.getenv("REVERIE_LOCAL_MODE", "1").strip() == "1"
         try:
             initial_epoch = int(os.getenv("REVERIE_LOCAL_MODE_EPOCH", "0") or 0)
@@ -167,6 +173,46 @@ async def main():
         persona_token.persona_id,
         persona_token.epoch,
     )
+    from src.kernel.contracts import PersonaScopeV3
+    from src.kernel.storage import KernelStore
+
+    identity_envelope = GLOBAL_PERSONA_EPOCH.envelope()
+    kernel_store = KernelStore(DATA_DIR / "runtime" / "kernel.sqlite3")
+    kernel_store.activate_persona(
+        PersonaScopeV3(
+            persona_id=persona_token.persona_id,
+            epoch=persona_token.epoch,
+            fingerprint=persona_token.fingerprint,
+        ),
+        identity=identity_envelope.core_identity,
+        identity_version=identity_envelope.version,
+        actor="bootstrap",
+        reason="authoritative persona registry startup",
+    )
+    if kernel_store.integrity_check() != "ok":
+        kernel_store.close()
+        raise RuntimeError("Persona kernel integrity check failed")
+    archive_store = None
+    game_state_store = None
+    from src.kernel.modules import ModuleRegistry
+
+    module_registry = ModuleRegistry(kernel_store)
+    try:
+        from src.archive import ArchiveStore
+
+        archive_store = ArchiveStore(DATA_DIR / "archive" / "archive.sqlite3")
+        module_registry.register(archive_store)
+        module_registry.start("archive")
+    except Exception:
+        logger.exception("Archive capability failed during startup; isolating it")
+    try:
+        from src.games import GameStateStore
+
+        game_state_store = GameStateStore(DATA_DIR / "games" / "game-state.sqlite3")
+        module_registry.register(game_state_store)
+        module_registry.start("games")
+    except Exception:
+        logger.exception("Game-state capability failed during startup; isolating it")
     from src.persona.state_scope import PersonaStateScope
 
     built_in_fingerprints = set(KNOWN_LEGACY_DEFAULT_FINGERPRINTS)
@@ -199,6 +245,11 @@ async def main():
         # importing any detachable feature module.  Electron can still present
         # the product shell and a precise unavailable state for missing systems.
         logger.info("Persona kernel reached desktop handoff boundary")
+        if archive_store is not None:
+            archive_store.close()
+        if game_state_store is not None:
+            game_state_store.close()
+        kernel_store.close()
         return
 
     # Initialize subsystems
@@ -254,25 +305,41 @@ async def main():
     }
     unavailable = [name for name, symbol in required_runtime.items() if symbol is None]
     if unavailable:
-        if not runtime_args.bridge:
+        if not desktop_bridge:
             raise RuntimeError("Interactive modules unavailable: " + ", ".join(unavailable))
         # A detachable feature must not take down the desktop process or the
         # sealed identity authority.  Bring up the authenticated bridge in an
         # explicit degraded state: persona inspection/import/activation and
         # owner policy controls remain available, while every missing feature
         # operation fails closed with a machine-readable diagnostic.
-        from src.bridge.ws_bridge import attach_bridge_state, start_bridge
+        from src.bridge.ws_bridge import attach_bridge_state
 
         attach_bridge_state(
             persona=persona,
             settings=settings,
+            kernel_store=kernel_store,
+            archive_store=archive_store,
+            game_state_store=game_state_store,
+            module_registry=module_registry,
             runtime_unavailable=tuple(unavailable),
         )
         logger.error(
             "Starting persona kernel with unavailable capabilities: %s",
             ", ".join(unavailable),
         )
-        await start_bridge(host=runtime_args.host, port=runtime_args.port)
+        if runtime_args.stdio_bridge:
+            from src.bridge.stdio_bridge import start_stdio_bridge
+
+            await start_stdio_bridge()
+        else:
+            from src.bridge.ws_bridge import start_bridge
+
+            await start_bridge(host=runtime_args.host, port=runtime_args.port)
+        if archive_store is not None:
+            archive_store.close()
+        if game_state_store is not None:
+            game_state_store.close()
+        kernel_store.close()
         return
     from src.api.budget import ApiBudgetTracker
     # API cost limits are owner/application scoped, not persona scoped; an
@@ -625,8 +692,8 @@ async def main():
     world_state_task = asyncio.create_task(world_state_checkpoint_loop())
 
     try:
-        if runtime_args.bridge:
-            from src.bridge.ws_bridge import attach_bridge_state, start_bridge
+        if desktop_bridge:
+            from src.bridge.ws_bridge import attach_bridge_state
 
             attach_bridge_state(
                 session=session,
@@ -656,13 +723,25 @@ async def main():
                 api_budget=api_budget,
                 social_universe=social_universe,
                 phrase_alignment=phrase_alignment,
+                kernel_store=kernel_store,
+                archive_store=archive_store,
+                game_state_store=game_state_store,
+                module_registry=module_registry,
             )
-            logger.info(
-                "Launching WebSocket bridge on ws://%s:%s",
-                runtime_args.host,
-                runtime_args.port,
-            )
-            await start_bridge(host=runtime_args.host, port=runtime_args.port)
+            if runtime_args.stdio_bridge:
+                from src.bridge.stdio_bridge import start_stdio_bridge
+
+                logger.info("Launching private framed-stdio bridge")
+                await start_stdio_bridge()
+            else:
+                from src.bridge.ws_bridge import start_bridge
+
+                logger.info(
+                    "Launching development WebSocket bridge on ws://%s:%s",
+                    runtime_args.host,
+                    runtime_args.port,
+                )
+                await start_bridge(host=runtime_args.host, port=runtime_args.port)
         else:
             # Launch TUI
             from src.ui.tui import ReverieTUI
@@ -710,6 +789,20 @@ async def main():
             memory.store.close()
         except Exception:
             logger.exception("Memory database shutdown failed")
+        try:
+            kernel_store.close()
+        except Exception:
+            logger.exception("Persona kernel shutdown failed")
+        try:
+            if archive_store is not None:
+                archive_store.close()
+        except Exception:
+            logger.exception("Archive module shutdown failed")
+        try:
+            if game_state_store is not None:
+                game_state_store.close()
+        except Exception:
+            logger.exception("Game-state module shutdown failed")
 
         # Cleanup
         logger.info("Shutting down...")

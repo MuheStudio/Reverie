@@ -9,6 +9,8 @@ import {
   loadPersistedConfig,
   savePersistedConfig,
   type PersistedConfig,
+  type PublicImageGenConfig,
+  type PublicLLMConfig,
 } from '../configPersistence';
 import type { LLMConfig } from '../llmModels';
 import type { ImageGenConfig } from '../imageGenClient';
@@ -31,23 +33,21 @@ const MOCK_IMAGEGEN_CONFIG: ImageGenConfig = {
   customHeaders: 'X-Api-Key: image-canary',
 };
 
-const PUBLIC_LLM_CONFIG: LLMConfig = {
+const PUBLIC_LLM_CONFIG: PublicLLMConfig = {
   provider: 'openai',
-  apiKey: '',
   baseUrl: 'https://api.openai.com',
   model: 'gpt-4',
 };
 
-const PUBLIC_IMAGEGEN_CONFIG: ImageGenConfig = {
+const PUBLIC_IMAGEGEN_CONFIG: PublicImageGenConfig = {
   provider: 'openai',
-  apiKey: '',
   baseUrl: 'https://api.openai.com',
   model: 'gpt-image-1.5',
 };
 
 const MOCK_PERSISTED: PersistedConfig = {
-  llm: MOCK_LLM_CONFIG,
-  imageGen: MOCK_IMAGEGEN_CONFIG,
+  llm: PUBLIC_LLM_CONFIG,
+  imageGen: PUBLIC_IMAGEGEN_CONFIG,
 };
 const providerGet = vi.fn();
 const providerSet = vi.fn();
@@ -132,7 +132,10 @@ describe('loadPersistedConfig()', () => {
 describe('savePersistedConfig()', () => {
   it('writes closed-world metadata through the Electron store', async () => {
     providerSet.mockResolvedValueOnce(undefined);
-    await savePersistedConfig(MOCK_PERSISTED);
+    await savePersistedConfig({
+      llm: MOCK_LLM_CONFIG,
+      imageGen: MOCK_IMAGEGEN_CONFIG,
+    });
 
     expect(providerSet).toHaveBeenCalledWith({
       llm: {
@@ -150,7 +153,10 @@ describe('savePersistedConfig()', () => {
 
   it('never sends credential material to Electron provider metadata', async () => {
     providerSet.mockResolvedValueOnce(undefined);
-    await savePersistedConfig(MOCK_PERSISTED);
+    await savePersistedConfig({
+      llm: MOCK_LLM_CONFIG,
+      imageGen: MOCK_IMAGEGEN_CONFIG,
+    });
 
     const body = providerSet.mock.calls[0][0];
     expect(JSON.stringify(body)).not.toContain('sk-test');

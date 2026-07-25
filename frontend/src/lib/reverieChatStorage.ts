@@ -1,43 +1,71 @@
-const CHAT_MESSAGES_KEY = 'reverie:dream-room:chat-messages:v2';
-const LEGACY_CHAT_MESSAGES_KEY = 'reverie:dream-room:chat-messages:v1';
-const CHAT_DRAFT_KEY = 'reverie:dream-room:chat-draft:v1';
+const CHAT_DRAFT_KEY = 'reverie:dream-room:chat-draft:v2';
+const MAX_DRAFT_LENGTH = 20_000;
+const MAX_DRAFT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-export function loadReverieChatMessages<T>(): T[] {
+interface ChatDraftEnvelope {
+  schema: 'reverie.chat-draft.v2';
+  sessionId: string;
+  savedAtUtc: string;
+  text: string;
+}
+
+function validSessionId(value: string): boolean {
+  return value.length > 0
+    && value.length <= 160
+    && /^[A-Za-z0-9._:-]+$/.test(value);
+}
+
+function removeDraft(): void {
   try {
-    const raw = window.localStorage.getItem(CHAT_MESSAGES_KEY)
-      ?? window.localStorage.getItem(LEGACY_CHAT_MESSAGES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
+    window.localStorage.removeItem(CHAT_DRAFT_KEY);
   } catch {
-    return [];
+    // A blocked emergency cache is inert.
   }
 }
 
-export function saveReverieChatMessages(messages: unknown[]): void {
+export function loadReverieChatDraft(sessionId: string): string {
+  if (!validSessionId(sessionId)) return '';
   try {
-    // Never discard older conversation records merely because a newer one was
-    // appended. Storage exhaustion fails atomically and preserves the prior
-    // complete snapshot.
-    window.localStorage.setItem(CHAT_MESSAGES_KEY, JSON.stringify(messages));
+    const raw = window.localStorage.getItem(CHAT_DRAFT_KEY);
+    if (!raw) return '';
+    const value = JSON.parse(raw) as Partial<ChatDraftEnvelope>;
+    const savedAt = typeof value.savedAtUtc === 'string'
+      ? Date.parse(value.savedAtUtc)
+      : Number.NaN;
+    if (
+      value.schema !== 'reverie.chat-draft.v2'
+      || value.sessionId !== sessionId
+      || typeof value.text !== 'string'
+      || value.text.length > MAX_DRAFT_LENGTH
+      || !Number.isFinite(savedAt)
+      || savedAt > Date.now() + 5 * 60 * 1000
+      || Date.now() - savedAt > MAX_DRAFT_AGE_MS
+    ) {
+      removeDraft();
+      return '';
+    }
+    return value.text;
   } catch {
-    // Local storage may be disabled or full; the in-memory chat still works.
-  }
-}
-
-export function loadReverieChatDraft(): string {
-  try {
-    return window.localStorage.getItem(CHAT_DRAFT_KEY) ?? '';
-  } catch {
+    removeDraft();
     return '';
   }
 }
 
-export function saveReverieChatDraft(draft: string): void {
+export function saveReverieChatDraft(draft: string, sessionId: string): void {
+  if (!draft) {
+    removeDraft();
+    return;
+  }
+  if (!validSessionId(sessionId) || draft.length > MAX_DRAFT_LENGTH) return;
+  const value: ChatDraftEnvelope = {
+    schema: 'reverie.chat-draft.v2',
+    sessionId,
+    savedAtUtc: new Date().toISOString(),
+    text: draft,
+  };
   try {
-    if (draft) window.localStorage.setItem(CHAT_DRAFT_KEY, draft);
-    else window.localStorage.removeItem(CHAT_DRAFT_KEY);
+    window.localStorage.setItem(CHAT_DRAFT_KEY, JSON.stringify(value));
   } catch {
-    // Best effort for restricted browser/Electron storage policies.
+    // Best effort only. The canonical chat ledger never lives here.
   }
 }

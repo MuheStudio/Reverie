@@ -8,7 +8,7 @@ from src.affairs import PersonalAffairManager
 from src.backup import LocalBackupManager
 from src.chat.proactive import ProactiveChat
 from src.chat.anti_ai import filter_output_detail
-from src.chat.session import ChatSession
+from src.chat.session import ChatSession, ProviderCallFailed
 from src.chat.reflex import ReflexSystem
 from src.chat.semantic_verifier import (
     StructuredFact,
@@ -241,18 +241,15 @@ def test_continuity_guard_vetoes_hard_persona_contradiction(tmp_path) -> None:
     assert "persona_age" in result["continuity_violations"]
 
 
-def test_provider_timeout_uses_local_reflex_without_leaking_provider_text(tmp_path) -> None:
+def test_provider_timeout_is_a_technical_error_and_never_character_speech(tmp_path) -> None:
     session = _session(tmp_path, TimeoutAdapter())
     session.reflex = ReflexSystem(tmp_path / "reflex.sqlite3", persona=default_persona())
 
-    result = asyncio.run(session.send_message("在吗"))
+    with pytest.raises(ProviderCallFailed) as raised:
+        asyncio.run(session.send_message("在吗"))
 
-    assert "provider request" not in result["reply"]
-    assert result["messages"]
-    assert result["provider_timeout"] is True
-    assert result["degraded_to_local_reflex"] is True
-    assert result["typing_duration"] > 0.0
-    assert result["scheduler_status"]["status"] == "busy"
+    assert "不会自动重试" in str(raised.value)
+    assert session._history == []
 
 
 def test_fake_api_error_prefix_cannot_bypass_immersion_filter() -> None:
@@ -264,6 +261,7 @@ def test_fake_api_error_prefix_cannot_bypass_immersion_filter() -> None:
 class StatefulMemory:
     def __init__(self) -> None:
         self.rows = [{"id": "before"}]
+        self.persona = default_persona()
 
     def export_all(self):
         return [dict(item) for item in self.rows]

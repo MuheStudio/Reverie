@@ -2,6 +2,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
+const {
+  assertProductionPayload,
+  copyProductionPythonSource,
+  preparePythonRuntime,
+  writeProductionInventory,
+} = require('./production-runtime.cjs');
 
 const frontendRoot = path.resolve(__dirname, '..');
 const projectRoot = path.resolve(frontendRoot, '..');
@@ -88,6 +94,7 @@ function shouldCopyElectronRuntime(src, stat) {
   if (stat.isDirectory()) {
     return !['__fixtures__', 'fixtures', 'test', 'tests'].includes(name.toLowerCase());
   }
+  if (name.toLowerCase() === 'bridge-supervisor.cjs') return false;
   return !/\.(?:test|spec|fixture)\.(?:c?js|mjs|json)$/i.test(name)
     && !/(?:^|[-_.])test-fixture(?:[-_.]|$)/i.test(name);
 }
@@ -226,20 +233,6 @@ function copyDataSkeleton() {
   });
 }
 
-function shouldCopyPythonRuntime(src, stat) {
-  const name = path.basename(src);
-  if (name === '__pycache__' || name === '.pytest_cache') return false;
-  if (!stat.isDirectory() && (name.endsWith('.pyc') || name.endsWith('.pyo'))) return false;
-  return true;
-}
-
-function shouldCopyProjectSource(src, stat) {
-  const name = path.basename(src);
-  if (name === '__pycache__' || name === '.pytest_cache') return false;
-  if (!stat.isDirectory() && (name.endsWith('.pyc') || name.endsWith('.pyo'))) return false;
-  return true;
-}
-
 function main() {
   const electronExe = require('electron');
   const electronDist = path.dirname(electronExe);
@@ -256,10 +249,6 @@ function main() {
   if (!fs.existsSync(path.join(frontendRoot, 'dist', 'index.html'))) {
     throw new Error('frontend/dist/index.html not found. Run the desktop Vite build first.');
   }
-  if (!fs.existsSync(path.join(projectRoot, 'venv', 'Scripts', 'python.exe'))) {
-    throw new Error('Bundled venv not found at projectRoot/venv/Scripts/python.exe.');
-  }
-
   ensureDir(outRoot);
   assertInside(outRoot, packageDir);
   removeIfExists(packageDir);
@@ -285,23 +274,46 @@ function main() {
     reverieDistribution: 'TEST_ONLY_DO_NOT_RELEASE',
   });
 
-  copyRecursive(path.join(projectRoot, 'src'), path.join(resourcesDir, 'src'), {
-    filter: shouldCopyProjectSource,
+  copyProductionPythonSource(
+    path.join(projectRoot, 'src'),
+    path.join(resourcesDir, 'src'),
+    resourcesDir,
+  );
+  const runtime = preparePythonRuntime({
+    projectRoot,
+    frontendRoot,
+    destination: path.join(resourcesDir, 'python'),
+    stagingRoot: resourcesDir,
   });
-  for (const compatDir of ['app', 'config', 'plugin', 'utils']) {
-    copyIfExists(path.join(projectRoot, compatDir), path.join(resourcesDir, compatDir));
-  }
-  for (const compatFile of ['charset_normalizer.py', 'msgpack.py', 'ormsgpack.py']) {
-    copyIfExists(path.join(projectRoot, compatFile), path.join(resourcesDir, compatFile));
-  }
-  for (const docFile of ['LICENSE', 'NOTICE', 'CREDITS.md', 'AGPL_EXCLUDED.md', 'requirements.txt']) {
+  for (const docFile of [
+    'LICENSE',
+    'NOTICE',
+    'CREDITS.md',
+    'AGPL_EXCLUDED.md',
+    'requirements-runtime.lock',
+  ]) {
     copyIfExists(path.join(projectRoot, docFile), path.join(resourcesDir, docFile));
   }
   copyIfExists(path.join(projectRoot, 'LICENSES_CREDITS'), path.join(resourcesDir, 'LICENSES_CREDITS'));
-  copyRecursive(path.join(projectRoot, 'venv'), path.join(resourcesDir, 'venv'), {
-    filter: shouldCopyPythonRuntime,
-  });
   copyDataSkeleton();
+  const licenseResult = spawnSync(
+    path.join(resourcesDir, 'python', 'python.exe'),
+    [
+      path.join(frontendRoot, 'script', 'collect-python-licenses.py'),
+      path.join(resourcesDir, 'THIRD_PARTY_LICENSES', 'python'),
+    ],
+    { cwd: frontendRoot, stdio: 'inherit', windowsHide: true },
+  );
+  if (licenseResult.error) throw licenseResult.error;
+  if (licenseResult.status !== 0) {
+    throw new Error(`Python license inventory failed with exit code ${licenseResult.status}`);
+  }
+  writeProductionInventory({
+    resourceRoot: resourcesDir,
+    appRoot: appDir,
+    runtime,
+  });
+  assertProductionPayload(resourcesDir, appDir);
   if (live2dBuildEnabled) {
     copyRecursive(
       live2dLicenseSource,
@@ -329,6 +341,7 @@ function main() {
       '',
       'Run Reverie.exe to start the Electron desktop shell.',
       'This is a portable test build generated without electron-builder/NSIS.',
+      'It uses the same hash-locked minimal Python runtime as the formal installer.',
       'It includes a sanitized data skeleton and does not copy private diary keys or memory vectors.',
       'For a formal installer, add electron-builder or another installer toolchain later.',
       '',

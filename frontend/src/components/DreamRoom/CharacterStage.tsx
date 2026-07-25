@@ -1,16 +1,27 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { ImagePlus, Trash2, UserRound, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import AvatarStage, {
+import {
   AVATAR_ACTION_KEYS,
   AVATAR_EXPRESSION_KEYS,
   type AvatarDetectedCapabilities,
   type AvatarExpressionKey,
   type CharacterActivity,
-} from './AvatarStage';
+} from './avatarContracts';
 import { useAvatarLibrary } from './useAvatarLibrary';
 import defaultYumiPreview from '@/assets/dreamroom/yumi-default-transparent.png';
 import styles from './CharacterStage.module.scss';
+
+const AvatarStage = lazy(() => import('./AvatarStage'));
 
 interface CharacterStageProps {
   personaName: string;
@@ -168,13 +179,25 @@ export default function CharacterStage({
     <section className={styles.characterStage} data-module="character-stage">
       {!avatars.candidate && (
         avatars.activeAvatar ? (
-          <AvatarStage
-            avatar={avatars.activeAvatar}
-            live2dRuntime={avatars.runtime}
-            activity={previewAction || activity}
-            expressionOverride={previewExpression}
-            onCapabilitiesDetected={setActiveDetected}
-          />
+          <Suspense fallback={(
+            <div
+              className={styles.defaultAvatar}
+              data-character-activity={previewAction || activity}
+              role="img"
+              aria-label={t('dream.defaultYumiPreview')}
+            >
+              <img src={defaultYumiPreview} alt="" />
+              <small>{t('dream.previewLoading')}</small>
+            </div>
+          )}>
+            <AvatarStage
+              avatar={avatars.activeAvatar}
+              live2dRuntime={avatars.runtime}
+              activity={previewAction || activity}
+              expressionOverride={previewExpression}
+              onCapabilitiesDetected={setActiveDetected}
+            />
+          </Suspense>
         ) : (
           <div
             className={styles.defaultAvatar}
@@ -365,14 +388,21 @@ export default function CharacterStage({
                 </small>
                 {previewAvatar && (
                   <div className={styles.previewStage}>
-                    <AvatarStage
-                      avatar={previewAvatar}
-                      live2dRuntime={avatars.runtime}
-                      activity="idle.default"
-                      lowPower
-                      onStatusChange={handlePreviewStatus}
-                      onCapabilitiesDetected={handlePreviewCapabilities}
-                    />
+                    <Suspense fallback={(
+                      <div className={styles.defaultAvatar}>
+                        <img src={defaultYumiPreview} alt="" />
+                        <small>{t('dream.previewLoading')}</small>
+                      </div>
+                    )}>
+                      <AvatarStage
+                        avatar={previewAvatar}
+                        live2dRuntime={avatars.runtime}
+                        activity="idle.default"
+                        lowPower
+                        onStatusChange={handlePreviewStatus}
+                        onCapabilitiesDetected={handlePreviewCapabilities}
+                      />
+                    </Suspense>
                   </div>
                 )}
                 <p role="status">

@@ -37,7 +37,9 @@ export default function FocusPanel({
   }, [onActivityChange, onCompleted, t]);
   const focus = useFocusSession(handleCompleted);
   const running = focus.state.phase === 'running';
-  const active = running || focus.state.phase === 'paused';
+  const active = running
+    || focus.state.phase === 'paused'
+    || focus.state.phase === 'starting';
   const audio = useFocusSoundscape(
     running,
     focus.state.id,
@@ -45,9 +47,11 @@ export default function FocusPanel({
   );
   const phaseLabel = useMemo(() => ({
     idle: t('dream.focusReady'),
+    starting: t('dream.focusRunning'),
     running: t('dream.focusRunning'),
     paused: t('dream.focusPaused'),
     completed: t('dream.focusCompleted'),
+    stopped: t('dream.focusReady'),
   }[focus.state.phase]), [focus.state.phase, t]);
   const soundLabels: Record<Soundscape, string> = {
     rain: t('dream.soundRain'),
@@ -58,23 +62,29 @@ export default function FocusPanel({
   };
 
   useEffect(() => {
-    const weather = running && (audio.sound === 'rain' || audio.sound === 'wind')
+    const weather = running && audio.playing && (audio.sound === 'rain' || audio.sound === 'wind')
       ? audio.sound
       : 'none';
     onAtmosphereChange?.(weather);
     return () => onAtmosphereChange?.('none');
-  }, [audio.sound, onAtmosphereChange, running]);
+  }, [audio.playing, audio.sound, onAtmosphereChange, running]);
+
+  useEffect(() => {
+    onActivityChange?.(active);
+  }, [active, onActivityChange]);
 
   const start = (minutes: number) => {
     if (generationInFlight && !window.confirm(t('dream.focusGenerationWarning'))) return;
     if (generationInFlight) onCancelGeneration?.();
-    onActivityChange?.(true);
     void focus.start(minutes).then((ok) => {
-      if (!ok) {
-        onActivityChange?.(false);
-        return;
-      }
+      if (!ok) return;
       if (audio.autoStart) void audio.startForSession();
+    });
+  };
+
+  const resume = () => {
+    void focus.resume().then((ok) => {
+      if (ok && audio.autoStart) void audio.startForSession();
     });
   };
 
@@ -100,7 +110,12 @@ export default function FocusPanel({
         <>
           <div className={styles.presets} aria-label={t('dream.focusDuration')}>
             {PRESETS.map((minutes) => (
-              <button key={minutes} type="button" disabled={!focus.available} onClick={() => start(minutes)}>
+              <button
+                key={minutes}
+                type="button"
+                disabled={!focus.available || focus.busy}
+                onClick={() => start(minutes)}
+              >
                 {t('dream.minutes', { count: minutes })}
               </button>
             ))}
@@ -114,7 +129,11 @@ export default function FocusPanel({
               value={customMinutes}
               onChange={(event) => setCustomMinutes(Math.min(180, Math.max(1, Number(event.target.value) || 1)))}
             />
-            <button type="button" disabled={!focus.available} onClick={() => start(customMinutes)}>
+            <button
+              type="button"
+              disabled={!focus.available || focus.busy}
+              onClick={() => start(customMinutes)}
+            >
               <Play size={16} /> {t('dream.start')}
             </button>
           </label>
@@ -122,11 +141,15 @@ export default function FocusPanel({
       ) : (
         <div className={styles.sessionActions}>
           {running ? (
-            <button type="button" onClick={() => void focus.pause()}><Pause size={16} /> {t('dream.pause')}</button>
+            <button type="button" disabled={focus.busy} onClick={() => void focus.pause()}>
+              <Pause size={16} /> {t('dream.pause')}
+            </button>
           ) : (
-            <button type="button" onClick={() => void focus.resume()}><Play size={16} /> {t('dream.resume')}</button>
+            <button type="button" disabled={focus.busy} onClick={resume}>
+              <Play size={16} /> {t('dream.resume')}
+            </button>
           )}
-          <button type="button" onClick={() => void focus.stop().then(() => onActivityChange?.(false))}>
+          <button type="button" disabled={focus.busy} onClick={() => void focus.stop()}>
             <RotateCcw size={16} /> {t('dream.stop')}
           </button>
         </div>
