@@ -33,6 +33,26 @@ export class CredentialWriteError extends Error {
   }
 }
 
+export class ProviderTestError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(message: string, code: string, retryable = false) {
+    super(message);
+    this.name = 'ProviderTestError';
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
+export interface ProviderTestReceipt {
+  receipt: string;
+  expiresAt: string;
+  provider: string;
+  model: string;
+  latencyMs: number;
+}
+
 function readLegacyPublicConfig(): PublicLLMConfig | null {
   try {
     const raw = globalThis.localStorage?.getItem(CONFIG_KEY);
@@ -75,7 +95,10 @@ export async function loadConfig(): Promise<LLMConfig | null> {
 export async function saveConfig(
   config: LLMConfig,
   imageGenConfig?: import('./imageGenClient').ImageGenConfig | null,
-  options: { credentialStorage?: CredentialStorageMode } = {},
+  options: {
+    credentialStorage?: CredentialStorageMode;
+    testReceipt?: string;
+  } = {},
 ): Promise<void> {
   const publicConfig = sanitizeLLMConfig(config);
   if (!publicConfig) throw new TypeError('LLM configuration metadata is invalid');
@@ -101,7 +124,18 @@ export async function saveConfig(
       false,
     );
   }
-  const result = await api.commit(persisted, credential, credentialStorage);
+  if (!options.testReceipt) {
+    throw new ProviderTestError(
+      '请先测试当前 API 设置；只有测试成功且输入未变化时才能保存。',
+      'REVERIE_PROVIDER_TEST_REQUIRED',
+    );
+  }
+  const result = await api.commit(
+    persisted,
+    credential,
+    credentialStorage,
+    options.testReceipt,
+  );
   const status = result.status;
   if (status.writeError) {
     throw new CredentialWriteError(
@@ -143,11 +177,32 @@ export async function saveConfig(
   removeLegacyPublicConfig();
 }
 
-export async function saveConfigMetadata(config: LLMConfig): Promise<void> {
+export async function testConfig(config: LLMConfig): Promise<ProviderTestReceipt> {
   const publicConfig = sanitizeLLMConfig(config);
   if (!publicConfig) throw new TypeError('LLM configuration metadata is invalid');
-  await savePersistedConfig({ llm: publicConfig });
-  removeLegacyPublicConfig();
+  const api = globalThis.window?.electronAPI?.providerConfig;
+  if (!api?.test) {
+    throw new ProviderTestError(
+      '供应商测试权威通道不可用，请完全退出并重新启动 Reverie。',
+      'REVERIE_DESKTOP_CONFIG_UNAVAILABLE',
+    );
+  }
+  const result = await api.test({
+    llm: publicConfig,
+  }, {
+    apiKey: config.apiKey.trim(),
+    customHeaders: config.customHeaders?.trim(),
+  });
+  if (!result.ok) {
+    throw new ProviderTestError(result.message, result.code, result.retryable);
+  }
+  return {
+    receipt: result.receipt,
+    expiresAt: result.expiresAt,
+    provider: result.provider,
+    model: result.model,
+    latencyMs: result.latencyMs,
+  };
 }
 
 export async function clearConfigCredentials(): Promise<void> {

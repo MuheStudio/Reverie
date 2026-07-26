@@ -16,9 +16,11 @@
     "electron:dev": "npm run build && electron .",
     "package:win:test": "node script/package-win-test.cjs",
     "package:win": "node script/package-win-installer.cjs",
-    "smoke:package": "node script/smoke-packaged-bridge.cjs"
+    "smoke:package": "node script/smoke-packaged-bridge.cjs",
+    "smoke:desktop": "node script/e2e-desktop-smoke.cjs"
   },
   "dependencies": {
+    "@pixi/unsafe-eval": "6.5.10",
     "@pixiv/three-vrm": "3.5.5",
     "@pixiv/three-vrm-animation": "3.5.5",
     "@react-spring/three": "^9.7.5",

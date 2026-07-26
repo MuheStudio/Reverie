@@ -113,6 +113,12 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
             message.get("llm")
         )
         result.update(configured)
+    elif control_type == "provider:test":
+        tested = await ws_bridge._test_runtime_provider(  # noqa: SLF001
+            message.get("llm"),
+            message.get("credential"),
+        )
+        result.update(tested)
     elif control_type in {"backup:file:export", "backup:file:import"}:
         operation = "export" if control_type.endswith(":export") else "import"
         result.update(

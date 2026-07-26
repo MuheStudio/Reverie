@@ -573,6 +573,7 @@ export default function AvatarStage({
           config={{ width: 640, height: 720, resolution: lowPower ? 1 : 1.5, maxFps: lowPower ? 15 : 30 }}
           modelUrl={avatar.entryUrl}
           expression={live2dExpression}
+          motion={live2dCapabilities.actionMatches[activity] || ''}
           onStateChange={handleLive2DState}
         />
       )}

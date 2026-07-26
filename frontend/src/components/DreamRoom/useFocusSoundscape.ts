@@ -30,7 +30,12 @@ export function useFocusSoundscape(
   const [error, setError] = useState('');
   const [customSounds, setCustomSounds] = useState<FocusSoundRecord[]>([]);
   const graphRef = useRef<FocusSoundGraph | null>(null);
+  const armedRef = useRef<{
+    context: AudioContext;
+    ready: Promise<boolean>;
+  } | null>(null);
   const operationRef = useRef(0);
+  const previousFocusRunningRef = useRef(focusRunning);
 
   const persist = useCallback((nextSound: Soundscape, nextVolume: number, nextAutoStart = autoStart) => {
     void window.electronAPI?.companionPreferences?.set({
@@ -70,7 +75,34 @@ export function useFocusSoundscape(
     } catch {
       // The device/context may already be gone.
     } finally {
+      if (armedRef.current?.context === graph.context) armedRef.current = null;
       void graph.context.close().catch(() => undefined);
+    }
+  }, []);
+
+  const arm = useCallback((): Promise<boolean> => {
+    const existing = armedRef.current;
+    if (existing && existing.context.state !== 'closed') return existing.ready;
+    try {
+      // Construct and resume inside the original click handler. Chromium may
+      // revoke user activation after the first awaited IPC round trip.
+      const context = new AudioContext({ latencyHint: 'playback' });
+      const ready = context.resume().then(() => {
+        if (context.state !== 'running') {
+          throw new Error(translate('dream.soundStartFailed'));
+        }
+        return true;
+      }).catch((reason) => {
+        if (armedRef.current?.context === context) armedRef.current = null;
+        void context.close().catch(() => undefined);
+        setError(reason instanceof Error ? reason.message : translate('dream.soundStartFailed'));
+        return false;
+      });
+      armedRef.current = { context, ready };
+      return ready;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : translate('dream.soundStartFailed'));
+      return Promise.resolve(false);
     }
   }, []);
 
@@ -91,9 +123,15 @@ export function useFocusSoundscape(
       if (requiresAudioRearm && focusId) {
         await window.electronAPI?.focus?.acknowledgeAudioRearm(focusId);
       }
-      context = new AudioContext({ latencyHint: 'playback' });
-      // This function is called only from the explicit sound toggle.
-      await context.resume();
+      const armed = armedRef.current;
+      if (armed && armed.context.state !== 'closed') {
+        if (!await armed.ready) return;
+        context = armed.context;
+        armedRef.current = null;
+      } else {
+        context = new AudioContext({ latencyHint: 'playback' });
+        await context.resume();
+      }
       const customId = sound.startsWith('custom:') ? sound.slice('custom:'.length) : '';
       const customUrl = customSounds.find((record) => record.id === customId)?.url || '';
       const playback = await attemptFocusPlayback(context, sound, volume, fetch, customUrl);
@@ -135,7 +173,9 @@ export function useFocusSoundscape(
   }, []);
 
   useEffect(() => {
-    if (!focusRunning && playing) void stop();
+    const wasRunning = previousFocusRunningRef.current;
+    previousFocusRunningRef.current = focusRunning;
+    if (wasRunning && !focusRunning && playing) void stop();
   }, [focusRunning, playing, stop]);
 
   useEffect(() => {
@@ -213,8 +253,13 @@ export function useFocusSoundscape(
       await window.electronAPI?.focusSound?.remove(id);
       if (sound === `custom:${id}`) setSound('rain');
     },
-    toggle: () => (playing ? stop() : start()),
     startForSession: () => start(true),
+    arm,
+    toggle: async () => {
+      if (playing) return stop();
+      if (!await arm()) return;
+      return start(true);
+    },
     stop,
   };
 }

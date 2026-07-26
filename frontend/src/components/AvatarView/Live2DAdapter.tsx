@@ -8,7 +8,12 @@
  * 适配修改: Muhe Studio 2026
  */
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { Application, Ticker } from 'pixi.js';
+import * as PIXI from 'pixi.js';
+import { install as installPixiCspAdapter } from '@pixi/unsafe-eval';
+
+const { Application, Ticker } = PIXI;
+installPixiCspAdapter(PIXI);
+(globalThis as typeof globalThis & { PIXI?: typeof PIXI }).PIXI = PIXI;
 
 const LIVE2D_CORE_URL = 'reverie-live2d-core://runtime/core.js';
 let coreLoadPromise: Promise<void> | null = null;
@@ -78,6 +83,21 @@ export interface Live2DModelOptions {
 
 export type Live2DState = 'pending' | 'loading' | 'mounted' | 'suspended' | 'error';
 
+export function calculateHeadCentredGaze(input: {
+  pointerX: number;
+  pointerY: number;
+  headX: number;
+  headY: number;
+  modelWidth: number;
+  modelHeight: number;
+}): { x: number; y: number } {
+  const clamp = (value: number) => Math.max(-1, Math.min(1, value));
+  return {
+    x: clamp((input.pointerX - input.headX) / Math.max(1, input.modelWidth * 0.7)),
+    y: clamp((input.headY - input.pointerY) / Math.max(1, input.modelHeight * 0.55)),
+  };
+}
+
 // ── 核心渲染器（框架无关）─────────────────────────────
 
 class Live2DRenderer {
@@ -91,6 +111,7 @@ class Live2DRenderer {
   private lifecycleToken = 0;
   private modelToken = 0;
   private desiredModel: Live2DModelOptions | null = null;
+  private detachModelRuntime: (() => void) | null = null;
 
   constructor(config: Live2DConfig) {
     this.config = {
@@ -131,6 +152,7 @@ class Live2DRenderer {
         throw new Error('Live2D initialization was cancelled');
       }
       this.app = app;
+      this.setMaxFps(this.config.maxFps ?? 0);
 
       this.app.stage.scale.set(res);
       this.canvas = this.app.view as HTMLCanvasElement;
@@ -182,6 +204,7 @@ class Live2DRenderer {
       model.scale.set(fit);
       model.position.set(this.config.width / 2, this.config.height / 2);
       this.app.stage.addChild(model);
+      this.attachContinuousRuntime(model);
       return true;
     } catch (error) {
       this.destroyDetachedModel(model);
@@ -200,10 +223,68 @@ class Live2DRenderer {
   private destroyModel(): void {
     const model = this.model;
     this.model = null;
+    this.detachModelRuntime?.();
+    this.detachModelRuntime = null;
     if (!model) return;
     try { this.app?.stage?.removeChild?.(model); } catch {}
     this.destroyDetachedModel(model);
     try { this.app?.renderer?.textureGC?.run?.(); } catch {}
+  }
+
+  private attachContinuousRuntime(model: any): void {
+    const internal = model?.internalModel;
+    const focusController = internal?.focusController;
+    const coreModel = internal?.coreModel;
+    if (!focusController || !this.canvas) return;
+    try {
+      if (model.automator) model.automator.autoFocus = false;
+    } catch {}
+
+    let lastPointerAt = 0;
+    const followPointer = (event: PointerEvent) => {
+      if (this.destroyed || this.suspended || this.model !== model || !this.canvas) return;
+      const rect = this.canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const scaleX = rect.width / Math.max(1, this.config.width);
+      const scaleY = rect.height / Math.max(1, this.config.height);
+      const headX = rect.left + model.x * scaleX;
+      const modelTop = model.y - model.height / 2;
+      const headY = rect.top + (modelTop + model.height * 0.18) * scaleY;
+      const gaze = calculateHeadCentredGaze({
+        pointerX: event.clientX,
+        pointerY: event.clientY,
+        headX,
+        headY,
+        modelWidth: model.width * scaleX,
+        modelHeight: model.height * scaleY,
+      });
+      focusController.focus(gaze.x, gaze.y);
+      lastPointerAt = performance.now();
+    };
+    const centerGaze = () => focusController.focus(0, 0, false);
+    window.addEventListener('pointermove', followPointer, { passive: true });
+    window.addEventListener('blur', centerGaze);
+
+    // The model ticker drives Cubism breath and eye blink continuously. A
+    // subtle pose drift keeps packages without an Idle motion alive too.
+    const idleTick = () => {
+      if (!coreModel || performance.now() - lastPointerAt < 2_500) return;
+      const seconds = performance.now() / 1000;
+      try {
+        coreModel.addParameterValueById('ParamAngleX', Math.sin(seconds * 0.42) * 1.4, 0.18);
+        coreModel.addParameterValueById('ParamAngleY', Math.sin(seconds * 0.31 + 1.2) * 0.8, 0.16);
+        coreModel.addParameterValueById('ParamAngleZ', Math.sin(seconds * 0.24 + 0.4) * 0.55, 0.14);
+        coreModel.addParameterValueById('ParamBodyAngleX', Math.sin(seconds * 0.19) * 0.45, 0.12);
+      } catch {}
+    };
+    internal.on?.('beforeModelUpdate', idleTick);
+
+    this.detachModelRuntime = () => {
+      window.removeEventListener('pointermove', followPointer);
+      window.removeEventListener('blur', centerGaze);
+      try { internal.off?.('beforeModelUpdate', idleTick); } catch {}
+      try { focusController.focus(0, 0, true); } catch {}
+    };
   }
 
   async setActive(active: boolean): Promise<void> {
@@ -232,6 +313,11 @@ class Live2DRenderer {
 
   setExpression(expression: string): void {
     try { void this.model?.expression?.(expression); } catch {}
+  }
+
+  playMotion(group: string): void {
+    if (!group) return;
+    try { void this.model?.motion?.(group); } catch {}
   }
 
   setMouthOpen(ratio: number): void {
@@ -377,7 +463,20 @@ export function useLive2D(config: Live2DConfig) {
     rendererRef.current?.setMouthOpen(speaking ? 0.7 : 0.0);
   }, []);
 
-  return { containerRef, state, error, loadModel, setExpression, setSpeaking, setActive };
+  const playMotion = useCallback((group: string) => {
+    rendererRef.current?.playMotion(group);
+  }, []);
+
+  return {
+    containerRef,
+    state,
+    error,
+    loadModel,
+    setExpression,
+    setSpeaking,
+    setActive,
+    playMotion,
+  };
 }
 
 // ── React 组件 ─────────────────────────────────────────
@@ -387,6 +486,7 @@ export function Live2DCanvas({
   modelUrl,
   expression = 'neutral',
   speaking = false,
+  motion = '',
   className,
   onStateChange,
 }: {
@@ -394,10 +494,19 @@ export function Live2DCanvas({
   modelUrl?: string;
   expression?: string;
   speaking?: boolean;
+  motion?: string;
   className?: string;
   onStateChange?: (state: Live2DState, error: string | null) => void;
 }) {
-  const { containerRef, state, error, loadModel, setExpression, setSpeaking } = useLive2D(config);
+  const {
+    containerRef,
+    state,
+    error,
+    loadModel,
+    setExpression,
+    setSpeaking,
+    playMotion,
+  } = useLive2D(config);
   const loadedModelUrlRef = useRef('');
   const loadingModelUrlRef = useRef('');
   const failedModelUrlRef = useRef('');
@@ -440,6 +549,10 @@ export function Live2DCanvas({
   useEffect(() => {
     setSpeaking(speaking);
   }, [speaking, setSpeaking]);
+
+  useEffect(() => {
+    if (modelReadyUrl === modelUrl && motion) playMotion(motion);
+  }, [modelReadyUrl, modelUrl, motion, playMotion]);
 
   return (
     <div className={className} style={{ position: 'relative', width: '100%', height: '100%' }}>

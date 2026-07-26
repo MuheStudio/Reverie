@@ -70,3 +70,4 @@ frontend/.installer-resources/
 frontend/.installer-source/
 frontend/.runtime-cache/
 frontend/.package-smoke/
+frontend/.desktop-smoke/

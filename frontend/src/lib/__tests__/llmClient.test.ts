@@ -12,6 +12,7 @@ import {
   loadConfig,
   loadConfigSync,
   saveConfig,
+  testConfig,
   chat,
   type ChatMessage,
   type ToolDef,
@@ -54,6 +55,8 @@ const MOCK_TOOLS: ToolDef[] = [
 const providerGet = vi.fn();
 const providerSet = vi.fn();
 const providerCommit = vi.fn();
+const providerTest = vi.fn();
+const TEST_OPTIONS = { testReceipt: 'provider-test-receipt' };
 
 // ─── Setup / Teardown ─────────────────────────────────────────────────────────
 
@@ -63,6 +66,7 @@ beforeEach(() => {
   providerGet.mockReset();
   providerSet.mockReset();
   providerCommit.mockReset();
+  providerTest.mockReset();
   providerGet.mockResolvedValue(null);
   providerSet.mockResolvedValue(undefined);
   providerCommit.mockResolvedValue({
@@ -76,12 +80,21 @@ beforeEach(() => {
       bindingMismatch: { llm: false, imageGen: false },
     },
   });
+  providerTest.mockResolvedValue({
+    ok: true,
+    receipt: 'provider-test-receipt',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    provider: 'openai',
+    model: 'gpt-4',
+    latencyMs: 42,
+  });
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       providerConfig: {
         get: providerGet,
         set: providerSet,
+        test: providerTest,
         commit: providerCommit,
       },
       credentials: {
@@ -327,13 +340,17 @@ describe('saveConfig()', () => {
   it('does not claim success when authoritative metadata persistence fails', async () => {
     providerCommit.mockRejectedValueOnce(new Error('disk full'));
 
-    await expect(saveConfig(MOCK_OPENAI_CONFIG)).rejects.toThrow('disk full');
+    await expect(saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      TEST_OPTIONS,
+    )).rejects.toThrow('disk full');
 
     expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
   });
 
   it('writes closed-world metadata through Electron and never uses HTTP', async () => {
-    await saveConfig(MOCK_OPENAI_CONFIG);
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, TEST_OPTIONS);
 
     expect(providerCommit).toHaveBeenCalledWith({
       llm: {
@@ -341,12 +358,12 @@ describe('saveConfig()', () => {
         baseUrl: 'https://api.openai.com',
         model: 'gpt-4',
       },
-    }, { apiKey: 'sk-test-key', customHeaders: undefined }, 'persistent');
+    }, { apiKey: 'sk-test-key', customHeaders: undefined }, 'persistent', 'provider-test-receipt');
   });
 
   it('includes imageGen when provided', async () => {
     const igConfig = { provider: 'openai' as const, apiKey: 'k', baseUrl: 'u', model: 'm' };
-    await saveConfig(MOCK_OPENAI_CONFIG, igConfig);
+    await saveConfig(MOCK_OPENAI_CONFIG, igConfig, TEST_OPTIONS);
 
     const body = providerCommit.mock.calls[0][0];
     expect(body.llm).toEqual({
@@ -373,8 +390,8 @@ describe('saveConfig()', () => {
   });
 
   it('overwrites previous config — latest value wins', async () => {
-    await saveConfig(MOCK_OPENAI_CONFIG);
-    await saveConfig(MOCK_ANTHROPIC_CONFIG);
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, TEST_OPTIONS);
+    await saveConfig(MOCK_ANTHROPIC_CONFIG, undefined, TEST_OPTIONS);
 
     expect(providerCommit.mock.calls.at(-1)?.[0].llm.provider).toBe('anthropic');
     expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
@@ -383,7 +400,7 @@ describe('saveConfig()', () => {
   it('does not call fetch while saving settings', async () => {
     const mockFetch = vi.fn();
     globalThis.fetch = mockFetch;
-    await saveConfig(MOCK_OPENAI_CONFIG);
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, TEST_OPTIONS);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -403,7 +420,11 @@ describe('saveConfig()', () => {
       },
     });
 
-    await expect(saveConfig(MOCK_OPENAI_CONFIG)).resolves.toBeUndefined();
+    await expect(saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      TEST_OPTIONS,
+    )).resolves.toBeUndefined();
     expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
   });
 
@@ -423,7 +444,11 @@ describe('saveConfig()', () => {
       },
     });
 
-    await expect(saveConfig(MOCK_OPENAI_CONFIG)).rejects.toMatchObject({
+    await expect(saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      TEST_OPTIONS,
+    )).rejects.toMatchObject({
       code: 'REVERIE_OS_ENCRYPTION_FAILED',
       canUseSessionStorage: true,
     });
@@ -442,13 +467,55 @@ describe('saveConfig()', () => {
     await expect(saveConfig(
       MOCK_OPENAI_CONFIG,
       undefined,
-      { credentialStorage: 'session' },
+      { credentialStorage: 'session', testReceipt: 'provider-test-receipt' },
     )).resolves.toBeUndefined();
     expect(providerCommit).toHaveBeenLastCalledWith(
       expect.objectContaining({ llm: expect.objectContaining({ provider: 'openai' }) }),
       { apiKey: 'sk-test-key', customHeaders: undefined },
       'session',
+      'provider-test-receipt',
     );
+  });
+
+  it('refuses to save an untested or edited provider draft', async () => {
+    await expect(saveConfig(MOCK_OPENAI_CONFIG)).rejects.toMatchObject({
+      code: 'REVERIE_PROVIDER_TEST_REQUIRED',
+    });
+    expect(providerCommit).not.toHaveBeenCalled();
+  });
+});
+
+describe('testConfig()', () => {
+  it('tests through the private desktop authority and returns an opaque receipt', async () => {
+    await expect(testConfig(MOCK_OPENAI_CONFIG)).resolves.toMatchObject({
+      receipt: 'provider-test-receipt',
+      model: 'gpt-4',
+      latencyMs: 42,
+    });
+    expect(providerTest).toHaveBeenCalledWith({
+      llm: {
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com',
+        model: 'gpt-4',
+      },
+    }, {
+      apiKey: 'sk-test-key',
+      customHeaders: undefined,
+    });
+  });
+
+  it('does not convert a failed probe into a saveable receipt', async () => {
+    providerTest.mockResolvedValueOnce({
+      ok: false,
+      code: 'PROVIDER_UNAUTHORIZED',
+      message: 'API 密钥或账户权限未通过验证。',
+      retryable: false,
+    });
+    await expect(testConfig(MOCK_OPENAI_CONFIG)).rejects.toMatchObject({
+      code: 'PROVIDER_UNAUTHORIZED',
+      retryable: false,
+    });
+    expect(providerCommit).not.toHaveBeenCalled();
   });
 });
 

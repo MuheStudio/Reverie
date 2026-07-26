@@ -46,6 +46,13 @@
 - **许可证**: MIT
 - **在 Reverie 中的角色**: VRM/Live2D 虚拟形象、语音输入输出、多 LLM 提供商适配
 
+### Luna-ts — Live2D AI 陪伴应用
+- **原作者**: Alan-Yu-2077 及 Luna-ts 贡献者 (Copyright 2026)
+- **原始仓库**: 用户提供的本地 `Cloning-project/Luna-ts`
+- **许可证**: MIT（其携带的 Live2D Cubism Core 不属于 MIT）
+- **在 Reverie 中的角色**: 参考并适配头部中心、按距离缩放的鼠标视线跟随算法
+- **边界**: Reverie 开发模式只从原仓库位置读取 Cubism Core，不复制或重新授权该专有文件
+
 ### foxgirls.club — 随机狐娘图片服务
 - **原作者**: foxgirls.org (Copyright 2026)
 - **原始仓库**: https://github.com/foxgirlsorg/foxgirls.club

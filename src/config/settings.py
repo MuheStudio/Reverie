@@ -156,6 +156,9 @@ class LLMSettings(_ValidatedSettingsModel):
     def _migrate_deprecated_deepseek_models(self) -> "LLMSettings":
         if self.provider == "deepseek":
             replacement = {
+                # DeepSeek retired these compatibility aliases on 2026-07-24.
+                # V4 Flash is the closest current endpoint for both aliases;
+                # users can explicitly select Pro in the desktop UI.
                 "deepseek-chat": "deepseek-v4-flash",
                 "deepseek-reasoner": "deepseek-v4-flash",
             }.get(self.model)

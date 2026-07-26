@@ -169,3 +169,28 @@ test('legacy unbound vaults remain readable but fail closed when an endpoint bin
   );
   assert.equal(vault.status().llm.bindingKnown, false);
 });
+
+test('provider commit rollback restores exactly one credential scope', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-rollback-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  const oldBinding = 'd'.repeat(64);
+  const newBinding = 'e'.repeat(64);
+  vault.set('llm', { apiKey: 'old-llm' }, { binding: oldBinding });
+  vault.set('imageGen', { apiKey: 'keep-image' }, { binding: 'f'.repeat(64) });
+  vault.setSession('llm', { customHeaders: 'X-Session: old' }, { binding: oldBinding });
+  const snapshot = vault.snapshotScope('llm');
+
+  vault.set('llm', { apiKey: 'new-llm' }, { binding: newBinding });
+  vault.setSession('llm', { customHeaders: 'X-Session: new' }, { binding: newBinding });
+  vault.restoreScope('llm', snapshot);
+
+  assert.deepEqual(vault.readForRuntime({ bindings: { llm: oldBinding } }).llm, {
+    apiKey: 'old-llm',
+    customHeaders: 'X-Session: old',
+  });
+  assert.equal(
+    vault.readForRuntime({ bindings: { llm: newBinding } }).llm,
+    undefined,
+  );
+  assert.deepEqual(vault.readForRuntime().imageGen, { apiKey: 'keep-image' });
+});

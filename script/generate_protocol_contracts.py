@@ -22,7 +22,10 @@ from src.kernel.contracts import (  # noqa: E402
 
 TS_TARGET = ROOT / "frontend" / "src" / "contracts" / "protocolV3.generated.ts"
 ELECTRON_TARGET = ROOT / "frontend" / "electron" / "protocol-v3.generated.cjs"
+PRELOAD_TARGET = ROOT / "frontend" / "electron" / "preload.js"
 SCHEMA_TARGET = ROOT / "config" / "protocol-v3.schema.json"
+PRELOAD_BEGIN = "/* BEGIN GENERATED PROTOCOL V3 COMMANDS */"
+PRELOAD_END = "/* END GENERATED PROTOCOL V3 COMMANDS */"
 
 
 def typescript() -> str:
@@ -104,10 +107,37 @@ module.exports = {{ COMMAND_NAMES, MESSAGE_NAMES }};
 """
 
 
+def preload_command_allowlist() -> str:
+    commands = ",\n".join(
+        f"  {json.dumps(value)}" for value in sorted(COMMAND_NAMES)
+    )
+    return f"""{PRELOAD_BEGIN}
+const COMMAND_NAMES = Object.freeze(new Set([
+{commands}
+]));
+{PRELOAD_END}"""
+
+
+def update_preload() -> None:
+    source = PRELOAD_TARGET.read_text(encoding="utf-8")
+    before, separator, remainder = source.partition(PRELOAD_BEGIN)
+    if not separator:
+        raise RuntimeError(f"missing generated preload marker: {PRELOAD_BEGIN}")
+    _current, separator, after = remainder.partition(PRELOAD_END)
+    if not separator:
+        raise RuntimeError(f"missing generated preload marker: {PRELOAD_END}")
+    PRELOAD_TARGET.write_text(
+        before + preload_command_allowlist() + after,
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def main() -> None:
     TS_TARGET.parent.mkdir(parents=True, exist_ok=True)
     TS_TARGET.write_text(typescript(), encoding="utf-8", newline="\n")
     ELECTRON_TARGET.write_text(electron_contracts(), encoding="utf-8", newline="\n")
+    update_preload()
     schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://reverie.local/schemas/protocol-v3.json",

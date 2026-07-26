@@ -1,7 +1,59 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-const { COMMAND_NAMES } = require('./protocol-v3.generated.cjs');
+
+/* BEGIN GENERATED PROTOCOL V3 COMMANDS */
+const COMMAND_NAMES = Object.freeze(new Set([
+  "ai_usage:get",
+  "ai_usage:grant",
+  "ai_usage:revoke",
+  "ambient:get",
+  "anti_ai:status",
+  "api:budget:get",
+  "archive:get",
+  "archive:migrate",
+  "archive:put",
+  "backup:export",
+  "backup:import",
+  "chat:cancel",
+  "chat:history",
+  "chat:reveal",
+  "chat:send",
+  "chat:stop",
+  "diary:request",
+  "emotion:get",
+  "game_state:get",
+  "game_state:put",
+  "group:request",
+  "group:send",
+  "image:random",
+  "immersion:closeup",
+  "immersion:nearby",
+  "immersion:smart_home",
+  "keepsake:add",
+  "keepsake:list",
+  "local_mode:set",
+  "memory:query",
+  "memory:settings:get",
+  "memory:store",
+  "module:control",
+  "module:list",
+  "persona:activate",
+  "persona:get",
+  "persona:import",
+  "persona:list",
+  "relationship:get",
+  "settings:get",
+  "settings:update",
+  "sticker:collect",
+  "sticker:list",
+  "sticker:react",
+  "sticker:send",
+  "timeline:request",
+  "user:profile:get",
+  "user:profile:update"
+]));
+/* END GENERATED PROTOCOL V3 COMMANDS */
 
 function subscribe(channel, callback) {
   if (typeof callback !== 'function') return () => {};
@@ -235,7 +287,11 @@ const api = Object.freeze({
   providerConfig: Object.freeze({
     get: () => ipcRenderer.invoke('providerConfig:get'),
     set: (value) => ipcRenderer.invoke('providerConfig:set', publicProviderConfig(value)),
-    commit: (value, credential, mode = 'persistent') => {
+    test: (value, credential) => ipcRenderer.invoke('providerConfig:test', {
+      config: publicProviderConfig(value),
+      credential: optionalCredentialValue(credential),
+    }),
+    commit: (value, credential, mode = 'persistent', testReceipt) => {
       if (!['persistent', 'session'].includes(mode)) {
         throw new TypeError('credential storage mode is invalid');
       }
@@ -243,6 +299,7 @@ const api = Object.freeze({
         config: publicProviderConfig(value),
         credential: optionalCredentialValue(credential),
         mode,
+        testReceipt: stringId(testReceipt, 'provider test receipt'),
       });
     },
   }),

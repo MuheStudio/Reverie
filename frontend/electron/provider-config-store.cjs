@@ -88,6 +88,14 @@ function providerBinding(scope, value) {
   ).digest('hex');
 }
 
+function sameLlmConnection(left, right) {
+  const first = normalizeProviderConfig(left).llm;
+  const second = normalizeProviderConfig(right).llm;
+  return first.provider === second.provider
+    && first.baseUrl === second.baseUrl
+    && first.model === second.model;
+}
+
 class ProviderConfigStore {
   constructor(options = {}) {
     if (!options.storageDir) throw new TypeError('ProviderConfigStore requires storageDir');
@@ -169,4 +177,5 @@ module.exports = {
   normalizeProviderConfig,
   providerBinding,
   providerUrl,
+  sameLlmConnection,
 };

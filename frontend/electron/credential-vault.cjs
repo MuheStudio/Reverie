@@ -265,6 +265,47 @@ class CredentialVault {
     return this.status();
   }
 
+  /**
+   * Main-process-only rollback material for a multi-store provider commit.
+   * The returned secret record must never cross IPC.
+   */
+  snapshotScope(scope) {
+    validateScope(scope);
+    let persistent = null;
+    if (this.isAvailable()) {
+      const vault = this._read();
+      persistent = {
+        credential: { ...vault.credentials[scope] },
+        binding: vault.bindings[scope],
+      };
+    }
+    return {
+      persistent,
+      sessionCredential: { ...this.sessionCredentials[scope] },
+      sessionBinding: this.sessionBindings[scope],
+    };
+  }
+
+  restoreScope(scope, snapshot) {
+    validateScope(scope);
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw new TypeError('credential rollback snapshot is invalid');
+    }
+    this.sessionCredentials[scope] = normalizeSecretRecord(
+      snapshot.sessionCredential || {},
+    );
+    this.sessionBindings[scope] = normalizeBinding(snapshot.sessionBinding);
+    if (snapshot.persistent) {
+      const vault = this._read();
+      vault.credentials[scope] = normalizeSecretRecord(
+        snapshot.persistent.credential || {},
+      );
+      vault.bindings[scope] = normalizeBinding(snapshot.persistent.binding);
+      this._write(vault);
+    }
+    return this.status();
+  }
+
   clear(scope) {
     validateScope(scope);
     this.sessionCredentials[scope] = {};

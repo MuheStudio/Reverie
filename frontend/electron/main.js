@@ -33,6 +33,7 @@ const {
   ProviderConfigStore,
   normalizeProviderConfig,
   providerBinding,
+  sameLlmConnection,
 } = require('./provider-config-store.cjs');
 const {
   assertPlainObject,
@@ -133,6 +134,8 @@ let jsonSaveDialogPending = false;
 let localModeTransitionPending = false;
 let focusGateRecovery = { available: true, reason: '', gateState: null };
 let shutdownStarted = false;
+const providerTestReceipts = new Map();
+const PROVIDER_TEST_RECEIPT_TTL_MS = 5 * 60 * 1000;
 
 function getRuntimeRoot() {
   return IS_DEV ? path.join(__dirname, '..', '..') : process.resourcesPath;
@@ -148,9 +151,23 @@ function isRegularUnlinkedFile(filePath) {
 }
 
 function getLive2DCorePath() {
-  return IS_DEV
-    ? process.env.REVERIE_LIVE2D_CORE_PATH
-    : path.join(process.resourcesPath, 'Live2DCubismCore.js');
+  if (!IS_DEV) return path.join(process.resourcesPath, 'Live2DCubismCore.js');
+  if (process.env.REVERIE_LIVE2D_CORE_PATH) {
+    return path.resolve(process.env.REVERIE_LIVE2D_CORE_PATH);
+  }
+  // Development-only reuse of the owner's local Luna-ts checkout. The
+  // proprietary Core remains there and is never copied into a package.
+  return path.resolve(
+    getRuntimeRoot(),
+    '..',
+    '..',
+    'Cloning-project',
+    'Luna-ts',
+    'packages',
+    'web',
+    'public',
+    'live2dcubismcore.min.js',
+  );
 }
 
 function probeLive2DRuntime() {
@@ -753,6 +770,9 @@ function createRuntimeModules() {
             ...probeLive2DRuntime(),
             isPackaged: app.isPackaged,
             licensePath,
+            developmentEnabled: IS_DEV && isRegularUnlinkedFile(getLive2DCorePath())
+              ? '1'
+              : process.env.REVERIE_LIVE2D_DEV,
             buildEnabled: IS_DEV
               ? process.env.REVERIE_LIVE2D_PUBLIC_BUILD
               : fs.existsSync(path.join(process.resourcesPath, 'LIVE2D_RUNTIME_ENABLED')) ? '1' : '0',
@@ -1152,17 +1172,151 @@ async function configureAuthoritativeProvider(input) {
   return committed;
 }
 
+function effectiveProviderCredential(normalized, submitted) {
+  const binding = providerBinding('llm', normalized);
+  let stored = {};
+  try {
+    stored = credentialVault.readForRuntime({
+      bindings: { llm: binding },
+    }).llm || {};
+  } catch (error) {
+    const code = String(error?.code || '');
+    if (!code.startsWith('REVERIE_')) throw error;
+  }
+  return {
+    ...stored,
+    ...(submitted || {}),
+  };
+}
+
+function providerTestDigest(normalized, credential) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    llm: normalized.llm,
+    credential: {
+      apiKey: String(credential.apiKey || ''),
+      customHeaders: String(credential.customHeaders || ''),
+    },
+  }), 'utf8').digest('hex');
+}
+
+function pruneProviderTestReceipts(now = Date.now()) {
+  for (const [receipt, record] of providerTestReceipts) {
+    if (record.expiresAt <= now) providerTestReceipts.delete(receipt);
+  }
+  while (providerTestReceipts.size > 64) {
+    providerTestReceipts.delete(providerTestReceipts.keys().next().value);
+  }
+}
+
+async function testProviderConfiguration(input = {}) {
+  assertPlainObject(input, 'provider configuration test');
+  const normalized = normalizeProviderConfig(input.config);
+  const submitted = input.credential == null ? {} : input.credential;
+  assertPlainObject(submitted, 'provider credential');
+  const credential = effectiveProviderCredential(normalized, submitted);
+  if (!bridge?.ready) {
+    if (!bridge?.child) startBridge();
+    return {
+      ok: false,
+      code: 'REVERIE_BRIDGE_NOT_READY',
+      message: '聊天后端正在启动，请稍后再测试。',
+      retryable: true,
+    };
+  }
+  try {
+    const result = await bridge.testProvider({
+      provider: normalized.llm.provider,
+      model: normalized.llm.model,
+      base_url: normalized.llm.baseUrl,
+    }, credential);
+    const now = Date.now();
+    pruneProviderTestReceipts(now);
+    const receipt = crypto.randomBytes(32).toString('base64url');
+    const expiresAt = now + PROVIDER_TEST_RECEIPT_TTL_MS;
+    providerTestReceipts.set(receipt, {
+      digest: providerTestDigest(normalized, credential),
+      expiresAt,
+    });
+    return {
+      ok: true,
+      receipt,
+      expiresAt: new Date(expiresAt).toISOString(),
+      provider: result.provider,
+      model: result.model,
+      latencyMs: result.latencyMs,
+    };
+  } catch (error) {
+    const code = String(error?.code || 'PROVIDER_FAILURE');
+    const messages = {
+      PROVIDER_UNAUTHORIZED: 'API 密钥或账户权限未通过验证。',
+      PROVIDER_RATE_LIMITED: '供应商正在限流，请稍后手动重试测试。',
+      PROVIDER_TIMEOUT: '测试请求超时；结果未知，不会自动重试。',
+      PROVIDER_CONNECTION_FAILED: '无法连接到供应商，请检查网络和请求地址。',
+      PROVIDER_INVALID_RESPONSE: '供应商返回了无法解析的响应。',
+      PROVIDER_EMPTY_RESPONSE: '供应商返回了空响应。',
+      REVERIE_LOCAL_MODE: '本地模式已启用，远程 API 测试被底层门禁阻止。',
+    };
+    return {
+      ok: false,
+      code,
+      message: messages[code] || 'API 测试失败；配置和密钥均未保存。',
+      retryable: ['PROVIDER_RATE_LIMITED', 'PROVIDER_TIMEOUT', 'PROVIDER_CONNECTION_FAILED']
+        .includes(code),
+    };
+  }
+}
+
 async function commitProviderConfiguration(input = {}) {
   assertPlainObject(input, 'provider configuration commit');
-  const committed = await configureAuthoritativeProvider(input.config);
+  const normalized = normalizeProviderConfig(input.config);
   const credential = input.credential;
   const mode = input.mode === 'session' ? 'session' : 'persistent';
-  let writeError = null;
+  const submitted = credential == null ? {} : credential;
+  assertPlainObject(submitted, 'provider credential');
+  const effectiveCredential = effectiveProviderCredential(normalized, submitted);
+  pruneProviderTestReceipts();
+  const receipt = boundedString(input.testReceipt, {
+    label: 'provider test receipt',
+    min: 32,
+    max: 128,
+  });
+  const tested = providerTestReceipts.get(receipt);
+  const digest = providerTestDigest(normalized, effectiveCredential);
+  if (!tested || tested.expiresAt <= Date.now()
+    || tested.digest.length !== digest.length
+    || !crypto.timingSafeEqual(Buffer.from(tested.digest), Buffer.from(digest))) {
+    return {
+      config: normalized,
+      status: {
+        ...publicCredentialStatus(),
+        writeError: {
+          code: 'REVERIE_PROVIDER_TEST_REQUIRED',
+          message: '供应商、模型、请求地址或密钥已变化，请重新测试后再保存。',
+        },
+      },
+    };
+  }
+
+  let snapshot;
+  try {
+    snapshot = credentialVault.snapshotScope('llm');
+  } catch (error) {
+    const code = String(error?.code || 'REVERIE_VAULT_IO');
+    return {
+      config: normalized,
+      status: {
+        ...publicCredentialStatus(),
+        writeError: {
+          code,
+          message: '无法读取原有安全凭据，未提交任何设置。',
+        },
+      },
+    };
+  }
   if (credential != null) {
-    assertPlainObject(credential, 'provider credential');
     const hasCredential = Boolean(credential.apiKey || credential.customHeaders);
     if (hasCredential) {
-      const binding = providerBinding('llm', committed);
+      const binding = providerBinding('llm', normalized);
       try {
         if (mode === 'session') {
           credentialVault.setSession('llm', credential, { binding });
@@ -1173,12 +1327,29 @@ async function commitProviderConfiguration(input = {}) {
         const code = String(error?.code || '');
         if (!code.startsWith('REVERIE_')) throw error;
         console.error('[Electron] Endpoint-bound credential write failed', code);
-        writeError = {
-          code,
-          message: 'Windows 安全存储未完成写入；供应商已切换，但未绑定任何旧密钥。',
+        return {
+          config: normalized,
+          status: {
+            ...publicCredentialStatus(),
+            writeError: {
+              code,
+              message: 'Windows 安全存储未完成写入；配置和原有密钥均未更改。',
+            },
+          },
         };
       }
     }
+  }
+  let committed;
+  try {
+    committed = await configureAuthoritativeProvider(normalized);
+  } catch (error) {
+    try {
+      credentialVault.restoreScope('llm', snapshot);
+    } catch (rollbackError) {
+      console.error('[Electron] Provider credential rollback failed', rollbackError);
+    }
+    throw error;
   }
   let status;
   try {
@@ -1192,12 +1363,12 @@ async function commitProviderConfiguration(input = {}) {
       runtimeAppliedScopes: { llm: false, imageGen: false },
     });
   }
+  providerTestReceipts.delete(receipt);
   return {
     config: committed,
     status: {
       ...status,
-      ...(writeError ? { writeError } : {}),
-      ...(mode === 'session' && !writeError
+      ...(mode === 'session'
         ? { sessionWarning: '凭据仅保存在本次运行的内存中，退出 Reverie 后会消失。' }
         : {}),
     },
@@ -1231,17 +1402,12 @@ function registerIpcHandlers() {
       min: 1,
       max: 16,
     });
-    assertPlainObject(input.value, 'credential value');
     if (scope === 'llm') {
-      return broadcastCredentialStatus({
-        runtimeApplied: false,
-        runtimePending: false,
-        writeError: {
-          code: 'REVERIE_PROVIDER_COMMIT_REQUIRED',
-          message: '模型凭据必须与供应商端点一起保存，未执行独立写入。',
-        },
-      });
+      const error = new Error('LLM credentials must be tested and committed with their provider settings');
+      error.code = 'REVERIE_PROVIDER_TEST_REQUIRED';
+      throw error;
     }
+    assertPlainObject(input.value, 'credential value');
     try {
       const cached = providerConfigStore.get();
       credentialVault.set(scope, input.value, {
@@ -1286,17 +1452,12 @@ function registerIpcHandlers() {
       min: 1,
       max: 16,
     });
-    assertPlainObject(input.value, 'credential value');
     if (scope === 'llm') {
-      return broadcastCredentialStatus({
-        runtimeApplied: false,
-        runtimePending: false,
-        writeError: {
-          code: 'REVERIE_PROVIDER_COMMIT_REQUIRED',
-          message: '模型凭据必须与供应商端点一起保存，未执行独立写入。',
-        },
-      });
+      const error = new Error('LLM credentials must be tested and committed with their provider settings');
+      error.code = 'REVERIE_PROVIDER_TEST_REQUIRED';
+      throw error;
     }
+    assertPlainObject(input.value, 'credential value');
     const cached = providerConfigStore.get();
     credentialVault.setSession(scope, input.value, {
       binding: providerBinding(scope, cached),
@@ -1341,8 +1502,20 @@ function registerIpcHandlers() {
     }
   });
   handle('providerConfig:get', () => authoritativeProviderConfig());
+  handle('providerConfig:test', (_event, input) => testProviderConfiguration(input));
   handle('providerConfig:set', async (_event, input) => {
-    const config = await configureAuthoritativeProvider(input);
+    const current = await authoritativeProviderConfig();
+    const candidate = normalizeProviderConfig(input);
+    if (!sameLlmConnection(current, candidate)) {
+      const error = new Error('LLM provider, model, or endpoint changes require a successful API test');
+      error.code = 'REVERIE_PROVIDER_TEST_REQUIRED';
+      throw error;
+    }
+    const config = {
+      llm: current.llm,
+      ...(candidate.imageGen ? { imageGen: candidate.imageGen } : {}),
+    };
+    providerConfigStore.set(config);
     await syncCredentialVault();
     return config;
   });

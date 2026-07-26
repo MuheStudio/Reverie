@@ -36,7 +36,7 @@ import {
   clearConfigCredentials,
   loadConfig,
   saveConfig,
-  saveConfigMetadata,
+  testConfig,
 } from '@/lib/llmClient';
 import {
   LLM_PROVIDER_CONFIGS,
@@ -417,13 +417,6 @@ const DEFAULT_USER_PROFILE: EditableUserProfile = {
   favorite_anime: ['梦想成为魔法少女', '慎重勇者'],
   important_dates: { 生日: '2026-03-03' },
 };
-
-function backendProvider(provider: LLMProvider): string {
-  if (provider === 'z.ai') return 'glm';
-  if (provider === 'anthropic') return 'anthropic';
-  if (provider === 'custom') return 'custom';
-  return provider;
-}
 
 function readJsonFile(file: File): Promise<unknown> {
   return file.text().then((text) => JSON.parse(text));
@@ -1038,7 +1031,7 @@ function TextAreaField({
   );
 }
 
-export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function AiSettingsPanel() {
   const fallback = getDefaultProviderConfig('openai');
   const [provider, setProvider] = useState<LLMProvider>(fallback.provider);
   const [apiKey, setApiKey] = useState('');
@@ -1049,11 +1042,25 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
   const [status, setStatus] = useState('');
   const [credentialStatus, setCredentialStatus] = useState<CredentialStatus | null>(null);
   const [sessionFallbackConfig, setSessionFallbackConfig] = useState<LLMConfig | null>(null);
+  const [testedDraft, setTestedDraft] = useState<{
+    key: string;
+    receipt: string;
+  } | null>(null);
+  const [busy, setBusy] = useState<'test' | 'save' | null>(null);
   const providerMeta = LLM_PROVIDER_CONFIGS[provider];
   const providerDisplayName = provider === 'custom'
     ? customProviderName.trim() || providerMeta.displayName
     : providerMeta.displayName;
   const needsKey = provider !== 'ollama';
+  const draftKey = JSON.stringify({
+    provider,
+    apiKey: needsKey ? apiKey.trim() : '',
+    baseUrl: baseUrl.trim(),
+    model: model.trim(),
+    customHeaders: customHeaders.trim(),
+    customProviderName: provider === 'custom' ? customProviderName.trim() : '',
+  });
+  const isCurrentDraftTested = testedDraft?.key === draftKey;
 
   const providerOptions = REQUESTED_PROVIDER_ORDER.map((id) => ({
     id,
@@ -1073,20 +1080,6 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    const unsubscribe = ws.subscribe(WSMsgType.SETTINGS_UPDATE_RESULT, (payload: unknown) => {
-      if (!isRecord(payload)) return;
-      if (payload.ok === false) {
-        setStatus(`保存失败：${String(payload.error || '后端未接受设置')}`);
-        return;
-      }
-      const llm = isRecord(payload.llm) ? payload.llm : {};
-      const hasRuntimeKey = llm.has_api_key === true || provider === 'ollama';
-      setStatus(hasRuntimeKey ? '已保存并同步到聊天后端' : '已保存，尚未填写 API Key');
-    });
-    return unsubscribe;
-  }, [provider, ws]);
 
   useEffect(() => {
     const api = window.electronAPI?.credentials;
@@ -1113,30 +1106,46 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
     if (nextProvider === 'custom' && !customProviderName.trim()) setCustomProviderName('自定义');
   };
 
-  const save = async () => {
-    const config: LLMConfig = {
+  const currentConfig = (): LLMConfig => ({
       provider,
       apiKey: needsKey ? apiKey.trim() : '',
       baseUrl: baseUrl.trim(),
       model: model.trim(),
       customHeaders: customHeaders.trim() || undefined,
       customProviderName: provider === 'custom' ? customProviderName.trim() || '自定义' : undefined,
-    };
+  });
+
+  const testApi = async () => {
+    const config = currentConfig();
+    setBusy('test');
+    setStatus('正在发送最小测试请求；这可能产生极少量 API 消耗……');
     try {
-      await saveConfig(config);
+      const result = await testConfig(config);
+      setTestedDraft({ key: draftKey, receipt: result.receipt });
       setSessionFallbackConfig(null);
+      setStatus(`测试成功 · ${result.model} · ${result.latencyMs} ms。现在可以保存。`);
+    } catch (error) {
+      setTestedDraft(null);
+      setStatus(error instanceof Error ? error.message : 'API 测试失败；未保存任何设置');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const save = async () => {
+    const config = currentConfig();
+    if (!testedDraft || testedDraft.key !== draftKey) {
+      setStatus('当前输入尚未通过测试，请先测试 API。');
+      return;
+    }
+    setBusy('save');
+    try {
+      await saveConfig(config, undefined, { testReceipt: testedDraft.receipt });
+      setSessionFallbackConfig(null);
+      setTestedDraft(null);
       setApiKey('');
       setCustomHeaders('');
-      const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
-        section: 'llm',
-        provider: backendProvider(provider),
-        model: config.model,
-        base_url: config.baseUrl,
-        custom_provider_name: config.customProviderName,
-      });
-      setStatus(sent
-        ? '接口元数据已发送；密钥由系统加密金库通过私有通道同步'
-        : '密钥已加密保存，但聊天后端当前未连接');
+      setStatus('API 测试结果、供应商设置和加密凭据已通过同一权威通道提交。');
     } catch (error) {
       if (error instanceof CredentialWriteError && error.canUseSessionStorage) {
         setSessionFallbackConfig(config);
@@ -1144,26 +1153,28 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
         return;
       }
       setStatus(error instanceof Error ? error.message : '安全保存失败');
+    } finally {
+      setBusy(null);
     }
   };
 
   const saveForSession = async () => {
-    if (!sessionFallbackConfig) return;
+    if (!sessionFallbackConfig || !testedDraft || testedDraft.key !== draftKey) return;
+    setBusy('save');
     try {
-      await saveConfig(sessionFallbackConfig, undefined, { credentialStorage: 'session' });
+      await saveConfig(sessionFallbackConfig, undefined, {
+        credentialStorage: 'session',
+        testReceipt: testedDraft.receipt,
+      });
       setApiKey('');
       setCustomHeaders('');
       setSessionFallbackConfig(null);
+      setTestedDraft(null);
       setStatus('密钥仅保存在本次 Reverie 运行的内存中，退出后会消失；没有明文落盘。');
-      ws.send(WSMsgType.SETTINGS_UPDATE, {
-        section: 'llm',
-        provider: backendProvider(sessionFallbackConfig.provider),
-        model: sessionFallbackConfig.model,
-        base_url: sessionFallbackConfig.baseUrl,
-        custom_provider_name: sessionFallbackConfig.customProviderName,
-      });
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '会话内凭据保存失败');
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -1225,12 +1236,28 @@ export function AiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> })
       </div>
 
       <div className={styles.actionRow}>
-        <button type="button" onClick={save}>
+        <button
+          type="button"
+          onClick={testApi}
+          disabled={busy !== null || !baseUrl.trim() || !model.trim()}
+        >
+          <Wifi size={15} />
+          {busy === 'test' ? '测试中…' : '测试 API'}
+        </button>
+        <button
+          type="button"
+          onClick={save}
+          disabled={busy !== null || !isCurrentDraftTested}
+        >
           <Save size={15} />
-          保存接口
+          {busy === 'save' ? '保存中…' : '保存接口'}
         </button>
         {sessionFallbackConfig && (
-          <button type="button" onClick={saveForSession}>
+          <button
+            type="button"
+            onClick={saveForSession}
+            disabled={busy !== null || !isCurrentDraftTested}
+          >
             <KeyRound size={15} />
             仅本次运行使用
           </button>
@@ -3801,9 +3828,7 @@ export function BackupPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
         return;
       }
     }
-    if (backup.llmConfig) {
-      await saveConfigMetadata({ ...backup.llmConfig, apiKey: '' });
-    }
+    const skippedLlmConfig = Boolean(backup.llmConfig);
     if (backup.userProfile) {
       const profile = normalizeUserProfile(backup.userProfile);
       ws.send(WSMsgType.USER_PROFILE_UPDATE, { profile: userProfilePayload(profile) });
@@ -3813,6 +3838,9 @@ export function BackupPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
     ws.send(WSMsgType.EMOTION_GET, {});
     ws.send(WSMsgType.RELATIONSHIP_GET, {});
     const warnings = [...backup.securityWarnings];
+    if (skippedLlmConfig) {
+      warnings.push('旧备份中的 API 供应商设置未自动启用；请在设置中重新测试后保存。');
+    }
     if (
       backup.evidence.chatMessages.length
       || backup.evidence.diaryEntries.length

@@ -1998,7 +1998,7 @@ export default function DreamRoom() {
               emotions={ws.emotions}
             />
           )}
-          {activePanel === 'ai' && <AiSettingsPanel ws={ws} />}
+          {activePanel === 'ai' && <AiSettingsPanel />}
           {activePanel === 'chatSettings' && <ChatSettingsPanel ws={ws} />}
           {activePanel === 'antiAiSettings' && <AntiAiSettingsPanel ws={ws} />}
           {activePanel === 'diarySettings' && <DiarySettingsPanel ws={ws} />}

@@ -8,6 +8,7 @@ const {
   FrameDecoder,
   FramedBridgeSupervisor,
   encodeFrame,
+  validateReady,
 } = require('./framed-bridge-supervisor.cjs');
 const { secretHash } = require('./bridge-supervisor.cjs');
 
@@ -25,6 +26,40 @@ function fakeChild(pid = 2468) {
   };
   return child;
 }
+
+test('Windows launcher PID differences retain the secret-bound authority proof', () => {
+  const ready = {
+    kind: 'ready',
+    schema: 'reverie.bridge.stdio.ready.v3',
+    transport: 'stdio-framed',
+    pid: 9002,
+    secretSha256: secretHash('owner-secret'),
+    protocolVersion: 3,
+    localModeEpoch: 0,
+    localModeSessionId: null,
+    personaId: 'persona',
+    personaEpoch: 1,
+    personaFingerprint: 'a'.repeat(64),
+  };
+  const expected = {
+    pid: 9001,
+    secretSha256: secretHash('owner-secret'),
+    localModeEpoch: 0,
+    localModeSessionId: null,
+  };
+  assert.throws(() => validateReady(ready, expected), /PID mismatch/);
+  assert.equal(
+    validateReady(ready, { ...expected, allowPidMismatch: true }).bridgePid,
+    9002,
+  );
+  assert.throws(
+    () => validateReady(
+      { ...ready, secretSha256: secretHash('attacker-secret') },
+      { ...expected, allowPidMismatch: true },
+    ),
+    /secret digest/i,
+  );
+});
 
 test('frame decoder handles fragmented and coalesced frames and rejects oversized lengths', () => {
   const values = [];
@@ -95,7 +130,7 @@ test('framed supervisor correlates private controls and business events without 
     requestId: getFrame.requestId,
     llm: {
       provider: 'deepseek',
-      model: 'deepseek-v4-flash',
+      model: 'deepseek-chat',
       base_url: 'https://api.deepseek.com',
       has_api_key: true,
       model_epoch: 3,
@@ -104,7 +139,7 @@ test('framed supervisor correlates private controls and business events without 
   }));
   assert.deepEqual(await providerRead, {
     provider: 'deepseek',
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-chat',
     baseUrl: 'https://api.deepseek.com',
     hasApiKey: true,
     modelEpoch: 3,
@@ -147,6 +182,31 @@ test('framed supervisor correlates private controls and business events without 
     modelEpoch: 4,
     optionalAiConsentsRevoked: true,
     cancelledOptionalAiTasks: 2,
+  });
+
+  const providerTest = supervisor.testProvider({
+    provider: 'deepseek',
+    model: 'deepseek-chat',
+    base_url: 'https://api.deepseek.com',
+  }, { apiKey: 'private-canary' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const testFrame = sent.at(-1);
+  assert.equal(testFrame.type, 'provider:test');
+  assert.equal(testFrame.credential.apiKey, 'private-canary');
+  child.stdout.write(encodeFrame({
+    kind: 'control_result',
+    schema: 'reverie.bridge.stdio.control.v3',
+    type: 'provider:test',
+    requestId: testFrame.requestId,
+    provider: 'deepseek',
+    model: 'deepseek-chat',
+    latency_ms: 321,
+    ok: true,
+  }));
+  assert.deepEqual(await providerTest, {
+    provider: 'deepseek',
+    model: 'deepseek-chat',
+    latencyMs: 321,
   });
 
   supervisor.sendBusinessFrame({

@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from script.generate_protocol_contracts import electron_contracts, typescript
+from script.generate_protocol_contracts import (
+    electron_contracts,
+    preload_command_allowlist,
+    typescript,
+)
 from script.validate_capability_manifest import validate as validate_capabilities
 from src.bridge.stdio_transport import (
     FrameProtocolError,
@@ -86,6 +90,20 @@ def test_generated_electron_command_allowlist_is_current():
     assert '"chat:send"' in generated
     command_allowlist = generated.split("const MESSAGE_NAMES", 1)[0]
     assert '"chat:chunk"' not in command_allowlist
+
+
+def test_sandbox_safe_preload_command_allowlist_is_current():
+    preload = (
+        ROOT / "frontend" / "electron" / "preload.js"
+    ).read_text(encoding="utf-8")
+    generated = preload.split(
+        "/* BEGIN GENERATED PROTOCOL V3 COMMANDS */", 1
+    )[1].split("/* END GENERATED PROTOCOL V3 COMMANDS */", 1)[0]
+    expected = preload_command_allowlist().split(
+        "/* BEGIN GENERATED PROTOCOL V3 COMMANDS */", 1
+    )[1].split("/* END GENERATED PROTOCOL V3 COMMANDS */", 1)[0]
+    assert generated == expected
+    assert "require('./protocol-v3.generated.cjs')" not in preload
 
 
 def test_length_prefixed_transport_round_trip_and_size_guard():

@@ -78,7 +78,12 @@ function validateReady(value, expected) {
     || value.transport !== 'stdio-framed' || value.protocolVersion !== 3) {
     throw new Error('Invalid framed bridge ready record');
   }
-  if (value.pid !== expected.pid) throw new Error('Bridge PID mismatch');
+  if (!Number.isInteger(value.pid) || value.pid < 1) {
+    throw new Error('Bridge PID is invalid');
+  }
+  if (value.pid !== expected.pid && expected.allowPidMismatch !== true) {
+    throw new Error('Bridge PID mismatch');
+  }
   if (String(value.secretSha256 || '').toLowerCase()
     !== String(expected.secretSha256 || '').toLowerCase()) {
     throw new Error('Bridge secret digest mismatch');
@@ -98,6 +103,7 @@ function validateReady(value, expected) {
     personaId: value.personaId,
     personaEpoch: value.personaEpoch,
     personaFingerprint: value.personaFingerprint.toLowerCase(),
+    bridgePid: value.pid,
     runtimeDegraded: value.runtimeDegraded === true,
     runtimeUnavailable: Array.isArray(value.runtimeUnavailable)
       ? value.runtimeUnavailable.filter((item) => typeof item === 'string').slice(0, 128)
@@ -115,6 +121,10 @@ class FramedBridgeSupervisor extends EventEmitter {
     this.spawnChild = options.spawnChild;
     this.readyTimeoutMs = options.readyTimeoutMs || 20_000;
     this.controlTimeoutMs = options.controlTimeoutMs || 8_000;
+    // Windows venv launchers may create the actual interpreter as a child and
+    // then exit. The random owner secret and dedicated stdio pipe remain the
+    // authority proof; a launcher PID is not a stable identity there.
+    this.allowPidMismatch = options.allowPidMismatch ?? process.platform === 'win32';
     this.child = null;
     this.ready = null;
     this.secret = null;
@@ -187,6 +197,7 @@ class FramedBridgeSupervisor extends EventEmitter {
     if (!this.ready) {
       this.ready = validateReady(frame, {
         pid: child.pid,
+        allowPidMismatch: this.allowPidMismatch,
         secretSha256: secretHash(this.secret),
         localModeEpoch: Number.isInteger(localMode.epoch) ? localMode.epoch : 0,
         localModeSessionId: localMode.sessionId || null,
@@ -375,6 +386,27 @@ class FramedBridgeSupervisor extends EventEmitter {
           : 0,
       };
     });
+  }
+
+  testProvider(llm, credential) {
+    return this._sendControl(
+      'provider:test',
+      { llm, credential },
+      (frame) => {
+        if (typeof frame.provider !== 'string'
+          || typeof frame.model !== 'string'
+          || !Number.isInteger(frame.latency_ms)
+          || frame.latency_ms < 0) {
+          throw new Error('Bridge returned an invalid provider test result');
+        }
+        return {
+          provider: frame.provider,
+          model: frame.model,
+          latencyMs: frame.latency_ms,
+        };
+      },
+      35_000,
+    );
   }
 
   backupToFile(filePath) {

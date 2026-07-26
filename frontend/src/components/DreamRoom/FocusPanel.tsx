@@ -76,20 +76,35 @@ export default function FocusPanel({
   const start = (minutes: number) => {
     if (generationInFlight && !window.confirm(t('dream.focusGenerationWarning'))) return;
     if (generationInFlight) onCancelGeneration?.();
+    const audioReady = audio.autoStart ? audio.arm() : null;
     void focus.start(minutes).then((ok) => {
       if (!ok) return;
-      if (audio.autoStart) void audio.startForSession();
+      if (audioReady) {
+        void audioReady.then((ready) => {
+          if (ready) void audio.startForSession();
+        });
+      }
     });
   };
 
   const resume = () => {
+    const audioReady = audio.autoStart ? audio.arm() : null;
     void focus.resume().then((ok) => {
-      if (ok && audio.autoStart) void audio.startForSession();
+      if (ok && audioReady) {
+        void audioReady.then((ready) => {
+          if (ready) void audio.startForSession();
+        });
+      }
     });
   };
 
   return (
-    <section className={styles.focus} aria-labelledby="focus-title" data-focus-phase={focus.state.phase}>
+    <section
+      className={styles.focus}
+      aria-labelledby="focus-title"
+      data-focus-phase={focus.state.phase}
+      data-sound-playing={audio.playing ? 'true' : 'false'}
+    >
       <header>
         <div>
           <span><Flame size={16} /> {t('dream.focusLocal')}</span>
@@ -101,6 +116,7 @@ export default function FocusPanel({
       <div
         className={styles.timer}
         role="timer"
+        data-testid="companion-timer"
         aria-label={t('dream.focusRemaining', { time: formatRemaining(focus.displayRemaining) })}
       >
         {formatRemaining(focus.displayRemaining)}
@@ -124,6 +140,7 @@ export default function FocusPanel({
             <span>{t('dream.customMinutes')}</span>
             <input
               type="number"
+              data-testid="companion-duration"
               min={1}
               max={180}
               value={customMinutes}
@@ -131,6 +148,7 @@ export default function FocusPanel({
             />
             <button
               type="button"
+              data-testid="companion-start"
               disabled={!focus.available || focus.busy}
               onClick={() => start(customMinutes)}
             >
@@ -149,7 +167,12 @@ export default function FocusPanel({
               <Play size={16} /> {t('dream.resume')}
             </button>
           )}
-          <button type="button" disabled={focus.busy} onClick={() => void focus.stop()}>
+          <button
+            type="button"
+            data-testid="companion-stop"
+            disabled={focus.busy}
+            onClick={() => void focus.stop()}
+          >
             <RotateCcw size={16} /> {t('dream.stop')}
           </button>
         </div>
@@ -182,7 +205,7 @@ export default function FocusPanel({
         )}
         <button
           type="button"
-          disabled={!running}
+          data-testid="companion-sound-toggle"
           onClick={() => void audio.toggle()}
           aria-pressed={audio.playing}
           title={t('dream.soundManualStart')}

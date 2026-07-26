@@ -108,7 +108,7 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
     defaultModel: 'deepseek-v4-flash',
     models: [
       { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', category: 'general' },
-      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', category: 'flagship' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', category: 'thinking' },
     ],
   },
 

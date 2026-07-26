@@ -4,6 +4,8 @@ from src.config.settings import FeatureSettings, LLMSettings
 def test_deprecated_deepseek_models_migrate_to_current_flash_model() -> None:
     assert LLMSettings(provider="deepseek", model="deepseek-chat").model == "deepseek-v4-flash"
     assert LLMSettings(provider="deepseek", model="deepseek-reasoner").model == "deepseek-v4-flash"
+    assert LLMSettings(provider="deepseek", model="deepseek-v4-flash").model == "deepseek-v4-flash"
+    assert LLMSettings(provider="deepseek", model="deepseek-v4-pro").model == "deepseek-v4-pro"
 
 
 def test_feature_settings_defaults() -> None:

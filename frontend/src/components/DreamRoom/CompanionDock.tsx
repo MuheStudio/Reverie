@@ -96,7 +96,12 @@ export default function CompanionDock({
         >
           <MessageCircle size={18} /><span>{t('dream.chat')}</span>
         </button>
-        <button type="button" data-active={tab === 'focus'} onClick={() => { setTab('focus'); setCompactOpen(true); }}>
+        <button
+          type="button"
+          data-active={tab === 'focus'}
+          data-testid="primary-companion-action"
+          onClick={() => { setTab('focus'); setCompactOpen(true); }}
+        >
           <Flame size={18} /><span>{t('dream.focus')}</span>
         </button>
       </nav>

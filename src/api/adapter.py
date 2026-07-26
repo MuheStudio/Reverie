@@ -22,6 +22,43 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("reverie.api")
 
+_RESERVED_CUSTOM_HEADERS = {
+    "authorization",
+    "content-length",
+    "host",
+    "x-api-key",
+}
+
+
+def parse_custom_headers(value: str | None) -> dict[str, str]:
+    """Parse the desktop header editor into a bounded, injection-safe mapping."""
+
+    if not value:
+        return {}
+    if len(value) > 16 * 1024 or "\x00" in value:
+        raise ValueError("custom headers are invalid")
+    result: dict[str, str] = {}
+    lines = value.splitlines()
+    if len(lines) > 32:
+        raise ValueError("too many custom headers")
+    for line in lines:
+        name, separator, raw_value = line.partition(":")
+        name = name.strip()
+        header_value = raw_value.strip()
+        if (
+            not separator
+            or not name
+            or not header_value
+            or len(name) > 128
+            or len(header_value) > 4096
+            or name.lower() in _RESERVED_CUSTOM_HEADERS
+            or not all(char.isalnum() or char in "!#$%&'*+-.^_`|~" for char in name)
+            or any(ord(char) < 32 or ord(char) == 127 for char in header_value)
+        ):
+            raise ValueError("custom headers are invalid")
+        result[name] = header_value
+    return result
+
 
 class ProviderRequestError(RuntimeError):
     """Sanitized provider failure safe for ledgers and technical UI."""
@@ -129,16 +166,18 @@ class LLMAdapter:
         budget_tracker: "ApiBudgetTracker | None" = None,
         local_mode_gate: LocalModeGate | None = None,
         usage_policy: UsagePolicy | None = None,
+        custom_headers: dict[str, str] | None = None,
     ) -> None:
         self.settings = settings or load_settings().llm
         self._client: AsyncOpenAI | None = None
-        self._client_signature: tuple[str, str, str] | None = None
+        self._client_signature: tuple[str, str, str, str] | None = None
         self._ollama: OllamaClient | None = None
         self._retired_clients: list[Any] = []
         self._close_tasks: set[asyncio.Task[Any]] = set()
         self.budget_tracker = budget_tracker
         self.local_mode_gate = local_mode_gate or get_local_mode_gate()
         self.usage_policy = usage_policy or get_usage_policy()
+        self.custom_headers = dict(custom_headers or {})
 
     def reset_client(self) -> None:
         """Drop cached provider clients after runtime settings change."""
@@ -332,6 +371,7 @@ class LLMAdapter:
             response = await client.post(
                 url,
                 headers={
+                    **self.custom_headers,
                     "x-api-key": self.settings.api_key,
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
@@ -383,6 +423,7 @@ class LLMAdapter:
             str(self.settings.provider),
             str(self.settings.base_url),
             str(self.settings.api_key),
+            json.dumps(self.custom_headers, sort_keys=True, separators=(",", ":")),
         )
         if self._client is None or self._client_signature != signature:
             self._client = AsyncOpenAI(
@@ -392,6 +433,7 @@ class LLMAdapter:
                 # errors automatically. Reverie cannot prove those retries are
                 # free or idempotent after dispatch.
                 max_retries=0,
+                default_headers=self.custom_headers or None,
             )
             self._client_signature = signature
         return self._client

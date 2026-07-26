@@ -5,7 +5,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { ProviderConfigStore, providerBinding } = require('./provider-config-store.cjs');
+const {
+  ProviderConfigStore,
+  providerBinding,
+  sameLlmConnection,
+} = require('./provider-config-store.cjs');
 
 test('provider metadata store persists a closed-world projection without credentials', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-config-'));
@@ -66,7 +70,7 @@ test('provider metadata replacement is repeatable on Windows and endpoint bindin
     llm: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5' },
   };
   const second = {
-    llm: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
+    llm: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
   };
   store.set(first);
   store.set(second);
@@ -77,4 +81,24 @@ test('provider metadata replacement is repeatable on Windows and endpoint bindin
     fs.readdirSync(root).some((name) => name.endsWith('.tmp') || name.endsWith('.backup')),
     false,
   );
+});
+
+test('untested metadata updates cannot change the LLM connection tuple', () => {
+  const current = {
+    llm: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+  };
+  assert.equal(sameLlmConnection(current, {
+    ...current,
+    imageGen: {
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com',
+      model: 'gpt-image-1.5',
+    },
+  }), true);
+  assert.equal(sameLlmConnection(current, {
+    llm: { ...current.llm, model: 'deepseek-reasoner' },
+  }), false);
+  assert.equal(sameLlmConnection(current, {
+    llm: { ...current.llm, baseUrl: 'https://proxy.invalid/v1' },
+  }), false);
 });

@@ -1939,6 +1939,82 @@ async def _configure_runtime_provider(payload: Any) -> dict[str, Any]:
     }
 
 
+async def _test_runtime_provider(payload: Any, credential: Any) -> dict[str, Any]:
+    """Make one minimal, non-persistent request against a candidate endpoint."""
+
+    if os.getenv("REVERIE_BRIDGE_MODE", "").strip() != "1":
+        raise PermissionError("provider tests require the Electron owner")
+    if not isinstance(payload, dict):
+        raise ValueError("provider metadata must be an object")
+    if not isinstance(credential, dict):
+        raise ValueError("provider credential must be an object")
+    if not bridge_state.settings:
+        raise RuntimeError("settings are not initialized")
+
+    from src.api.adapter import LLMAdapter, ProviderRequestError, parse_custom_headers
+    from src.config.settings import PROVIDER_DEFAULTS, normalize_provider_endpoint
+
+    provider = str(payload.get("provider", "")).strip().lower()
+    provider = {"z.ai": "glm", "zai": "glm", "claude": "anthropic"}.get(
+        provider,
+        provider,
+    )
+    if provider not in PROVIDER_DEFAULTS:
+        raise ValueError(f"Unsupported provider: {provider}")
+    model = str(payload.get("model") or "").strip()
+    if not model or len(model) > 512 or any(ord(char) < 32 for char in model):
+        raise ValueError("provider model is invalid")
+    base_url = normalize_provider_endpoint(
+        provider,
+        str(payload.get("base_url") or "").strip(),
+    )
+    api_key = str(credential.get("apiKey") or "")
+    if len(api_key) > 16 * 1024 or "\x00" in api_key or "\r" in api_key or "\n" in api_key:
+        raise ValueError("provider API key is invalid")
+    if provider != "ollama" and not api_key:
+        raise ProviderRequestError(
+            "PROVIDER_UNAUTHORIZED",
+            retryable=False,
+            outcome_unknown=False,
+        )
+    headers = parse_custom_headers(str(credential.get("customHeaders") or ""))
+
+    candidate = bridge_state.settings.llm.model_copy(deep=True)
+    candidate.provider = provider
+    candidate.model = model
+    candidate.base_url = base_url
+    candidate.api_key = api_key
+    owner_adapter = bridge_state.adapter
+    probe = LLMAdapter(
+        settings=candidate,
+        local_mode_gate=getattr(owner_adapter, "local_mode_gate", None),
+        custom_headers=headers,
+    )
+    started = asyncio.get_running_loop().time()
+    try:
+        response = await asyncio.wait_for(
+            probe.chat(
+                [{"role": "user", "content": "Reply with OK."}],
+                model=model,
+                temperature=0,
+                max_tokens=4,
+                purpose="chat_reply",
+                background=False,
+            ),
+            timeout=30,
+        )
+    finally:
+        await probe.close()
+    return {
+        "provider": provider,
+        "model": str(response.model or model)[:512],
+        "latency_ms": max(
+            0,
+            int((asyncio.get_running_loop().time() - started) * 1000),
+        ),
+    }
+
+
 @register_handler(MsgType.SETTINGS_GET)
 async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """Return the public authoritative settings projection without secrets."""
@@ -2621,7 +2697,15 @@ async def _apply_runtime_credentials(value: Any) -> dict[str, bool]:
     llm.api_key = next_key
     adapter = bridge_state.adapter
     if adapter:
+        from src.api.adapter import parse_custom_headers
+
         adapter.settings = llm
+        if llm_credentials is None:
+            adapter.custom_headers = {}
+        elif llm_credentials is not ...:
+            adapter.custom_headers = parse_custom_headers(
+                str(llm_credentials.get("customHeaders") or "")
+            )
         reset_client = getattr(adapter, "reset_client", None)
         if callable(reset_client):
             reset_client()

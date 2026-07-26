@@ -288,6 +288,32 @@ declare global {
             model: string;
           };
         }) => Promise<unknown>;
+        test: (
+          value: {
+            llm: {
+              provider: string;
+              baseUrl: string;
+              model: string;
+              customProviderName?: string;
+            };
+          },
+          credential?: { apiKey?: string; customHeaders?: string },
+        ) => Promise<
+          | {
+              ok: true;
+              receipt: string;
+              expiresAt: string;
+              provider: string;
+              model: string;
+              latencyMs: number;
+            }
+          | {
+              ok: false;
+              code: string;
+              message: string;
+              retryable: boolean;
+            }
+        >;
         commit: (
           value: {
             llm: {
@@ -304,6 +330,7 @@ declare global {
           },
           credential?: { apiKey?: string; customHeaders?: string },
           mode?: 'persistent' | 'session',
+          testReceipt?: string,
         ) => Promise<{
           config: {
             llm: {
