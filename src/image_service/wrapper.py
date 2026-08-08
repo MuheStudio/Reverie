@@ -25,6 +25,7 @@ import httpx
 logger = logging.getLogger("reverie.image_service")
 
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 class FoxgirlImageService:
@@ -122,7 +123,10 @@ class FoxgirlImageService:
             return {"url": None, "error": str(exc)}
 
     def _fetch_as_data_url(self, source: str) -> str:
-        with httpx.Client(timeout=self._timeout, follow_redirects=True) as client:
+        # Redirects are disabled: entries come from a local db.json which may
+        # be user-edited, and a redirect chain could smuggle a request to an
+        # internal address. Source URLs should resolve directly.
+        with httpx.Client(timeout=self._timeout, follow_redirects=False) as client:
             response = client.get(
                 source,
                 headers={
@@ -137,7 +141,10 @@ class FoxgirlImageService:
             content_type = response.headers.get("content-type", "").split(";")[0].strip()
             if content_type not in ALLOWED_CONTENT_TYPES:
                 raise RuntimeError(f"意外的图片内容类型: {content_type}")
-            encoded = base64.b64encode(response.content).decode("ascii")
+            body = response.content
+            if len(body) > MAX_IMAGE_BYTES:
+                raise ValueError(f"图片超过安全大小上限: {len(body)} bytes")
+            encoded = base64.b64encode(body).decode("ascii")
             return f"data:{content_type};base64,{encoded}"
 
 

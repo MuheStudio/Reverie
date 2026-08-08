@@ -55,6 +55,16 @@ class CommandBus:
                     code=ErrorCode.PROVIDER_OUTCOME_UNKNOWN,
                     message="上一次请求结果未知，为避免重复计费不会自动重试。",
                 )
+            if existing.state == "failed":
+                # Terminal state: the previous attempt already ran the handler
+                # (which may have produced LLM calls or side effects) before
+                # failing. Re-running it here would repeat those side effects
+                # only to discard the result at commit time, so short-circuit.
+                return CommandResultV4.failure(
+                    command.request_id,
+                    code=ErrorCode.CONFLICT,
+                    message="上一次请求未完成，为避免重复执行不会自动重试。",
+                )
             value = await handler(command)
             committed = self.store.commit_command_result(command, value)
             return CommandResultV4.success(command.request_id, committed.result)

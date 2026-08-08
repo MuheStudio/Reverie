@@ -128,6 +128,12 @@ class ChatSession:
 
             world_clock = WorldClock()
         self.world_clock = world_clock
+        if self.scheduler.world_clock is None:
+            self.scheduler.world_clock = world_clock
+        if self.emotion is not None and getattr(self.emotion, "world_clock", None) is None:
+            self.emotion.world_clock = world_clock
+        if self.web is not None and getattr(self.web, "world_clock", None) is None:
+            self.web.world_clock = world_clock
         self._last_safe_memories: list[str] = []
         self._last_safe_emotions = dict(getattr(persona, "emotions", {}) or {})
         self._last_safe_intimacy = int(getattr(relationship, "intimacy", 0) or 0)

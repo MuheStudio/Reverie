@@ -65,12 +65,19 @@ class EmotionSystem:
     inertia_factor: float = INERTIA_FACTOR
     carryover_days: int = 3
     _last_updated: str = field(default="", init=False)
+    world_clock: Any = field(default=None, init=True, repr=False)
 
     def __post_init__(self):
         self._normalise_all()
         self._load_state()
         self.apply_daily_carryover()
         self._clamp_all()
+
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
 
     # ── Read state ───────────────────────────────────────
 
@@ -136,7 +143,7 @@ class EmotionSystem:
         for name, delta in changes.items():
             if name in self.values:
                 self.values[name] = max(0.0, min(100.0, self.values[name] + delta))
-        self._last_updated = datetime.now().isoformat()
+        self._last_updated = self._now_local().isoformat()
         self._save_state()
         logger.debug("Emotion event → %s", self.get_dominant(2))
 
@@ -150,13 +157,13 @@ class EmotionSystem:
             # Exponential decay toward baseline
             self.values[name] = current + (target - current) * self.inertia_factor
         self._clamp_all()
-        self._last_updated = datetime.now().isoformat()
+        self._last_updated = self._now_local().isoformat()
         self._save_state()
 
     def reset(self) -> None:
         """Reset all emotions to baseline."""
         self.values = dict(self.baseline)
-        self._last_updated = datetime.now().isoformat()
+        self._last_updated = self._now_local().isoformat()
         self._save_state()
 
     def restore(self, data: dict) -> None:
@@ -200,7 +207,7 @@ class EmotionSystem:
 
     def apply_daily_carryover(self, now: datetime | None = None) -> None:
         """Drift emotions by calendar days so yesterday still has residue."""
-        now = now or datetime.now()
+        now = now or self._now_local()
         if not self._last_updated:
             self._last_updated = now.isoformat()
             self._save_state()

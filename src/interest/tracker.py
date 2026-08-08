@@ -75,21 +75,29 @@ class InterestTracker:
         data_dir: Path | None = None,
         *,
         state_scope: "PersonaModuleState | None" = None,
+        world_clock=None,
     ) -> None:
         if state_scope is not None and data_dir is not None:
             if Path(data_dir).resolve() != state_scope.path.resolve():
                 raise ValueError("InterestTracker data_dir conflicts with persona state scope")
         self._state_scope = state_scope
+        self.world_clock = world_clock
         self.data_dir = state_scope.path if state_scope is not None else (data_dir or INTEREST_DIR)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir / "tracker.json"
         self._interests: dict[str, Interest] = {}
         self._load()
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def ensure_defaults(self, persona: Any, *, now: datetime | None = None) -> int:
         """Seed stable persona hobbies once; existing local state always wins."""
         self._require_scope()
-        now = now or datetime.now()
+        now = now or self._now_local()
         inserted = 0
         for raw_name in getattr(persona, "daily_life", {}).get("hobbies", []):
             name = str(raw_name).strip()
@@ -133,7 +141,7 @@ class InterestTracker:
         clean_name = name.strip()[:120]
         if not clean_name:
             raise ValueError("兴趣名称不能为空")
-        now = now or datetime.now()
+        now = now or self._now_local()
         key = clean_name.lower()
         interest = self._interests.get(key)
         if interest is None:
@@ -159,7 +167,7 @@ class InterestTracker:
     def advance_due(self, now: datetime | None = None) -> Interest | None:
         """Advance one established hobby at most once per local day."""
         self._require_scope()
-        now = now or datetime.now()
+        now = now or self._now_local()
         for interest in self.get_top_interests(self.count):
             if interest.progress >= 100.0:
                 continue
@@ -217,7 +225,7 @@ class InterestTracker:
         saved = self._append_output(
             interest,
             {"title": title, "kind": kind, "media_url": media_url, "note": note},
-            now or datetime.now(),
+            now or self._now_local(),
         )
         self._save()
         return saved

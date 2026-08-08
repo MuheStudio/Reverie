@@ -455,8 +455,11 @@ async def main():
         settings.features,
         path=world_state_db,
         persona_name=persona.name,
+        world_clock=world_clock,
     )
-    thought_engine = ThoughtOfYouEngine(settings.features, path=world_state_db)
+    thought_engine = ThoughtOfYouEngine(
+        settings.features, path=world_state_db, world_clock=world_clock
+    )
     if web_surfing is not None:
         thought_engine.ingest(web_surfing.approved_items(), now=world_clock.now())
     ambient_presence.advance(world_clock.now(), emotions=dict(emotion.values))
@@ -471,12 +474,13 @@ async def main():
         memory=memory,
     )
     social_universe.sync_persona_registry(PERSONA_DIR)
-    interest_tracker = InterestTracker(state_scope=interest_state)
+    interest_tracker = InterestTracker(state_scope=interest_state, world_clock=world_clock)
     social_circle.ensure_defaults(persona, now=world_clock.now())
     interest_tracker.ensure_defaults(persona, now=world_clock.now())
     affair_manager = PersonalAffairManager(
         interest_tracker=interest_tracker,
         state_scope=affairs_state,
+        world_clock=world_clock,
     )
     affair_manager.ensure_defaults(persona, now=world_clock.now())
 
@@ -554,6 +558,7 @@ async def main():
                 memory,
                 speech_habit_engine=session.speech_habits,
                 state_scope=diary_state,
+                world_clock=world_clock,
             )
         except Exception:
             logger.exception("Diary capability failed during startup; isolating it")
@@ -575,6 +580,7 @@ async def main():
                     diary=diary,
                     relationship=relationship,
                     path=world_state_db,
+                    world_clock=world_clock,
                 )
             except Exception:
                 logger.exception("Diary-key capability failed during startup; isolating it")

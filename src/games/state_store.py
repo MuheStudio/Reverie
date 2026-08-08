@@ -44,7 +44,14 @@ def _validate_json(value: Any, *, depth: int = 0, budget: list[int] | None = Non
             raise ValueError("game state string is invalid")
         return
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        if not math.isfinite(float(value)):
+        # float() of a huge Python int (e.g. 10**400) raises OverflowError,
+        # which is still "not a finite JSON number" and must surface as the
+        # same validation failure as inf/nan.
+        try:
+            finite = math.isfinite(float(value))
+        except OverflowError:
+            finite = False
+        if not finite:
             raise ValueError("game state number must be finite")
         return
     if isinstance(value, list):

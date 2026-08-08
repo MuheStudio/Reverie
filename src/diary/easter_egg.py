@@ -27,8 +27,10 @@ class DiaryKeyManager:
         diary: "DiaryManager",
         relationship: "RelationshipTracker",
         path: Path | None = None,
+        world_clock=None,
     ) -> None:
         self.settings = settings
+        self.world_clock = world_clock
         self.ambient = ambient
         self.diary = diary
         self.relationship = relationship
@@ -64,8 +66,14 @@ class DiaryKeyManager:
                 """
             )
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def evaluate(self, now: datetime | None = None) -> dict[str, Any] | None:
-        now = now or datetime.now()
+        now = now or self._now_local()
         if not self.settings.diary_key_easter_egg_enabled:
             return None
         if int(getattr(self.relationship, "intimacy", 0) or 0) < int(
@@ -189,7 +197,7 @@ class DiaryKeyManager:
         return decorated
 
     def unlock(self, host_date: str, now: datetime | None = None) -> dict[str, Any]:
-        now = now or datetime.now()
+        now = now or self._now_local()
         state = self.evaluate(now)
         if state is None or state["unlocked"] or state["host_date"] != str(host_date):
             raise ValueError("这把日记钥匙现在不可用")

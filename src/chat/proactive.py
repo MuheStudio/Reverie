@@ -209,7 +209,7 @@ class ProactiveChat:
     @property
     def late_night_active(self) -> bool:
         """Whether today's late-night event is currently keeping her awake."""
-        now = datetime.now()
+        now = self.world_clock.now().replace(tzinfo=None)
         return (
             self._late_night_date == now.strftime("%Y-%m-%d")
             and self._late_night_until_hour is not None
@@ -273,7 +273,9 @@ class ProactiveChat:
             if result.trigger == "late_night_checkin":
                 event_date = str(result.trigger_context.get("event_date") or "")
                 if event_date:
-                    self._last_triggered[f"late_night_checkin_{event_date}"] = datetime.now()
+                    self._last_triggered[f"late_night_checkin_{event_date}"] = (
+                        self.world_clock.now().replace(tzinfo=None)
+                    )
             self._record_successful_trigger(result.trigger, result.trigger_context)
             self._pending.put_nowait(result)
 
@@ -288,7 +290,7 @@ class ProactiveChat:
         """Record user activity and the latest status signal for later care."""
         self._last_proactive_replied = True
         self._silence_penalized = False
-        self._last_user_activity = datetime.now()
+        self._last_user_activity = self.world_clock.now().replace(tzinfo=None)
         self._last_user_message = message.strip()[:500]
         self._save_state()
 
@@ -302,7 +304,7 @@ class ProactiveChat:
         result = await self._generate_message(
             "late_night_checkin",
             {
-                "time": datetime.now().strftime("%H:%M"),
+                "time": self.world_clock.now().replace(tzinfo=None).strftime("%H:%M"),
                 "event_date": event_date,
                 "user_online": user_online,
             },
@@ -621,7 +623,9 @@ class ProactiveChat:
         """If she reached out and got no reply for hours, let that hurt a little."""
         if self._last_proactive_replied or self._last_proactive_at is None or self._silence_penalized:
             return
-        hours = (datetime.now() - self._last_proactive_at).total_seconds() / 3600
+        hours = (
+            self.world_clock.now().replace(tzinfo=None) - self._last_proactive_at
+        ).total_seconds() / 3600
         if hours < 4:
             return
         changes = self.emotion.apply_user_silence(hours)
@@ -639,7 +643,7 @@ class ProactiveChat:
         """Auto-switch online status based on time of day."""
         if self.scheduler is None or not self.manage_status:
             return
-        now = datetime.now()
+        now = self.world_clock.now().replace(tzinfo=None)
         self._prepare_late_night_state(now)
 
         if self._is_sleep_time(now):
@@ -703,7 +707,7 @@ class ProactiveChat:
         system_prompt = self._build_proactive_prompt(trigger_context, mood)
 
         user_prompt = (
-            f"Current time: {context.get('time', datetime.now().strftime('%H:%M'))}\n"
+            f"Current time: {context.get('time', self.world_clock.now().replace(tzinfo=None).strftime('%H:%M'))}\n"
             f"Dominant emotions: {current_emotions}\n"
             f"Mood: {mood}\n"
             f"\n"
@@ -955,7 +959,7 @@ class ProactiveChat:
                 "total_steps": context.get("total_steps"),
                 "content": context.get("content"),
                 "tags": context.get("tags", []),
-                "date": datetime.now().strftime("%Y-%m-%d"),
+                "date": self.world_clock.now().replace(tzinfo=None).strftime("%Y-%m-%d"),
             }
         }
 
@@ -1112,7 +1116,7 @@ class ProactiveChat:
                 # the state file cannot grow without bound. Memory recall uses
                 # this ledger for its dedicated 24h cooldown, so pruning must
                 # never discard entries younger than that window.
-                now = datetime.now()
+                now = self.world_clock.now().replace(tzinfo=None)
                 stale_cutoff = now - timedelta(days=30)
                 parsed_entries: dict[str, datetime] = {}
                 for key, value in triggered.items():

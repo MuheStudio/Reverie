@@ -59,13 +59,20 @@ def _string_list(value: Any, *, label: str, limit: int = 100) -> list[str]:
 
 def _asset_reference(value: Any) -> str:
     result = _text(value or "", label="portraitUrl", maximum=512)
+    if not result:
+        return result
     lowered = result.lower()
-    if (
-        lowered.startswith(("http:", "https:", "data:", "file:"))
-        or "\\" in result
-        or ".." in result.split("/")
-    ):
+    # Whitelist instead of blacklist: only local managed assets are allowed.
+    # A legal reference is a rooted relative path such as "/characters/x.jpg".
+    if "://" in lowered or lowered.startswith(("data:", "file:")):
         raise ValueError("portraitUrl must reference a managed local asset")
+    if not result.startswith("/"):
+        raise ValueError("portraitUrl must be a rooted local asset path")
+    if "\\" in result or any(segment == ".." for segment in result.split("/")):
+        raise ValueError("portraitUrl must reference a managed local asset")
+    # Defense in depth against encoded path traversal (e.g. %2e%2e).
+    if "%" in result:
+        raise ValueError("portraitUrl must not contain percent-encoding")
     return result
 
 

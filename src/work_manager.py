@@ -282,7 +282,7 @@ class WorkManager:
                 result = await result
             if result:
                 self._require_scope(epoch_token)
-                sent[event_date] = datetime.now().isoformat()
+                sent[event_date] = self.world_clock.now().replace(tzinfo=None).isoformat()
                 self._save_state()
         except StalePersonaEpoch:
             raise

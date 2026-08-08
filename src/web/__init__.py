@@ -172,6 +172,7 @@ class WebSurfingManager:
         feed_sources: list[dict] | None = None,
         usage_policy=None,
         local_mode_gate=None,
+        world_clock=None,
     ) -> None:
         self.persona = persona
         if self.persona is not None and callable(getattr(self.persona, "seal_identity", None)):
@@ -183,6 +184,7 @@ class WebSurfingManager:
             or getattr(adapter, "local_mode_gate", None)
             or get_local_mode_gate()
         )
+        self.world_clock = world_clock
         self.data_dir = data_dir or WEB_CACHE_DIR
         self.data_dir.mkdir(parents=True, exist_ok=True)
         topic_values = SAFE_TOPICS if allowed_topics is None else allowed_topics
@@ -211,16 +213,22 @@ class WebSurfingManager:
         """Return the list of safe topics for web surfing."""
         return list(self.allowed_topics)
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def is_in_search_window(self, now: datetime | None = None) -> bool:
         """Return whether scheduled fetching is allowed right now."""
-        return is_in_any_time_window(now or datetime.now(), self.search_windows)
+        return is_in_any_time_window(now or self._now_local(), self.search_windows)
 
     async def fetch_if_needed(self) -> bool:
         """Fetch new content if the refresh interval has passed.
 
         Returns True if content was refreshed.
         """
-        now = datetime.now()
+        now = self._now_local()
         if not self.is_in_search_window(now):
             return False
         if self._last_fetch:
@@ -383,7 +391,7 @@ class WebSurfingManager:
                 summary=summary,
                 source="local",
                 topic=topic,
-                fetched_at=datetime.now().isoformat(),
+                fetched_at=self._now_local().isoformat(),
                 source_url=str(entry.get("url", ""))[:2000],
                 published_at=str(entry.get("published_at", ""))[:80],
                 source_name=filepath.stem,
@@ -516,7 +524,7 @@ class WebSurfingManager:
                             summary=summary,
                             source="rss",
                             topic=source["topic"],
-                            fetched_at=datetime.now().isoformat(),
+                            fetched_at=self._now_local().isoformat(),
                             source_url=str(entry.get("link") or url)[:2000],
                             published_at=str(entry.get("published", ""))[:80],
                             source_name=source["name"],
@@ -551,7 +559,7 @@ class WebSurfingManager:
             last = data.get("last_fetch")
             if last:
                 parsed_last = datetime.fromisoformat(last)
-                if parsed_last <= datetime.now():
+                if parsed_last <= self._now_local():
                     self._last_fetch = parsed_last
         except Exception:
             logger.exception("WebSurfing: failed to load cache")

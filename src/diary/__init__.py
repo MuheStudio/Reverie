@@ -326,6 +326,7 @@ class DiaryManager:
         speech_habit_engine: "SpeechHabitEngine | None" = None,
         usage_policy=None,
         state_scope: "PersonaModuleState | None" = None,
+        world_clock=None,
     ) -> None:
         self.persona = persona
         if callable(getattr(self.persona, "seal_identity", None)):
@@ -335,6 +336,7 @@ class DiaryManager:
         self.emotion = emotion
         self.memory = memory
         self.speech_habits = speech_habit_engine
+        self.world_clock = world_clock
         if state_scope is not None and diary_dir is not None:
             if Path(diary_dir).resolve() != state_scope.path.resolve():
                 raise ValueError("DiaryManager diary_dir conflicts with persona state scope")
@@ -348,6 +350,12 @@ class DiaryManager:
         self._crypto: DiaryCrypto | None = None
         self._last_generated_date: str | None = None
         self._emotion_snapshot: dict[str, float] = {}
+
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
 
     @property
     def crypto(self) -> DiaryCrypto:
@@ -373,7 +381,7 @@ class DiaryManager:
     ) -> DiaryEntry | None:
         """Compatibility wrapper for the fixed sleep/late-night diary event."""
         self._require_scope()
-        now = now or datetime.now()
+        now = now or self._now_local()
         today_str = now.strftime("%Y-%m-%d")
 
         if late_night_active:
@@ -474,11 +482,11 @@ class DiaryManager:
             if self.usage_policy is not None else None
         )
 
-        date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+        date_str = date_str or self._now_local().strftime("%Y-%m-%d")
         if not DATE_RE.match(date_str):
             logger.warning("Diary: invalid date ignored: %s", date_str)
             return None
-        now = datetime.now()
+        now = self._now_local()
 
         # Gather context
         current_emotions = dict(self.emotion.values) if self.emotion else {}
@@ -718,7 +726,7 @@ class DiaryManager:
             highlights=[],
             source_facts=[],
             consistency_status="manual_local",
-            created_at=datetime.now().isoformat(),
+            created_at=self._now_local().isoformat(),
         )
         self.save_entry(entry)
         return entry

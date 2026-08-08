@@ -71,11 +71,13 @@ class PersonalAffairManager:
         *,
         interest_tracker: "InterestTracker | None" = None,
         state_scope: "PersonaModuleState | None" = None,
+        world_clock=None,
     ) -> None:
         if state_scope is not None and data_dir is not None:
             if Path(data_dir).resolve() != state_scope.path.resolve():
                 raise ValueError("PersonalAffairManager data_dir conflicts with persona state scope")
         self._state_scope = state_scope
+        self.world_clock = world_clock
         self.data_dir = state_scope.path if state_scope is not None else (data_dir or AFFAIRS_DIR)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir / "affairs.json"
@@ -83,11 +85,17 @@ class PersonalAffairManager:
         self._affairs: dict[str, PersonalAffair] = {}
         self._load()
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def ensure_defaults(self, persona: "Persona", *, now: datetime | None = None) -> int:
         self._require_scope()
         if self._affairs:
             return 0
-        now = now or datetime.now()
+        now = now or self._now_local()
         identity = str(persona.identity.get("title", "自己的工作") or "自己的工作")
         hobbies = [str(item).strip() for item in persona.daily_life.get("hobbies", []) if str(item).strip()]
         hobby = next((item for item in hobbies if item != "写日记"), hobbies[0] if hobbies else "阅读")
@@ -120,7 +128,7 @@ class PersonalAffairManager:
         clean_title = title.strip()[:160]
         if not clean_title:
             raise ValueError("事务标题不能为空")
-        now = now or datetime.now()
+        now = now or self._now_local()
         affair_id = "aff_" + hashlib.sha256(
             f"{clean_title}\0{now.isoformat()}".encode("utf-8")
         ).hexdigest()[:14]
@@ -151,7 +159,7 @@ class PersonalAffairManager:
         self._require_scope()
         affair = self._affairs[affair_id]
         new_progress = max(affair.progress, min(100.0, float(progress)))
-        now = now or datetime.now()
+        now = now or self._now_local()
         affair.progress = new_progress
         affair.status = "completed" if new_progress >= 100.0 else "in_progress"
         affair.updated_at = now.isoformat()
@@ -166,7 +174,7 @@ class PersonalAffairManager:
 
     def advance_due(self, now: datetime | None = None) -> list[dict[str, Any]]:
         self._require_scope()
-        now = now or datetime.now()
+        now = now or self._now_local()
         updates: list[dict[str, Any]] = []
         changed = False
         for affair in self._affairs.values():

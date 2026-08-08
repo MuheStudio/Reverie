@@ -210,7 +210,7 @@ class TimelineManager:
         Returns the post if generated, None otherwise.
         """
         epoch_token = self._capture_scope()
-        now = now or datetime.now()
+        now = now or self._now_local()
         if self.feature_settings:
             if not self.feature_settings.timeline_enabled:
                 return None
@@ -538,9 +538,15 @@ class TimelineManager:
 
     # ── LLM prompts ───────────────────────────────────────
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def _build_system_prompt(self, now: datetime | None = None) -> str:
         catchphrases = "、".join(getattr(self.persona, "catchphrases", []))
-        now = now or datetime.now()
+        now = now or self._now_local()
         description = (
             self.persona.description_at(now)
             if hasattr(self.persona, "description_at") else self.persona.description
@@ -737,8 +743,8 @@ class TimelineManager:
         ev = StoryEvent(
             id=event_id or str(uuid.uuid4())[:8],
             title=title.strip()[:160] or "一件持续中的小事",
-            started=started or datetime.now().strftime("%Y-%m-%d"),
-            last_post_date=datetime.now().strftime("%Y-%m-%d"),
+            started=started or self._now_local().strftime("%Y-%m-%d"),
+            last_post_date=self._now_local().strftime("%Y-%m-%d"),
             status="ongoing",
             post_count=0,
             visual_stage="草稿",
@@ -762,7 +768,7 @@ class TimelineManager:
         clean_fact = re.sub(r"\s+", " ", fact).strip()[:500]
         if clean_fact and clean_fact not in event.facts:
             event.facts.append(clean_fact)
-        event.last_post_date = date or datetime.now().strftime("%Y-%m-%d")
+        event.last_post_date = date or self._now_local().strftime("%Y-%m-%d")
         self._save()
         return event
 
@@ -882,7 +888,7 @@ class TimelineManager:
                 }
                 for e in self._events
             ],
-            "updated": datetime.now().isoformat(),
+            "updated": self._now_local().isoformat(),
         }
 
     def _save(self) -> None:
@@ -909,7 +915,7 @@ class TimelineManager:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._restore_payload(data)
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = self._now_local().strftime("%Y-%m-%d")
             self._last_check_date = today
             self._today_post_count = sum(post.date.startswith(today) for post in self._posts)
         except Exception:

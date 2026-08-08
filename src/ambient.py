@@ -91,8 +91,10 @@ class AmbientPresence:
         *,
         path: Path | None = None,
         persona_name: str = "她",
+        world_clock=None,
     ) -> None:
         self.settings = settings
+        self.world_clock = world_clock
         self.persona_name = _clean_text(persona_name, 80) or "她"
         self._db = _WorldSQLite(path)
         self._initialize()
@@ -135,6 +137,12 @@ class AmbientPresence:
                 """
             )
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def advance(
         self,
         now: datetime | None = None,
@@ -143,7 +151,7 @@ class AmbientPresence:
         late_night_active: bool = False,
     ) -> dict[str, Any]:
         """Advance local life state and replay at most the configured offline gap."""
-        now = now or datetime.now()
+        now = now or self._now_local()
         if not self.settings.ambient_presence_enabled:
             return self.snapshot()
         now_ts = _as_timestamp(now)
@@ -302,7 +310,7 @@ class AmbientPresence:
         )
 
     def happy_streak(self, now: datetime | None = None, *, maximum: int = 60) -> int:
-        now = now or datetime.now()
+        now = now or self._now_local()
         with self._db.connect() as connection:
             rows = connection.execute(
                 """SELECT day,happiness_qualified FROM ambient_emotion_days
@@ -337,7 +345,7 @@ class AmbientPresence:
             }
         rendered: list[dict[str, Any]] = []
         for row in traces:
-            occurred = _from_timestamp(row["occurred_at"], datetime.now())
+            occurred = _from_timestamp(row["occurred_at"], self._now_local())
             try:
                 metadata = json.loads(str(row["metadata"] or "{}"))
             except json.JSONDecodeError:
@@ -355,7 +363,7 @@ class AmbientPresence:
         return {
             "book_page": int(runtime["book_page"]),
             "book_total": int(runtime["book_total"]),
-            "last_advanced_at": _from_timestamp(runtime["last_advanced_at"], datetime.now()).isoformat(),
+            "last_advanced_at": _from_timestamp(runtime["last_advanced_at"], self._now_local()).isoformat(),
             "traces": rendered,
             "latest_sticky": latest_sticky,
             "happy_streak": self.happy_streak(),
@@ -444,9 +452,11 @@ class ThoughtOfYouEngine:
         *,
         path: Path | None = None,
         random_func: Any = random.random,
+        world_clock=None,
     ) -> None:
         self.settings = settings
         self.random_func = random_func
+        self.world_clock = world_clock
         self._db = _WorldSQLite(path)
         self._initialize()
 
@@ -474,8 +484,14 @@ class ThoughtOfYouEngine:
                 """
             )
 
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
+
     def ingest(self, items: Iterable["WebItem"], now: datetime | None = None) -> int:
-        now = now or datetime.now()
+        now = now or self._now_local()
         now_ts = _as_timestamp(now)
         minimum = max(30, int(self.settings.thought_min_delay_minutes))
         maximum = max(minimum, int(self.settings.thought_max_delay_minutes))
@@ -546,7 +562,7 @@ class ThoughtOfYouEngine:
         *,
         now: datetime | None = None,
     ) -> ThoughtShare | None:
-        now = now or datetime.now()
+        now = now or self._now_local()
         if not self.settings.thought_of_you_enabled:
             return None
         if not _hour_in_window(
@@ -597,7 +613,7 @@ class ThoughtOfYouEngine:
         )
 
     def mark_shared(self, thought_id: str, now: datetime | None = None) -> bool:
-        now = now or datetime.now()
+        now = now or self._now_local()
         with self._db.connect() as connection:
             cursor = connection.execute(
                 """UPDATE ambient_web_thoughts SET status='shared',shared_at=?
@@ -607,7 +623,7 @@ class ThoughtOfYouEngine:
         return cursor.rowcount == 1
 
     def pending_count(self, now: datetime | None = None) -> int:
-        now = now or datetime.now()
+        now = now or self._now_local()
         with self._db.connect() as connection:
             row = connection.execute(
                 """SELECT COUNT(*) FROM ambient_web_thoughts

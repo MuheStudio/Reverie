@@ -66,6 +66,13 @@ class MessageScheduler:
     })
     _temporary_status: Status | None = field(default=None, init=False, repr=False)
     _temporary_until: datetime | None = field(default=None, init=False, repr=False)
+    world_clock: "WorldClock | None" = field(default=None, init=True, repr=False)
+
+    def _now_local(self) -> datetime:
+        """Naive wall time in the world clock zone, or process-local fallback."""
+        if self.world_clock is not None:
+            return self.world_clock.now().replace(tzinfo=None)
+        return datetime.now()
 
     def __post_init__(self) -> None:
         self.reply_delay_min = _clamp(self.reply_delay_min, 1.0, 60.0)
@@ -88,7 +95,7 @@ class MessageScheduler:
         moment. A negative roll defers the reply instead of dropping it, which
         keeps user messages recoverable and avoids pretending they were seen.
         """
-        now = now or datetime.now()
+        now = now or self._now_local()
         status = self.current_status(now)
         probability = self.immediate_reply_probability(emotions=emotions)
         if random.random() <= probability:
@@ -276,7 +283,7 @@ class MessageScheduler:
 
     def _sleeping_delay_seconds(self, now: datetime | None = None) -> float:
         """During sleep, either reply sleepily after 10-20m or wait until wake."""
-        now = now or datetime.now()
+        now = now or self._now_local()
         if random.random() < 0.25:
             return random.uniform(10 * 60, 20 * 60)
         wake_at = _next_wake_at(now, time(hour=9, minute=0))
@@ -485,11 +492,11 @@ class MessageScheduler:
     def set_temporary_status(self, status: Status, duration_seconds: float) -> None:
         """Apply an expiring runtime status without overwriting user settings."""
         self._temporary_status = status
-        self._temporary_until = datetime.now() + timedelta(seconds=max(1.0, duration_seconds))
+        self._temporary_until = self._now_local() + timedelta(seconds=max(1.0, duration_seconds))
         logger.debug("Temporary status changed to %s until %s", status, self._temporary_until)
 
     def current_status(self, now: datetime | None = None) -> Status:
-        now = now or datetime.now()
+        now = now or self._now_local()
         if self._temporary_status and self._temporary_until and now < self._temporary_until:
             return self._temporary_status
         self._temporary_status = None
