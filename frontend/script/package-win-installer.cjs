@@ -2,7 +2,12 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
+const {
+  assertLive2DReleaseGate,
+  readCharacterRightsManifest,
+} = require('../electron/live2d-release-gate.cjs');
+const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
+const { createTextureTransformer } = require('./live2d-build-assets.cjs');
 const {
   assertProductionPayload,
   copyProductionPythonSource,
@@ -29,6 +34,9 @@ const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
 const live2dLicenseSource = process.env.REVERIE_LIVE2D_LICENSE_PATH
   ? path.resolve(process.env.REVERIE_LIVE2D_LICENSE_PATH)
   : path.join(projectRoot, 'LICENSES_CREDITS', 'LIVE2D_PUBLICATION_LICENSE.json');
+const characterRightsSource = process.env.REVERIE_YUMI_RIGHTS_PATH
+  ? path.resolve(process.env.REVERIE_YUMI_RIGHTS_PATH)
+  : path.join(projectRoot, 'LICENSES_CREDITS', 'YUMI_CHARACTER_RIGHTS.json');
 
 function isInside(parent, child) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
@@ -136,15 +144,40 @@ function enforceLive2DReleaseBoundary() {
     ],
   });
   if (!live2dBuildEnabled) return;
+  readCharacterRightsManifest(characterRightsSource, {
+    appId: 'studio.muhe.reverie',
+    assetId: 'yumi',
+  });
   copyRecursive(
     live2dLicenseSource,
     path.join(resourceStage, 'LIVE2D_PUBLICATION_LICENSE.json'),
+  );
+  copyRecursive(
+    characterRightsSource,
+    path.join(resourceStage, 'YUMI_CHARACTER_RIGHTS.json'),
   );
   fs.writeFileSync(
     path.join(resourceStage, 'LIVE2D_RUNTIME_ENABLED'),
     'Licensed Live2D public runtime enabled for this build.\r\n',
     'utf8',
   );
+}
+
+function stageLicensedLive2DAssets() {
+  if (!live2dBuildEnabled) return null;
+  const coreSource = process.env.REVERIE_LIVE2D_CORE_PATH
+    ? path.resolve(process.env.REVERIE_LIVE2D_CORE_PATH)
+    : '';
+  const modelSource = process.env.REVERIE_YUMI_SOURCE
+    ? path.resolve(process.env.REVERIE_YUMI_SOURCE)
+    : path.resolve(reverieRoot, '皮套-yumi');
+  return stageLive2DRuntimeAssets({
+    coreSource,
+    modelSource,
+    resourceRoot: resourceStage,
+    mode: 'public',
+    transformCharacter: createTextureTransformer({ projectRoot, frontendRoot }),
+  });
 }
 
 function prepareDesktopApp() {
@@ -175,19 +208,17 @@ function prepareDesktopApp() {
 function prepareSeedData() {
   const dataRoot = path.join(resourceStage, 'data');
   const dirs = [
-    'affairs', 'backups', 'diary', path.join('diary', 'keys'), 'emotion',
-    'interest', 'keepsakes', 'memory', 'persona', 'relationship', 'social',
-    'stickers', 'timeline', 'user', 'web_cache', 'world',
+    'memory', 'persona', 'user',
   ];
   for (const dir of dirs) ensureDir(path.join(dataRoot, dir));
 
   writeJson(path.join(dataRoot, 'config.json'), {
     llm: {
-      provider: 'deepseek', model: 'deepseek-v4-flash', api_key: '',
-      base_url: 'https://api.deepseek.com', temperature: 0.82, max_tokens: 2048,
+      provider: 'ollama', model: '', api_key: '',
+      base_url: 'http://localhost:11434/v1', temperature: 0.82, max_tokens: 2048,
     },
     memory: {
-      embedding_model: 'BAAI/bge-small-en-v1.5', retention_days: 730,
+      embedding_model: 'BAAI/bge-small-zh-v1.5', retention_days: 730,
       forgetting_enabled: true, long_term_forget_days: 90,
       short_term_forget_days: 7, forget_probability: 0.05,
       decay_lambda: 0.0077, recall_reinforcement_alpha: 0.12,
@@ -236,7 +267,7 @@ function prepareSourceBundle() {
   );
   copyIfExists(path.join(projectRoot, 'docs'), path.join(sourceStage, 'docs'));
 
-  for (const name of ['src', 'electron', 'script']) {
+  for (const name of ['src', 'electron', 'script', 'vendor']) {
     const source = path.join(frontendRoot, name);
     assertInside(projectRoot, source, 'Frontend source');
     copyIfExists(source, path.join(sourceStage, 'frontend', name));
@@ -298,9 +329,23 @@ function collectFrontendLicenses() {
     for (const entry of packages) {
       const versions = Array.isArray(entry.versions) ? entry.versions : [];
       const packagePaths = Array.isArray(entry.paths) ? entry.paths : [];
+      const resolvedVersions = versions.length > 0
+        ? versions
+        : packagePaths.map((packagePath) => {
+            if (!isInside(frontendRoot, packagePath)) {
+              throw new Error(`npm license source escaped frontend root: ${packagePath}`);
+            }
+            const metadata = JSON.parse(
+              fs.readFileSync(path.join(packagePath, 'package.json'), 'utf8'),
+            );
+            if (typeof metadata.version !== 'string' || !metadata.version.trim()) {
+              throw new Error(`npm license source has no version: ${packagePath}`);
+            }
+            return metadata.version.trim();
+          });
       inventory.push({
         name: entry.name,
-        versions,
+        versions: resolvedVersions,
         license,
         homepage: entry.homepage || '',
       });
@@ -309,7 +354,7 @@ function collectFrontendLicenses() {
         if (!isInside(frontendRoot, packagePath)) {
           throw new Error(`npm license source escaped frontend root: ${packagePath}`);
         }
-        const version = versions[Math.min(index, versions.length - 1)] || 'unknown';
+        const version = resolvedVersions[Math.min(index, resolvedVersions.length - 1)];
         const target = path.join(licenseRoot, `${safePackageName(entry.name)}@${version}`);
         for (const name of fs.readdirSync(packagePath)) {
           if (/^(licen[cs]e|copying|notice)(\..*)?$/i.test(name)) {
@@ -400,6 +445,7 @@ function main() {
   try {
     buildRenderer();
     enforceLive2DReleaseBoundary();
+    stageLicensedLive2DAssets();
     prepareDesktopApp();
     prepareSeedData();
     copyProductionPythonSource(

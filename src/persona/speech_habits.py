@@ -123,8 +123,13 @@ class SpeechHabitEngine:
             probability = min(0.9, 0.25 + intensity / 130.0)
             if not re.search(r"[!！?？…]$", result) and random.random() < probability:
                 result += "！"
-        elif dominant in {"sadness", "anxiety", "grievance"} and intensity >= 55:
+            # High arousal is impatient with trailing ellipses.
+            result = re.sub(r"……+$", "", result)
+        elif dominant in {"sadness", "anxiety", "grievance"} and intensity >= 40:
             probability = min(0.85, 0.20 + intensity / 140.0)
+            # Low mood is not energetic: collapse excited bangs into calm ones.
+            result = re.sub(r"!{2,}", "!", result)
+            result = re.sub(r"！{2,}", "！", result)
             if random.random() < probability:
                 result = re.sub(r"[，,]+$", "", result) + "……"
         elif dominant == "anger" and intensity >= 60:

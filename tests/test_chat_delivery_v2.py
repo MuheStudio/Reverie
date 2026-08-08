@@ -125,10 +125,15 @@ async def wait_for_state(store: PendingChatStore, request_id: str, state: str, t
     raise AssertionError(f"request {request_id} did not reach {state}: {store.get_item(request_id)}")
 
 
-def payload(request_id: str, text: str = "普通消息") -> dict:
+def payload(
+    request_id: str,
+    text: str = "普通消息",
+    *,
+    conversation_id: str = "conversation_a",
+) -> dict:
     return {
         "request_id": request_id,
-        "conversation_id": "conversation_a",
+        "conversation_id": conversation_id,
         "persona_id": "persona_a",
         "persona_epoch": 1,
         "persona_fingerprint": "persona_fp_a",
@@ -263,14 +268,19 @@ async def test_partial_side_effect_failure_is_never_reported_as_committed(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_ten_requests_allow_targeted_queued_cancellation(tmp_path: Path) -> None:
+async def test_targeted_inflight_cancellation_never_delivers_cancelled_bubbles(
+    tmp_path: Path,
+) -> None:
     release = asyncio.Event()
     session = FakeSession(block=release, messages=["完成"])
     sink = EventSink()
     delivery, store = coordinator(tmp_path / "pending.json", session, sink)
     ids = [f"request_batch_{index:02d}" for index in range(10)]
-    for request_id in ids:
-        await delivery.accept(payload(request_id), client_id=CLIENT)
+    for index, request_id in enumerate(ids):
+        await delivery.accept(
+            payload(request_id, conversation_id=f"conversation_{index}"),
+            client_id=CLIENT,
+        )
     await wait_for_state(store, ids[0], "generating")
     await delivery.cancel(ids[3], client_id=CLIENT)
     await delivery.cancel(ids[7], client_id=CLIENT)
@@ -286,7 +296,64 @@ async def test_ten_requests_allow_targeted_queued_cancellation(tmp_path: Path) -
     bubble_requests = {event[2]["request_id"] for event in sink.events if event[1] == "chat:bubble"}
     assert ids[3] not in bubble_requests
     assert ids[7] not in bubble_requests
-    assert session.provider_calls == 8
+    # Different conversations may run concurrently, so cancellation cannot
+    # promise that an already-dispatched provider call was free.
+    assert session.provider_calls == 10
+    await delivery.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_new_user_input_durably_cancels_the_previous_turn(tmp_path: Path) -> None:
+    release = asyncio.Event()
+    session = FakeSession(block=release, messages=["latest"])
+    sink = EventSink()
+    delivery, store = coordinator(tmp_path / "pending.json", session, sink)
+
+    await delivery.accept(payload("request_previous_01"), client_id=CLIENT)
+    await wait_for_state(store, "request_previous_01", "generating")
+    await delivery.accept(payload("request_latest_001"), client_id=CLIENT)
+
+    assert store.get_item("request_previous_01")["state"] == "cancelled"
+    assert store.get_item("request_previous_01")["error"] == (
+        "superseded_by_user_input"
+    )
+    release.set()
+    await wait_for_state(store, "request_latest_001", "ready_waiting")
+    await delivery.reveal("request_latest_001", client_id=CLIENT)
+    await wait_for_state(store, "request_latest_001", "done")
+    bubble_requests = {
+        event[2]["request_id"]
+        for event in sink.events
+        if event[1] == "chat:bubble"
+    }
+    assert "request_previous_01" not in bubble_requests
+    assert "request_latest_001" in bubble_requests
+    await delivery.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_new_request_persistence_does_not_cancel_previous_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = asyncio.Event()
+    session = FakeSession(block=release, messages=["previous"])
+    sink = EventSink()
+    delivery, store = coordinator(tmp_path / "pending.json", session, sink)
+
+    await delivery.accept(payload("request_previous_02"), client_id=CLIENT)
+    await wait_for_state(store, "request_previous_02", "generating")
+
+    def fail_enqueue(*_args, **_kwargs):
+        raise OSError("injected disk full")
+
+    monkeypatch.setattr(store, "enqueue", fail_enqueue)
+    with pytest.raises(OSError, match="disk full"):
+        await delivery.accept(payload("request_latest_002"), client_id=CLIENT)
+
+    assert store.get_item("request_previous_02")["state"] == "generating"
+    release.set()
+    await delivery.cancel("request_previous_02", client_id=CLIENT)
     await delivery.shutdown()
 
 

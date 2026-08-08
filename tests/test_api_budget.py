@@ -97,7 +97,7 @@ def test_adapter_tracks_selected_model_and_actual_usage(tmp_path, monkeypatch) -
     )
     usage_policy.grant("memory_enrichment")
     adapter = LLMAdapter(
-        LLMSettings(provider="openai", model="default-model"),
+        LLMSettings(provider="ollama", model="default-model"),
         budget_tracker=tracker,
         usage_policy=usage_policy,
     )

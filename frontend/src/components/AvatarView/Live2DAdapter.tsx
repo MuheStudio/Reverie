@@ -112,8 +112,13 @@ class Live2DRenderer {
   private modelToken = 0;
   private desiredModel: Live2DModelOptions | null = null;
   private detachModelRuntime: (() => void) | null = null;
+  private detachCanvasRuntime: (() => void) | null = null;
+  private mouthOpen = 0;
 
-  constructor(config: Live2DConfig) {
+  constructor(
+    config: Live2DConfig,
+    private readonly reportRuntimeState?: (state: Live2DState, error: string | null) => void,
+  ) {
     this.config = {
       resolution: 2,
       maxFps: 0,
@@ -160,6 +165,46 @@ class Live2DRenderer {
       this.canvas.style.height = '100%';
       this.canvas.style.objectFit = 'cover';
       this.canvas.style.display = 'block';
+      const handleContextLost = (event: Event) => {
+        event.preventDefault();
+        this.suspended = true;
+        this.reportRuntimeState?.('suspended', 'Live2D WebGL context was lost');
+        try { this.app?.ticker?.stop?.(); } catch (error) {
+          console.warn('[Live2D] Failed to stop the renderer after context loss', error);
+        }
+      };
+      const handleContextRestored = () => {
+        if (this.destroyed) return;
+        this.suspended = false;
+        this.reportRuntimeState?.('loading', null);
+        try { this.app?.ticker?.start?.(); } catch (error) {
+          console.warn('[Live2D] Failed to restart the renderer after context restore', error);
+        }
+        const desired = this.desiredModel;
+        if (desired) {
+          void this.loadModel(desired).then((loaded) => {
+            if (!this.destroyed && loaded) this.reportRuntimeState?.('mounted', null);
+            else if (!this.destroyed) {
+              this.reportRuntimeState?.(
+                'error',
+                'Live2D model did not recover after WebGL context restoration',
+              );
+            }
+          }).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            this.reportRuntimeState?.('error', message);
+            console.error('[Live2D] Model reload after WebGL restore failed', error);
+          });
+        } else {
+          this.reportRuntimeState?.('mounted', null);
+        }
+      };
+      this.canvas.addEventListener('webglcontextlost', handleContextLost);
+      this.canvas.addEventListener('webglcontextrestored', handleContextRestored);
+      this.detachCanvasRuntime = () => {
+        this.canvas?.removeEventListener('webglcontextlost', handleContextLost);
+        this.canvas?.removeEventListener('webglcontextrestored', handleContextRestored);
+      };
 
       if (container.isConnected && !this.destroyed) container.appendChild(this.canvas);
     } catch (error) {
@@ -205,6 +250,11 @@ class Live2DRenderer {
       model.position.set(this.config.width / 2, this.config.height / 2);
       this.app.stage.addChild(model);
       this.attachContinuousRuntime(model);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      if (this.destroyed || this.suspended || token !== this.modelToken || this.model !== model) {
+        return false;
+      }
+      this.app.renderer.render(this.app.stage);
       return true;
     } catch (error) {
       this.destroyDetachedModel(model);
@@ -241,6 +291,10 @@ class Live2DRenderer {
     } catch {}
 
     let lastPointerAt = 0;
+    let targetX = 0;
+    let targetY = 0;
+    let currentX = 0;
+    let currentY = 0;
     const followPointer = (event: PointerEvent) => {
       if (this.destroyed || this.suspended || this.model !== model || !this.canvas) return;
       const rect = this.canvas.getBoundingClientRect();
@@ -258,32 +312,54 @@ class Live2DRenderer {
         modelWidth: model.width * scaleX,
         modelHeight: model.height * scaleY,
       });
+      targetX = gaze.x;
+      targetY = gaze.y;
       focusController.focus(gaze.x, gaze.y);
       lastPointerAt = performance.now();
     };
-    const centerGaze = () => focusController.focus(0, 0, false);
+    const centerGaze = () => {
+      targetX = 0;
+      targetY = 0;
+      focusController.focus(0, 0, false);
+    };
     window.addEventListener('pointermove', followPointer, { passive: true });
     window.addEventListener('blur', centerGaze);
+    this.canvas.addEventListener('pointerleave', centerGaze);
 
     // The model ticker drives Cubism breath and eye blink continuously. A
     // subtle pose drift keeps packages without an Idle motion alive too.
     const idleTick = () => {
-      if (!coreModel || performance.now() - lastPointerAt < 2_500) return;
+      if (!coreModel) return;
       const seconds = performance.now() / 1000;
       try {
-        coreModel.addParameterValueById('ParamAngleX', Math.sin(seconds * 0.42) * 1.4, 0.18);
-        coreModel.addParameterValueById('ParamAngleY', Math.sin(seconds * 0.31 + 1.2) * 0.8, 0.16);
-        coreModel.addParameterValueById('ParamAngleZ', Math.sin(seconds * 0.24 + 0.4) * 0.55, 0.14);
-        coreModel.addParameterValueById('ParamBodyAngleX', Math.sin(seconds * 0.19) * 0.45, 0.12);
-      } catch {}
+        const idle = performance.now() - lastPointerAt >= 2_500;
+        const idleX = idle ? Math.sin(seconds * 0.42) * 0.05 : 0;
+        const idleY = idle ? Math.sin(seconds * 0.31 + 1.2) * 0.035 : 0;
+        currentX += (targetX + idleX - currentX) * 0.18;
+        currentY += (targetY + idleY - currentY) * 0.18;
+        coreModel.addParameterValueById('ParamAngleX', currentX * 24, 0.72);
+        coreModel.addParameterValueById('ParamAngleY', currentY * 18, 0.68);
+        coreModel.addParameterValueById('ParamAngleZ', currentX * currentY * -8, 0.45);
+        coreModel.addParameterValueById('ParamBodyAngleX', currentX * 8, 0.42);
+        coreModel.setParameterValueById('ParamEyeBallX', currentX);
+        coreModel.setParameterValueById('ParamEyeBallY', currentY);
+        coreModel.setParameterValueById('ParamMouthOpenY', this.mouthOpen);
+      } catch (error) {
+        console.warn('[Live2D] Gaze parameter update failed', error);
+      }
     };
-    internal.on?.('beforeModelUpdate', idleTick);
+    internal.on?.('afterMotionUpdate', idleTick);
 
     this.detachModelRuntime = () => {
       window.removeEventListener('pointermove', followPointer);
       window.removeEventListener('blur', centerGaze);
-      try { internal.off?.('beforeModelUpdate', idleTick); } catch {}
-      try { focusController.focus(0, 0, true); } catch {}
+      this.canvas?.removeEventListener('pointerleave', centerGaze);
+      try { internal.off?.('afterMotionUpdate', idleTick); } catch (error) {
+        console.warn('[Live2D] Failed to detach gaze ticker', error);
+      }
+      try { focusController.focus(0, 0, true); } catch (error) {
+        console.warn('[Live2D] Failed to reset gaze', error);
+      }
     };
   }
 
@@ -302,7 +378,8 @@ class Live2DRenderer {
     try { this.app?.ticker?.start?.(); } catch {}
     if (this.desiredModel) {
       try {
-        await this.loadModel(this.desiredModel);
+        const loaded = await this.loadModel(this.desiredModel);
+        if (!loaded) throw new Error('Live2D model did not resume to a rendered frame');
       } catch (error) {
         this.suspended = true;
         try { this.app?.ticker?.stop?.(); } catch {}
@@ -312,18 +389,44 @@ class Live2DRenderer {
   }
 
   setExpression(expression: string): void {
-    try { void this.model?.expression?.(expression); } catch {}
+    try {
+      if (!expression) {
+        this.model?.internalModel?.motionManager?.expressionManager?.resetExpression?.();
+        return;
+      }
+      const result = this.model?.expression?.(expression);
+      void Promise.resolve(result).then((applied) => {
+        if (applied === false) console.warn(`[Live2D] Expression is unavailable: ${expression}`);
+      }).catch((error) => {
+        console.warn(`[Live2D] Expression failed: ${expression}`, error);
+      });
+    } catch (error) {
+      console.warn(`[Live2D] Expression failed: ${expression}`, error);
+    }
   }
 
   playMotion(group: string): void {
     if (!group) return;
-    try { void this.model?.motion?.(group); } catch {}
+    try {
+      const result = this.model?.motion?.(group);
+      void Promise.resolve(result).then((applied) => {
+        if (applied === false) console.warn(`[Live2D] Motion is unavailable: ${group}`);
+      }).catch((error) => {
+        console.warn(`[Live2D] Motion failed: ${group}`, error);
+      });
+    } catch (error) {
+      console.warn(`[Live2D] Motion failed: ${group}`, error);
+    }
   }
 
   setMouthOpen(ratio: number): void {
+    this.mouthOpen = Math.max(0, Math.min(1, Number.isFinite(ratio) ? ratio : 0));
     if (this.model?.internalModel?.coreModel) {
       try {
-        this.model.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', ratio);
+        this.model.internalModel.coreModel.setParameterValueById(
+          'ParamMouthOpenY',
+          this.mouthOpen,
+        );
       } catch {}
     }
   }
@@ -351,6 +454,8 @@ class Live2DRenderer {
     this.lifecycleToken += 1;
     this.modelToken += 1;
     this.destroyModel();
+    this.detachCanvasRuntime?.();
+    this.detachCanvasRuntime = null;
     if (this.app) {
       try { this.app.ticker?.stop?.(); } catch {}
       try {
@@ -383,7 +488,12 @@ export function useLive2D(config: Live2DConfig) {
     if (!container) return;
 
     let active = true;
-    const renderer = new Live2DRenderer(config);
+    let renderer: Live2DRenderer;
+    renderer = new Live2DRenderer(config, (nextState, nextError) => {
+      if (!active || rendererRef.current !== renderer) return;
+      setError(nextError);
+      setState(nextState);
+    });
     rendererRef.current = renderer;
     setState('loading');
 
@@ -414,7 +524,14 @@ export function useLive2D(config: Live2DConfig) {
       setError(null);
       setState('loading');
       const loaded = await renderer.loadModel(options);
-      if (rendererRef.current === renderer) setState(document.hidden ? 'suspended' : 'mounted');
+      if (rendererRef.current === renderer) {
+        if (loaded) {
+          setState(document.hidden ? 'suspended' : 'mounted');
+        } else {
+          setError('Live2D model did not reach its first rendered frame');
+          setState('error');
+        }
+      }
       return loaded;
     } catch (err: unknown) {
       if (rendererRef.current === renderer) {
@@ -551,7 +668,9 @@ export function Live2DCanvas({
   }, [speaking, setSpeaking]);
 
   useEffect(() => {
-    if (modelReadyUrl === modelUrl && motion) playMotion(motion);
+    if (modelReadyUrl === modelUrl && motion) {
+      playMotion(motion.split('#', 1)[0]);
+    }
   }, [modelReadyUrl, modelUrl, motion, playMotion]);
 
   return (

@@ -1,6 +1,5 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import 'intl-pluralrules';
 import translation from './locale';
 import { ENABLE_LOCALES, FALLBACK_LNG } from './config';
 export * from './config';

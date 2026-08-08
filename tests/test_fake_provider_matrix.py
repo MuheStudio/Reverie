@@ -86,7 +86,7 @@ def test_openai_compatible_sdk_retries_are_explicitly_disabled(monkeypatch) -> N
 
     adapter = LLMAdapter(
         LLMSettings(
-            provider="deepseek",
+            provider="custom",
             model="deepseek-v4-flash",
             api_key="session-key",
             base_url="https://api.deepseek.com",

@@ -20,10 +20,10 @@ from src.bridge.stdio_transport import (
 )
 from src.kernel.command_bus import CommandBus
 from src.kernel.contracts import (
-    CommandEnvelopeV3,
-    DomainEventV3,
+    CommandEnvelopeV4,
+    DomainEventV4,
     ErrorCode,
-    PersonaScopeV3,
+    PersonaScopeV4,
 )
 from src.kernel.modules import (
     CapabilityManifest,
@@ -37,8 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture()
-def persona() -> PersonaScopeV3:
-    return PersonaScopeV3(
+def persona() -> PersonaScopeV4:
+    return PersonaScopeV4(
         persona_id="persona_test",
         epoch=1,
         fingerprint="a" * 64,
@@ -46,7 +46,7 @@ def persona() -> PersonaScopeV3:
 
 
 @pytest.fixture()
-def store(tmp_path: Path, persona: PersonaScopeV3):
+def store(tmp_path: Path, persona: PersonaScopeV4):
     value = KernelStore(tmp_path / "kernel.sqlite3")
     value.activate_persona(
         persona,
@@ -59,13 +59,13 @@ def store(tmp_path: Path, persona: PersonaScopeV3):
     value.close()
 
 
-def command(persona: PersonaScopeV3, request_id: str = "request-1") -> CommandEnvelopeV3:
-    return CommandEnvelopeV3(
+def command(persona: PersonaScopeV4, request_id: str = "request-1") -> CommandEnvelopeV4:
+    return CommandEnvelopeV4(
         request_id=request_id,
         idempotency_key=f"idempotency-{request_id}",
         command="chat:send",
         persona=persona,
-        payload={"message": "hello"},
+        payload={"text": "hello"},
     )
 
 
@@ -75,7 +75,7 @@ def test_capability_manifest_has_exactly_110_decision_complete_entries():
 
 def test_generated_typescript_is_current():
     generated = (
-        ROOT / "frontend" / "src" / "contracts" / "protocolV3.generated.ts"
+        ROOT / "frontend" / "src" / "contracts" / "protocolV4.generated.ts"
     ).read_text(encoding="utf-8")
     assert generated == typescript()
     assert "STICKER_SEND" in generated
@@ -84,7 +84,7 @@ def test_generated_typescript_is_current():
 
 def test_generated_electron_command_allowlist_is_current():
     generated = (
-        ROOT / "frontend" / "electron" / "protocol-v3.generated.cjs"
+        ROOT / "frontend" / "electron" / "protocol-v4.generated.cjs"
     ).read_text(encoding="utf-8")
     assert generated == electron_contracts()
     assert '"chat:send"' in generated
@@ -97,32 +97,32 @@ def test_sandbox_safe_preload_command_allowlist_is_current():
         ROOT / "frontend" / "electron" / "preload.js"
     ).read_text(encoding="utf-8")
     generated = preload.split(
-        "/* BEGIN GENERATED PROTOCOL V3 COMMANDS */", 1
-    )[1].split("/* END GENERATED PROTOCOL V3 COMMANDS */", 1)[0]
+        "/* BEGIN GENERATED PROTOCOL V4 COMMANDS */", 1
+    )[1].split("/* END GENERATED PROTOCOL V4 COMMANDS */", 1)[0]
     expected = preload_command_allowlist().split(
-        "/* BEGIN GENERATED PROTOCOL V3 COMMANDS */", 1
-    )[1].split("/* END GENERATED PROTOCOL V3 COMMANDS */", 1)[0]
+        "/* BEGIN GENERATED PROTOCOL V4 COMMANDS */", 1
+    )[1].split("/* END GENERATED PROTOCOL V4 COMMANDS */", 1)[0]
     assert generated == expected
-    assert "require('./protocol-v3.generated.cjs')" not in preload
+    assert "require('./protocol-v4.generated.cjs')" not in preload
 
 
 def test_length_prefixed_transport_round_trip_and_size_guard():
-    payload = {"protocol_version": 3, "message": "你好"}
+    payload = {"protocol_version": 4, "message": "你好"}
     assert round_trip(payload) == payload
     with pytest.raises(FrameProtocolError):
-        encode_frame({"oversized": "x" * (16 * 1024 * 1024)})
+        encode_frame({"oversized": "x" * (1024 * 1024)})
     with pytest.raises(EOFError):
         read_frame(__import__("io").BytesIO(b"\x00\x00\x00\x10{}"))
 
 
 def test_chat_exchange_commits_message_events_and_command_atomically(
     store: KernelStore,
-    persona: PersonaScopeV3,
+    persona: PersonaScopeV4,
 ):
     request = command(persona)
     store.begin_command(request)
     store.mark_provider_dispatched(request.request_id)
-    event = DomainEventV3(
+    event = DomainEventV4(
         event_type="relationship.delta.accepted",
         persona=persona,
         causation_id=request.request_id,
@@ -148,7 +148,7 @@ def test_chat_exchange_commits_message_events_and_command_atomically(
 
 def test_message_pages_keep_atomic_bubble_order_with_identical_timestamps(
     store: KernelStore,
-    persona: PersonaScopeV3,
+    persona: PersonaScopeV4,
 ):
     for index in range(3):
         request = command(persona, f"request-page-{index}")
@@ -188,11 +188,11 @@ def test_message_pages_keep_atomic_bubble_order_with_identical_timestamps(
 
 def test_invalid_cross_persona_event_rolls_back_everything(
     store: KernelStore,
-    persona: PersonaScopeV3,
+    persona: PersonaScopeV4,
 ):
     request = command(persona, "request-rollback")
     store.begin_command(request)
-    other = PersonaScopeV3(
+    other = PersonaScopeV4(
         persona_id="persona_other",
         epoch=1,
         fingerprint="b" * 64,
@@ -203,7 +203,7 @@ def test_invalid_cross_persona_event_rolls_back_everything(
             conversation_id="conversation-rollback",
             user_text="hello",
             assistant_bubbles=["must not persist"],
-            events=[DomainEventV3(event_type="memory.accepted", persona=other)],
+            events=[DomainEventV4(event_type="memory.accepted", persona=other)],
         )
     assert store.messages("conversation-rollback") == []
     assert store.command(request.request_id).state == "accepted"
@@ -211,7 +211,7 @@ def test_invalid_cross_persona_event_rolls_back_everything(
 
 def test_dispatched_request_becomes_unknown_and_is_never_reopened(
     store: KernelStore,
-    persona: PersonaScopeV3,
+    persona: PersonaScopeV4,
 ):
     request = command(persona, "request-unknown")
     store.begin_command(request)
@@ -225,7 +225,7 @@ def test_dispatched_request_becomes_unknown_and_is_never_reopened(
 def test_command_bus_rejects_stale_persona_outside_character_message(
     store: KernelStore,
 ):
-    stale = PersonaScopeV3(
+    stale = PersonaScopeV4(
         persona_id="persona_test",
         epoch=2,
         fingerprint="a" * 64,
@@ -269,11 +269,11 @@ class RecordingModule:
 
 def test_module_crash_degrades_only_module_and_replay_resumes_from_checkpoint(
     store: KernelStore,
-    persona: PersonaScopeV3,
+    persona: PersonaScopeV4,
 ):
     request = command(persona, "request-module")
     store.begin_command(request)
-    event = DomainEventV3(event_type="memory.accepted", persona=persona)
+    event = DomainEventV4(event_type="memory.accepted", persona=persona)
     store.commit_chat_exchange(
         request,
         conversation_id="conversation-module",

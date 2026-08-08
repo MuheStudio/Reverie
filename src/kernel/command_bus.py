@@ -7,15 +7,15 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from .contracts import (
-    CommandEnvelopeV3,
-    CommandResultV3,
+    CommandEnvelopeV4,
+    CommandResultV4,
     ErrorCode,
 )
 from .storage import IdempotencyConflict, KernelStore
 
 
 logger = logging.getLogger("reverie.kernel.command_bus")
-Handler = Callable[[CommandEnvelopeV3], Awaitable[Any]]
+Handler = Callable[[CommandEnvelopeV4], Awaitable[Any]]
 
 
 class CommandBus:
@@ -28,47 +28,54 @@ class CommandBus:
             raise ValueError(f"handler already registered for {command}")
         self._handlers[command] = handler
 
-    async def dispatch(self, command: CommandEnvelopeV3) -> CommandResultV3:
+    async def dispatch(self, command: CommandEnvelopeV4) -> CommandResultV4:
+        began = False
         active = self.store.active_persona()
         if active is not None and active != command.persona:
-            return CommandResultV3.failure(
+            return CommandResultV4.failure(
                 command.request_id,
                 code=ErrorCode.STALE_PERSONA,
                 message="请求属于已过期的人格版本。",
             )
         handler = self._handlers.get(command.command)
         if handler is None:
-            return CommandResultV3.failure(
+            return CommandResultV4.failure(
                 command.request_id,
                 code=ErrorCode.MODULE_UNAVAILABLE,
                 message="该功能模块当前不可用。",
             )
         try:
             existing = self.store.begin_command(command)
+            began = True
             if existing.state == "committed":
-                return CommandResultV3.success(command.request_id, existing.result)
+                return CommandResultV4.success(command.request_id, existing.result)
             if existing.state == "outcome_unknown":
-                return CommandResultV3.failure(
+                return CommandResultV4.failure(
                     command.request_id,
                     code=ErrorCode.PROVIDER_OUTCOME_UNKNOWN,
                     message="上一次请求结果未知，为避免重复计费不会自动重试。",
                 )
             value = await handler(command)
-            return CommandResultV3.success(command.request_id, value)
+            committed = self.store.commit_command_result(command, value)
+            return CommandResultV4.success(command.request_id, committed.result)
         except IdempotencyConflict:
-            return CommandResultV3.failure(
+            return CommandResultV4.failure(
                 command.request_id,
                 code=ErrorCode.CONFLICT,
                 message="请求标识发生冲突，未执行重复操作。",
             )
         except PermissionError:
-            return CommandResultV3.failure(
+            if began:
+                self.store.fail_command(command.request_id, error_code="CONSENT_REQUIRED")
+            return CommandResultV4.failure(
                 command.request_id,
                 code=ErrorCode.CONSENT_REQUIRED,
                 message="该操作需要用户明确授权。",
             )
         except (TypeError, ValueError):
-            return CommandResultV3.failure(
+            if began:
+                self.store.fail_command(command.request_id, error_code="INVALID_REQUEST")
+            return CommandResultV4.failure(
                 command.request_id,
                 code=ErrorCode.INVALID_REQUEST,
                 message="请求内容无效。",
@@ -81,7 +88,7 @@ class CommandBus:
                 self.store.fail_command(command.request_id, error_code=error.__class__.__name__)
             except Exception:
                 logger.exception("Could not persist failed command state")
-            return CommandResultV3.failure(
+            return CommandResultV4.failure(
                 command.request_id,
                 code=ErrorCode.INTERNAL,
                 message="请求未完成。技术详情已写入本地日志。",

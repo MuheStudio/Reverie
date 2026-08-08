@@ -1,1 +1,0 @@
-"""Plugin scaffolding templates."""

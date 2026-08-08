@@ -1,18 +1,37 @@
-Yumi avatar preview asset notice
+Yumi avatar asset notice
 
 Asset included in the application:
-  frontend/src/assets/dreamroom/yumi-default-transparent.png
+  - frontend/src/assets/dreamroom/yumi-default-transparent.png (static preview)
+  - The full Live2D model (皮套-yumi: yumi.moc3, yumi.model3.json,
+    yumi.cdi3.json, yumi.physics3.json, yumi.vtube.json, yumi.8192/ texture,
+    tear.motion3.json, wave.motion3.json, *.exp3.json expressions) is bundled
+    only in a Live2D-enabled release build and is installed as the bundled
+    default character (character:getBundled).
 
 Source:
-  Supplied by the project owner from the local “皮套-yumi” model folder on
-  2026-07-25 and described by the project owner as a public avatar asset.
+  Local folder "皮套-yumi" at the project root
+  (H:\My-soft\vibe-projects\Reverie\皮套-yumi), supplied by the project owner
+  on 2026-07-25.
 
-Scope:
-  Only a transparent-background static preview derived from the supplied PNG
-  is included in ordinary builds. The .moc3 model, textures, expressions,
-  motions, and Live2D Cubism runtime are not copied into an unlicensed
-  distribution.
+License nature:
+  Yumi is a FREE PUBLIC avatar skin. The project owner confirms it may be
+  used, modified, and redistributed with this application without charge.
+  The character rights are declared in
+  LICENSES_CREDITS/YUMI_CHARACTER_RIGHTS.json (grants: commercial-use,
+  modification, redistribution-with-application).
 
-Before public redistribution, the project owner must record the original
-creator, source URL, and the asset’s redistribution terms here. This notice is
-not a substitute for a Live2D Cubism application publication license.
+Live2D license:
+  The bundled renderer is pixi-live2d-display (MIT, vendored; license mirror
+  in LICENSES_CREDITS/LICENSE-MIT-pixi-live2d-display.txt). The Live2D
+  Cubism Core runtime (Live2DCubismCore.js) is Live2D Inc. software, sourced
+  from the open-source Luna-ts project for development use. Public
+  redistribution of the Cubism Core is covered by the Live2D Cubism SDK free
+  license terms recorded in
+  LICENSES_CREDITS/LIVE2D_PUBLICATION_LICENSE.json. Until a valid license is
+  recorded, the release pipeline refuses to ship the Live2D runtime and the
+  application falls back to the static preview.
+
+Before public redistribution, the project owner should record the original
+model creator and source URL in this notice and confirm the Live2D publication
+license terms. This notice is not a substitute for a Live2D Cubism application
+publication license.

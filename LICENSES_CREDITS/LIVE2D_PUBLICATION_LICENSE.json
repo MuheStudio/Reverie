@@ -1,0 +1,11 @@
+{
+  "schema": "reverie.live2d.public-license.v1",
+  "applicationId": "studio.muhe.reverie",
+  "contractId": "Live2D-Cubism-SDK-Free-EULA",
+  "platforms": [
+    "win32"
+  ],
+  "validFrom": "2025-01-01T00:00:00.000Z",
+  "expiresAt": "2035-01-01T00:00:00.000Z",
+  "licensee": "Muhe Studio"
+}

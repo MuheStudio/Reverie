@@ -173,7 +173,19 @@ class PersonalAffairManager:
             if affair.status in {"paused", "completed"}:
                 continue
             due = _parse_datetime(affair.next_update_at)
-            if due is not None and _coerce_like(now, due) < due:
+            if due is None and affair.next_update_at:
+                # Corrupt timestamp: treat as not-yet-due and refresh the
+                # field so the affair does not stall forever.
+                affair.next_update_at = (now + timedelta(hours=8)).isoformat()
+                changed = True
+                continue
+            if due is None:
+                # Empty scheduling field from old data: self-heal with a
+                # default window instead of advancing on every 15-minute tick.
+                affair.next_update_at = (now + timedelta(hours=8)).isoformat()
+                changed = True
+                continue
+            if _coerce_like(now, due) < due:
                 continue
             step = 8.0 + (int(hashlib.sha256(f"{affair.id}:{now.date()}".encode()).hexdigest()[:2], 16) % 7)
             old_progress = affair.progress

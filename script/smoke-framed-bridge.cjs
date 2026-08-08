@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -17,23 +18,29 @@ const python = path.resolve(
 );
 const tempRoot = fs.realpathSync(os.tmpdir());
 const dataDir = fs.mkdtempSync(path.join(tempRoot, 'reverie-framed-smoke-'));
+const storageKey = crypto.randomBytes(32);
 const child = spawn(python, [path.join(projectRoot, 'src', 'main.py'), '--stdio-bridge'], {
   cwd: projectRoot,
   windowsHide: true,
-  stdio: ['pipe', 'pipe', 'pipe'],
+  stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
   env: {
     ...process.env,
     PYTHONIOENCODING: 'utf-8',
     PYTHONUNBUFFERED: '1',
     REVERIE_BRIDGE_MODE: '1',
-    REVERIE_BRIDGE_PROTOCOL_VERSION: '3',
+    REVERIE_BRIDGE_PROTOCOL_VERSION: '4',
     REVERIE_BRIDGE_SECRET: 'A'.repeat(43),
     REVERIE_PARENT_PID: String(process.pid),
     REVERIE_DATA_DIR: dataDir,
     REVERIE_LOCAL_MODE: '1',
     REVERIE_LOCAL_MODE_EPOCH: '0',
+    REVERIE_REQUIRE_ENCRYPTED_STORAGE: '1',
+    REVERIE_STORAGE_KEY_FD: '3',
   },
 });
+const clearStorageKey = () => storageKey.fill(0);
+child.once('error', clearStorageKey);
+child.stdio[3].end(storageKey, clearStorageKey);
 
 let stderr = '';
 let ready = false;
@@ -43,16 +50,16 @@ const decoder = new FrameDecoder((frame) => {
   if (!ready) {
     assert.equal(frame.kind, 'ready');
     assert.equal(frame.transport, 'stdio-framed');
-    assert.equal(frame.protocolVersion, 3);
+    assert.equal(frame.protocolVersion, 4);
     ready = true;
     child.stdin.write(encodeFrame({
       kind: 'renderer_command',
-      schema: 'reverie.command.v3',
+      schema: 'reverie.command.v4',
       envelope: {
-        protocol_version: 3,
+        protocol_version: 4,
         request_id: 'rpc_smoke_12345678',
         idempotency_key: 'rpc_smoke_12345678',
-        command: 'persona:get',
+        command: 'settings:get',
         persona: {
           persona_id: frame.personaId,
           epoch: frame.personaEpoch,
@@ -66,10 +73,10 @@ const decoder = new FrameDecoder((frame) => {
   }
   if (
     frame.kind === 'event'
-    && frame.frame?.type === 'persona:data'
+    && frame.frame?.type === 'settings:get:result'
     && frame.frame?.request_id === 'rpc_smoke_12345678'
   ) {
-    assert.equal(typeof frame.frame.payload?.persona, 'object');
+    assert.equal(frame.frame.payload?.ok, true);
     finish(null);
   }
 });
@@ -95,7 +102,7 @@ function finish(error) {
     process.stderr.write(`${error.stack || error}\n${stderr.slice(-4000)}`);
     process.exitCode = 1;
   } else {
-    process.stdout.write('Framed bridge smoke passed: ready + persona:get\n');
+    process.stdout.write('Framed bridge smoke passed: v4 ready + encrypted settings:get\n');
   }
   // On Windows the child may still hold SQLite/WAL handles until its exit
   // event. Reporting success must not be skipped by an early EPERM cleanup.

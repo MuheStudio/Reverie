@@ -24,10 +24,24 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@gui/vibe-container": ["src/lib/vibeContainerMock.ts"]
+      "@gui/vibe-container": ["src/lib/vibeContainerMock.ts"],
+      "@/components/DreamRoom": ["src/types/dream-room.d.ts"],
+      "@/components/DreamRoom/index": ["src/types/dream-room.d.ts"]
     },
     "types": []
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx"],
+  "include": [
+    "src/index.tsx",
+    "src/vite-env.d.ts",
+    "src/types/global.d.ts",
+    "src/types/optional-airi.d.ts",
+    "src/types/dream-room.d.ts",
+    "src/components/MvpRoom/**/*.tsx",
+    "src/components/AvatarView/Live2DAdapter.tsx",
+    "src/hooks/useMvpBridge.ts",
+    "src/contracts/protocolV4.generated.ts",
+    "src/lib/electronBridgeSocket.ts",
+    "src/lib/llmModels.ts"
+  ],
   "exclude": ["node_modules"]
 }

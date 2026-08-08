@@ -1,28 +1,17 @@
-import React, { useEffect } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
-import { createBrowserRouter, createHashRouter, RouterProvider } from 'react-router-dom';
-import rootRouter from '@/routers';
+import MvpRoom from '@/components/MvpRoom';
+import { useMvpBridge } from '@/hooks/useMvpBridge';
+import { initI18n } from '@/i18';
 
 import './common.scss';
 import './styles/reverie-theme.css';
-import { initI18n } from './i18';
 
-declare const __ROUTER_BASE__: string;
-
-initI18n();
 document.body.classList.add('reverie-dark');
-
-const basename = typeof __ROUTER_BASE__ !== 'undefined' && __ROUTER_BASE__ ? __ROUTER_BASE__ : '/';
-const useFileRouter = window.location.protocol === 'file:';
-const router = useFileRouter
-  ? createHashRouter(rootRouter)
-  : createBrowserRouter(rootRouter, { basename });
 
 console.info('[ReverieRenderer] boot', {
   href: window.location.href,
   protocol: window.location.protocol,
-  routerMode: useFileRouter ? 'hash' : 'browser',
-  basename,
 });
 
 window.addEventListener('error', (event) => {
@@ -70,16 +59,71 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-function ReverieApp() {
+// DreamRoom is the full "her room" experience. It is loaded lazily so the
+// compact MvpRoom shell stays fast to boot; the Python host decides the active
+// mode via settings.ui.mode (mvp | dream).
+const DreamRoom = lazy(() => import('@/components/DreamRoom'));
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function AppShell() {
+  const bridge = useMvpBridge();
+  const [mode, setMode] = useState<'mvp' | 'dream'>('mvp');
+  const [modeKnown, setModeKnown] = useState(false);
+
+  useEffect(() => {
+    if (!bridge.settings || !isRecord(bridge.settings.ui)) return;
+    const stored = bridge.settings.ui.mode;
+    if (stored === 'dream' || stored === 'mvp') {
+      setMode(stored);
+      setModeKnown(true);
+    } else {
+      setModeKnown(true);
+    }
+  }, [bridge.settings]);
+
+  useEffect(() => {
+    void initI18n().catch((error) => {
+      console.warn('[ReverieRenderer] i18n init failed', error);
+    });
+  }, []);
+
   useEffect(() => {
     console.info('[ReverieRenderer] app mounted', {
       pathname: window.location.pathname,
       hash: window.location.hash,
       bodyClass: document.body.className,
+      mode,
     });
-  }, []);
+  }, [mode]);
 
-  return <RouterProvider router={router} />;
+  // Before the Python host reports the stored mode, show the compact shell.
+  if (!modeKnown) return <MvpRoom />;
+  if (mode === 'dream') {
+    return (
+      <Suspense fallback={(
+        <main style={{
+          minHeight: '100vh',
+          display: 'grid',
+          placeItems: 'center',
+          background: '#141727',
+          color: '#f0f1f5',
+          fontFamily: 'sans-serif',
+        }}>
+          <span>正在布置她的房间…</span>
+        </main>
+      )}>
+        <DreamRoom />
+      </Suspense>
+    );
+  }
+  return <MvpRoom />;
+}
+
+function ReverieApp() {
+  return <AppShell />;
 }
 
 const rootElement = document.getElementById('root');

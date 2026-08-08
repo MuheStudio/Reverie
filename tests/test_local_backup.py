@@ -53,7 +53,7 @@ class FakeEmotion:
 
 class FakeRelationship:
     def __init__(self) -> None:
-        self.state = {"intimacy": 520, "stage": "依赖期"}
+        self.state = {"intimacy": 520, "stage": "信任期"}
         self.restored = None
 
     def to_dict(self):

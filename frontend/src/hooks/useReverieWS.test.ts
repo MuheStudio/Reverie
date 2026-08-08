@@ -19,22 +19,15 @@ import {
 } from './useReverieWS';
 
 describe('useReverieWS protocol defaults', () => {
-  it('requests all locally persistent room state after websocket connection opens', () => {
+  it('legacy bridge compatibility requests only the retained MVP state', () => {
     expect(INITIAL_STATE_REQUEST_TYPES).toEqual([
       WSMsgType.CHAT_HISTORY,
       WSMsgType.EMOTION_GET,
       WSMsgType.PERSONA_GET,
       WSMsgType.RELATIONSHIP_GET,
-      WSMsgType.DIARY_REQUEST,
-      WSMsgType.TIMELINE_REQUEST,
-      WSMsgType.AMBIENT_GET,
-      WSMsgType.API_BUDGET_GET,
-      WSMsgType.GROUP_REQUEST,
       WSMsgType.USER_PROFILE_GET,
-      WSMsgType.KEEPSAKE_LIST,
-      WSMsgType.STICKER_LIST,
       WSMsgType.ANTI_AI_STATUS,
-      WSMsgType.AI_USAGE_GET,
+      WSMsgType.MEMORY_SETTINGS_GET,
       WSMsgType.SETTINGS_GET,
     ]);
     expect(INITIAL_STATE_REQUEST_TYPES).not.toContain(WSMsgType.SETTINGS_UPDATE);

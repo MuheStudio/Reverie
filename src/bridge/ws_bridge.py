@@ -25,12 +25,16 @@ from weakref import WeakSet
 
 import websockets
 from websockets.server import WebSocketServerProtocol
-from ..kernel.contracts import LEGACY_MESSAGE_TYPES
+from ..kernel.contracts import (
+    CommandEnvelopeV4,
+    LEGACY_MESSAGE_TYPES,
+    PersonaScopeV4,
+)
 
 logger = logging.getLogger("reverie.bridge.ws")
 
 class MsgType:
-    """Legacy attribute facade generated from the canonical V3 contract."""
+    """Legacy event-name facade generated from the canonical V4 contract."""
 
 
 for _message_name, _message_value in LEGACY_MESSAGE_TYPES:
@@ -107,9 +111,15 @@ class BridgeClientContext:
 
 RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MEMORY_QUERY: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_LIST: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_EDIT: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_DELETE: MsgType.MEMORY_RESULT,
     MsgType.CHAT_HISTORY: MsgType.CHAT_HISTORY_RESULT,
     MsgType.MEMORY_SETTINGS_GET: MsgType.MEMORY_SETTINGS_RESULT,
     MsgType.MEMORY_STORE: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_CANDIDATE_LIST: MsgType.MEMORY_CANDIDATE_RESULT,
+    MsgType.MEMORY_CANDIDATE_CONFIRM: MsgType.MEMORY_CANDIDATE_RESULT,
+    MsgType.MEMORY_CANDIDATE_REJECT: MsgType.MEMORY_CANDIDATE_RESULT,
     MsgType.EMOTION_GET: MsgType.EMOTION_UPDATE,
     MsgType.PERSONA_GET: MsgType.PERSONA_DATA,
     MsgType.PERSONA_IMPORT: MsgType.PERSONA_IMPORT_RESULT,
@@ -224,6 +234,9 @@ _PERSONA_SCOPED_COMMANDS = frozenset({
     MsgType.MEMORY_QUERY,
     MsgType.MEMORY_SETTINGS_GET,
     MsgType.MEMORY_STORE,
+    MsgType.MEMORY_CANDIDATE_LIST,
+    MsgType.MEMORY_CANDIDATE_CONFIRM,
+    MsgType.MEMORY_CANDIDATE_REJECT,
     MsgType.EMOTION_GET,
     MsgType.ARCHIVE_GET,
     MsgType.ARCHIVE_PUT,
@@ -592,7 +605,7 @@ async def _emit_chat_event(client_id: str, msg_type: str, payload: dict[str, Any
         return False
     delivered = False
     for ws, context in targets:
-        if context.protocol_version >= 2:
+        if context.protocol_version >= 4:
             delivered = await send_to_frontend(ws, msg_type, payload) or delivered
             continue
         # Compatibility is a per-connection projection, never a second source
@@ -941,6 +954,51 @@ async def handle_memory_query(payload: dict, ws: WebSocketServerProtocol) -> dic
     return {"memories": results}
 
 
+@register_handler(MsgType.MEMORY_LIST)
+async def handle_memory_list(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized", "memories": []}
+    memories = bridge_state.memory.list_confirmed_memories(
+        limit=int(payload.get("limit") or 100),
+    )
+    return {"ok": True, "memories": memories}
+
+
+@register_handler(MsgType.MEMORY_EDIT)
+async def handle_memory_edit(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized"}
+    result = bridge_state.memory.correct_confirmed_memory(
+        str(payload.get("memory_id") or ""),
+        str(payload.get("text") or ""),
+    )
+    return {"ok": True, **result}
+
+
+@register_handler(MsgType.MEMORY_DELETE)
+async def handle_memory_delete(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized"}
+    return {
+        "ok": True,
+        **bridge_state.memory.delete_confirmed_memory(
+            str(payload.get("memory_id") or ""),
+        ),
+    }
+
+
 @register_handler(MsgType.MEMORY_SETTINGS_GET)
 async def handle_memory_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """Return the running memory configuration."""
@@ -990,7 +1048,7 @@ async def handle_memory_store(payload: dict, _ws: WebSocketServerProtocol) -> di
         return {"ok": False, "error": "Memory system is not initialized"}
     text = str(payload.get("text", "")).strip()
     layer = str(payload.get("layer", "long_term")).strip()
-    if layer not in {"long_term", "short_term"}:
+    if layer not in {"long_term", "short_term", "permanent"}:
         return {"ok": False, "error": f"Unsupported memory layer: {layer}"}
     if not text:
         return {"ok": False, "error": "Memory text is empty"}
@@ -1003,6 +1061,56 @@ async def handle_memory_store(payload: dict, _ws: WebSocketServerProtocol) -> di
     except Exception as exc:
         logger.exception("Manual memory store failed")
         return {"ok": False, "error": str(exc), "layer": layer}
+
+
+def _require_memory_controller(ws: WebSocketServerProtocol) -> None:
+    context = _client_contexts.get(ws)
+    if not context or not context.authenticated or ws is not _controller_ws:
+        raise PermissionError("authenticated controller required")
+
+
+@register_handler(MsgType.MEMORY_CANDIDATE_LIST)
+async def handle_memory_candidate_list(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized", "candidates": []}
+    status = str(payload.get("status") or "pending")
+    limit = max(1, min(200, int(payload.get("limit") or 100)))
+    candidates = bridge_state.memory.list_memory_candidates(status=status, limit=limit)
+    return {"ok": True, "status": status, "candidates": candidates}
+
+
+@register_handler(MsgType.MEMORY_CANDIDATE_CONFIRM)
+async def handle_memory_candidate_confirm(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized"}
+    candidate_id = str(payload.get("candidate_id") or "")
+    if not re.fullmatch(r"mc_[a-f0-9]{32}", candidate_id):
+        raise ValueError("invalid memory candidate id")
+    result = bridge_state.memory.confirm_memory_candidate(candidate_id)
+    return {"ok": True, **result}
+
+
+@register_handler(MsgType.MEMORY_CANDIDATE_REJECT)
+async def handle_memory_candidate_reject(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized"}
+    candidate_id = str(payload.get("candidate_id") or "")
+    if not re.fullmatch(r"mc_[a-f0-9]{32}", candidate_id):
+        raise ValueError("invalid memory candidate id")
+    candidate = bridge_state.memory.reject_memory_candidate(candidate_id)
+    return {"ok": True, "candidate": candidate}
 
 
 @register_handler(MsgType.EMOTION_GET)
@@ -1864,17 +1972,18 @@ async def _configure_runtime_provider(payload: Any) -> dict[str, Any]:
     credential_fields = {"api_key", "apiKey", "custom_headers", "customHeaders"}
     if credential_fields.intersection(payload):
         raise ValueError("credentials require the private Electron control channel")
-    provider = str(payload.get("provider", "openai")).strip().lower()
+    provider = str(payload.get("provider", "ollama")).strip().lower()
     provider_aliases = {"z.ai": "glm", "zai": "glm", "claude": "anthropic"}
     provider = provider_aliases.get(provider, provider)
     from src.config.settings import (
+        SUPPORTED_PROVIDER_NAMES,
         PROVIDER_DEFAULTS,
         environment_api_key,
         normalize_provider_endpoint,
         save_settings,
     )
 
-    if provider not in PROVIDER_DEFAULTS:
+    if provider not in SUPPORTED_PROVIDER_NAMES:
         raise ValueError(f"Unsupported provider: {provider}")
     if not bridge_state.settings:
         raise RuntimeError("Settings are not initialized")
@@ -1952,14 +2061,15 @@ async def _test_runtime_provider(payload: Any, credential: Any) -> dict[str, Any
         raise RuntimeError("settings are not initialized")
 
     from src.api.adapter import LLMAdapter, ProviderRequestError, parse_custom_headers
-    from src.config.settings import PROVIDER_DEFAULTS, normalize_provider_endpoint
+    from src.api.provider_probe import ProviderProbe
+    from src.config.settings import SUPPORTED_PROVIDER_NAMES, normalize_provider_endpoint
 
     provider = str(payload.get("provider", "")).strip().lower()
     provider = {"z.ai": "glm", "zai": "glm", "claude": "anthropic"}.get(
         provider,
         provider,
     )
-    if provider not in PROVIDER_DEFAULTS:
+    if provider not in SUPPORTED_PROVIDER_NAMES:
         raise ValueError(f"Unsupported provider: {provider}")
     model = str(payload.get("model") or "").strip()
     if not model or len(model) > 512 or any(ord(char) < 32 for char in model):
@@ -1985,33 +2095,24 @@ async def _test_runtime_provider(payload: Any, credential: Any) -> dict[str, Any
     candidate.base_url = base_url
     candidate.api_key = api_key
     owner_adapter = bridge_state.adapter
-    probe = LLMAdapter(
+    candidate_adapter = LLMAdapter(
         settings=candidate,
         local_mode_gate=getattr(owner_adapter, "local_mode_gate", None),
         custom_headers=headers,
     )
-    started = asyncio.get_running_loop().time()
     try:
-        response = await asyncio.wait_for(
-            probe.chat(
-                [{"role": "user", "content": "Reply with OK."}],
-                model=model,
-                temperature=0,
-                max_tokens=4,
-                purpose="chat_reply",
-                background=False,
-            ),
-            timeout=30,
+        result = await ProviderProbe(candidate_adapter).run(
+            provider=provider,
+            model=model,
+            base_url=base_url,
         )
     finally:
-        await probe.close()
+        await candidate_adapter.close()
     return {
-        "provider": provider,
-        "model": str(response.model or model)[:512],
-        "latency_ms": max(
-            0,
-            int((asyncio.get_running_loop().time() - started) * 1000),
-        ),
+        "provider": result.provider,
+        "model": result.model,
+        "latency_ms": result.latency_ms,
+        "finish_reason": result.finish_reason,
     }
 
 
@@ -2039,7 +2140,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
     section = payload.get("section", "")
     if section == "lorebook":
         # 保存世界书到文件
-        # Retired in V3. Accepting this legacy write would recreate a second
+        # Retired before V4. Accepting this legacy write would recreate a second
         # world-book fact source beside the persona-scoped ArchiveStore.
         return {
             "ok": False,
@@ -2127,6 +2228,23 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+    elif section == "ui":
+        try:
+            from src.config.settings import save_settings
+
+            if not bridge_state.settings:
+                return {"ok": False, "error": "Settings are not initialized"}
+            mode = str(payload.get("mode", "") or "").strip()
+            if mode not in {"mvp", "dream"}:
+                return {"ok": False, "error": "mode must be mvp or dream"}
+            bridge_state.settings.ui.mode = mode  # type: ignore[assignment]
+            save_settings(bridge_state.settings)
+            return {
+                "ok": True,
+                "ui": bridge_state.settings.ui.model_dump(),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
     elif section == "memory":
         try:
             from src.config.settings import save_settings
@@ -2181,15 +2299,20 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 memory_settings.long_term_forget_days = clamp_int(payload["long_term_forget_days"], 60, 365)
             if "short_term_forget_days" in payload:
                 memory_settings.short_term_forget_days = clamp_int(payload["short_term_forget_days"], 1, 59)
-            for key in ("long_term_forget_probability", "short_term_forget_probability"):
-                if key in payload:
-                    setattr(memory_settings, key, clamp_float(payload[key], 0.01, 0.10))
+            if "long_term_forget_probability" in payload:
+                memory_settings.long_term_forget_probability = clamp_float(
+                    payload["long_term_forget_probability"], 0.01, 0.10
+                )
+            if "short_term_forget_probability" in payload:
+                memory_settings.short_term_forget_probability = clamp_float(
+                    payload["short_term_forget_probability"], 0.001, 0.01
+                )
             for key in (
                 "misremember_probability", "long_term_misremember_probability",
                 "short_term_misremember_probability",
             ):
                 if key in payload:
-                    setattr(memory_settings, key, clamp_float(payload[key], 0.001, 0.01))
+                    setattr(memory_settings, key, clamp_float(payload[key], 0.01, 0.10))
             if "decay_lambda" in payload:
                 memory_settings.decay_lambda = clamp_float(payload["decay_lambda"], 0.0001, 0.10)
             if "recall_reinforcement_alpha" in payload:
@@ -2951,11 +3074,11 @@ async def _authenticate_bridge_client(ws: WebSocketServerProtocol) -> BridgeClie
         protocol_version = int(
             payload.get("protocol_version")
             or payload.get("protocolVersion")
-            or os.getenv("REVERIE_BRIDGE_PROTOCOL_VERSION", "2")
+            or os.getenv("REVERIE_BRIDGE_PROTOCOL_VERSION", "4")
         )
     except (TypeError, ValueError) as exc:
         raise PermissionError("invalid bridge protocol version") from exc
-    if protocol_version not in (1, 2):
+    if protocol_version != 4:
         raise PermissionError("unsupported bridge protocol version")
     return BridgeClientContext(
         client_id=client_id,
@@ -2969,7 +3092,9 @@ async def _authenticate_bridge_client(ws: WebSocketServerProtocol) -> BridgeClie
 async def dispatch_authenticated_message(
     message: Any,
     endpoint: WebSocketServerProtocol,
-) -> None:
+    *,
+    emit_result: bool = True,
+) -> dict[str, Any] | None:
     """Dispatch one already-owner-authenticated V2 compatibility frame.
 
     Production stdio and the development WebSocket adapter share this exact
@@ -3000,7 +3125,7 @@ async def dispatch_authenticated_message(
                 {"message": f"未知消息类型: {msg_type}"},
                 request_id=request_id,
             )
-            return
+            return None
         context = _client_contexts.get(endpoint)
         persona_scoped = msg_type in _PERSONA_SCOPED_COMMANDS
         if (
@@ -3038,13 +3163,14 @@ async def dispatch_authenticated_message(
                 result = await handler(payload, endpoint)
         else:
             result = await handler(payload, endpoint)
-        if result is not None:
+        if result is not None and emit_result:
             await send_to_frontend(
                 endpoint,
                 response_type_for_request(msg_type),
                 result,
                 request_id=request_id,
             )
+        return result
     except ValueError as exc:
         await send_to_frontend(
             endpoint,
@@ -3052,6 +3178,7 @@ async def dispatch_authenticated_message(
             {"message": str(exc)},
             request_id=request_id,
         )
+        return None
     except Exception:
         logger.exception("Authenticated bridge message failed")
         await send_to_frontend(
@@ -3060,6 +3187,7 @@ async def dispatch_authenticated_message(
             {"message": "内部错误"},
             request_id=request_id,
         )
+        return None
 
 
 async def websocket_handler(ws: WebSocketServerProtocol):
@@ -3117,12 +3245,47 @@ async def websocket_handler(ws: WebSocketServerProtocol):
                     raise ValueError("invalid message type")
                 if not isinstance(payload, dict):
                     raise ValueError("payload must be an object")
-                raw_request_id = msg.get("request_id", "")
-                if raw_request_id:
-                    candidate_request_id = str(raw_request_id)
-                    if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", candidate_request_id):
-                        raise ValueError("invalid request_id")
-                    request_id = candidate_request_id
+                carries_persona_proof = any(
+                    field in payload
+                    for field in (
+                        "expected_persona_id",
+                        "expected_persona_epoch",
+                        "expected_persona_fingerprint",
+                    )
+                )
+                if carries_persona_proof and not _matches_expected_persona(payload):
+                    raise ValueError("stale persona proof")
+                sanitized_payload = dict(payload)
+                for field in (
+                    "expected_persona_id",
+                    "expected_persona_epoch",
+                    "expected_persona_fingerprint",
+                ):
+                    sanitized_payload.pop(field, None)
+                raw_request_id = str(msg.get("request_id") or "")
+                if not raw_request_id and msg_type == MsgType.CHAT_SEND:
+                    raw_request_id = str(sanitized_payload.get("request_id") or "")
+                candidate_request_id = raw_request_id or f"dev_{secrets.token_hex(16)}"
+                active = _active_persona_scope()
+                envelope = CommandEnvelopeV4(
+                    request_id=candidate_request_id,
+                    idempotency_key=candidate_request_id,
+                    command=msg_type,
+                    persona=PersonaScopeV4(
+                        persona_id=str(active["persona_id"]),
+                        epoch=int(active["persona_epoch"]),
+                        fingerprint=str(active["persona_fingerprint"]),
+                    ),
+                    payload=sanitized_payload,
+                )
+                request_id = envelope.request_id
+                msg_type = envelope.command
+                payload = dict(envelope.payload)
+                payload.update(
+                    expected_persona_id=envelope.persona.persona_id,
+                    expected_persona_epoch=envelope.persona.epoch,
+                    expected_persona_fingerprint=envelope.persona.fingerprint,
+                )
 
                 handler = _handlers.get(msg_type)
                 if handler:
@@ -3159,10 +3322,11 @@ async def websocket_handler(ws: WebSocketServerProtocol):
             except json.JSONDecodeError:
                 await send_to_frontend(ws, MsgType.ERROR, {"message": "无效 JSON"})
             except ValueError as exc:
+                del exc
                 await send_to_frontend(
                     ws,
                     MsgType.ERROR,
-                    {"message": str(exc)},
+                    {"message": "The command was rejected"},
                     request_id=request_id,
                 )
             except Exception:
@@ -3215,7 +3379,7 @@ async def start_bridge(host: str = "127.0.0.1", port: int = 48913):
             host,
             port,
             origins=_allowed_bridge_origins(),
-            max_size=4 * 1024 * 1024,
+            max_size=256 * 1024,
             max_queue=16,
             compression=None,
             server_header=None,
@@ -3232,7 +3396,7 @@ async def start_bridge(host: str = "127.0.0.1", port: int = 48913):
                 "port": actual_port,
                 "pid": os.getpid(),
                 "secretSha256": hashlib.sha256(configured_secret.encode("utf-8")).hexdigest(),
-                "protocolVersion": 2,
+                "protocolVersion": 4,
                 "localModeEpoch": gate_snapshot.epoch,
                 "localModeSessionId": gate_snapshot.session_id or None,
                 "personaId": persona_scope["persona_id"],

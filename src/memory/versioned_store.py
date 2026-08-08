@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .catalog import MemoryCatalog
-from .embedding import embed_query, embed_texts, embedding_runtime_info
+from .embedding import DEFAULT_MODEL, embed_query, embed_texts, embedding_runtime_info
 from .sqlite_vec_index import SQLiteVecIndex
 
 logger = logging.getLogger("reverie.memory.versioned_store")
@@ -24,7 +24,7 @@ class VersionedVectorStore:
         db_path: str,
         table_name: str = "memories",
         *,
-        model_name: str = "BAAI/bge-small-en-v1.5",
+        model_name: str = DEFAULT_MODEL,
         catalog_path: str | Path | None = None,
         vector_quantization: str = "int8",
         vector_partitioning: bool = True,
@@ -45,6 +45,12 @@ class VersionedVectorStore:
         self._activate_sqlite_index()
 
     def _activate_sqlite_index(self) -> None:
+        if self.runtime.backend == "unavailable":
+            if self._sqlite_index is not None:
+                self._sqlite_index.close()
+            self._sqlite_index = None
+            self.vector_backend = "bounded_lexical_fallback"
+            return
         try:
             if self._sqlite_index is None:
                 self._sqlite_index = SQLiteVecIndex(
@@ -99,6 +105,11 @@ class VersionedVectorStore:
         try:
             result = self.db.list_tables()
             return list(result.tables if hasattr(result, "tables") else result)
+        except (ImportError, ModuleNotFoundError):
+            # The optional LanceDB reader is absent from the production
+            # runtime; there is nothing to migrate and no user action required.
+            logger.debug("LanceDB legacy reader is unavailable; skipping migration")
+            return None
         except Exception:
             logger.exception("Could not list LanceDB tables")
             return None
@@ -119,6 +130,12 @@ class VersionedVectorStore:
             return
         try:
             rows = self.db.open_table(self.legacy_table_name).to_lance().to_pylist()
+        except (ImportError, ModuleNotFoundError):
+            # to_lance() needs the optional `pylance` package. The production
+            # runtime never ships it, so a quiet skip avoids startup noise while
+            # leaving canonical memory untouched.
+            logger.debug("Legacy LanceDB migration skipped: pylance is unavailable")
+            return
         except Exception:
             logger.exception("Legacy LanceDB memory scan failed")
             return
@@ -222,6 +239,15 @@ class VersionedVectorStore:
             sanitizer_status=sanitizer_status,
             sanitizer_flags=sanitizer_flags,
         )
+        if self.runtime.backend == "unavailable":
+            self.catalog.mark_embedding(
+                id,
+                self.runtime.model_version,
+                self._vector_table_marker(),
+                self.runtime.dimensions,
+                error="semantic embedding model is unavailable",
+            )
+            return
         try:
             actual_vector = vector if vector is not None else self.embed_documents([text])[0]
             self._index_add(id, text, np.asarray(actual_vector, dtype=np.float32))
@@ -278,13 +304,26 @@ class VersionedVectorStore:
                 break
         return results
 
-    def delete(self, id: str) -> None:
+    def delete(self, id: str) -> bool:
         if self._sqlite_index is not None:
             try:
                 self._sqlite_index.delete(id)
             except Exception:
                 logger.exception("sqlite-vec deletion failed for %s", id)
-        self.catalog.delete(id)
+        return self.catalog.delete(id)
+
+    def delete_fact_lineage(self, fact_key: str) -> list[str]:
+        memory_ids = self.catalog.delete_fact_lineage(fact_key)
+        if self._sqlite_index is not None:
+            for memory_id in memory_ids:
+                try:
+                    self._sqlite_index.delete(memory_id)
+                except Exception:
+                    logger.exception(
+                        "sqlite-vec lineage deletion failed for %s",
+                        memory_id,
+                    )
+        return memory_ids
 
     def delete_by_layer(self, layer: str) -> None:
         ids = [str(row["id"]) for row in self.catalog.list_by_layer(layer)]
@@ -342,6 +381,7 @@ class VersionedVectorStore:
 
     def migration_status(self) -> dict:
         indexed, pending = self.catalog.embedding_counts(self.runtime.model_version)
+        semantic_available = self.runtime.backend != "unavailable"
         return {
             "requested_model": self.model_name,
             "model_version": self.runtime.model_version,
@@ -353,10 +393,27 @@ class VersionedVectorStore:
             "partition_strategy": "utc_quarter" if self.vector_partitioning else "none",
             "indexed": indexed,
             "pending": pending,
-            "state": "organizing" if pending else "ready",
+            "semantic_available": semantic_available,
+            "diagnostic": (
+                ""
+                if semantic_available
+                else "语义模型未安装，当前仅使用有界词法检索。"
+            ),
+            "state": (
+                "lexical_only"
+                if not semantic_available
+                else ("organizing" if pending else "ready")
+            ),
         }
 
     def reembed_batch(self, limit: int = 24) -> dict:
+        if self.runtime.backend == "unavailable":
+            return {
+                **self.migration_status(),
+                "processed": 0,
+                "failed": 0,
+                "reason": "embedding_unavailable",
+            }
         rows = self.catalog.pending_for_version(self.runtime.model_version, limit)
         if not rows:
             return {**self.migration_status(), "processed": 0, "failed": 0}

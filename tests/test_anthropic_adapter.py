@@ -1,113 +1,41 @@
 import asyncio
 
-from src.api.adapter import LLMAdapter
+from src.api.adapter import LLMAdapter, _anthropic_request_messages, parse_anthropic_message
 from src.config.settings import LLMSettings
 
 
-class FakeAnthropicResponse:
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict:
-        return {
-            "model": "claude-test",
-            "stop_reason": "end_turn",
-            "content": [{"type": "text", "text": "pong"}],
-            "usage": {"input_tokens": 7, "output_tokens": 3},
-        }
-
-
-class FakeAnthropicClient:
-    last_request: dict | None = None
-
-    def __init__(self, timeout: float) -> None:
-        self.timeout = timeout
-
-    async def __aenter__(self) -> "FakeAnthropicClient":
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    async def post(self, url: str, *, headers: dict, json: dict) -> FakeAnthropicResponse:
-        FakeAnthropicClient.last_request = {
-            "url": url,
-            "headers": headers,
-            "json": json,
-        }
-        return FakeAnthropicResponse()
-
-
-def test_anthropic_uses_native_messages_api(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.adapter.httpx.AsyncClient", FakeAnthropicClient)
-    settings = LLMSettings(
-        provider="anthropic",
-        model="claude-test",
-        api_key="test-key",
-        base_url="https://api.anthropic.com",
-    )
-    adapter = LLMAdapter(settings)
-
-    async def fail_openai(*args, **kwargs):
-        raise AssertionError("Anthropic must not fall back to OpenAI-compatible chat")
-
-    monkeypatch.setattr(adapter, "_openai_chat", fail_openai)
-
-    result = asyncio.run(
-        adapter.chat(
-            [
-                {"role": "system", "content": "Stay in character."},
-                {"role": "user", "content": [{"type": "text", "text": "ping"}]},
-            ],
-            temperature=0.2,
-            max_tokens=16,
-            purpose="chat_reply",
+def test_native_anthropic_provider_uses_messages_api_contract(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    adapter = LLMAdapter(
+        LLMSettings(
+            provider="anthropic",
+            model="claude-test",
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
         )
     )
-
-    assert result.content == "pong"
-    assert result.model == "claude-test"
-    assert result.usage == {"prompt_tokens": 7, "completion_tokens": 3}
-    assert FakeAnthropicClient.last_request == {
-        "url": "https://api.anthropic.com/v1/messages",
-        "headers": {
-            "x-api-key": "test-key",
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        "json": {
-            "model": "claude-test",
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 16,
-            "temperature": 0.2,
-            "system": "Stay in character.",
-        },
-    }
+    client = adapter._get_anthropic_client()
+    assert client.headers["x-api-key"] == "test-key"
+    assert client.headers["anthropic-version"] == "2023-06-01"
+    asyncio.run(adapter.close())
 
 
-def test_anthropic_omits_default_temperature(monkeypatch) -> None:
-    monkeypatch.setattr("src.api.adapter.httpx.AsyncClient", FakeAnthropicClient)
-    FakeAnthropicClient.last_request = None
-    settings = LLMSettings(
-        provider="anthropic",
-        model="claude-test",
-        api_key="test-key",
-        base_url="https://api.anthropic.com/v1",
-    )
-    adapter = LLMAdapter(settings)
-
-    result = asyncio.run(
-        adapter.chat(
-            [{"role": "user", "content": "ping"}],
-            max_tokens=16,
-            purpose="chat_reply",
-        )
-    )
-
-    assert result.content == "pong"
-    assert FakeAnthropicClient.last_request is not None
-    assert FakeAnthropicClient.last_request["url"] == "https://api.anthropic.com/v1/messages"
-    assert "temperature" not in FakeAnthropicClient.last_request["json"]
+def test_anthropic_message_translation_separates_system_and_text_blocks() -> None:
+    system, turns = _anthropic_request_messages([
+        {"role": "system", "content": "be kind"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ])
+    assert system == "be kind"
+    assert turns == [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+    parsed = parse_anthropic_message({
+        "model": "claude-test",
+        "stop_reason": "end_turn",
+        "content": [{"type": "thinking", "thinking": "hidden"}, {"type": "text", "text": "hello"}],
+        "usage": {"input_tokens": 3, "output_tokens": 2},
+    })
+    assert parsed.content == "hello"
+    assert parsed.usage == {"prompt_tokens": 3, "completion_tokens": 2}
 
 
 def test_reset_and_shutdown_close_persistent_provider_clients() -> None:

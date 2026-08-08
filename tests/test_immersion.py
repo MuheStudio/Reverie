@@ -138,3 +138,37 @@ def test_closeups_and_smart_home_are_opt_in_dry_runs() -> None:
     command = enabled.smart_home_command(provider="xiaomi", device="灯", action="打开")
     assert command["ok"] is True
     assert command["dry_run"] is True
+
+
+def test_smart_home_vendor_adapter_only_activates_with_credentials() -> None:
+    class FakeAdapter:
+        def execute(self, *, device: str, action: str) -> dict:
+            return {"applied": True, "device": device, "action": action}
+
+    configured = ImmersionManager(
+        FeatureSettings(immersion_smart_home_enabled=True),
+        vendor_adapter_factory=lambda provider: FakeAdapter() if provider == "xiaomi" else None,
+    )
+    controlled = configured.smart_home_command(provider="xiaomi", device="灯", action="打开")
+    assert controlled["ok"] is True
+    assert controlled["dry_run"] is False
+    assert controlled["controller"] == "xiaomi"
+    assert controlled["result"]["applied"] is True
+
+    # Vendor without injected credentials stays a dry run.
+    no_credentials = ImmersionManager(
+        FeatureSettings(immersion_smart_home_enabled=True),
+        vendor_adapter_factory=lambda provider: None,
+    )
+    still_dry = no_credentials.smart_home_command(provider="huawei", device="空调", action="26 度")
+    assert still_dry["ok"] is True
+    assert still_dry["dry_run"] is True
+
+    # A raising factory must never fall through to a real device call.
+    raising = ImmersionManager(
+        FeatureSettings(immersion_smart_home_enabled=True),
+        vendor_adapter_factory=lambda provider: (_ for _ in ()).throw(RuntimeError("no creds")),
+    )
+    safe = raising.smart_home_command(provider="xiaomi", device="灯", action="打开")
+    assert safe["ok"] is True
+    assert safe["dry_run"] is True

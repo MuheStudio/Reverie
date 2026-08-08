@@ -18,18 +18,8 @@ export interface PersistedConfig {
 }
 
 const LLM_PROVIDERS = new Set<LLMProvider>([
-  'openai',
-  'custom',
-  'anthropic',
-  'gemini',
-  'grok',
-  'deepseek',
-  'kimi',
-  'z.ai',
-  'ollama',
-  'llama.cpp',
-  'minimax',
-  'openrouter',
+  'openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm',
+  'ollama', 'custom',
 ]);
 const IMAGE_PROVIDERS = new Set<ImageGenProvider>(['openai', 'gemini']);
 

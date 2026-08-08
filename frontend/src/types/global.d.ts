@@ -1,17 +1,39 @@
 declare global {
   const __ENV__: string;
 
-  type AvatarKind = 'vrm' | 'glb' | 'live2d';
-  type AvatarRecordStatus = 'ready' | 'importing' | 'invalid' | 'missing' | 'error';
+  interface AvatarRecord {
+    id: string;
+    name: string;
+    kind: 'live2d' | 'vrm' | 'glb';
+    entryUrl: string;
+    status: 'ready' | 'invalid' | 'missing' | 'error';
+    detected?: {
+      expressions: string[];
+      animationClips: string[];
+    };
+    mapping?: {
+      expressions: Record<string, string>;
+      actions: Record<string, string>;
+    };
+    capabilities?: {
+      expressionPlayback?: boolean;
+      embeddedAnimationPlayback?: boolean;
+      vrmaImport?: boolean;
+      vrmaPlayback?: boolean;
+      [key: string]: boolean | undefined;
+    };
+    motions?: Array<{
+      id: string;
+      name: string;
+      url: string;
+      playbackSupported?: boolean;
+    }>;
+  }
 
-  interface AvatarCapabilities {
-    renderReady: boolean;
-    expressionMapping: boolean;
-    actionMapping: boolean;
-    expressionPlayback: boolean;
-    embeddedAnimationPlayback: boolean;
-    vrmaImport: boolean;
-    vrmaPlayback: boolean;
+  interface AvatarListResult {
+    records: AvatarRecord[];
+    activeId: string | null;
+    runtime?: AvatarRuntime;
   }
 
   interface AvatarDetected {
@@ -19,87 +41,38 @@ declare global {
     expressions: string[];
   }
 
-  interface AvatarMapping {
-    expressions: Record<string, string>;
-    actions: Record<string, string>;
-  }
-
-  interface AvatarMotionRecord {
-    id: string;
-    name: string;
-    url: string;
-    size: number;
-    importedAtUtc: string;
-    playbackSupported: boolean;
-  }
-
-  interface AvatarRecord {
-    id: string;
-    name: string;
-    kind: AvatarKind;
-    entryUrl: string;
-    thumbnailUrl?: string;
-    status: AvatarRecordStatus;
-    warnings: string[];
-    stats?: Record<string, unknown>;
-    detected?: AvatarDetected;
-    capabilities?: AvatarCapabilities;
-    mapping?: AvatarMapping;
-    motions?: AvatarMotionRecord[];
-  }
-
-  interface AvatarListResult {
-    records: AvatarRecord[];
-    activeId: string | null;
-    runtime?: {
-      live2d?: {
-        available: boolean;
-        licenseAccepted: boolean;
-        developmentOnly?: boolean;
-        reason?: string;
-      };
-    };
-  }
-
   interface AvatarImportCandidate {
     importId: string;
     name: string;
-    kind: AvatarKind;
-    warnings: string[];
-    stats?: Record<string, unknown>;
-    detected: AvatarDetected;
-    summary?: {
-      files?: number;
-      bytes?: number;
-      triangles?: number;
-      estimatedVramBytes?: number;
-    };
-    preview: {
+    kind: 'live2d' | 'vrm' | 'glb';
+    preview?: {
       url: string;
-      format: AvatarKind;
-      expiresAtUtc: string;
-      capabilities: AvatarCapabilities;
+      format: string;
+      capabilities?: AvatarDetected;
     };
-    requiresRightsConfirmation: boolean;
-    requiresWarningAcceptance: boolean;
   }
-
-  interface AvatarImportConfirmation {
-    rightsConfirmed: boolean;
-    warningsAccepted: boolean;
-  }
-
-  type FocusPhase = 'idle' | 'starting' | 'running' | 'paused' | 'completed' | 'stopped';
 
   interface FocusState {
-    phase: FocusPhase;
-    id: string | null;
-    durationSeconds: number;
-    remainingSeconds: number;
-    startedAtUtc: string | null;
-    endsAtUtc: string | null;
-    pausedAtUtc: string | null;
-    requiresAudioRearm?: boolean;
+    running: boolean;
+    startedAt?: string;
+    endsAt?: string;
+    [key: string]: unknown;
+  }
+
+  interface FocusSoundRecord {
+    id: string;
+    name: string;
+    url: string;
+    [key: string]: unknown;
+  }
+
+  interface AvatarRuntime {
+    live2d?: {
+      available: boolean;
+      licenseAccepted: boolean;
+      developmentOnly?: boolean;
+      reason?: string;
+    };
   }
 
   interface BridgeConnectionConfig {
@@ -107,7 +80,7 @@ declare global {
     url: string;
     secret: string;
     origin?: string;
-    protocolVersion: 2;
+    protocolVersion: 4;
     generation?: number;
     clientId?: string;
     personaId?: string;
@@ -127,13 +100,6 @@ declare global {
     transitioning?: boolean;
   }
 
-  interface CredentialScopeStatus {
-    hasApiKey: boolean;
-    hasCustomHeaders: boolean;
-    sessionOnly?: boolean;
-    bindingKnown?: boolean;
-  }
-
   interface CredentialStatus {
     available: boolean;
     persistentAvailable?: boolean;
@@ -144,60 +110,41 @@ declare global {
       message: string;
     };
     sessionWarning?: string;
-    llm: CredentialScopeStatus;
-    imageGen: CredentialScopeStatus;
+    llm: {
+      hasApiKey: boolean;
+      hasCustomHeaders: boolean;
+      sessionOnly?: boolean;
+      bindingKnown?: boolean;
+    };
     stored?: boolean;
     runtimeApplied?: boolean;
     runtimePending?: boolean;
-    runtimeAppliedScopes?: {
-      llm: boolean;
-      imageGen: boolean;
-    };
-    bindingMismatch?: {
-      llm: boolean;
-      imageGen: boolean;
+    runtimeAppliedScopes?: { llm: boolean };
+    bindingMismatch?: { llm: boolean };
+  }
+
+  interface PublicProviderConfig {
+    llm: {
+      provider: 'openai' | 'anthropic' | 'gemini' | 'grok' | 'deepseek' | 'kimi' | 'glm'
+        | 'ollama' | 'custom';
+      baseUrl: string;
+      model: string;
+      customProviderName?: string;
     };
   }
 
-  interface NativeBackupResult {
-    ok: boolean;
-    canceled: boolean;
-    operation?: 'export' | 'import';
-    fileName?: string;
-    result?: Record<string, number>;
+  interface ProviderCredential {
+    apiKey?: string;
+    customHeaders?: string;
   }
 
   interface Window {
     electronAPI?: {
       platform?: string;
-      onAppLifecycle?: (callback: (event: { state: string; at: string }) => void) => () => void;
-      showNotification?: (title: string, body: string) => Promise<{ shown: boolean }>;
-      getNotificationStatus?: () => Promise<{
-        supported: boolean;
-        platform: string;
-        permission: 'managed_by_windows' | 'runtime';
-        appUserModelId: string;
-        installedIdentity: boolean;
-      }>;
-      openLocationSettings?: () => Promise<{ opened: boolean }>;
-      getCurrentWindowsLocation?: () => Promise<
-        | {
-            ok: true;
-            code: 'REVERIE_LOCATION_OK';
-            status: string;
-            latitude: number;
-            longitude: number;
-            accuracy: number;
-            timestamp: string;
-            source: 'windows-winrt';
-          }
-        | {
-            ok: false;
-            code: string;
-            status: string;
-            source: 'windows-winrt';
-          }
-      >;
+      getAppVersion?: () => Promise<string>;
+      onAppLifecycle?: (
+        callback: (event: { state: string; at: string }) => void,
+      ) => () => void;
       bridge?: {
         getConnectionConfig: () => Promise<BridgeConnectionConfig>;
         send: (frame: {
@@ -206,42 +153,9 @@ declare global {
           request_id?: string;
         }) => Promise<{ accepted: boolean }>;
         onMessage: (callback: (frame: unknown) => void) => () => void;
-        onChanged: (callback: (state: { ready: boolean; generation?: number }) => void) => () => void;
-      };
-      stickers?: {
-        importFile: (value?: {
-          text?: string;
-          emotions?: string[];
-          styleTags?: string[];
-        }) => Promise<{
-          canceled: boolean;
-          fileName?: string;
-          item: {
-            id: string;
-            text: string;
-            emotions: string[];
-            image_data_url?: string;
-            image_path?: string;
-            style_tags?: string[];
-          } | null;
-          items: unknown[];
-        }>;
-      };
-      companionPreferences?: {
-        get: () => Promise<{
-          sound: string;
-          volume: number;
-          autoStart: boolean;
-        }>;
-        set: (value: {
-          sound: string;
-          volume: number;
-          autoStart: boolean;
-        }) => Promise<{
-          sound: string;
-          volume: number;
-          autoStart: boolean;
-        }>;
+        onChanged: (
+          callback: (state: { ready: boolean; generation?: number }) => void,
+        ) => () => void;
       };
       localMode?: {
         get: () => Promise<LocalModeState>;
@@ -250,184 +164,86 @@ declare global {
       };
       credentials?: {
         status: () => Promise<CredentialStatus>;
-        set: (
-          scope: 'llm' | 'imageGen',
-          value: { apiKey?: string; customHeaders?: string },
-        ) => Promise<CredentialStatus>;
-        setSession: (
-          scope: 'llm' | 'imageGen',
-          value: { apiKey?: string; customHeaders?: string },
-        ) => Promise<CredentialStatus>;
-        clear: (scope: 'llm' | 'imageGen') => Promise<CredentialStatus>;
+        clear: () => Promise<CredentialStatus>;
         onChanged: (callback: (status: CredentialStatus) => void) => () => void;
+        // Legacy DreamRoom surface kept for type compatibility.
+        set?: (scope: string, value: Record<string, unknown>) => Promise<CredentialStatus>;
+        setSession?: (scope: string, value: Record<string, unknown>) => Promise<CredentialStatus>;
       };
       providerConfig?: {
-        get: () => Promise<{
-          llm: {
-            provider: string;
-            baseUrl: string;
-            model: string;
-            customProviderName?: string;
-          };
-          imageGen?: {
-            provider: string;
-            baseUrl: string;
-            model: string;
-          };
-        } | null>;
-        set: (value: {
-          llm: {
-            provider: string;
-            baseUrl: string;
-            model: string;
-            customProviderName?: string;
-          };
-          imageGen?: {
-            provider: string;
-            baseUrl: string;
-            model: string;
-          };
-        }) => Promise<unknown>;
+        get: () => Promise<PublicProviderConfig | null>;
         test: (
-          value: {
-            llm: {
-              provider: string;
-              baseUrl: string;
-              model: string;
-              customProviderName?: string;
-            };
-          },
-          credential?: { apiKey?: string; customHeaders?: string },
+          value: PublicProviderConfig,
+          credential?: ProviderCredential,
         ) => Promise<
           | {
               ok: true;
               receipt: string;
-              expiresAt: string;
-              provider: string;
-              model: string;
               latencyMs: number;
+              finishReason: string;
+              model?: string;
             }
           | {
               ok: false;
               code: string;
               message: string;
-              retryable: boolean;
             }
         >;
         commit: (
-          value: {
-            llm: {
-              provider: string;
-              baseUrl: string;
-              model: string;
-              customProviderName?: string;
-            };
-            imageGen?: {
-              provider: string;
-              baseUrl: string;
-              model: string;
-            };
-          },
-          credential?: { apiKey?: string; customHeaders?: string },
-          mode?: 'persistent' | 'session',
-          testReceipt?: string,
+          value: PublicProviderConfig,
+          credential: ProviderCredential | undefined,
+          mode: 'persistent' | 'session',
+          testReceipt: string,
         ) => Promise<{
-          config: {
-            llm: {
-              provider: string;
-              baseUrl: string;
-              model: string;
-              customProviderName?: string;
-            };
-          };
+          config: PublicProviderConfig;
           status: CredentialStatus;
         }>;
+        // Legacy DreamRoom surface kept for type compatibility.
+        set?: (value: Record<string, unknown>) => Promise<unknown>;
       };
-      backup?: {
-        export: () => Promise<NativeBackupResult>;
-        import: () => Promise<NativeBackupResult>;
-        onProgress: (
-          callback: (progress: {
-            operation: 'export' | 'import';
-            phase: 'started' | 'completed' | 'failed';
-            result?: Record<string, number>;
-          }) => void,
-        ) => () => void;
+      character?: {
+        get: () => Promise<{
+          record: AvatarRecord | null;
+          runtime?: AvatarRuntime;
+        }>;
+      };
+      // DreamRoom / legacy surface (kept for the switchable her-room view)
+      showNotification?: (title: string, body: string) => Promise<boolean>;
+      getNotificationStatus?: () => Promise<{ supported: boolean; enabled: boolean }>;
+      stickers?: {
+        list: () => Promise<{ items: unknown[] }>;
+        collect: (value: Record<string, unknown>) => Promise<{ ok: boolean }>;
       };
       files?: {
-        saveJson: (
-          suggestedName: string,
-          payload: unknown,
-        ) => Promise<{ ok: boolean; canceled: boolean; fileName?: string }>;
+        selectAudio?: () => Promise<{ name: string; dataUrl: string } | null>;
+        selectVideo?: () => Promise<{ name: string; dataUrl: string } | null>;
       };
-      avatar?: {
-        list: () => Promise<AvatarListResult | AvatarRecord[]>;
-        beginImport: () => Promise<AvatarImportCandidate | null>;
-        beginImportFolder: () => Promise<AvatarImportCandidate | null>;
-        confirmPreview: (
-          importId: string,
-          report: {
-            detected: AvatarDetected;
-            capabilities: {
-              expressionPlayback: boolean;
-              embeddedAnimationPlayback: boolean;
-            };
-          },
-        ) => Promise<{
-          importId: string;
-          ready: boolean;
-          previewReadyAtUtc: string;
-          detected: AvatarDetected;
-          capabilities: AvatarCapabilities;
-        }>;
-        discardImport: (importId: string) => Promise<{ discarded: boolean }>;
-        failPreview: (importId: string) => Promise<{ discarded: boolean }>;
-        commitImport: (
-          importId: string,
-          confirmation: AvatarImportConfirmation,
-        ) => Promise<AvatarRecord>;
-        remove: (id: string) => Promise<{ removed: boolean }>;
-        setActive: (id: string | null) => Promise<{ activeId: string | null }>;
-        addMotion: (id: string) => Promise<AvatarMotionRecord | null>;
-        removeMotion: (id: string, motionId: string) => Promise<{ removed: boolean; motionId: string }>;
-        setMapping: (
-          id: string,
-          category: 'expression' | 'action',
-          key: string,
-          target: string | null,
-        ) => Promise<{ id: string; mapping: AvatarMapping }>;
-        onChanged: (callback: (result: AvatarListResult | AvatarRecord[]) => void) => () => void;
+      backup?: {
+        export: () => Promise<{ ok: boolean }>;
+        import: () => Promise<{ ok: boolean }>;
       };
       focus?: {
-        getState: () => Promise<FocusState>;
-        start: (durationSeconds: number) => Promise<FocusState>;
-        pause: (id: string) => Promise<FocusState>;
-        resume: (id: string) => Promise<FocusState>;
-        stop: (id: string) => Promise<FocusState>;
-        acknowledgeAudioRearm: (id: string) => Promise<FocusState>;
-        onChanged: (callback: (state: FocusState) => void) => () => void;
-        showNotification: (title: string, body: string) => Promise<{ shown: boolean }>;
+        get: () => Promise<unknown>;
+        set: (value: unknown) => Promise<unknown>;
       };
       focusSound?: {
-        list: () => Promise<{ available: boolean; records: FocusSoundRecord[] }>;
-        import: () => Promise<FocusSoundRecord | null>;
-        open: (id: string) => Promise<FocusSoundRecord>;
-        remove: (id: string) => Promise<{ removed: boolean }>;
-        onChanged: (
-          callback: (result: { available: boolean; records: FocusSoundRecord[] }) => void,
-        ) => () => void;
+        list: () => Promise<{ items: unknown[] }>;
+        add: (value: unknown) => Promise<{ ok: boolean }>;
       };
+      avatar?: {
+        list: () => Promise<{ records: unknown[]; activeId: string | null }>;
+      };
+      companionPreferences?: {
+        get: () => Promise<unknown>;
+        set: (value: unknown) => Promise<unknown>;
+      };
+      getCurrentWindowsLocation?: () => Promise<{
+        latitude: number;
+        longitude: number;
+        accuracy?: number;
+      } | null>;
+      openLocationSettings?: () => Promise<void>;
     };
-  }
-
-  interface FocusSoundRecord {
-    id: string;
-    name: string;
-    url: string;
-    format: 'aac' | 'flac' | 'm4a' | 'mp3' | 'ogg' | 'wav';
-    mimeType: string;
-    size: number;
-    importedAtUtc: string;
   }
 }
 

@@ -89,6 +89,9 @@ class ChatSession:
         ambient_presence: "AmbientPresence | None" = None,
         thought_engine: "ThoughtOfYouEngine | None" = None,
         social_universe: "SocialUniverse | None" = None,
+        hypa_compressor: "Any | None" = None,
+        hypa_max_context_tokens: int = 2000,
+        hypa_compress_cooldown_seconds: int = 300,
     ) -> None:
         self.persona = persona
         self.adapter = adapter
@@ -108,6 +111,13 @@ class ChatSession:
         self.ambient_presence = ambient_presence
         self.thought_engine = thought_engine
         self.social_universe = social_universe
+        # Optional HypaMemory V3 long-context compression (Risuai GPL port).
+        # Consumes API through the adapter's memory_summary consent purpose, so
+        # it is only ever active when the owner enables hypa_compression_enabled.
+        self.hypa_compressor = hypa_compressor
+        self._hypa_max_context_tokens = int(hypa_max_context_tokens or 2000)
+        self._hypa_cooldown = float(hypa_compress_cooldown_seconds or 0.0)
+        self._hypa_last_compress = 0.0
         if speech_habit_engine is None:
             from ..persona.speech_habits import SpeechHabitEngine
 
@@ -122,14 +132,27 @@ class ChatSession:
         self._last_safe_emotions = dict(getattr(persona, "emotions", {}) or {})
         self._last_safe_intimacy = int(getattr(relationship, "intimacy", 0) or 0)
 
-        # Conversation history (in-memory for this session)
+        # Conversation history (in-memory for this session). History is keyed
+        # by conversation_id so concurrent conversations never leak context
+        # into each other's model prompt. self._history is the default scope.
         self._history: list[dict] = []
+        self._histories: dict[str, list[dict]] = {}
         self._committed_request_ids: set[str] = set()
 
         # Session start time
         self.started_at = time.time()
 
     # ── Public API ────────────────────────────────────────
+
+    def _history_for(self, conversation_id: str) -> list[dict]:
+        """Return the in-memory history list scoped to one conversation."""
+        if not conversation_id:
+            return self._history
+        history = self._histories.get(conversation_id)
+        if history is None:
+            history = []
+            self._histories[conversation_id] = history
+        return history
 
     async def send_message(
         self,
@@ -138,6 +161,7 @@ class ChatSession:
         status_delay_applied: bool = False,
         defer_side_effects: bool = False,
         request_id: str = "",
+        conversation_id: str = "",
     ) -> dict:
         """Process a user message and return the assistant's reply.
 
@@ -237,22 +261,33 @@ class ChatSession:
                     emotions=current_emotions,
                     defer_side_effects=defer_side_effects,
                     request_id=request_id,
+                    conversation_id=conversation_id,
                 )
 
         if guard.identity_probe_detected and not guard.injection_detected:
-            raw_reply = choose_avoidance_reply(
-                emotions=current_emotions,
-                intimacy=intimacy,
-                persona_name=getattr(self.persona, "name", "星野幻月"),
-            )
+            persona_name = getattr(self.persona, "name", "星野幻月")
+            # Natural, emotion/relationship-aware reaction first, then an honest
+            # one-line disclosure. The avoidance strategy pool keeps the same
+            # question from producing a mechanical identical reply.
             try:
-                raw_reply = self.scheduler.shape_reply_length(
-                    raw_reply,
-                    allow_long=False,
-                    allow_environment_description=False,
+                natural_reaction = choose_avoidance_reply(
+                    emotions=current_emotions,
+                    intimacy=intimacy,
+                    persona_name=persona_name,
+                ).strip()
+                raw_reply = (
+                    f"{natural_reaction}\n"
+                    f"不过说真的，我是由 AI 驱动的虚拟陪伴角色{persona_name}，"
+                    "不是真人。我会尽量保持她的表达和记忆连续，但也可能犯错。"
                 )
             except Exception:
-                logger.exception("Identity-probe reply shaping failed")
+                logger.exception("Identity-avoidance strategy pick failed")
+                raw_reply = (
+                    f"我是由 AI 驱动、而不是真人的虚拟陪伴角色{persona_name}。"
+                    "我会尽量保持她的表达和记忆连续，但也可能犯错。"
+                )
+            # Identity disclosure is a safety-critical statement: the reply
+            # length distribution must never truncate "not a real person".
             try:
                 raw_reply = self.speech_habits.apply(
                     raw_reply,
@@ -262,18 +297,14 @@ class ChatSession:
             except Exception:
                 logger.exception("Identity-probe speech habits failed")
             raw_reply = self._safe_addressing(raw_reply)
-            final_filtered = filter_output_detail(raw_reply)
-            if final_filtered.action == "rewrite":
-                raw_reply = final_filtered.text
-            elif final_filtered.action == "retry":
-                raw_reply = choose_avoidance_reply(
-                    emotions=current_emotions,
-                    intimacy=intimacy,
-                    persona_name=getattr(self.persona, "name", "星野幻月"),
-                )
+            # Strip director's notes ("（停顿）", "（沉默几秒）") that exist only
+            # to steer delivery timing; the pause itself is realised by the
+            # extra delay above, not by visible stage directions.
+            raw_reply = raw_reply.replace("（停顿）", "").replace("（沉默几秒）", "")
             if not defer_side_effects:
-                self._history.append({"role": "user", "content": user_message})
-                self._history.append({"role": "assistant", "content": raw_reply})
+                history = self._history_for(conversation_id)
+                history.append({"role": "user", "content": user_message})
+                history.append({"role": "assistant", "content": raw_reply})
             emotion_changes = {} if defer_side_effects else self._apply_guard_emotion(guard)
             if (
                 emotion_changes
@@ -292,6 +323,10 @@ class ChatSession:
                     emotions=current_emotions,
                     status_delay_applied=status_delay_applied,
                 )
+                # Silent+diversion strategy: a short "read but not yet replied"
+                # beat before the message appears, like a real person who pauses.
+                if "（停顿" in raw_reply or "…（沉默" in raw_reply:
+                    delay += 3.0
                 typing_dur = self.scheduler.typing_duration(len(raw_reply))
                 clean_messages_to_show = self.scheduler.split_message(raw_reply)
             except Exception:
@@ -332,6 +367,7 @@ class ChatSession:
                 cross_character_event_id="",
                 emotions=current_emotions,
                 emotion_intensity=emotion_intensity,
+                conversation_id=conversation_id,
             )
 
         # ── Step 4: Build system prompt ───────────────────
@@ -415,7 +451,15 @@ class ChatSession:
             system_prompt = self._minimal_system_prompt(current_time, current_emotions, intimacy)
 
         # ── Step 5: LLM call ──────────────────────────────
-        conversation_tail = list(self._history[-20:])
+        conversation_tail = list(self._history_for(conversation_id)[-20:])
+
+        # Optional HypaMemory V3 long-context summary enrichment.
+        hypa_summary_block = ""
+        if self.hypa_compressor is not None:
+            try:
+                hypa_summary_block = await self._hypa_context(user_message, conversation_tail)
+            except Exception:
+                logger.exception("HypaV3 context enrichment failed; continuing without it")
 
         raw_reply = ""
         attempt = 0
@@ -426,12 +470,30 @@ class ChatSession:
         retry_prompt = ""
         degraded_provider_failure = False
 
+        # When the user's message looks like an injection attempt or an
+        # out-of-character probe, the LLM gets an emotion/relationship-aware
+        # avoidance hint so it replies in persona instead of a rigid script.
+        avoidance_hint = ""
+        if guard.guarded and not (guard.identity_probe_detected and not guard.injection_detected):
+            try:
+                from .anti_ai import choose_identity_avoidance_reply
+
+                avoidance_hint = "\n" + choose_identity_avoidance_reply(
+                    emotions=current_emotions,
+                    intimacy=intimacy,
+                    persona_name=getattr(self.persona, "name", "星野幻月"),
+                )
+            except Exception:
+                logger.exception("Avoidance hint failed; continuing without it")
+
         while attempt <= max_retries:
             messages = [
                 {"role": "system", "content": f"{system_prompt}\n\n{retry_prompt}".strip()},
             ]
+            if hypa_summary_block:
+                messages.append({"role": "system", "content": hypa_summary_block})
             messages.extend(conversation_tail)
-            messages.append({"role": "user", "content": guard.llm_text})
+            messages.append({"role": "user", "content": f"{guard.llm_text}{avoidance_hint}"})
             try:
                 response = await asyncio.wait_for(
                     self.adapter.chat(messages, purpose="chat_reply", background=False),
@@ -539,71 +601,18 @@ class ChatSession:
             *final_continuity.violations,
         ]))
 
-        # Every normally generated reply receives an independent semantic pass
-        # over atomic facts. The verifier is deliberately fail-closed for
-        # identity/history claims if its own provider call is unavailable.
-        semantic_status = "not_run"
-        semantic_reasons: list[str] = []
+        # Deterministic local guards are the normal safety boundary. A second
+        # model call would add cost and latency while remaining vulnerable to
+        # the same prompt/data poisoning as the first model.
+        semantic_status = "local_deterministic"
+        semantic_reasons: list[str] = list(continuity_violations)
         semantic_claims: list[str] = []
-        try:
-            from .semantic_verifier import build_fact_registry, verify_reply_semantics
-
-            facts = build_fact_registry(
-                persona=self.persona,
-                now=current_time,
-                intimacy=intimacy,
-                emotions=current_emotions,
-                memories=memories,
-                relationship=self.relationship,
-                user_manager=self.user_manager,
-                social_circle=self.social,
-                interest_tracker=self.interest,
-                affair_manager=self.affairs,
-                history=self._history,
-            )
-            semantic = await verify_reply_semantics(
-                raw_reply,
-                user_message=user_message,
-                adapter=self.adapter,
-                facts=facts,
-            )
-            raw_reply = semantic.text
-            semantic_status = semantic.status
-            semantic_reasons = list(semantic.reasons)
-            semantic_claims = list(semantic.claims)
-        except Exception:
-            logger.exception("Semantic continuity gate failed unexpectedly")
-            semantic_status = "gate_error"
-            raw_reply = "等一下，我先不把还没确认的事情说死。"
-
-        semantic_filter = filter_output_detail(raw_reply)
-        if semantic_filter.action == "rewrite":
-            raw_reply = semantic_filter.text
-        elif semantic_filter.action == "retry":
-            raw_reply = choose_avoidance_reply(
-                emotions=current_emotions,
-                intimacy=intimacy,
-                persona_name=getattr(self.persona, "name", "星野幻月"),
-            )
-        semantic_continuity = enforce_continuity(
-            raw_reply,
-            persona=self.persona,
-            now=current_time,
-            intimacy=intimacy,
-            emotions=current_emotions,
-            affairs_context=affairs_context,
-        )
-        raw_reply = semantic_continuity.text
-        continuity_guarded = continuity_guarded or not semantic_continuity.allowed
-        continuity_violations = list(dict.fromkeys([
-            *continuity_violations,
-            *semantic_continuity.violations,
-        ]))
 
         # ── Step 7: Store in history ──────────────────────
         if not defer_side_effects:
-            self._history.append({"role": "user", "content": user_message})
-            self._history.append({"role": "assistant", "content": raw_reply})
+            history = self._history_for(conversation_id)
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": raw_reply})
 
         # ── Step 8: Emotion update ────────────────────────
         emotion_enabled = (
@@ -660,10 +669,19 @@ class ChatSession:
                 elif memory_directive.startswith("long_term::"):
                     directive_text = memory_directive.removeprefix("long_term::").strip()
                 if directive_text:
-                    self.memory.store_fact(
-                        f"User asked me to remember: {directive_text}",
-                        layer=directive_layer,
-                    )
+                    if hasattr(self.memory, "confirm_explicit_statement"):
+                        self.memory.confirm_explicit_statement(
+                            directive_text,
+                            source_uri=(
+                                f"reverie-chat://request/{request_id}"
+                                if request_id else ""
+                            ),
+                        )
+                    else:
+                        self.memory.store_fact(
+                            f"User asked me to remember: {directive_text}",
+                            layer=directive_layer,
+                        )
             except Exception:
                 logger.exception("Explicit memory storage failed; reply remains available")
         elif guard.memory_safe:
@@ -673,6 +691,10 @@ class ChatSession:
                     raw_reply,
                     emotion_intensity=memory_importance,
                     emotions=memory_emotions,
+                    source_uri=(
+                        f"reverie-chat://request/{request_id}"
+                        if request_id else ""
+                    ),
                 )
             except Exception:
                 logger.exception("Interaction memory storage failed; reply remains available")
@@ -796,6 +818,7 @@ class ChatSession:
             cross_character_event_id=cross_character_event_id,
             emotions=current_emotions,
             emotion_intensity=emotion_intensity,
+            conversation_id=conversation_id,
         )
 
     def _with_deferred_commit(
@@ -811,6 +834,7 @@ class ChatSession:
         cross_character_event_id: str,
         emotions: dict[str, float],
         emotion_intensity: float,
+        conversation_id: str = "",
     ) -> dict:
         """Attach JSON-safe commit material without mutating durable identity state."""
         if not defer_side_effects:
@@ -819,6 +843,7 @@ class ChatSession:
         result["side_effects_deferred"] = True
         result["_commit_context"] = {
             "request_id": str(request_id or ""),
+            "conversation_id": str(conversation_id or ""),
             "memory_safe": bool(getattr(guard, "memory_safe", False)),
             "memory_directive": memory_directive,
             "web_item_id": str(web_item_id or ""),
@@ -839,6 +864,7 @@ class ChatSession:
         request_id: str,
         user_message: str,
         result: dict,
+        conversation_id: str = "",
     ) -> None:
         """Apply reply side effects at most once after cached delivery is accepted.
 
@@ -878,8 +904,10 @@ class ChatSession:
         # Record the semantic exchange first in the in-memory conversation.
         # The set is updated only at the end, while the external ledger owns
         # crash uncertainty and prevents retries after a partial commit.
-        self._history.append({"role": "user", "content": user_message})
-        self._history.append({"role": "assistant", "content": reply})
+        context_conversation_id = str(context.get("conversation_id") or "")
+        commit_history = self._history_for(conversation_id or context_conversation_id)
+        commit_history.append({"role": "user", "content": user_message})
+        commit_history.append({"role": "assistant", "content": reply})
 
         relationship_recorded = False
         try:
@@ -945,10 +973,16 @@ class ChatSession:
                     elif memory_directive.startswith("long_term::"):
                         directive_text = memory_directive.removeprefix("long_term::").strip()
                     if directive_text:
-                        self.memory.store_fact(
-                            f"User asked me to remember: {directive_text}",
-                            layer=layer,
-                        )
+                        if hasattr(self.memory, "confirm_explicit_statement"):
+                            self.memory.confirm_explicit_statement(
+                                directive_text,
+                                source_uri=f"reverie-chat://request/{request_id}",
+                            )
+                        else:
+                            self.memory.store_fact(
+                                f"User asked me to remember: {directive_text}",
+                                layer=layer,
+                            )
                 else:
                     changed = sum(abs(float(value)) for value in emotion_changes.values()) / 30.0
                     await self.memory.store_interaction(
@@ -956,6 +990,7 @@ class ChatSession:
                         reply,
                         emotion_intensity=max(emotion_intensity, min(changed, 1.0)),
                         emotions=dict(getattr(self.emotion, "values", {}) or emotions),
+                        source_uri=f"reverie-chat://request/{request_id}",
                     )
             except Exception:
                 logger.exception("Deferred memory commit failed")
@@ -1001,6 +1036,34 @@ class ChatSession:
         except Exception:
             logger.exception("Optional context module failed: %s", method_name)
             return ""
+
+    async def _hypa_context(self, user_message: str, conversation_tail: list[dict]) -> str:
+        """Compress an oversized tail and inject relevant HypaMemory summaries.
+
+        The summarization call goes through the adapter's ``memory_summary``
+        consent purpose, so local mode / usage policy vetoes apply normally.
+        A cooldown prevents re-summarising the same tail on every turn.
+        """
+        from ..memory.hypa_v3 import _estimate_tokens
+
+        tokens = sum(
+            _estimate_tokens(str(message.get("content") or ""))
+            for message in conversation_tail
+        )
+        now = time.time()
+        if self._hypa_cooldown <= 0.0 or now - self._hypa_last_compress >= self._hypa_cooldown:
+            await self.hypa_compressor.compress(
+                conversation_tail,
+                current_tokens=tokens,
+                max_context_tokens=self._hypa_max_context_tokens,
+            )
+            self._hypa_last_compress = now
+        relevant = await self.hypa_compressor.query(
+            user_message,
+            recent_messages=conversation_tail,
+            top_k=3,
+        )
+        return str(self.hypa_compressor.format_for_prompt(relevant) or "")
 
     def _safe_addressing(self, text: str) -> str:
         try:
@@ -1051,12 +1114,14 @@ class ChatSession:
         emotions: dict[str, float],
         defer_side_effects: bool = False,
         request_id: str = "",
+        conversation_id: str = "",
     ) -> dict:
         """Deliver a deterministic local personality response through normal guards."""
         text = self._shape_reflex_text(text)
         if not defer_side_effects:
-            self._history.append({"role": "user", "content": user_message})
-            self._history.append({"role": "assistant", "content": text})
+            history = self._history_for(conversation_id)
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": text})
         try:
             delay = self.scheduler.calculate_delay(
                 len(text),
@@ -1099,6 +1164,7 @@ class ChatSession:
             cross_character_event_id="",
             emotions=emotions,
             emotion_intensity=0.0,
+            conversation_id=conversation_id,
         )
 
     def _shape_reflex_text(self, text: str) -> str:
@@ -1169,8 +1235,10 @@ class ChatSession:
         return False
 
     def _apply_guard_emotion(self, guard) -> dict[str, float]:
-        """Let weird identity probes affect mood without calling the LLM."""
+        """Apply bounded prompt-attack mood only; identity questions are neutral."""
         if not guard.guarded:
+            return {}
+        if guard.identity_probe_detected and not guard.injection_detected:
             return {}
         emotion_enabled = (
             self.feature_settings.emotion_system_enabled
@@ -1180,10 +1248,8 @@ class ChatSession:
         if not emotion_enabled:
             return {}
         changes: dict[str, float] = {"anxiety": 1.0}
-        if guard.identity_probe_detected:
-            changes = {"grievance": 2.0, "anxiety": 1.0}
         if guard.injection_detected:
-            changes = {"anger": 1.0, "anxiety": 2.0}
+            changes = {"anxiety": 2.0}
         try:
             self.emotion.apply_event(changes)
             self.emotion.tick()

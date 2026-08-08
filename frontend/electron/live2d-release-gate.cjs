@@ -4,7 +4,13 @@ const fs = require('fs');
 const path = require('path');
 
 const LICENSE_SCHEMA = 'reverie.live2d.public-license.v1';
+const CHARACTER_RIGHTS_SCHEMA = 'reverie.character-rights.v1';
 const APP_ID = 'studio.muhe.reverie';
+const REQUIRED_CHARACTER_GRANTS = Object.freeze([
+  'commercial-use',
+  'modification',
+  'redistribution-with-application',
+]);
 const FORBIDDEN_PACKAGE_NAMES = [
   /live2dcubismcore/i,
   /\.moc3$/i,
@@ -60,6 +66,46 @@ function readLicenseManifest(filePath, options = {}) {
   return validateLive2DLicense(JSON.parse(fs.readFileSync(resolved, 'utf8')), options);
 }
 
+function validateCharacterRights(value, options = {}) {
+  const appId = options.appId || APP_ID;
+  const assetId = options.assetId || 'yumi';
+  if (!value || typeof value !== 'object' || value.schema !== CHARACTER_RIGHTS_SCHEMA) {
+    throw new Error('Character rights manifest has an invalid schema');
+  }
+  if (value.applicationId !== appId || value.assetId !== assetId) {
+    throw new Error('Character rights manifest is not bound to this app and asset');
+  }
+  if (typeof value.evidenceId !== 'string' || !/^[A-Za-z0-9._/-]{4,128}$/.test(value.evidenceId)) {
+    throw new Error('Character rights evidenceId is missing or invalid');
+  }
+  if (typeof value.rightsHolder !== 'string' || !value.rightsHolder.trim()) {
+    throw new Error('Character rights holder is missing');
+  }
+  const grants = new Set(Array.isArray(value.grants) ? value.grants : []);
+  for (const grant of REQUIRED_CHARACTER_GRANTS) {
+    if (!grants.has(grant)) {
+      throw new Error(`Character rights do not include ${grant}`);
+    }
+  }
+  return Object.freeze({
+    schema: CHARACTER_RIGHTS_SCHEMA,
+    applicationId: appId,
+    assetId,
+    evidenceId: value.evidenceId,
+    rightsHolder: value.rightsHolder.trim(),
+    grants: [...REQUIRED_CHARACTER_GRANTS],
+  });
+}
+
+function readCharacterRightsManifest(filePath, options = {}) {
+  const resolved = path.resolve(String(filePath || ''));
+  const stat = fs.lstatSync(resolved);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) {
+    throw new Error('Character rights manifest must be a small regular file');
+  }
+  return validateCharacterRights(JSON.parse(fs.readFileSync(resolved, 'utf8')), options);
+}
+
 function scanForbiddenLive2DFiles(roots) {
   const findings = [];
   const visit = (root, current) => {
@@ -91,6 +137,29 @@ function evaluateLive2DRuntime(options = {}) {
   const rendererAvailable = options.rendererAvailable === true;
   const developmentEnabled = !isPackaged
     && String(options.developmentEnabled ?? process.env.REVERIE_LIVE2D_DEV) === '1';
+  const testOnly = isPackaged && options.testOnly === true;
+  if (testOnly) {
+    if (!coreAvailable || !rendererAvailable) {
+      return Object.freeze({
+        available: false,
+        coreAvailable,
+        rendererAvailable,
+        licenseAccepted: false,
+        developmentOnly: true,
+        reason: !coreAvailable
+          ? 'Live2D Cubism Core is missing'
+          : 'Live2D renderer package is missing',
+      });
+    }
+    return Object.freeze({
+      available: true,
+      coreAvailable: true,
+      rendererAvailable: true,
+      licenseAccepted: false,
+      developmentOnly: true,
+      reason: 'Internal test-only Live2D runtime; redistribution is prohibited',
+    });
+  }
   if (developmentEnabled) {
     if (!coreAvailable || !rendererAvailable) {
       return Object.freeze({
@@ -178,11 +247,15 @@ function assertLive2DReleaseGate(options = {}) {
 
 module.exports = {
   APP_ID,
+  CHARACTER_RIGHTS_SCHEMA,
   FORBIDDEN_PACKAGE_NAMES,
   LICENSE_SCHEMA,
+  REQUIRED_CHARACTER_GRANTS,
   assertLive2DReleaseGate,
   evaluateLive2DRuntime,
+  readCharacterRightsManifest,
   readLicenseManifest,
   scanForbiddenLive2DFiles,
+  validateCharacterRights,
   validateLive2DLicense,
 };

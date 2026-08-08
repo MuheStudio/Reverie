@@ -24,17 +24,17 @@ import { getDefaultProviderConfig, type LLMConfig } from '../llmModels';
 const CONFIG_KEY = 'webuiapps-llm-config';
 
 const MOCK_OPENAI_CONFIG: LLMConfig = {
-  provider: 'openai',
+  provider: 'custom',
   apiKey: 'sk-test-key',
-  baseUrl: 'https://api.openai.com',
-  model: 'gpt-4',
+  baseUrl: 'https://gateway.example.test/v1',
+  model: 'gateway-model',
 };
 
 const MOCK_ANTHROPIC_CONFIG: LLMConfig = {
-  provider: 'anthropic',
-  apiKey: 'ant-test-key',
-  baseUrl: 'https://api.anthropic.com',
-  model: 'claude-opus-4-6',
+  provider: 'ollama',
+  apiKey: '',
+  baseUrl: 'http://localhost:11434/v1',
+  model: 'installed-model',
 };
 
 const PUBLIC_OPENAI_CONFIG: LLMConfig = { ...MOCK_OPENAI_CONFIG, apiKey: '' };
@@ -84,8 +84,8 @@ beforeEach(() => {
     ok: true,
     receipt: 'provider-test-receipt',
     expiresAt: '2099-01-01T00:00:00.000Z',
-    provider: 'openai',
-    model: 'gpt-4',
+    provider: 'custom',
+    model: 'gateway-model',
     latencyMs: 42,
   });
   Object.defineProperty(window, 'electronAPI', {
@@ -136,94 +136,24 @@ afterEach(() => {
 });
 
 describe('getDefaultProviderConfig()', () => {
-  it('returns correct defaults for openai', () => {
-    const cfg = getDefaultProviderConfig('openai');
-    expect(cfg.provider).toBe('openai');
-    expect(cfg.baseUrl).toBe('https://api.openai.com/v1');
-    expect(cfg.model).toBe('gpt-5.4');
-    expect('apiKey' in cfg).toBe(false);
-  });
-
-  it('returns correct defaults for custom OpenAI-compatible providers', () => {
+  it('requires users to supply the endpoint and model for a custom gateway', () => {
     const cfg = getDefaultProviderConfig('custom');
     expect(cfg.provider).toBe('custom');
-    expect(cfg.baseUrl).toBe('https://api.openai.com/v1');
-    expect(cfg.model).toBe('gpt-5.4');
+    expect(cfg.baseUrl).toBe('');
+    expect(cfg.model).toBe('');
   });
 
-  it('returns correct defaults for anthropic', () => {
-    const cfg = getDefaultProviderConfig('anthropic');
-    expect(cfg.provider).toBe('anthropic');
-    expect(cfg.baseUrl).toBe('https://api.anthropic.com/v1');
-    expect(cfg.model).toBe('claude-sonnet-4-6');
-  });
-
-  it('returns correct defaults for gemini', () => {
-    const cfg = getDefaultProviderConfig('gemini');
-    expect(cfg.provider).toBe('gemini');
-    expect(cfg.baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
-    expect(cfg.model).toBe('gemini-2.5-pro');
-  });
-
-  it('returns correct defaults for grok', () => {
-    const cfg = getDefaultProviderConfig('grok');
-    expect(cfg.provider).toBe('grok');
-    expect(cfg.baseUrl).toBe('https://api.x.ai/v1');
-    expect(cfg.model).toBe('grok-4');
-  });
-
-  it('returns correct defaults for deepseek', () => {
-    const cfg = getDefaultProviderConfig('deepseek');
-    expect(cfg.provider).toBe('deepseek');
-    expect(cfg.baseUrl).toBe('https://api.deepseek.com');
-    expect(cfg.model).toBe('deepseek-v4-flash');
-  });
-
-  it('returns correct defaults for ollama', () => {
+  it('pins Ollama to loopback without guessing an installed model', () => {
     const cfg = getDefaultProviderConfig('ollama');
     expect(cfg.provider).toBe('ollama');
     expect(cfg.baseUrl).toBe('http://localhost:11434/v1');
-    expect(cfg.model).toBe('llama3.1');
-  });
-
-  it('returns correct defaults for llama.cpp', () => {
-    const cfg = getDefaultProviderConfig('llama.cpp');
-    expect(cfg.provider).toBe('llama.cpp');
-    expect(cfg.baseUrl).toBe('http://localhost:8080');
-    expect(cfg.model).toBe('local-model');
-  });
-
-  it('returns correct defaults for minimax', () => {
-    const cfg = getDefaultProviderConfig('minimax');
-    expect(cfg.provider).toBe('minimax');
-    expect(cfg.baseUrl).toBe('https://api.minimax.io/anthropic/v1');
-    expect(cfg.model).toBe('MiniMax-M2.5');
-  });
-
-  it('returns correct defaults for z.ai', () => {
-    const cfg = getDefaultProviderConfig('z.ai');
-    expect(cfg.provider).toBe('z.ai');
-    expect(cfg.baseUrl).toBe('https://open.bigmodel.cn/api/paas/v4');
-    expect(cfg.model).toBe('glm-5.2');
-  });
-
-  it('returns correct defaults for kimi', () => {
-    const cfg = getDefaultProviderConfig('kimi');
-    expect(cfg.provider).toBe('kimi');
-    expect(cfg.baseUrl).toBe('https://api.moonshot.cn/v1');
-    expect(cfg.model).toBe('kimi-k2.7-code');
-  });
-
-  it('returns correct defaults for openrouter', () => {
-    const cfg = getDefaultProviderConfig('openrouter');
-    expect(cfg.provider).toBe('openrouter');
-    expect(cfg.baseUrl).toBe('https://openrouter.ai/api/v1');
-    expect(cfg.model).toBe('minimax/MiniMax-M2.5');
+    expect(cfg.model).toBe('');
+    expect('apiKey' in cfg).toBe(false);
   });
 
   it('returns consistent values for the same provider', () => {
-    const a = getDefaultProviderConfig('openai');
-    const b = getDefaultProviderConfig('openai');
+    const a = getDefaultProviderConfig('ollama');
+    const b = getDefaultProviderConfig('ollama');
     expect(a).toStrictEqual(b);
   });
 });
@@ -354,9 +284,9 @@ describe('saveConfig()', () => {
 
     expect(providerCommit).toHaveBeenCalledWith({
       llm: {
-        provider: 'openai',
-        baseUrl: 'https://api.openai.com',
-        model: 'gpt-4',
+        provider: 'custom',
+        baseUrl: 'https://gateway.example.test/v1',
+        model: 'gateway-model',
       },
     }, { apiKey: 'sk-test-key', customHeaders: undefined }, 'persistent', 'provider-test-receipt');
   });
@@ -367,9 +297,9 @@ describe('saveConfig()', () => {
 
     const body = providerCommit.mock.calls[0][0];
     expect(body.llm).toEqual({
-      provider: 'openai',
-      baseUrl: 'https://api.openai.com',
-      model: 'gpt-4',
+      provider: 'custom',
+      baseUrl: 'https://gateway.example.test/v1',
+      model: 'gateway-model',
     });
     expect(body.imageGen).toEqual({ provider: 'openai', baseUrl: 'u', model: 'm' });
     expect(JSON.stringify(body)).not.toContain('sk-test-key');
@@ -393,7 +323,7 @@ describe('saveConfig()', () => {
     await saveConfig(MOCK_OPENAI_CONFIG, undefined, TEST_OPTIONS);
     await saveConfig(MOCK_ANTHROPIC_CONFIG, undefined, TEST_OPTIONS);
 
-    expect(providerCommit.mock.calls.at(-1)?.[0].llm.provider).toBe('anthropic');
+    expect(providerCommit.mock.calls.at(-1)?.[0].llm.provider).toBe('ollama');
     expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
   });
 
@@ -470,7 +400,7 @@ describe('saveConfig()', () => {
       { credentialStorage: 'session', testReceipt: 'provider-test-receipt' },
     )).resolves.toBeUndefined();
     expect(providerCommit).toHaveBeenLastCalledWith(
-      expect.objectContaining({ llm: expect.objectContaining({ provider: 'openai' }) }),
+      expect.objectContaining({ llm: expect.objectContaining({ provider: 'custom' }) }),
       { apiKey: 'sk-test-key', customHeaders: undefined },
       'session',
       'provider-test-receipt',
@@ -489,14 +419,14 @@ describe('testConfig()', () => {
   it('tests through the private desktop authority and returns an opaque receipt', async () => {
     await expect(testConfig(MOCK_OPENAI_CONFIG)).resolves.toMatchObject({
       receipt: 'provider-test-receipt',
-      model: 'gpt-4',
+      model: 'gateway-model',
       latencyMs: 42,
     });
     expect(providerTest).toHaveBeenCalledWith({
       llm: {
-        provider: 'openai',
-        baseUrl: 'https://api.openai.com',
-        model: 'gpt-4',
+        provider: 'custom',
+        baseUrl: 'https://gateway.example.test/v1',
+        model: 'gateway-model',
       },
     }, {
       apiKey: 'sk-test-key',

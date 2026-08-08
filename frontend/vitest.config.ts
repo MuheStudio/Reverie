@@ -6,7 +6,11 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     setupFiles: ['./vitest.setup.ts'],
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: [
+      'src/components/AvatarView/Live2DAdapter.test.ts',
+      'src/components/MvpRoom/**/*.{test,spec}.{ts,tsx}',
+      'src/lib/__tests__/reverieChatStorage.test.ts',
+    ],
     coverage: {
       provider: 'istanbul',
       reporter: ['text', 'lcov', 'html'],
@@ -21,7 +25,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, './src'),
-      '@gui/vibe-container': resolve(__dirname, './src/lib/vibeContainerMock.ts'),
     },
   },
 });

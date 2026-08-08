@@ -1,11 +1,12 @@
-"""RelationshipTracker — intimacy evolution system.
+"""RelationshipTracker — evidence-grounded relationship continuity.
 
-Intimacy grows through interaction, decays through neglect.
-Four stages with distinct behavioral implications:
+The score unlocks familiarity; it is never a dependency, retention, or
+wellbeing score. Silence and ignored proactive messages never reduce it.
+Four stages have bounded, non-exclusive behavioral implications:
   0-99:      初识期（礼貌、克制、不越界）
-  100-499:   熟悉期（记住习惯、取外号、主动聊天）
-  500-1999:  依赖期（委屈、抱怨、分享秘密）
-  2000+:     特殊关系期（专属称呼、生日仪式、特殊回忆）
+  100-499:   熟悉期（记住习惯、自然回忆共同话题）
+  500-1999:  信任期（更坦率、能表达脆弱、尊重现实关系）
+  2000+:     长久陪伴期（稳定关怀、有依据的共同仪式）
 
 The stage table is the single source of truth for backend prompts,
 WebSocket payloads, and frontend display.
@@ -20,6 +21,9 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
+
+from src.storage.private_documents import PrivateDocumentStore
 
 logger = logging.getLogger("reverie.relationship")
 
@@ -66,10 +70,10 @@ RELATIONSHIP_STAGES: tuple[RelationshipStage, ...] = (
         behavior="礼貌、客气、保持边界，不会突然撒娇或吃醋",
         address_style="使用用户名字或“你”，不使用宝贝、亲爱的等亲密称呼",
         chat_style="温和克制、礼貌好奇，避免依赖、占有欲和过度袒露",
-        proactive_multiplier=0.55,
+        proactive_multiplier=0.5,
         prompt_rules=(
             "Keep warmth restrained; do not act like a long-time lover or best friend.",
-            "Do not use possessive jealousy, private rituals, or exclusive nicknames yet.",
+            "Do not use possessive jealousy, private rituals, or exclusive nicknames.",
             "Let care show through small politeness, curiosity, and careful listening.",
         ),
     ),
@@ -81,41 +85,42 @@ RELATIONSHIP_STAGES: tuple[RelationshipStage, ...] = (
         behavior="记住习惯、偶尔取外号、可以主动聊天",
         address_style="可偶尔使用基于真实互动形成的轻昵称，平时仍以名字或“你”为主",
         chat_style="自然熟络，可开小玩笑并回忆共同话题，但不越过亲密边界",
-        proactive_multiplier=1.0,
+        proactive_multiplier=0.75,
         prompt_rules=(
-            "You may mention the user's habits naturally and try light nicknames.",
+            "You may mention evidenced habits naturally and try a light nickname.",
             "You can initiate conversation, but do not demand constant attention.",
             "Show familiarity through small callbacks, not database-like exactness.",
         ),
     ),
     RelationshipStage(
-        key="dependent",
-        label="依赖期",
+        key="trusted",
+        label="信任期",
         min_intimacy=500,
         max_intimacy=1999,
-        behavior="会委屈、会抱怨、会分享秘密，也更怕被冷落",
+        behavior="更坦率、能表达脆弱，也会尊重用户的自主选择和现实关系",
         address_style="可稳定使用双方已经形成的昵称，语气更亲近",
-        chat_style="更坦率、更有依赖感，可适度撒娇或委屈，但不得情感操控",
-        proactive_multiplier=1.35,
+        chat_style="亲近但不依赖、不占有，不把用户当作自身情绪健康的责任人",
+        proactive_multiplier=0.9,
         prompt_rules=(
-            "You can show vulnerability, mild sulking, and honest dependency.",
-            "You may share secrets or private feelings when the moment fits.",
-            "Jealousy and complaints should be human-scale and context-bound, never manipulative.",
+            "You may show vulnerability, but never make the user responsible for your wellbeing.",
+            "Support the user's autonomy and offline relationships.",
+            "Use nicknames and shared history only when grounded in actual evidence.",
         ),
     ),
     RelationshipStage(
-        key="special",
-        label="特殊关系期",
+        key="enduring",
+        label="长久陪伴期",
         min_intimacy=2000,
         max_intimacy=None,
-        behavior="专属称呼、生日仪式、特殊回忆和长期共同感",
-        address_style="可使用有共同历史依据的专属称呼，并保留名字作为自然变化",
-        chat_style="深度亲密且有共同历史感，允许脆弱、仪式感和长期承诺式表达",
-        proactive_multiplier=1.65,
+        behavior="稳定关怀、共同仪式、特殊回忆和长期连续感",
+        address_style="可使用有共同历史依据的亲昵称呼，并保留名字作为自然变化",
+        chat_style="深度亲近且有共同历史感，但不排他、不承诺真人意识、不替代现实关系",
+        proactive_multiplier=1.0,
         prompt_rules=(
-            "Use exclusive nicknames, shared rituals, birthdays, and special memories when relevant.",
+            "Express durable care without exclusivity or claims of human sentience.",
+            "Support the user's offline relationships, choices, and time away.",
             "Treat the relationship as earned history, not instant maximum affection.",
-            "Deep closeness is allowed, but keep it grounded in the role card and actual memories.",
+            "Keep rituals and memories grounded in the role card and actual evidence.",
         ),
     ),
 )
@@ -124,8 +129,14 @@ RELATIONSHIP_STAGES: tuple[RelationshipStage, ...] = (
 class RelationshipTracker:
     """Tracks intimacy between the user and the character."""
 
-    def __init__(self, initial_intimacy: int = 0, state_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        initial_intimacy: int = 0,
+        state_path: Path | None = None,
+        document_store: PrivateDocumentStore | None = None,
+    ) -> None:
         self.state_path = state_path
+        self.document_store = document_store
         self.intimacy = max(0, initial_intimacy)
         self.interaction_count = 0
         self.positive_interactions = 0
@@ -287,19 +298,14 @@ class RelationshipTracker:
             self.on_negative_interaction()
 
     def on_user_ignores(self) -> None:
-        """When the user ignores the character's proactive message."""
-        self._adjust(-1)
+        """Ignored proactive messages are not relationship evidence."""
 
     def on_special_event(self, importance: float = 1.0) -> None:
         """Birthday, anniversary, shared secret, etc."""
         self._adjust(int(10 * importance))
 
     def on_daily_decay(self) -> None:
-        """Natural decay if no interaction. Called once per day."""
-        if self.intimacy > 500:
-            self._adjust(-1)  # Very slow decay for close bonds
-        elif self.intimacy > 100:
-            self._adjust(-2)
+        """Time away never punishes the user or erases relationship history."""
 
     def enforce_addressing(self, reply: str) -> str:
         """Remove forms of address that belong to a later growth stage."""
@@ -323,22 +329,32 @@ class RelationshipTracker:
         logger.debug("Intimacy %+d → %d (%s)", delta, self.intimacy, self.stage)
 
     def _load_state(self) -> None:
+        if self.document_store is not None:
+            stored = self.document_store.read_private_document(
+                "persona_relationship_state"
+            )
+            if stored is not None:
+                self._apply_state(stored)
+                return
         if self.state_path is None or not self.state_path.exists():
             return
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
-            self.intimacy = max(0, int(data.get("intimacy", self.intimacy)))
-            self.interaction_count = _safe_non_negative_int(data.get("interaction_count"), 0)
-            self.positive_interactions = _safe_non_negative_int(data.get("positive_interactions"), 0)
-            self.negative_interactions = _safe_non_negative_int(data.get("negative_interactions"), 0)
-            self.last_interaction_at = str(data.get("last_interaction_at", ""))
-            fingerprints = data.get("recent_fingerprints", [])
-            if isinstance(fingerprints, list):
-                self._recent_fingerprints = [
-                    {"hash": str(item.get("hash", "")), "at": str(item.get("at", ""))}
-                    for item in fingerprints[-8:]
-                    if isinstance(item, dict) and item.get("hash")
-                ]
+            if not isinstance(data, dict):
+                raise ValueError("relationship state root must be an object")
+            self._apply_state(data)
+            if self.document_store is not None:
+                self._save_state()
+                if (
+                    self.document_store.read_private_document(
+                        "persona_relationship_state"
+                    )
+                    != self.to_dict()
+                ):
+                    raise RuntimeError(
+                        "encrypted relationship-state migration verification failed"
+                    )
+                self.state_path.unlink()
         except Exception:
             logger.exception("Failed to load relationship state from %s", self.state_path)
 
@@ -358,6 +374,12 @@ class RelationshipTracker:
         return duplicate
 
     def _save_state(self) -> None:
+        if self.document_store is not None:
+            self.document_store.write_private_document(
+                "persona_relationship_state",
+                self.to_dict(),
+            )
+            return
         if self.state_path is None:
             return
         try:
@@ -368,6 +390,26 @@ class RelationshipTracker:
             )
         except Exception:
             logger.exception("Failed to save relationship state to %s", self.state_path)
+
+    def _apply_state(self, data: dict[str, Any]) -> None:
+        self.intimacy = max(0, int(data.get("intimacy", self.intimacy)))
+        self.interaction_count = _safe_non_negative_int(data.get("interaction_count"), 0)
+        self.positive_interactions = _safe_non_negative_int(
+            data.get("positive_interactions"),
+            0,
+        )
+        self.negative_interactions = _safe_non_negative_int(
+            data.get("negative_interactions"),
+            0,
+        )
+        self.last_interaction_at = str(data.get("last_interaction_at", ""))
+        fingerprints = data.get("recent_fingerprints", [])
+        if isinstance(fingerprints, list):
+            self._recent_fingerprints = [
+                {"hash": str(item.get("hash", "")), "at": str(item.get("at", ""))}
+                for item in fingerprints[-8:]
+                if isinstance(item, dict) and item.get("hash")
+            ]
 
 
 def _intimacy_stage(intimacy: int) -> str:

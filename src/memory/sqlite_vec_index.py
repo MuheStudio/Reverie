@@ -13,6 +13,8 @@ import time
 
 import numpy as np
 
+from src.storage.encrypted_sqlite import connect_database
+
 logger = logging.getLogger("reverie.memory.sqlite_vec")
 
 _SAFE_TABLE = re.compile(r"^memory_vec_[a-f0-9]{20}$")
@@ -39,10 +41,12 @@ class SQLiteVecIndex:
         self.path = Path(database_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._connection = sqlite3.connect(
-            str(self.path), timeout=30.0, check_same_thread=False, isolation_level=None,
+        self._connection = connect_database(
+            self.path,
+            timeout=30.0,
+            check_same_thread=False,
+            isolation_level=None,
         )
-        self._connection.row_factory = sqlite3.Row
         try:
             self._connection.enable_load_extension(True)
             sqlite_vec.load(self._connection)
@@ -52,7 +56,7 @@ class SQLiteVecIndex:
         finally:
             try:
                 self._connection.enable_load_extension(False)
-            except sqlite3.ProgrammingError:
+            except Exception:
                 pass
         with self._lock:
             self._connection.execute("PRAGMA journal_mode=WAL")

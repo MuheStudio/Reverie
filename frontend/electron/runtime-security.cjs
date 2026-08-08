@@ -4,6 +4,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 const DENIED_PERMISSION = false;
+const ALLOWED_PERMISSION = true;
 
 function canonicalOrigin(value) {
   try {
@@ -93,21 +94,31 @@ function installPermissionPolicy(electronSession, trustPolicy, getWindow) {
   if (!electronSession || !trustPolicy || typeof getWindow !== 'function') {
     throw new TypeError('Electron session, trust policy, and window getter are required');
   }
-  const allow = (webContents, permission, details = {}) => {
-    const expected = getWindow()?.webContents;
-    if (!expected || webContents !== expected || expected.isDestroyed?.()) return false;
-    if (permission !== 'geolocation') return false;
-    if (details.isMainFrame === false) return false;
-    const mainFrame = expected.mainFrame;
-    if (!mainFrame || mainFrame.parent || !trustPolicy.isTrustedUrl(mainFrame.url)) return false;
-    const requestingUrl = details.requestingUrl || mainFrame.url;
-    return trustPolicy.isTrustedUrl(requestingUrl);
-  };
-  electronSession.setPermissionCheckHandler((webContents, permission, _origin, details) => (
-    allow(webContents, permission, details)
-  ));
+  // Only geolocation is granted, and only for the trusted main frame of the
+  // main window. Location is used by the immersion feature strictly on user
+  // action (the her-room "nearby places" button calls getCurrentPosition),
+  // never in the background. Every other Chromium permission (media,
+  // notifications, clipboard, MIDI, USB, serial, Bluetooth, HID) stays denied
+  // unconditionally so a renderer button cannot silently acquire it.
+  function isTrustedGeolocation(webContents, details) {
+    if (!webContents || webContents.isDestroyed?.()) return false;
+    if (!details || details.isMainFrame !== true) return false;
+    if (!trustPolicy.isTrustedUrl(webContents.mainFrame?.url)) return false;
+    if (!trustPolicy.isTrustedUrl(details.requestingUrl)) return false;
+    return true;
+  }
+  electronSession.setPermissionCheckHandler((webContents, permission, _origin, details) => {
+    if (permission === 'geolocation' && isTrustedGeolocation(webContents, details)) {
+      return ALLOWED_PERMISSION;
+    }
+    return DENIED_PERMISSION;
+  });
   electronSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
-    callback(allow(webContents, permission, details));
+    if (permission === 'geolocation' && isTrustedGeolocation(webContents, details)) {
+      callback(ALLOWED_PERMISSION);
+      return;
+    }
+    callback(DENIED_PERMISSION);
   });
   if (typeof electronSession.setDevicePermissionHandler === 'function') {
     electronSession.setDevicePermissionHandler(() => DENIED_PERMISSION);

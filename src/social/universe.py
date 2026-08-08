@@ -19,6 +19,7 @@ from ..config.settings import WORLD_STATE_DB
 if TYPE_CHECKING:
     from ..api.adapter import LLMAdapter
     from ..config.settings import FeatureSettings
+    from ..memory.manager import MemoryManager
     from ..persona.persona_card import Persona
     from ..persona.state_scope import PersonaModuleState
 
@@ -44,12 +45,14 @@ class SocialUniverse:
         path: Path | None = None,
         rng: random.Random | None = None,
         state_scope: "PersonaModuleState | None" = None,
+        memory: "MemoryManager | None" = None,
     ) -> None:
         self.owner = owner
         if callable(getattr(owner, "seal_identity", None)):
             owner.seal_identity()
         self.settings = settings
         self.adapter = adapter
+        self.memory = memory
         scoped_path = (
             state_scope.file(WORLD_STATE_DB.name)
             if state_scope is not None
@@ -203,6 +206,10 @@ class SocialUniverse:
             )
 
     def sync_character_cards(self, cards: list[dict[str, Any]]) -> int:
+        existing = {
+            str(row.get("name", "")).casefold()
+            for row in self._characters(include_owner=False)
+        }
         count = 0
         for card in cards:
             if not isinstance(card, dict):
@@ -210,6 +217,7 @@ class SocialUniverse:
             name = self._clean_text(card.get("name", ""), 120)
             if not name or name.casefold() == self.owner.name.casefold():
                 continue
+            is_new = name.casefold() not in existing
             self._upsert_character(
                 character_id=self._character_id(name),
                 name=name,
@@ -221,6 +229,22 @@ class SocialUniverse:
                 speaking_style=self._flatten_profile(card.get("speaking_style"), 400),
                 source="local_character_card",
             )
+            # Characters that know each other appear in permanent memory so the
+            # relationship is never forgotten or misremembered (group-social spec).
+            if (
+                is_new
+                and self.memory is not None
+                and self.settings.group_social_permanent_memory_enabled
+            ):
+                try:
+                    self.memory.store_fact(
+                        f"社交圈：{self.owner.name} 认识角色「{name}」",
+                        layer="permanent",
+                        source_type="social_universe",
+                    )
+                except Exception:
+                    logger.exception("Permanent social memory write failed; sync continues")
+            existing.add(name.casefold())
             count += 1
         self._ensure_default_thread()
         return count

@@ -131,6 +131,37 @@ def test_affairs_and_interest_progress_are_monotonic_and_reusable(tmp_path) -> N
     assert restored_interests.get_reusable_output()["id"] == output["id"]
 
 
+def test_interest_with_corrupt_last_active_is_not_auto_advanced(tmp_path) -> None:
+    interests = InterestTracker(tmp_path / "interest-corrupt")
+    interests.record_activity("画画", note="真实练习", progress_boost=2, now=datetime(2026, 7, 13, 8, 0))
+    interest = interests.get_top_interests(1)[0]
+    interest.last_active = "not-a-date"
+    interests._save()
+
+    restored = InterestTracker(tmp_path / "interest-corrupt")
+    before = restored.get_top_interests(1)[0].progress
+    restored.advance_due(datetime(2026, 7, 14, 8, 0))
+    assert restored.get_top_interests(1)[0].progress == before  # skipped, no runaway
+
+
+def test_affair_with_empty_schedule_is_self_healed_not_runaway(tmp_path) -> None:
+    persona = default_persona()
+    affairs = PersonalAffairManager(tmp_path / "affairs-heal")
+    affairs.ensure_defaults(persona, now=datetime(2026, 7, 13, 8, 0))
+    affair = next(iter(affairs._affairs.values()))
+    affair.next_update_at = ""  # simulate old/corrupt data
+    affair.progress = 10.0
+    affairs._save()
+
+    restored = PersonalAffairManager(tmp_path / "affairs-heal")
+    updates = restored.advance_due(datetime(2026, 7, 13, 8, 15))
+    healed = next(iter(restored._affairs.values()))
+    assert healed.next_update_at  # self-healed to a default window
+    # The heal tick must not also advance progress; next real advance is later.
+    assert healed.progress == 10.0
+    assert updates == []
+
+
 def test_world_clock_uses_exact_2026_calendar_and_does_not_guess(tmp_path) -> None:
     clock = _clock(tmp_path, datetime(2026, 9, 25, 1, 0))
 

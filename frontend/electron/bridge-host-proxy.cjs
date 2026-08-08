@@ -1,9 +1,9 @@
 'use strict';
 
 const { EventEmitter } = require('events');
-const { COMMAND_NAMES, MESSAGE_NAMES } = require('./protocol-v3.generated.cjs');
+const { COMMAND_NAMES, MESSAGE_NAMES } = require('./protocol-v4.generated.cjs');
 
-const MAX_RENDERER_FRAME_BYTES = 4 * 1024 * 1024;
+const MAX_RENDERER_FRAME_BYTES = 256 * 1024;
 const REQUEST_ID = /^[A-Za-z0-9_-]{8,128}$/;
 
 function normalizeFrame(value, { renderer = false } = {}) {
@@ -18,10 +18,10 @@ function normalizeFrame(value, { renderer = false } = {}) {
     throw new TypeError('Renderer may not control bridge authentication');
   }
   if (renderer && !COMMAND_NAMES.has(type)) {
-    throw new TypeError('Renderer bridge command is not declared by protocol V3');
+    throw new TypeError('Renderer bridge command is not declared by protocol V4');
   }
   if (!renderer && !MESSAGE_NAMES.has(type)) {
-    throw new TypeError('Bridge message is not declared by protocol V3');
+    throw new TypeError('Bridge message is not declared by protocol V4');
   }
   const payload = value.payload === undefined ? {} : value.payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -68,7 +68,7 @@ class BridgeHostProxy extends EventEmitter {
     }
     this.framedConnected = true;
     this.auth = Object.freeze({
-      protocol_version: 2,
+      protocol_version: 4,
       client_id: config.clientId,
       persona_id: config.personaId,
       persona_epoch: config.personaEpoch,
@@ -89,7 +89,7 @@ class BridgeHostProxy extends EventEmitter {
       transport: 'electron-ipc',
       url: 'electron-ipc://bridge',
       secret: '',
-      protocolVersion: 2,
+      protocolVersion: 4,
       generation: this.supervisor.generation,
       clientId: this.auth.client_id,
       personaId: this.auth.persona_id,

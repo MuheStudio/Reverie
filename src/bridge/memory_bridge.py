@@ -1,14 +1,23 @@
 """
-N.E.K.O 记忆系统 ↔ Reverie 本地记忆目录互操作桥。
+Copyright 2025-2026 Project N.E.K.O. Team
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-职责：
-  1. 将 N.E.K.O 的五维记忆（facts/reflection/persona）同步到 Reverie 的 SQLite 事实库
-  2. 提供统一查询接口：语义搜索同时命中两套记忆
-  3. N.E.K.O 事实提取增强 Reverie 的长期记忆入库流程
-  4. 人格一致性校验：确保两套系统的角色认知同步
+    http://www.apache.org/licenses/LICENSE-2.0
 
-原始 N.E.K.O 代码: Apache 2.0 — Project N.E.K.O. Team
-修改集成: Muhe Studio 2026
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+-- 修改说明 (Modified by Muhe Studio in 2026) --
+Changes made:
+  - 从 Project N.E.K.O 的五维记忆（facts/reflection/persona）持久化与查询逻辑
+    提取为 N.E.K.O ↔ Reverie 本地记忆目录互操作桥。
+  - 适配 Reverie 的 SQLite 事实库 / MemoryManager 接口与 V4 桥接消息。
+  - 增加人格一致性校验，确保两套系统的角色认知同步。
 """
 from __future__ import annotations
 

@@ -30,10 +30,18 @@ const extraResources = [
   },
   { from: path.join(stagingResources, 'THIRD_PARTY_LICENSES'), to: 'THIRD_PARTY_LICENSES' },
   { from: path.join(projectRoot, 'LICENSES_CREDITS'), to: 'LICENSES_CREDITS' },
+  { from: path.join(frontendRoot, 'public', 'icon.ico'), to: 'icon.ico' },
 ];
 
 if (live2dBuildEnabled) {
-  for (const name of ['LIVE2D_PUBLICATION_LICENSE.json', 'LIVE2D_RUNTIME_ENABLED']) {
+  for (const name of [
+    'LIVE2D_PUBLICATION_LICENSE.json',
+    'YUMI_CHARACTER_RIGHTS.json',
+    'LIVE2D_RUNTIME_ENABLED',
+    'LIVE2D-RUNTIME-ASSETS.json',
+    'Live2DCubismCore.js',
+    'character',
+  ]) {
     const source = path.join(stagingResources, name);
     if (!fs.existsSync(source)) {
       throw new Error(`Live2D release gate output is missing: ${name}`);
@@ -83,7 +91,7 @@ module.exports = {
   extraResources,
   win: {
     target: [{ target: 'nsis', arch: ['x64'] }],
-    icon: path.join(frontendRoot, 'public', 'icon.svg'),
+    icon: path.join(frontendRoot, 'public', 'icon.ico'),
     executableName: 'Reverie',
     requestedExecutionLevel: 'asInvoker',
     artifactName: 'Reverie-Setup-${version}-x64.${ext}',

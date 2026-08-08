@@ -18,10 +18,10 @@ import type { ImageGenConfig } from '../imageGenClient';
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
 const MOCK_LLM_CONFIG: LLMConfig = {
-  provider: 'openai',
+  provider: 'custom',
   apiKey: 'sk-test',
-  baseUrl: 'https://api.openai.com',
-  model: 'gpt-4',
+  baseUrl: 'https://gateway.example.test/v1',
+  model: 'gateway-model',
   customHeaders: 'Authorization: backup-canary',
 };
 
@@ -34,9 +34,9 @@ const MOCK_IMAGEGEN_CONFIG: ImageGenConfig = {
 };
 
 const PUBLIC_LLM_CONFIG: PublicLLMConfig = {
-  provider: 'openai',
-  baseUrl: 'https://api.openai.com',
-  model: 'gpt-4',
+  provider: 'custom',
+  baseUrl: 'https://gateway.example.test/v1',
+  model: 'gateway-model',
 };
 
 const PUBLIC_IMAGEGEN_CONFIG: PublicImageGenConfig = {
@@ -104,7 +104,7 @@ describe('loadPersistedConfig()', () => {
     const result = await loadPersistedConfig();
 
     expect(result).toEqual({ llm: PUBLIC_LLM_CONFIG });
-    expect(result?.llm.provider).toBe('openai');
+    expect(result?.llm.provider).toBe('custom');
     expect(result?.imageGen).toBeUndefined();
   });
 

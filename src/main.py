@@ -116,6 +116,14 @@ async def main():
     runtime_args = parse_runtime_args()
     desktop_bridge = runtime_args.bridge or runtime_args.stdio_bridge
 
+    # The packaged Electron parent writes exactly 32 key bytes to a dedicated
+    # inherited pipe and closes it. This happens before any canonical database
+    # is opened; no key material is accepted through argv or an environment
+    # variable.
+    from src.storage import initialize_storage_from_environment
+
+    initialize_storage_from_environment()
+
     # Desktop starts fail-closed before any proactive/background subsystem is
     # constructed.  Electron persists and re-declares the authoritative epoch.
     from src.local_mode import get_local_mode_gate, install_desktop_socket_guard
@@ -173,13 +181,13 @@ async def main():
         persona_token.persona_id,
         persona_token.epoch,
     )
-    from src.kernel.contracts import PersonaScopeV3
+    from src.kernel.contracts import PersonaScopeV4
     from src.kernel.storage import KernelStore
 
     identity_envelope = GLOBAL_PERSONA_EPOCH.envelope()
     kernel_store = KernelStore(DATA_DIR / "runtime" / "kernel.sqlite3")
     kernel_store.activate_persona(
-        PersonaScopeV3(
+        PersonaScopeV4(
             persona_id=persona_token.persona_id,
             epoch=persona_token.epoch,
             fingerprint=persona_token.fingerprint,
@@ -197,22 +205,6 @@ async def main():
     from src.kernel.modules import ModuleRegistry
 
     module_registry = ModuleRegistry(kernel_store)
-    try:
-        from src.archive import ArchiveStore
-
-        archive_store = ArchiveStore(DATA_DIR / "archive" / "archive.sqlite3")
-        module_registry.register(archive_store)
-        module_registry.start("archive")
-    except Exception:
-        logger.exception("Archive capability failed during startup; isolating it")
-    try:
-        from src.games import GameStateStore
-
-        game_state_store = GameStateStore(DATA_DIR / "games" / "game-state.sqlite3")
-        module_registry.register(game_state_store)
-        module_registry.start("games")
-    except Exception:
-        logger.exception("Game-state capability failed during startup; isolating it")
     from src.persona.state_scope import PersonaStateScope
 
     built_in_fingerprints = set(KNOWN_LEGACY_DEFAULT_FINGERPRINTS)
@@ -226,18 +218,11 @@ async def main():
     # All persona-coupled durable stores derive their path from this single
     # sealed identity authority.  Unknown imported personas never inherit the
     # old unscoped built-in history.
-    world_state = persona_state.module("world", legacy_path=WORLD_STATE_DB)
-    world_state_db = world_state.file(WORLD_STATE_DB.name)
     emotion_state = persona_state.module("emotion", legacy_path=EMOTION_DIR)
     relationship_state = persona_state.module(
         "relationship",
         legacy_path=RELATIONSHIP_DIR,
     )
-    social_state = persona_state.module("social", legacy_path=SOCIAL_DIR)
-    interest_state = persona_state.module("interest", legacy_path=INTEREST_DIR)
-    affairs_state = persona_state.module("affairs", legacy_path=AFFAIRS_DIR)
-    diary_state = persona_state.module("diary", legacy_path=DIARY_DIR)
-    timeline_state = persona_state.module("timeline", legacy_path=TIMELINE_DIR)
     memory_state = persona_state.module("memory", legacy_path=MEMORY_DIR)
 
     if runtime_args.bootstrap_smoke:
@@ -251,6 +236,41 @@ async def main():
             game_state_store.close()
         kernel_store.close()
         return
+
+    if desktop_bridge:
+        # The packaged app has one explicit composition root. Legacy feature
+        # modules below are reserved for the developer TUI and are never
+        # imported or instantiated by the Windows MVP.
+        from src.mvp_runtime import run_mvp_desktop
+
+        try:
+            await run_mvp_desktop(
+                persona=persona,
+                settings=settings,
+                memory_state=memory_state,
+                emotion_state=emotion_state,
+                relationship_state=relationship_state,
+                persona_state=persona_state,
+                kernel_store=kernel_store,
+                module_registry=module_registry,
+                logger=logger,
+                stdio=runtime_args.stdio_bridge,
+                host=runtime_args.host,
+                port=runtime_args.port,
+            )
+        finally:
+            if archive_store is not None:
+                archive_store.close()
+            kernel_store.close()
+        return
+
+    world_state = persona_state.module("world", legacy_path=WORLD_STATE_DB)
+    world_state_db = world_state.file(WORLD_STATE_DB.name)
+    social_state = persona_state.module("social", legacy_path=SOCIAL_DIR)
+    interest_state = persona_state.module("interest", legacy_path=INTEREST_DIR)
+    affairs_state = persona_state.module("affairs", legacy_path=AFFAIRS_DIR)
+    diary_state = persona_state.module("diary", legacy_path=DIARY_DIR)
+    timeline_state = persona_state.module("timeline", legacy_path=TIMELINE_DIR)
 
     # Initialize subsystems
     LLMAdapter = optional_symbol("src.api.adapter", "LLMAdapter")
@@ -403,6 +423,27 @@ async def main():
         except Exception:
             logger.exception("Web capability failed during startup; continuing without it")
 
+    # ── Random image service: foxgirls.club vendored index
+    from src.image_service import FoxgirlImageService
+    image_service = None
+    if settings.features.image_service_enabled:
+        try:
+            image_service = FoxgirlImageService()
+        except Exception:
+            logger.exception("Image service failed during startup; continuing without it")
+
+    # ── N.E.K.O memory import: best-effort one-time import at startup
+    if settings.features.neko_import_enabled:
+        from src.memory import neko_import
+        source_dir = str(settings.features.neko_import_source_dir or "").strip()
+        if source_dir:
+            try:
+                asyncio.create_task(
+                    asyncio.to_thread(neko_import.import_from_directory, memory, source_dir)
+                )
+            except Exception:
+                logger.exception("N.E.K.O import failed during startup; skipping it")
+
     # ── Social Circle & Interests
     from src.social.circle import SocialCircle
     from src.interest.tracker import InterestTracker
@@ -427,6 +468,7 @@ async def main():
         adapter=adapter,
         path=world_state_db,
         state_scope=world_state,
+        memory=memory,
     )
     social_universe.sync_persona_registry(PERSONA_DIR)
     interest_tracker = InterestTracker(state_scope=interest_state)
@@ -457,6 +499,25 @@ async def main():
     )
 
     # Create session after optional managers are initialized.
+    hypa_compressor = None
+    if settings.features.hypa_compression_enabled:
+        from src.memory.hypa_v3 import HypaMemoryV3
+        from src.memory.embedding import embed_query
+
+        class _HypaEmbedder:
+            async def embed(self, text: str):
+                return list(embed_query(text))
+
+        try:
+            hypa_compressor = HypaMemoryV3(
+                adapter=adapter,
+                embedder=_HypaEmbedder(),
+                data_dir=Path(settings.memory.lancedb_path).parent / "hypa",
+            )
+        except Exception:
+            logger.exception("HypaMemory V3 failed during startup; disabling it")
+            hypa_compressor = None
+
     session = ChatSession(
         persona=persona,
         adapter=adapter,
@@ -478,6 +539,7 @@ async def main():
         ambient_presence=ambient_presence,
         thought_engine=thought_engine,
         social_universe=social_universe,
+        hypa_compressor=hypa_compressor,
     )
 
     # ── Diary: character's private journal
@@ -628,6 +690,7 @@ async def main():
         late_night_message_callback=send_late_night_checkin,
         affair_manager=affair_manager,
         interest_tracker=interest_tracker,
+        memory=memory,
         world_clock=world_clock,
         ambient_presence=ambient_presence,
         state_scope=work_manager_state,
@@ -727,6 +790,7 @@ async def main():
                 archive_store=archive_store,
                 game_state_store=game_state_store,
                 module_registry=module_registry,
+                image_service=image_service,
             )
             if runtime_args.stdio_bridge:
                 from src.bridge.stdio_bridge import start_stdio_bridge

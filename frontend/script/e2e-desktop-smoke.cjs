@@ -173,14 +173,12 @@ async function main() {
     const apiSurface = await evaluate(cdp, `({
       providerTest: typeof window.electronAPI?.providerConfig?.test,
       providerCommit: typeof window.electronAPI?.providerConfig?.commit,
-      focusStart: typeof window.electronAPI?.focus?.start,
-      soundList: typeof window.electronAPI?.focusSound?.list,
+      characterGet: typeof window.electronAPI?.character?.get,
     })`);
     assert.deepEqual(apiSurface, {
       providerTest: 'function',
       providerCommit: 'function',
-      focusStart: 'function',
-      soundList: 'function',
+      characterGet: 'function',
     });
     await waitFor(
       () => evaluate(cdp, `(async () => {
@@ -207,7 +205,11 @@ async function main() {
         config, {}, 'session', tested.receipt
       );
       return {
-        tested: { ok: tested.ok, model: tested.model, latencyMs: tested.latencyMs },
+        tested: {
+          ok: tested.ok,
+          latencyMs: tested.latencyMs,
+          finishReason: tested.finishReason,
+        },
         committed: {
           provider: committed.config.llm.provider,
           writeError: committed.status.writeError || null,
@@ -219,110 +221,24 @@ async function main() {
     assert.equal(provider.committed.writeError, null);
     assert.equal(fake.requests.length, 1);
     assert.match(fake.requests[0].url, /\/v1\/chat\/completions$/);
-
-    await evaluate(cdp, `document.querySelector('[data-testid="primary-companion-action"]').click()`, {
-      userGesture: true,
-    });
-    await waitFor(
-      () => evaluate(cdp, `Boolean(document.querySelector('[data-focus-phase]'))`),
-      'Companion panel',
-    );
-
-    const focusStarted = await evaluate(cdp, `(() => {
-      const input = document.querySelector('[data-testid="companion-duration"]');
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype, 'value'
-      ).set;
-      setter.call(input, '1');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      document.querySelector('[data-testid="companion-start"]').click();
-      return true;
-    })()`, { userGesture: true });
-    assert.equal(focusStarted, true);
-    const initialTimer = await waitFor(
-      () => evaluate(cdp, `(() => {
-        const panel = document.querySelector('[data-focus-phase="running"]');
-        const timer = document.querySelector('[data-testid="companion-timer"]');
-        return panel && timer ? timer.textContent.trim() : '';
-      })()`),
-      'Companion UI timer start',
-    );
-    await delay(1_250);
-    const tickingTimer = await waitFor(
-      () => evaluate(cdp, `(() => {
-        const timer = document.querySelector('[data-testid="companion-timer"]');
-        const value = timer?.textContent.trim() || '';
-        return value && value !== '${initialTimer}' ? value : '';
-      })()`),
-      'Companion UI timer tick',
-      5_000,
-    );
-    await evaluate(cdp, `document.querySelector('[data-testid="companion-stop"]').click()`, {
-      userGesture: true,
-    });
-    const stoppedPhase = await waitFor(
-      () => evaluate(cdp, `document.querySelector('[data-focus-phase]')?.getAttribute('data-focus-phase') === 'stopped' ? 'stopped' : ''`),
-      'Companion UI timer stop',
-    );
-    const focus = { initialTimer, tickingTimer, stoppedPhase };
-
-    await evaluate(cdp, `document.querySelector('[data-testid="companion-sound-toggle"]').click()`, {
-      userGesture: true,
-    });
-    try {
-      await waitFor(
-        () => evaluate(cdp, `document.querySelector('[data-focus-phase]')?.getAttribute('data-sound-playing') === 'true'`),
-        'Companion rain playback',
-      );
-    } catch (error) {
-      const diagnostics = await evaluate(cdp, `({
-        phase: document.querySelector('[data-focus-phase]')?.getAttribute('data-focus-phase') || '',
-        playing: document.querySelector('[data-focus-phase]')?.getAttribute('data-sound-playing') || '',
-        pressed: document.querySelector('[data-testid="companion-sound-toggle"]')?.getAttribute('aria-pressed') || '',
-        alert: document.querySelector('[role="alert"]')?.textContent?.trim() || '',
-        resources: Array.from(performance.getEntriesByType('resource'))
-          .map((entry) => entry.name)
-          .filter((value) => value.includes('focus-')),
-      })`);
-      throw new Error(`${error.message}: ${JSON.stringify(diagnostics)}`);
-    }
-    const sound = await evaluate(cdp, `(async () => {
-      const records = await window.electronAPI.focusSound.list();
-      const url = Array.from(performance.getEntriesByType('resource'))
-        .map((entry) => entry.name)
-        .find((value) => value.includes('focus-rain') && value.endsWith('.wav'));
-      if (!url) throw new Error('bundled rain asset was not requested');
-      const context = new AudioContext({ latencyHint: 'playback' });
-      await context.resume();
-      const decoded = await context.decodeAudioData(await (await fetch(url)).arrayBuffer());
-      const stateWhileActive = context.state;
-      await context.close();
-      return {
-        managerAvailable: records.available,
-        uiPlaying: document.querySelector('[data-focus-phase]')
-          ?.getAttribute('data-sound-playing') === 'true',
-        contextState: stateWhileActive,
-        assetUrl: url,
-        duration: decoded.duration,
-        channels: decoded.numberOfChannels,
-      };
-    })()`, { userGesture: true });
-    assert.equal(sound.managerAvailable, true);
-    assert.equal(sound.uiPlaying, true);
-    assert.equal(sound.contextState, 'running');
-    assert.ok(sound.duration > 0);
-    assert.ok(sound.channels > 0);
-    await evaluate(cdp, `document.querySelector('[data-testid="companion-sound-toggle"]').click()`, {
-      userGesture: true,
-    });
-    await waitFor(
-      () => evaluate(cdp, `document.querySelector('[data-focus-phase]')?.getAttribute('data-sound-playing') === 'false'`),
-      'Companion rain stop',
-    );
+    const sentProbe = JSON.parse(fake.requests[0].body);
+    assert.equal(sentProbe.max_tokens, 64);
+    assert.equal(sentProbe.thinking, undefined);
 
     let lastLive2d = null;
     let live2d;
     try {
+      const preflight = await evaluate(cdp, `(async () => ({
+        avatar: await window.electronAPI.character.get(),
+        room: Boolean(document.querySelector('[data-testid="mvp-room"]')),
+      }))()`);
+      assert.equal(preflight.room, true);
+      if (preflight.avatar?.runtime?.live2d?.available !== true) {
+        lastLive2d = preflight;
+        throw new Error(
+          'Live2D desktop smoke requires an official Cubism Core via REVERIE_LIVE2D_CORE_PATH',
+        );
+      }
       live2d = await waitFor(async () => {
         const value = await evaluate(cdp, `(async () => ({
           core: Boolean(window.Live2DCubismCore),
@@ -362,8 +278,6 @@ async function main() {
     const report = {
       apiSurface,
       provider,
-      focus,
-      sound,
       live2d,
       screenshotPath,
       electronLogTail: electronLogs.join('').split(/\r?\n/).filter(Boolean).slice(-12),

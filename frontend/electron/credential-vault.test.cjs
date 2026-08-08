@@ -170,13 +170,12 @@ test('legacy unbound vaults remain readable but fail closed when an endpoint bin
   assert.equal(vault.status().llm.bindingKnown, false);
 });
 
-test('provider commit rollback restores exactly one credential scope', () => {
+test('provider commit rollback restores the sole MVP credential scope', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-rollback-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const oldBinding = 'd'.repeat(64);
   const newBinding = 'e'.repeat(64);
   vault.set('llm', { apiKey: 'old-llm' }, { binding: oldBinding });
-  vault.set('imageGen', { apiKey: 'keep-image' }, { binding: 'f'.repeat(64) });
   vault.setSession('llm', { customHeaders: 'X-Session: old' }, { binding: oldBinding });
   const snapshot = vault.snapshotScope('llm');
 
@@ -192,5 +191,5 @@ test('provider commit rollback restores exactly one credential scope', () => {
     vault.readForRuntime({ bindings: { llm: newBinding } }).llm,
     undefined,
   );
-  assert.deepEqual(vault.readForRuntime().imageGen, { apiKey: 'keep-image' });
+  assert.throws(() => vault.set('imageGen', { apiKey: 'forbidden' }), /scope is invalid/);
 });

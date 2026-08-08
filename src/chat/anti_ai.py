@@ -17,6 +17,7 @@ from .anti_ai_guard import (  # noqa: E402,F401
     build_anti_ai_prompt_block,
     build_retry_prompt,
     choose_avoidance_reply,
+    choose_identity_avoidance_reply,
     decode_possible_base64_payloads,
     detect_injection,
     detect_suspicion,

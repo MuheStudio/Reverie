@@ -30,11 +30,11 @@ function fakeChild(pid = 2468) {
 test('Windows launcher PID differences retain the secret-bound authority proof', () => {
   const ready = {
     kind: 'ready',
-    schema: 'reverie.bridge.stdio.ready.v3',
+    schema: 'reverie.bridge.stdio.ready.v4',
     transport: 'stdio-framed',
     pid: 9002,
     secretSha256: secretHash('owner-secret'),
-    protocolVersion: 3,
+    protocolVersion: 4,
     localModeEpoch: 0,
     localModeSessionId: null,
     personaId: 'persona',
@@ -88,11 +88,11 @@ test('framed supervisor correlates private controls and business events without 
   });
   child.stdout.write(encodeFrame({
     kind: 'ready',
-    schema: 'reverie.bridge.stdio.ready.v3',
+    schema: 'reverie.bridge.stdio.ready.v4',
     transport: 'stdio-framed',
     pid: child.pid,
     secretSha256: secretHash(context.secret),
-    protocolVersion: 3,
+    protocolVersion: 4,
     localModeEpoch: 0,
     localModeSessionId: null,
     personaId: 'persona',
@@ -111,7 +111,7 @@ test('framed supervisor correlates private controls and business events without 
   assert.equal(sent[0].kind, 'control');
   child.stdout.write(encodeFrame({
     kind: 'control_result',
-    schema: 'reverie.bridge.stdio.control.v3',
+    schema: 'reverie.bridge.stdio.control.v4',
     type: 'credentials:set',
     requestId: sent[0].requestId,
     applied: { llm: true, imageGen: false },
@@ -125,7 +125,7 @@ test('framed supervisor correlates private controls and business events without 
   assert.equal(getFrame.type, 'provider:get');
   child.stdout.write(encodeFrame({
     kind: 'control_result',
-    schema: 'reverie.bridge.stdio.control.v3',
+    schema: 'reverie.bridge.stdio.control.v4',
     type: 'provider:get',
     requestId: getFrame.requestId,
     llm: {
@@ -160,7 +160,7 @@ test('framed supervisor correlates private controls and business events without 
   });
   child.stdout.write(encodeFrame({
     kind: 'control_result',
-    schema: 'reverie.bridge.stdio.control.v3',
+    schema: 'reverie.bridge.stdio.control.v4',
     type: 'provider:configure',
     requestId: configureFrame.requestId,
     llm: {
@@ -195,39 +195,45 @@ test('framed supervisor correlates private controls and business events without 
   assert.equal(testFrame.credential.apiKey, 'private-canary');
   child.stdout.write(encodeFrame({
     kind: 'control_result',
-    schema: 'reverie.bridge.stdio.control.v3',
+    schema: 'reverie.bridge.stdio.control.v4',
     type: 'provider:test',
     requestId: testFrame.requestId,
     provider: 'deepseek',
     model: 'deepseek-chat',
     latency_ms: 321,
+    finish_reason: 'stop',
     ok: true,
   }));
   assert.deepEqual(await providerTest, {
     provider: 'deepseek',
     model: 'deepseek-chat',
     latencyMs: 321,
+    finishReason: 'stop',
   });
 
   supervisor.sendBusinessFrame({
-    type: 'game_state:get',
+    type: 'memory:query',
     payload: {
-      game_id: 'gomoku',
+      query: 'blueberries',
       expected_persona_id: 'renderer-forgery',
     },
-    request_id: 'rpc_game_state_01',
+    request_id: 'rpc_memory_query_01',
   });
   const command = sent.at(-1);
   assert.equal(command.kind, 'renderer_command');
-  assert.equal(command.schema, 'reverie.command.v3');
-  assert.equal(command.envelope.protocol_version, 3);
-  assert.equal(command.envelope.command, 'game_state:get');
+  assert.equal(command.schema, 'reverie.command.v4');
+  assert.equal(command.envelope.protocol_version, 4);
+  assert.equal(command.envelope.command, 'memory:query');
   assert.deepEqual(command.envelope.persona, {
     persona_id: 'persona',
     epoch: 1,
     fingerprint: 'a'.repeat(64),
   });
-  assert.equal(command.envelope.payload.expected_persona_id, 'persona');
+  assert.equal(command.envelope.payload.expected_persona_id, undefined);
+  assert.throws(
+    () => supervisor.sendBusinessFrame({ type: 'local_mode:set', payload: {} }),
+    /not declared/i,
+  );
 
   const event = new Promise((resolve) => supervisor.once('message', resolve));
   child.stdout.write(encodeFrame({

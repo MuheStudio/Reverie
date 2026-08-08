@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -11,6 +12,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
+
+from src.storage.encrypted_sqlite import connect_database
 
 RETENTION_LAYERS = {"permanent", "long_term", "short_term"}
 COGNITIVE_LAYERS = {"episodic", "semantic", "procedural"}
@@ -37,10 +40,12 @@ class MemoryCatalog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._connection = sqlite3.connect(
-            str(self.path), timeout=30.0, check_same_thread=False, isolation_level=None,
+        self._connection = connect_database(
+            self.path,
+            timeout=30.0,
+            check_same_thread=False,
+            isolation_level=None,
         )
-        self._connection.row_factory = sqlite3.Row
         with self._lock:
             self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.execute("PRAGMA synchronous=FULL")
@@ -73,6 +78,10 @@ class MemoryCatalog:
                 access_count INTEGER NOT NULL DEFAULT 0,
                 mention_count INTEGER NOT NULL DEFAULT 1,
                 lifecycle_state TEXT NOT NULL DEFAULT 'active',
+                fact_key TEXT NOT NULL DEFAULT '',
+                fact_revision INTEGER NOT NULL DEFAULT 0,
+                supersedes_id TEXT NOT NULL DEFAULT '',
+                confirmation_state TEXT NOT NULL DEFAULT 'observed',
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 CHECK (retention_layer IN ('permanent','long_term','short_term')),
@@ -126,6 +135,26 @@ class MemoryCatalog:
                 value TEXT NOT NULL,
                 updated_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS memory_candidates (
+                id TEXT PRIMARY KEY,
+                fact_key TEXT NOT NULL,
+                proposed_text TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_uri TEXT NOT NULL DEFAULT '',
+                source_hash TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                committed_memory_id TEXT NOT NULL DEFAULT '',
+                conflict_memory_id TEXT NOT NULL DEFAULT '',
+                decision_reason TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                decided_at REAL,
+                CHECK (status IN ('pending','confirmed','rejected'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_candidates_status_time
+                ON memory_candidates(status,created_at,id);
             """
         )
         # Forward-compatible migration for databases created before lifecycle
@@ -137,10 +166,257 @@ class MemoryCatalog:
             self._connection.execute(
                 "ALTER TABLE memory_records ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active'"
             )
+        for name, definition in (
+            ("fact_key", "TEXT NOT NULL DEFAULT ''"),
+            ("fact_revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("supersedes_id", "TEXT NOT NULL DEFAULT ''"),
+            ("confirmation_state", "TEXT NOT NULL DEFAULT 'observed'"),
+        ):
+            if name not in columns:
+                self._connection.execute(
+                    f"ALTER TABLE memory_records ADD COLUMN {name} {definition}"
+                )
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_lifecycle_time "
             "ON memory_records(lifecycle_state,timestamp,id)"
         )
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_fact_current "
+            "ON memory_records(fact_key,lifecycle_state,fact_revision DESC)"
+        )
+
+    @staticmethod
+    def _candidate_row(row: sqlite3.Row | dict) -> dict:
+        return dict(row)
+
+    def create_candidate(
+        self,
+        *,
+        fact_key: str,
+        proposed_text: str,
+        source_text: str,
+        source_type: str,
+        source_uri: str,
+        source_hash: str,
+        confidence: float,
+    ) -> dict:
+        fact_key = str(fact_key).strip()
+        proposed_text = str(proposed_text).strip()
+        source_text = str(source_text).strip()
+        source_hash = str(source_hash).strip()
+        if not fact_key or len(fact_key) > 500:
+            raise ValueError("Memory candidate fact key is invalid")
+        if not proposed_text or not source_text or not source_hash:
+            raise ValueError("Memory candidate evidence is incomplete")
+        digest = hashlib.sha256(
+            f"{fact_key}\0{proposed_text}\0{source_hash}".encode("utf-8")
+        ).hexdigest()
+        candidate_id = f"mc_{digest[:32]}"
+        now = time.time()
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_candidates (
+                    id,fact_key,proposed_text,source_text,source_type,source_uri,
+                    source_hash,confidence,status,created_at,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    candidate_id,
+                    fact_key,
+                    proposed_text[:2000],
+                    source_text[:4000],
+                    str(source_type)[:200],
+                    str(source_uri)[:4096],
+                    source_hash[:500],
+                    max(0.0, min(1.0, float(confidence))),
+                    "pending",
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM memory_candidates WHERE id=?",
+                (candidate_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Memory candidate disappeared after insert")
+        return self._candidate_row(row)
+
+    def list_candidates(self, *, status: str = "pending", limit: int = 100) -> list[dict]:
+        if status not in {"pending", "confirmed", "rejected", "all"}:
+            raise ValueError("Unsupported memory candidate status")
+        where = "" if status == "all" else "WHERE status=?"
+        params: list[object] = [] if status == "all" else [status]
+        params.append(max(1, min(1000, int(limit))))
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT * FROM memory_candidates {where} "
+                "ORDER BY created_at DESC,id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [self._candidate_row(row) for row in rows]
+
+    def reject_candidate(self, candidate_id: str, *, reason: str = "user_rejected") -> dict:
+        now = time.time()
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM memory_candidates WHERE id=?",
+                (str(candidate_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Memory candidate not found")
+            if str(row["status"]) == "confirmed":
+                raise ValueError("Confirmed memory candidate cannot be rejected")
+            connection.execute(
+                """UPDATE memory_candidates
+                   SET status='rejected',decision_reason=?,decided_at=?,updated_at=?
+                   WHERE id=?""",
+                (str(reason)[:500], now, now, str(candidate_id)),
+            )
+            decided = connection.execute(
+                "SELECT * FROM memory_candidates WHERE id=?",
+                (str(candidate_id),),
+            ).fetchone()
+        return self._candidate_row(decided)
+
+    def confirm_candidate(
+        self,
+        candidate_id: str,
+        *,
+        embedding_model_version: str,
+        importance: float = 0.75,
+        decision_reason: str = "user_confirmed",
+    ) -> dict:
+        """Atomically confirm a candidate and supersede a conflicting fact."""
+
+        now = time.time()
+        with self.transaction() as connection:
+            candidate = connection.execute(
+                "SELECT * FROM memory_candidates WHERE id=?",
+                (str(candidate_id),),
+            ).fetchone()
+            if candidate is None:
+                raise KeyError("Memory candidate not found")
+            if str(candidate["status"]) == "rejected":
+                raise ValueError("Rejected memory candidate cannot be confirmed")
+            if str(candidate["status"]) == "confirmed":
+                memory = connection.execute(
+                    "SELECT * FROM memory_records WHERE id=?",
+                    (str(candidate["committed_memory_id"]),),
+                ).fetchone()
+                return {
+                    "candidate": self._candidate_row(candidate),
+                    "memory": self._row(memory) if memory else None,
+                    "idempotent": True,
+                }
+
+            fact_key = str(candidate["fact_key"])
+            proposed_text = str(candidate["proposed_text"])
+            current = connection.execute(
+                """SELECT * FROM memory_records
+                   WHERE fact_key=? AND lifecycle_state='active'
+                     AND confirmation_state='confirmed'
+                   ORDER BY fact_revision DESC,updated_at DESC LIMIT 1""",
+                (fact_key,),
+            ).fetchone()
+            if current is not None and str(current["text"]) == proposed_text:
+                memory_id = str(current["id"])
+                conflict_id = ""
+                idempotent = True
+            else:
+                conflict_id = str(current["id"]) if current is not None else ""
+                revision = int(current["fact_revision"] or 0) + 1 if current is not None else 1
+                memory_id = f"fact_{hashlib.sha256(str(candidate_id).encode()).hexdigest()[:32]}"
+                if current is not None:
+                    connection.execute(
+                        """UPDATE memory_records
+                           SET lifecycle_state='superseded',updated_at=? WHERE id=?""",
+                        (now, conflict_id),
+                    )
+                emotions = json.dumps(
+                    {
+                        name: 0.0
+                        for name in (
+                            "joy", "sadness", "anger", "excitement", "calm",
+                            "anxiety", "grievance", "touched",
+                        )
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO memory_records (
+                        id,text,retention_layer,cognitive_layer,timestamp,event_time,
+                        importance,emotions_json,source_type,source_uri,source_hash,
+                        trust_level,sanitizer_status,sanitizer_flags_json,keywords,
+                        embedding_model_version,embedding_status,lifecycle_state,
+                        fact_key,fact_revision,supersedes_id,confirmation_state,
+                        created_at,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        memory_id,
+                        proposed_text,
+                        "long_term",
+                        "semantic",
+                        now,
+                        None,
+                        max(0.0, min(1.0, float(importance))),
+                        emotions,
+                        str(candidate["source_type"]),
+                        str(candidate["source_uri"]),
+                        str(candidate["source_hash"]),
+                        "trusted_local",
+                        "not_required",
+                        "[]",
+                        " ".join(memory_terms(proposed_text)),
+                        str(embedding_model_version),
+                        "pending",
+                        "active",
+                        fact_key,
+                        revision,
+                        conflict_id,
+                        "confirmed",
+                        now,
+                        now,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
+                    (memory_id, now, "candidate_confirmed"),
+                )
+                idempotent = False
+
+            connection.execute(
+                """UPDATE memory_candidates
+                   SET status='confirmed',committed_memory_id=?,conflict_memory_id=?,
+                       decision_reason=?,decided_at=?,updated_at=?
+                   WHERE id=?""",
+                (
+                    memory_id,
+                    conflict_id,
+                    str(decision_reason)[:500],
+                    now,
+                    now,
+                    str(candidate_id),
+                ),
+            )
+            decided = connection.execute(
+                "SELECT * FROM memory_candidates WHERE id=?",
+                (str(candidate_id),),
+            ).fetchone()
+            memory = connection.execute(
+                "SELECT * FROM memory_records WHERE id=?",
+                (memory_id,),
+            ).fetchone()
+        return {
+            "candidate": self._candidate_row(decided),
+            "memory": self._row(memory) if memory else None,
+            "idempotent": idempotent,
+        }
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -327,6 +603,20 @@ class MemoryCatalog:
             ).fetchall()
         return [self._row(row) for row in rows]
 
+    def list_confirmed(self, *, limit: int = 100) -> list[dict]:
+        """Return only current facts the user explicitly approved."""
+
+        bounded_limit = max(1, min(200, int(limit)))
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT * FROM memory_records
+                   WHERE confirmation_state='confirmed'
+                     AND lifecycle_state='active'
+                   ORDER BY updated_at DESC,id DESC LIMIT ?""",
+                (bounded_limit,),
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
     def page(
         self,
         *,
@@ -338,7 +628,7 @@ class MemoryCatalog:
         """Return a keyset page without imposing a catalog-wide row cap."""
 
         size = max(1, min(2_000, int(page_size)))
-        if lifecycle_state not in {"active", "expired", "all"}:
+        if lifecycle_state not in {"active", "expired", "superseded", "all"}:
             raise ValueError("Unsupported memory lifecycle state")
         clauses: list[str] = []
         params: list[object] = []
@@ -483,9 +773,45 @@ class MemoryCatalog:
             ).fetchall()
         return [self._row(row) for row in rows]
 
-    def delete(self, memory_id: str) -> None:
+    def delete(self, memory_id: str) -> bool:
+        """Purge a memory and its confirming evidence instead of leaving a shadow copy."""
+
         with self.transaction() as connection:
-            connection.execute("DELETE FROM memory_records WHERE id=?", (memory_id,))
+            connection.execute(
+                "DELETE FROM memory_candidates WHERE committed_memory_id=?",
+                (memory_id,),
+            )
+            connection.execute(
+                "UPDATE memory_candidates SET conflict_memory_id='' WHERE conflict_memory_id=?",
+                (memory_id,),
+            )
+            cursor = connection.execute(
+                "DELETE FROM memory_records WHERE id=?",
+                (memory_id,),
+            )
+        return cursor.rowcount > 0
+
+    def delete_fact_lineage(self, fact_key: str) -> list[str]:
+        """Atomically purge every revision and evidence row for one confirmed fact."""
+
+        key = str(fact_key).strip()
+        if not key:
+            raise ValueError("Memory fact key is empty")
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT id FROM memory_records WHERE fact_key=?",
+                (key,),
+            ).fetchall()
+            memory_ids = [str(row["id"]) for row in rows]
+            connection.execute(
+                "DELETE FROM memory_candidates WHERE fact_key=?",
+                (key,),
+            )
+            connection.execute(
+                "DELETE FROM memory_records WHERE fact_key=?",
+                (key,),
+            )
+        return memory_ids
 
     def delete_by_layer(self, layer: str) -> None:
         with self.transaction() as connection:
@@ -699,8 +1025,14 @@ class MemoryCatalog:
                 raise ValueError("Backup sanitizer flags must be a list")
             flags = [str(flag)[:200] for flag in raw_flags[:64]]
             lifecycle_state = str(record.get("lifecycle_state", "active"))
-            if lifecycle_state not in {"active", "expired"}:
+            if lifecycle_state not in {"active", "expired", "superseded"}:
                 raise ValueError("Backup contains an invalid memory lifecycle state")
+            fact_key = str(record.get("fact_key", ""))[:500]
+            fact_revision = max(0, int(record.get("fact_revision", 0) or 0))
+            supersedes_id = str(record.get("supersedes_id", ""))[:500]
+            confirmation_state = str(record.get("confirmation_state", "observed"))
+            if confirmation_state not in {"observed", "confirmed"}:
+                raise ValueError("Backup contains an invalid confirmation state")
             prepared.append((
                 memory_id, text, retention, cognitive, timestamp, event_time,
                 max(0.0, min(1.0, importance)),
@@ -711,7 +1043,8 @@ class MemoryCatalog:
                 json.dumps(flags, ensure_ascii=False),
                 " ".join(memory_terms(text)),
                 model_version,
-                "pending", lifecycle_state, now, now,
+                "pending", lifecycle_state, fact_key, fact_revision,
+                supersedes_id, confirmation_state, now, now,
             ))
         with self.transaction() as connection:
             connection.execute("DELETE FROM memory_records")
@@ -720,8 +1053,9 @@ class MemoryCatalog:
                        id,text,retention_layer,cognitive_layer,timestamp,event_time,importance,
                        emotions_json,source_type,source_uri,source_hash,trust_level,
                        sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
-                       embedding_status,lifecycle_state,created_at,updated_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       embedding_status,lifecycle_state,fact_key,fact_revision,
+                       supersedes_id,confirmation_state,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 prepared,
             )
         return len(prepared)
@@ -747,8 +1081,9 @@ class MemoryCatalog:
                    id,text,retention_layer,cognitive_layer,timestamp,event_time,importance,
                    emotions_json,source_type,source_uri,source_hash,trust_level,
                    sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
-                   embedding_status,lifecycle_state,created_at,updated_at
-               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   embedding_status,lifecycle_state,fact_key,fact_revision,
+                   supersedes_id,confirmation_state,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                    text=excluded.text,retention_layer=excluded.retention_layer,
                    cognitive_layer=excluded.cognitive_layer,timestamp=excluded.timestamp,
@@ -761,6 +1096,9 @@ class MemoryCatalog:
                    keywords=excluded.keywords,
                    embedding_model_version=excluded.embedding_model_version,
                    embedding_status='pending',lifecycle_state=excluded.lifecycle_state,
+                   fact_key=excluded.fact_key,fact_revision=excluded.fact_revision,
+                   supersedes_id=excluded.supersedes_id,
+                   confirmation_state=excluded.confirmation_state,
                    created_at=excluded.created_at,updated_at=excluded.updated_at"""
         with self.transaction() as connection:
             connection.execute(
@@ -847,8 +1185,18 @@ class MemoryCatalog:
             raise ValueError("Backup sanitizer flags must be a list")
         flags = [str(flag)[:200] for flag in raw_flags[:64]]
         lifecycle_state = str(record.get("lifecycle_state", "active"))
-        if lifecycle_state not in {"active", "expired"}:
+        if lifecycle_state not in {"active", "expired", "superseded"}:
             raise ValueError("Backup contains an invalid memory lifecycle state")
+        fact_key = str(record.get("fact_key", ""))
+        supersedes_id = str(record.get("supersedes_id", ""))
+        if len(fact_key) > 500 or len(supersedes_id) > 500:
+            raise ValueError("Backup contains oversized fact version metadata")
+        fact_revision = int(record.get("fact_revision", 0) or 0)
+        if fact_revision < 0:
+            raise ValueError("Backup contains an invalid fact revision")
+        confirmation_state = str(record.get("confirmation_state", "observed"))
+        if confirmation_state not in {"observed", "confirmed"}:
+            raise ValueError("Backup contains an invalid confirmation state")
         return (
             memory_id, text, retention, cognitive, timestamp, event_time,
             max(0.0, min(1.0, importance)),
@@ -858,7 +1206,8 @@ class MemoryCatalog:
             str(record.get("sanitizer_status", "not_required"))[:200],
             json.dumps(flags, ensure_ascii=False),
             " ".join(memory_terms(text)), model_version,
-            "pending", lifecycle_state, now, now,
+            "pending", lifecycle_state, fact_key, fact_revision,
+            supersedes_id, confirmation_state, now, now,
         )
 
     def reset_embedding_derivatives(self) -> None:

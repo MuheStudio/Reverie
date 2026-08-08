@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
+const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
+const { createTextureTransformer } = require('./live2d-build-assets.cjs');
 const {
   assertProductionPayload,
   copyProductionPythonSource,
@@ -20,7 +22,10 @@ const packageName = `Reverie-Windows-Test-${timestamp}`;
 const packageDir = path.join(outRoot, packageName);
 const resourcesDir = path.join(packageDir, 'resources');
 const appDir = path.join(resourcesDir, 'app');
+const smokeMarker = path.join(frontendRoot, '.package-smoke', 'latest-package.json');
 const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
+const live2dTestEnabled = process.env.REVERIE_LIVE2D_TEST_BUILD === '1';
+const live2dAssetsEnabled = live2dBuildEnabled || live2dTestEnabled;
 const live2dLicenseSource = process.env.REVERIE_LIVE2D_LICENSE_PATH
   ? path.resolve(process.env.REVERIE_LIVE2D_LICENSE_PATH)
   : path.join(projectRoot, 'LICENSES_CREDITS', 'LIVE2D_PUBLICATION_LICENSE.json');
@@ -77,7 +82,7 @@ function runElectronBuild() {
       env: {
         ...process.env,
         VITE_ELECTRON_BUILD: 'true',
-        VITE_LIVE2D_PUBLIC_ENABLED: live2dBuildEnabled ? 'true' : 'false',
+        VITE_LIVE2D_PUBLIC_ENABLED: live2dAssetsEnabled ? 'true' : 'false',
       },
     },
   );
@@ -133,7 +138,9 @@ function createTestBuildMetadata() {
     product: 'Reverie',
     publishable: false,
     distribution: 'TEST_ONLY_DO_NOT_RELEASE',
-    live2dReleaseGate: live2dBuildEnabled ? 'licensed-test-runtime' : 'disabled-and-scanned',
+    live2dReleaseGate: live2dBuildEnabled
+      ? 'licensed-test-runtime'
+      : live2dTestEnabled ? 'internal-test-runtime' : 'disabled-and-scanned',
     generatedAtUtc: new Date().toISOString(),
   };
 }
@@ -147,17 +154,9 @@ function copyIfExists(src, dest) {
 function copyDataSkeleton() {
   const dataDir = path.join(resourcesDir, 'data');
   const dirs = [
-    'backups',
-    'diary',
-    path.join('diary', 'keys'),
-    'interest',
     'memory',
     'persona',
-    'social',
-    'stickers',
-    'timeline',
     'user',
-    'web_cache',
   ];
   for (const dir of dirs) {
     ensureDir(path.join(dataDir, dir));
@@ -165,14 +164,14 @@ function copyDataSkeleton() {
 
   writeJson(path.join(dataDir, 'config.json'), {
     llm: {
-      provider: 'deepseek',
-      model: 'deepseek-v4-flash',
-      base_url: 'https://api.deepseek.com',
+      provider: 'ollama',
+      model: '',
+      base_url: 'http://localhost:11434/v1',
       temperature: 0.82,
       max_tokens: 2048,
     },
     memory: {
-      embedding_model: 'BAAI/bge-small-en-v1.5',
+      embedding_model: 'BAAI/bge-small-zh-v1.5',
       retention_days: 730,
       forgetting_enabled: true,
       long_term_forget_days: 90,
@@ -214,10 +213,6 @@ function copyDataSkeleton() {
     path.join(projectRoot, 'data', 'persona', 'active.json'),
     path.join(dataDir, 'persona', 'active.json'),
   );
-  copyIfExists(
-    path.join(projectRoot, 'data', 'stickers', 'library.json'),
-    path.join(dataDir, 'stickers', 'library.json'),
-  );
   writeJson(path.join(dataDir, 'user', 'profile.json'), {
     name: '',
     nickname: '',
@@ -233,10 +228,42 @@ function copyDataSkeleton() {
   });
 }
 
-function main() {
+function stageLive2DTestAssets() {
+  if (!live2dAssetsEnabled) return null;
+  const coreSource = process.env.REVERIE_LIVE2D_CORE_PATH
+    ? path.resolve(process.env.REVERIE_LIVE2D_CORE_PATH)
+    : '';
+  const modelSource = process.env.REVERIE_YUMI_SOURCE
+    ? path.resolve(process.env.REVERIE_YUMI_SOURCE)
+    : path.resolve(repoRoot, '皮套-yumi');
+  return stageLive2DRuntimeAssets({
+    coreSource,
+    modelSource,
+    resourceRoot: resourcesDir,
+    mode: live2dBuildEnabled ? 'public' : 'internal-test',
+    transformCharacter: createTextureTransformer({ projectRoot, frontendRoot }),
+  });
+}
+
+async function applyPortableExecutableMetadata(executable) {
+  const { rcedit } = await import('rcedit');
+  await rcedit(executable, {
+    icon: path.join(frontendRoot, 'public', 'icon.ico'),
+    'file-version': '0.1.0.0',
+    'product-version': '0.1.0.0',
+    'version-string': {
+      ProductName: 'Reverie',
+      FileDescription: 'Reverie local-first digital companion',
+      OriginalFilename: 'Reverie.exe',
+    },
+  });
+}
+
+async function main() {
   const electronExe = require('electron');
   const electronDist = path.dirname(electronExe);
 
+  removeIfExists(smokeMarker);
   runElectronBuild();
   enforceLive2DTestPackageBoundary([
     path.join(projectRoot, 'src'),
@@ -260,6 +287,7 @@ function main() {
   if (fs.existsSync(oldExe)) {
     fs.renameSync(oldExe, newExe);
   }
+  await applyPortableExecutableMetadata(newExe);
 
   ensureDir(appDir);
   copyRecursive(path.join(frontendRoot, 'dist'), path.join(appDir, 'dist'));
@@ -295,7 +323,9 @@ function main() {
     copyIfExists(path.join(projectRoot, docFile), path.join(resourcesDir, docFile));
   }
   copyIfExists(path.join(projectRoot, 'LICENSES_CREDITS'), path.join(resourcesDir, 'LICENSES_CREDITS'));
+  copyRecursive(path.join(frontendRoot, 'public', 'icon.ico'), path.join(resourcesDir, 'icon.ico'));
   copyDataSkeleton();
+  stageLive2DTestAssets();
   const licenseResult = spawnSync(
     path.join(resourcesDir, 'python', 'python.exe'),
     [
@@ -324,9 +354,15 @@ function main() {
       'Licensed Live2D runtime in a non-publishable test build.\r\n',
       'utf8',
     );
+  } else if (live2dTestEnabled) {
+    fs.writeFileSync(
+      path.join(resourcesDir, 'LIVE2D_RUNTIME_ENABLED'),
+      'Internal test-only Live2D runtime. Redistribution is prohibited.\r\n',
+      'utf8',
+    );
   }
   assertNoTestCode(path.join(appDir, 'electron'));
-  if (!live2dBuildEnabled) {
+  if (!live2dAssetsEnabled) {
     enforceLive2DTestPackageBoundary([appDir, resourcesDir]);
   }
   writeJson(path.join(packageDir, 'TEST-BUILD-DO-NOT-RELEASE.json'), createTestBuildMetadata());
@@ -349,13 +385,23 @@ function main() {
     'utf-8',
   );
 
+  writeJson(smokeMarker, {
+    schema: 'reverie.package-smoke-target.v1',
+    packageRoot: packageDir,
+  });
   console.log(`[TEST ONLY - NOT FOR RELEASE] ${packageDir}`);
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
 
 module.exports = {
   assertNoTestCode,
+  applyPortableExecutableMetadata,
   createTestBuildMetadata,
   enforceLive2DTestPackageBoundary,
   main,

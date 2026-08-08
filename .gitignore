@@ -35,21 +35,13 @@ frontend/.vite/
 frontend/.vitest/
 *.tsbuildinfo
 
-# Project data (user-generated, local only)
-data/persona/*.json
-data/memory/*
-data/diary/*
-data/stickers/*
-data/backups/*
-data/config.json
-data/**/*.db
-data/**/*.db-*
-data/**/*.sqlite
-data/**/*.sqlite3
-data/**/*.sqlite3-*
-data/**/*.log
-data/assets/
-data/runtime/
+# Project data (user-generated, local only). The whole directory is local;
+# only keep placeholder files (.gitkeep) so empty directories survive clones.
+data/*
+data/**
+!data/.gitkeep
+!data/**/.gitkeep
+data/config.invalid.*
 
 # Environment secrets
 .env

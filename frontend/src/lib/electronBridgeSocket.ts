@@ -100,8 +100,9 @@ export class ElectronBridgeSocket implements BridgeSocketLike {
         ? { request_id: frame.request_id }
         : {}),
     }).catch(() => {
+      // A rejected command must not destroy a healthy connection. Only surface
+      // the failure; the owning hook decides whether the bridge is still usable.
       this.onerror?.(new Event('error'));
-      this.close(1011, 'bridge send failed');
     });
   }
 

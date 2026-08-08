@@ -18,10 +18,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from ..kernel.contracts import CommandEnvelopeV3, DomainEventV3, PersonaScopeV3
+from ..kernel.contracts import CommandEnvelopeV4, DomainEventV4, PersonaScopeV4
 from ..kernel.storage import KernelStore
 from ..local_mode import LocalModeBlocked, LocalModeGate, get_local_mode_gate
 from .pending import ACTIVE_STATES, PendingChatStore, epoch_to_utc, utc_to_epoch
+from .turn_engine import LegacySessionTurnGenerator, TurnEngine, TurnRequest
 
 logger = logging.getLogger("reverie.chat.delivery")
 
@@ -142,6 +143,7 @@ class ChatDeliveryCoordinator:
         scope_is_current: ScopeValidator | None = None,
         local_mode_gate: LocalModeGate | None = None,
         kernel_store: KernelStore | None = None,
+        turn_engine: TurnEngine | None = None,
         provider_timeout: float = 180.0,
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
@@ -153,6 +155,9 @@ class ChatDeliveryCoordinator:
         self.scope_is_current = scope_is_current or (lambda _item: True)
         self.local_mode_gate = local_mode_gate or get_local_mode_gate()
         self.kernel_store = kernel_store
+        self.turn_engine = turn_engine or TurnEngine(
+            LegacySessionTurnGenerator(get_session)
+        )
         self.provider_timeout = max(1.0, float(provider_timeout))
         self.clock = clock
         self.monotonic = monotonic
@@ -160,7 +165,6 @@ class ChatDeliveryCoordinator:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.reveal_events: dict[str, asyncio.Event] = {}
         self.anchors: dict[str, tuple[float, float]] = {}
-        self.generation_lock = asyncio.Lock()
 
     def _track(self, request_id: str, task: asyncio.Task[None]) -> None:
         previous = self.tasks.get(request_id)
@@ -259,9 +263,41 @@ class ChatDeliveryCoordinator:
         )
         self.anchors[request_id] = (self.monotonic(), utc_to_epoch(sent_at, fallback=now))
         item = self.store.get_item(request_id) or {}
+        await self._cancel_superseded_turns(
+            conversation_id=conversation_id,
+            persona_id=persona_id,
+            client_id=client_id,
+            except_request_id=request_id,
+        )
         await self._emit_state(item, label="她看见了")
         self._spawn(request_id)
         return self._state_payload(item)
+
+    async def _cancel_superseded_turns(
+        self,
+        *,
+        conversation_id: str,
+        persona_id: str,
+        client_id: str,
+        except_request_id: str,
+    ) -> None:
+        """Durably cancel an older turn before accepting newer user input."""
+
+        for item in self.store.list_active():
+            request_id = str(item.get("request_id") or "")
+            if (
+                not request_id
+                or request_id == except_request_id
+                or item.get("conversation_id") != conversation_id
+                or item.get("persona_id") != persona_id
+                or item.get("client_id") != client_id
+            ):
+                continue
+            await self.cancel(
+                request_id,
+                client_id=client_id,
+                reason="superseded_by_user_input",
+            )
 
     async def resume(
         self,
@@ -393,48 +429,36 @@ class ChatDeliveryCoordinator:
         if not self.scope_is_current(item):
             self.store.mark_cancelled(request_id, reason="scope_changed")
             return
-        session = self.get_session()
-        if session is None or not hasattr(session, "send_message"):
-            raise ChatDeliveryError("会话未初始化")
+        if item.get("state") != "queued":
+            return
+        self.store.mark_generating(request_id)
+        if self.kernel_store is not None:
+            self.kernel_store.mark_provider_dispatched(request_id)
+        item = self.store.get_item(request_id) or item
+        if not await self._emit_state(item, label="她看见了，正在想怎么说"):
+            # Generation may continue without a renderer; the result will be
+            # cached, but no bubble is emitted to another arbitrary window.
+            logger.info("Controller disconnected while request %s was generating", request_id)
 
-        async with self.generation_lock:
-            item = self.store.get_item(request_id)
-            if not item or item.get("cancelled") or item.get("state") != "queued":
-                return
-            self.local_mode_gate.require_remote("chat generation")
-            if not self.scope_is_current(item):
-                self.store.mark_cancelled(request_id, reason="scope_changed")
-                return
-            self.store.mark_generating(request_id)
-            if self.kernel_store is not None:
-                self.kernel_store.mark_provider_dispatched(request_id)
-            item = self.store.get_item(request_id) or item
-            if not await self._emit_state(item, label="她看见了，正在想怎么说"):
-                # Generation may continue without a renderer; the result will be
-                # cached, but no bubble is emitted to another arbitrary window.
-                logger.info("Controller disconnected while request %s was generating", request_id)
-
-            send_method = session.send_message
-            parameters = inspect.signature(send_method).parameters
-            kwargs: dict[str, Any] = {}
-            if "status_delay_applied" in parameters:
-                kwargs["status_delay_applied"] = True
-            if "defer_side_effects" in parameters:
-                kwargs["defer_side_effects"] = True
-            if "request_id" in parameters:
-                kwargs["request_id"] = request_id
-
-            try:
-                result = await asyncio.wait_for(
-                    send_method(str(item.get("text", "")), **kwargs),
-                    timeout=self.provider_timeout,
-                )
-            except LocalModeBlocked:
-                self.store.mark_cancelled(request_id, reason="local_mode")
-                await self._emit_state(self.store.get_item(request_id) or item)
-                return
-        if not isinstance(result, dict):
-            raise ChatDeliveryError("Chat session returned an invalid result")
+        request = TurnRequest(
+            conversation_id=str(item.get("conversation_id") or ""),
+            turn_id=request_id,
+            generation_id=request_id,
+            text=str(item.get("text") or ""),
+            persona_id=str(item.get("persona_id") or ""),
+            persona_epoch=int(item.get("persona_epoch") or 0),
+            persona_fingerprint=str(item.get("persona_fingerprint") or ""),
+        )
+        try:
+            outcome = await self.turn_engine.generate(
+                request,
+                timeout=self.provider_timeout,
+            )
+        except LocalModeBlocked:
+            self.store.mark_cancelled(request_id, reason="local_mode")
+            await self._emit_state(self.store.get_item(request_id) or item)
+            return
+        result = outcome.payload
 
         current = self.store.get_item(request_id)
         if not current or current.get("cancelled") or current.get("state") == "cancelled":
@@ -465,7 +489,7 @@ class ChatDeliveryCoordinator:
         result["characters_per_minute"] = cpm
         result["delivery_targets_seconds"] = targets
         result["provider_completed_at_utc"] = _utc_now(self.clock)
-        result["side_effects_deferred"] = "defer_side_effects" in parameters
+        result["side_effects_deferred"] = outcome.side_effects_deferred
         sent_epoch = utc_to_epoch(current.get("created_at_utc"), fallback=self.clock())
         deliver_at = sent_epoch + (targets[0] if targets else 0.0)
         self.store.mark_ready(request_id, result, deliver_at_utc=epoch_to_utc(deliver_at))
@@ -595,16 +619,16 @@ class ChatDeliveryCoordinator:
             self.store.mark_commit_uncertain(request_id, str(exc))
             logger.exception("Chat side-effect commit failed for %s", request_id)
 
-    def _kernel_command(self, item: dict[str, Any]) -> CommandEnvelopeV3 | None:
+    def _kernel_command(self, item: dict[str, Any]) -> CommandEnvelopeV4 | None:
         if self.kernel_store is None:
             return None
-        persona = PersonaScopeV3(
+        persona = PersonaScopeV4(
             persona_id=str(item.get("persona_id") or ""),
             epoch=int(item.get("persona_epoch") or 0),
             fingerprint=str(item.get("persona_fingerprint") or ""),
         )
         request_id = str(item.get("request_id") or "")
-        return CommandEnvelopeV3(
+        return CommandEnvelopeV4(
             request_id=request_id,
             idempotency_key=request_id,
             command="chat:send",
@@ -627,13 +651,13 @@ class ChatDeliveryCoordinator:
         if not isinstance(context, dict):
             context = {}
         events = [
-            DomainEventV3(
+            DomainEventV4(
                 event_type="relationship.interaction.requested",
                 persona=command.persona,
                 causation_id=command.request_id,
                 payload={"request_id": command.request_id},
             ),
-            DomainEventV3(
+            DomainEventV4(
                 event_type="emotion.exchange.requested",
                 persona=command.persona,
                 causation_id=command.request_id,
@@ -642,7 +666,7 @@ class ChatDeliveryCoordinator:
         ]
         if bool(context.get("memory_safe")) and context.get("memory_directive") != "skip":
             events.append(
-                DomainEventV3(
+                DomainEventV4(
                     event_type="memory.interaction.requested",
                     persona=command.persona,
                     causation_id=command.request_id,

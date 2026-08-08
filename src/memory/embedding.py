@@ -1,13 +1,12 @@
 """Local embedding model loader and inference.
 
-Uses sentence-transformers to run BAAI/bge-small-en-v1.5 locally.
-If the model is not already cached, falls back to deterministic hash
-embeddings so Reverie can still run offline.
+Semantic recall is available only when a real local model is present. Missing
+models fail explicitly so callers can use the canonical lexical index without
+pretending deterministic noise is semantic similarity.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import threading
 from dataclasses import dataclass
@@ -16,7 +15,8 @@ import numpy as np
 
 logger = logging.getLogger("reverie.memory.embedding")
 
-VECTOR_DIM = 384
+DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+DEFAULT_DIMENSIONS = 384
 _embedding_models: dict[str, object] = {}
 _embedding_load_failures: set[str] = set()
 _embedding_lock = threading.RLock()
@@ -32,9 +32,13 @@ class EmbeddingRuntime:
     backend: str
 
 
-def get_embedding_model(model_name: str = "BAAI/bge-small-en-v1.5"):
+class EmbeddingUnavailable(RuntimeError):
+    """The requested semantic model is not installed in the local runtime."""
+
+
+def get_embedding_model(model_name: str = DEFAULT_MODEL):
     """Load one cached model without downloading it implicitly."""
-    requested = (model_name or "BAAI/bge-small-en-v1.5").strip()
+    requested = (model_name or DEFAULT_MODEL).strip()
     with _embedding_lock:
         if requested in _embedding_models:
             return _embedding_models[requested]
@@ -50,22 +54,22 @@ def get_embedding_model(model_name: str = "BAAI/bge-small-en-v1.5"):
         except Exception as exc:
             _embedding_load_failures.add(requested)
             logger.warning(
-                "Embedding model %s unavailable; using deterministic fallback vectors (%s)",
+                "Embedding model %s unavailable; semantic recall is disabled (%s)",
                 requested, exc,
             )
             return None
 
 
-def embedding_runtime_info(model_name: str = "BAAI/bge-small-en-v1.5") -> EmbeddingRuntime:
-    """Return a stable version tag that detects fallback-to-model drift."""
-    requested = (model_name or "BAAI/bge-small-en-v1.5").strip()
+def embedding_runtime_info(model_name: str = DEFAULT_MODEL) -> EmbeddingRuntime:
+    """Return a stable version tag that detects lexical-to-model drift."""
+    requested = (model_name or DEFAULT_MODEL).strip()
     model = get_embedding_model(requested)
     if model is None:
         return EmbeddingRuntime(
             requested_model=requested,
-            model_version=f"reverie-hash-v1:{VECTOR_DIM}",
-            dimensions=VECTOR_DIM,
-            backend="deterministic_hash",
+            model_version=f"unavailable:{requested}",
+            dimensions=DEFAULT_DIMENSIONS,
+            backend="unavailable",
         )
     getter = getattr(model, "get_embedding_dimension", None)
     if not callable(getter):
@@ -84,7 +88,7 @@ def embedding_runtime_info(model_name: str = "BAAI/bge-small-en-v1.5") -> Embedd
     )
 
 
-def embed_texts(texts: list[str], model_name: str = "BAAI/bge-small-en-v1.5") -> np.ndarray:
+def embed_texts(texts: list[str], model_name: str = DEFAULT_MODEL) -> np.ndarray:
     """Convert a list of strings to embedding vectors.
 
     The shape is determined by the active runtime and may change across models.
@@ -95,17 +99,21 @@ def embed_texts(texts: list[str], model_name: str = "BAAI/bge-small-en-v1.5") ->
 
     model = get_embedding_model(model_name)
     if model is None:
-        return np.vstack([_hash_embedding(text) for text in texts]).astype(np.float32)
+        raise EmbeddingUnavailable(
+            f"semantic embedding model is unavailable: {model_name}"
+        )
 
     embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
     return np.asarray(embeddings, dtype=np.float32)
 
 
-def embed_query(query: str, model_name: str = "BAAI/bge-small-en-v1.5") -> np.ndarray:
+def embed_query(query: str, model_name: str = DEFAULT_MODEL) -> np.ndarray:
     """Embed a search query with the appropriate BGE prefix."""
     model = get_embedding_model(model_name)
     if model is None:
-        return _hash_embedding(query)
+        raise EmbeddingUnavailable(
+            f"semantic embedding model is unavailable: {model_name}"
+        )
     prepared = query
     if "bge" in model_name.lower() and not query.startswith("Represent this sentence"):
         prepared = f"Represent this sentence for searching relevant passages: {query}"
@@ -115,19 +123,3 @@ def embed_query(query: str, model_name: str = "BAAI/bge-small-en-v1.5") -> np.nd
         show_progress_bar=False,
     )
     return embedding[0].astype(np.float32)
-
-
-def _hash_embedding(text: str) -> np.ndarray:
-    """Create a deterministic normalized fallback vector for offline mode."""
-    seed = hashlib.sha256(text.encode("utf-8", errors="replace")).digest()
-    values: list[float] = []
-    counter = 0
-    while len(values) < VECTOR_DIM:
-        block = hashlib.sha256(seed + counter.to_bytes(4, "big")).digest()
-        values.extend((byte / 127.5) - 1.0 for byte in block)
-        counter += 1
-    arr = np.array(values[:VECTOR_DIM], dtype=np.float32)
-    norm = np.linalg.norm(arr)
-    if norm > 0:
-        arr = arr / norm
-    return arr.astype(np.float32)

@@ -2,10 +2,12 @@
 
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const { COMMAND_NAMES } = require('./protocol-v4.generated.cjs');
 
-const MAX_FRAME_BYTES = 16 * 1024 * 1024;
-const READY_SCHEMA = 'reverie.bridge.stdio.ready.v3';
-const CONTROL_SCHEMA = 'reverie.bridge.stdio.control.v3';
+const MAX_FRAME_BYTES = 1024 * 1024;
+const READY_SCHEMA = 'reverie.bridge.stdio.ready.v4';
+const CONTROL_SCHEMA = 'reverie.bridge.stdio.control.v4';
+const COMMAND_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 function secretHash(secret) {
   return crypto.createHash('sha256').update(secret, 'utf8').digest('hex');
@@ -75,7 +77,7 @@ class FrameDecoder {
 
 function validateReady(value, expected) {
   if (value?.kind !== 'ready' || value.schema !== READY_SCHEMA
-    || value.transport !== 'stdio-framed' || value.protocolVersion !== 3) {
+    || value.transport !== 'stdio-framed' || value.protocolVersion !== 4) {
     throw new Error('Invalid framed bridge ready record');
   }
   if (!Number.isInteger(value.pid) || value.pid < 1) {
@@ -99,7 +101,7 @@ function validateReady(value, expected) {
   }
   return Object.freeze({
     transport: 'stdio-framed',
-    protocolVersion: 3,
+    protocolVersion: 4,
     personaId: value.personaId,
     personaEpoch: value.personaEpoch,
     personaFingerprint: value.personaFingerprint.toLowerCase(),
@@ -291,27 +293,43 @@ class FramedBridgeSupervisor extends EventEmitter {
     if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
       throw new TypeError('Business frame must be an object');
     }
+    if (!COMMAND_NAMES.has(String(frame.type || ''))) {
+      throw new TypeError('Business frame command is not declared by protocol V4');
+    }
+    const sourcePayload = { ...(frame.payload || {}) };
+    const payloadRequestId = frame.type === 'chat:send'
+      ? String(sourcePayload.request_id || '')
+      : '';
     const requestId = frame.request_id
       ? String(frame.request_id)
-      : `ipc_${crypto.randomBytes(12).toString('hex')}`;
-    const payload = {
-      ...(frame.payload || {}),
-      // Renderer values are descriptive. The trusted host stamps the persona
-      // generation that was proven by the V3 startup handshake.
-      expected_persona_id: this.ready.personaId,
-      expected_persona_epoch: this.ready.personaEpoch,
-      expected_persona_fingerprint: this.ready.personaFingerprint,
-    };
+      : payloadRequestId || `ipc_${crypto.randomBytes(12).toString('hex')}`;
+    if (!COMMAND_ID.test(requestId)) {
+      throw new TypeError('Business frame request id is invalid');
+    }
     const idempotencyKey = String(
-      payload.idempotency_key
-      || payload.client_request_id
+      sourcePayload.idempotency_key
+      || sourcePayload.client_request_id
       || requestId,
     );
+    if (!COMMAND_ID.test(idempotencyKey)) {
+      throw new TypeError('Business frame idempotency key is invalid');
+    }
+    // Persona proof and idempotency metadata are host-owned envelope fields.
+    // Drop renderer copies instead of allowing two conflicting authorities.
+    for (const field of [
+      'expected_persona_id',
+      'expected_persona_epoch',
+      'expected_persona_fingerprint',
+      'idempotency_key',
+      'client_request_id',
+    ]) {
+      delete sourcePayload[field];
+    }
     this._write({
       kind: 'renderer_command',
-      schema: 'reverie.command.v3',
+      schema: 'reverie.command.v4',
       envelope: {
-        protocol_version: 3,
+        protocol_version: 4,
         request_id: requestId,
         idempotency_key: idempotencyKey,
         command: String(frame.type || ''),
@@ -320,7 +338,7 @@ class FramedBridgeSupervisor extends EventEmitter {
           epoch: this.ready.personaEpoch,
           fingerprint: this.ready.personaFingerprint,
         },
-        payload,
+        payload: sourcePayload,
         created_at_utc: new Date().toISOString(),
       },
     });
@@ -396,50 +414,20 @@ class FramedBridgeSupervisor extends EventEmitter {
         if (typeof frame.provider !== 'string'
           || typeof frame.model !== 'string'
           || !Number.isInteger(frame.latency_ms)
-          || frame.latency_ms < 0) {
+          || frame.latency_ms < 0
+          || (frame.finish_reason != null && typeof frame.finish_reason !== 'string')) {
           throw new Error('Bridge returned an invalid provider test result');
         }
         return {
           provider: frame.provider,
           model: frame.model,
           latencyMs: frame.latency_ms,
+          finishReason: typeof frame.finish_reason === 'string'
+            ? frame.finish_reason.slice(0, 64)
+            : 'stop',
         };
       },
       35_000,
-    );
-  }
-
-  backupToFile(filePath) {
-    return this._sendControl(
-      'backup:file:export',
-      { path: String(filePath) },
-      () => ({ operation: 'export', completed: true }),
-      15 * 60 * 1000,
-    );
-  }
-
-  restoreFromFile(filePath) {
-    return this._sendControl(
-      'backup:file:import',
-      { path: String(filePath) },
-      (frame) => ({
-        operation: 'import',
-        completed: true,
-        result: frame.result && typeof frame.result === 'object' ? { ...frame.result } : {},
-      }),
-      0,
-    );
-  }
-
-  importStickerFile(filePath, metadata) {
-    return this._sendControl(
-      'sticker:file:import',
-      { path: String(filePath), metadata },
-      (frame) => ({
-        item: frame.item && typeof frame.item === 'object' ? { ...frame.item } : null,
-        items: Array.isArray(frame.items) ? frame.items : [],
-      }),
-      30_000,
     );
   }
 

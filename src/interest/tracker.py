@@ -166,7 +166,11 @@ class InterestTracker:
             try:
                 last = datetime.fromisoformat(interest.last_active) if interest.last_active else None
             except ValueError:
-                last = None
+                # A corrupt timestamp must not cause the same interest to be
+                # advanced every day until it maxes out. Conservatively skip it
+                # and let record_activity refresh the timestamp on real use.
+                logger.warning("Interest %r has an unparsable last_active; skipping auto-advance", interest.name)
+                continue
             if last is not None and last.date() >= now.date():
                 continue
             return self.record_activity(

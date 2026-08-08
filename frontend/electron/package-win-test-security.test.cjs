@@ -25,7 +25,7 @@ test('portable package filter excludes tests and fixture directories', () => {
   assert.equal(shouldCopyElectronRuntime('avatar-manager.test.cjs', file), false);
   assert.equal(shouldCopyElectronRuntime('bridge-supervisor.cjs', file), false);
   assert.equal(shouldCopyElectronRuntime('framed-bridge-supervisor.cjs', file), true);
-  assert.equal(shouldCopyElectronRuntime('protocol-v3.generated.cjs', file), true);
+  assert.equal(shouldCopyElectronRuntime('protocol-v4.generated.cjs', file), true);
   assert.equal(shouldCopyElectronRuntime('payload.fixture.json', file), false);
   assert.equal(shouldCopyElectronRuntime('fixtures', directory), false);
   assert.equal(shouldCopyElectronRuntime('runtime', directory), true);
@@ -65,7 +65,7 @@ test('release resources use a verified portable runtime and never the developmen
   assert.match(PYTHON_RUNTIME.sha256, /^[a-f0-9]{64}$/);
 });
 
-test('production Python filter removes reference projects and tests', () => {
+test('production Python filter removes test trees without a stale reference-project rule', () => {
   const root = path.join('C:', 'reverie', 'src');
   const file = { isDirectory: () => false };
   const directory = { isDirectory: () => true };
@@ -75,7 +75,7 @@ test('production Python filter removes reference projects and tests', () => {
   );
   assert.equal(
     shouldCopyProductionPythonSource(path.join(root, 'neko_core'), directory, root),
-    false,
+    true,
   );
   assert.equal(
     shouldCopyProductionPythonSource(path.join(root, 'tests', 'test_chat.py'), file, root),

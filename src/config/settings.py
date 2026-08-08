@@ -51,6 +51,13 @@ ProviderName = Literal[
     "kimi", "glm", "ollama", "custom",
 ]
 
+# Public provider surface.  Every listed provider has an implementation in the
+# shared adapter; do not add a label here without adding its transport there.
+SUPPORTED_PROVIDER_NAMES: frozenset[ProviderName] = frozenset({
+    "openai", "anthropic", "gemini", "grok", "deepseek", "kimi", "glm",
+    "ollama", "custom",
+})
+
 PROVIDER_DEFAULTS: dict[ProviderName, dict] = {
     "deepseek":  {"base_url": "https://api.deepseek.com", "env_key": "DEEPSEEK_API_KEY"},
     "openai":    {"base_url": "https://api.openai.com/v1",   "env_key": "OPENAI_API_KEY"},
@@ -58,7 +65,7 @@ PROVIDER_DEFAULTS: dict[ProviderName, dict] = {
     "gemini":    {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "env_key": "GEMINI_API_KEY"},
     "grok":      {"base_url": "https://api.x.ai/v1",          "env_key": "XAI_API_KEY"},
     "kimi":      {"base_url": "https://api.moonshot.cn/v1",   "env_key": "KIMI_API_KEY"},
-    "glm":       {"base_url": "https://open.bigmodel.cn/api/paas/v4", "env_key": "GLM_API_KEY"},
+    "glm":       {"base_url": "https://api.z.ai/api/paas/v4", "env_key": "GLM_API_KEY"},
     "ollama":    {"base_url": "http://localhost:11434/v1",    "env_key": None},
     "custom":    {"base_url": "",                             "env_key": None},
 }
@@ -145,8 +152,8 @@ class _ValidatedSettingsModel(BaseModel):
 
 
 class LLMSettings(_ValidatedSettingsModel):
-    provider: ProviderName = Field(default="deepseek")
-    model: str = Field(default="deepseek-v4-flash")
+    provider: ProviderName = Field(default="ollama")
+    model: str = Field(default="")
     api_key: str = Field(default="")
     base_url: str = Field(default="")
     temperature: float = Field(default=0.82, ge=0.0, le=2.0)
@@ -206,7 +213,7 @@ def environment_api_key(variable: str) -> str:
 
 
 class MemorySettings(_ValidatedSettingsModel):
-    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5")
+    embedding_model: str = Field(default="BAAI/bge-small-zh-v1.5")
     vector_quantization: Literal["float32", "int8"] = Field(default="int8")
     vector_partitioning_enabled: bool = Field(default=True)
     lancedb_path: str = Field(default=str(MEMORY_DIR / "vectors"))
@@ -222,20 +229,20 @@ class MemorySettings(_ValidatedSettingsModel):
     long_term_forget_days: int = Field(default=90, ge=60, le=365)
     short_term_forget_days: int = Field(default=7, ge=1, le=59)
     long_term_forget_probability: float = Field(default=0.05, ge=0.01, le=0.10)
-    short_term_forget_probability: float = Field(default=0.05, ge=0.01, le=0.10)
+    short_term_forget_probability: float = Field(default=0.005, ge=0.001, le=0.01)
     # Legacy fallback kept for older config files.
     forget_probability: float = Field(default=0.05, ge=0.01, le=0.10)
     # Retrieval decay. Defaults to a 90-day half-life before layer/salience scaling.
     decay_lambda: float = Field(default=0.0077, ge=0.0001, le=0.10)
     recall_reinforcement_alpha: float = Field(default=0.12, ge=0.0, le=0.50)
     minimum_retrieval_retention: float = Field(default=0.05, ge=0.0, le=0.95)
-    # Misremembering
+    # Misremembering (1%-10%, scaled by memory age inside the eligible window)
     misremembering_enabled: bool = Field(default=False)
-    misremember_probability: float = Field(default=0.001, ge=0.0, le=0.01)
+    misremember_probability: float = Field(default=0.05, ge=0.01, le=0.10)
     long_term_misremembering_enabled: bool = Field(default=True)
     short_term_misremembering_enabled: bool = Field(default=True)
-    long_term_misremember_probability: float = Field(default=0.001, ge=0.0, le=0.01)
-    short_term_misremember_probability: float = Field(default=0.001, ge=0.0, le=0.01)
+    long_term_misremember_probability: float = Field(default=0.05, ge=0.01, le=0.10)
+    short_term_misremember_probability: float = Field(default=0.05, ge=0.01, le=0.10)
 
     @field_validator("retention_days")
     @classmethod
@@ -247,7 +254,7 @@ class MemorySettings(_ValidatedSettingsModel):
 
 class ChatSettings(_ValidatedSettingsModel):
     reply_delay_min: float = Field(default=3.0, ge=1.0, le=60.0)
-    reply_delay_max: float = Field(default=25.0, ge=1.0, le=60.0)
+    reply_delay_max: float = Field(default=30.0, ge=1.0, le=60.0)
     split_messages: bool = Field(default=True)
     typing_indicator: bool = Field(default=True)
     allow_environment_description: bool = Field(default=False)
@@ -372,6 +379,11 @@ class FeatureSettings(_ValidatedSettingsModel):
     immersion_closeups_enabled: bool = Field(default=False)
     immersion_smart_home_enabled: bool = Field(default=False)
     immersion_location_radius_m: int = Field(default=1200, ge=300, le=5000)
+    image_service_enabled: bool = Field(default=False)
+    download_service_enabled: bool = Field(default=False)
+    hypa_compression_enabled: bool = Field(default=False)
+    neko_import_enabled: bool = Field(default=False)
+    neko_import_source_dir: str = Field(default="", max_length=2048)
 
     @model_validator(mode="after")
     def _validate_dependent_ranges(self) -> "FeatureSettings":
@@ -385,6 +397,7 @@ class UISettings(_ValidatedSettingsModel):
 
     onboarding_completed: bool = Field(default=False)
     onboarding_completed_at_utc: str = Field(default="", max_length=64)
+    mode: Literal["mvp", "dream"] = Field(default="mvp")
 
 
 class _Settings(_ValidatedSettingsModel):

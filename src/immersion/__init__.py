@@ -65,9 +65,11 @@ class ImmersionManager:
         self,
         feature_settings: "FeatureSettings | None" = None,
         poi_service_factory: Callable[[], Any] | None = None,
+        vendor_adapter_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self.feature_settings = feature_settings
         self._poi_service_factory = poi_service_factory
+        self._vendor_adapter_factory = vendor_adapter_factory
 
     def nearby_life_context(
         self,
@@ -199,7 +201,15 @@ class ImmersionManager:
         return {"ok": True, "kind": clean_kind, "prompt": prompts[clean_kind], "requires_multimodal_api": True}
 
     def smart_home_command(self, *, provider: str, device: str, action: str) -> dict:
-        """Return a safe dry-run smart-home command envelope."""
+        """Return a safe smart-home command envelope.
+
+        Without a configured vendor adapter this stays a dry run that never
+        controls a real device. When the owner later supplies vendor
+        credentials (e.g. Xiaomi / Huawei open-platform OAuth), the injected
+        ``vendor_adapter_factory`` can replace the dry-run controller; until
+        then the envelope is returned unchanged and the note makes it clear
+        nothing was controlled.
+        """
         enabled = bool(getattr(self.feature_settings, "immersion_smart_home_enabled", False))
         provider_clean = str(provider or "manual").strip().lower()
         device_clean = str(device or "").strip()[:40]
@@ -210,7 +220,7 @@ class ImmersionManager:
             provider_clean = "manual"
         if not device_clean or not action_clean:
             return {"ok": False, "dry_run": True, "error": "Device and action are required"}
-        return {
+        envelope = {
             "ok": True,
             "dry_run": True,
             "provider": provider_clean,
@@ -218,6 +228,33 @@ class ImmersionManager:
             "action": action_clean,
             "note": "Dry-run only. No real smart-home device was controlled.",
         }
+        factory = self._vendor_adapter_factory
+        if factory is None or provider_clean == "manual":
+            return envelope
+        try:
+            adapter = factory(provider_clean)
+        except Exception as exc:
+            envelope["note"] = (
+                f"Vendor adapter for {provider_clean} is not configured; dry-run only ({exc})."
+            )
+            return envelope
+        if adapter is None:
+            envelope["note"] = (
+                f"No credentials configured for {provider_clean}; dry-run only."
+            )
+            return envelope
+        try:
+            return {
+                **envelope,
+                "ok": True,
+                "dry_run": False,
+                "controller": provider_clean,
+                "result": adapter.execute(device=device_clean, action=action_clean),
+                "note": "Controlled through the configured vendor adapter.",
+            }
+        except Exception as exc:
+            envelope["note"] = f"Vendor control failed; dry-run preserved ({exc})."
+            return envelope
 
 
 def _valid_coordinate(latitude: float, longitude: float) -> bool:

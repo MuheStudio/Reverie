@@ -357,6 +357,22 @@ class ProactiveChat:
         hour = now.hour
         weekday = now.weekday()  # 0=Monday
 
+        # Wake care: if the user was active deep in the night and she is now
+        # awake, ask what kept them up (real-person continuity).
+        if 8 <= hour < 11 and self._last_user_activity is not None:
+            last_active_hour = self._last_user_activity.hour
+            if (
+                last_active_hour >= 0
+                and last_active_hour < 6
+                and (now - self._last_user_activity).total_seconds() >= 2 * 3600
+                and self._can_trigger("wake_care", now)
+            ):
+                return ("wake_care", {
+                    "time": now.strftime("%H:%M"),
+                    "weekday": weekday,
+                    "last_active_hour": last_active_hour,
+                })
+
         if self.MORNING_HOURS[0] <= hour < self.MORNING_HOURS[1]:
             if self._can_trigger("morning_greeting", now):
                 return ("morning_greeting", {
@@ -398,11 +414,29 @@ class ProactiveChat:
                         "direction": "low",
                     })
 
-        memory_context = self._memory_recall_context(now)
-        if memory_context and self._can_trigger(memory_context[0], now):
-            return "memory_recall", memory_context[1]
+        # Memory recall is a dedicated daily beat: a 24-hour cooldown is
+        # tracked per memory (not via the shared any-trigger timestamp), so
+        # morning/evening greetings cannot starve it out. The cooldown is
+        # checked before the expensive semantic recall runs.
+        memory_recall_due = self._memory_recall_due(now)
+        if memory_recall_due:
+            memory_context = self._memory_recall_context(now)
+            if memory_context and self._can_trigger(memory_context[0], now):
+                return "memory_recall", memory_context[1]
 
         return (None, None)
+
+    def _memory_recall_due(self, now: datetime) -> bool:
+        """Return True when no memory-recall fired within the 24h window.
+
+        Uses the per-trigger ledger instead of the shared any-trigger
+        timestamp so ordinary greetings do not suppress the memory beat.
+        """
+        window = timedelta(hours=24)
+        for key, fired_at in self._last_triggered.items():
+            if key.startswith("memory_recall_") and now - fired_at < window:
+                return False
+        return True
 
     def _can_trigger(self, key: str, now: datetime) -> bool:
         """Check cooldown: has this trigger fired recently?"""
@@ -535,8 +569,6 @@ class ProactiveChat:
     def _memory_recall_context(self, now: datetime) -> tuple[str, dict] | None:
         """Occasionally use one stored memory as a reason to reach out."""
         if self.memory is None:
-            return None
-        if self._last_any_triggered and now - self._last_any_triggered < timedelta(hours=12):
             return None
         try:
             memories = self.memory.retrieve_relevant("最近的重要约定、长期目标或共同经历", k=3)
@@ -683,7 +715,7 @@ class ProactiveChat:
         try:
             local_care_triggers = {
                 "morning_greeting", "evening_checkin", "user_care",
-                "friend_silence", "late_night_checkin",
+                "friend_silence", "late_night_checkin", "wake_care",
             }
             use_local_reflex = (
                 self.reflex is not None
@@ -720,17 +752,23 @@ class ProactiveChat:
             elif filtered.action == "retry":
                 logger.warning("ProactiveChat: anti-AI guard replaced unsafe proactive output")
                 text = "唔……刚才脑子卡了一下，忽然想找你说句话"
+            # Reminders, affair updates and user-care messages are important
+            # events: they keep their full length instead of being cut to the
+            # casual length bucket.
+            important_trigger = trigger_type in {
+                "reminder", "affair_update", "user_care", "event_story",
+            }
             if self.scheduler and hasattr(self.scheduler, "shape_reply_length"):
                 text = self.scheduler.shape_reply_length(
                     text,
-                    allow_long=False,
+                    allow_long=important_trigger,
                     allow_environment_description=getattr(self.scheduler, "allow_environment_description", False),
                 )
             if self.speech_habits is not None:
                 text = self.speech_habits.apply(
                     text,
                     emotions=emotion_values,
-                    allow_long=False,
+                    allow_long=important_trigger,
                 )
             final_filtered = filter_output_detail(text)
             if final_filtered.action == "rewrite":
@@ -855,7 +893,10 @@ class ProactiveChat:
         )
 
     def _record_successful_trigger(self, trigger_type: str, context: dict) -> None:
-        now = datetime.now()
+        # Use the same world clock as trigger evaluation so cooldown math is
+        # consistent even when the system clock differs (timezones, NTP skew).
+        # The ledger stores naive wall time, matching _check_triggers/coerce.
+        now = self.world_clock.now().replace(tzinfo=None)
         trigger_key = self._trigger_key(trigger_type, context, now)
         self._last_triggered[trigger_key] = now
         self._last_any_triggered = now
@@ -1067,14 +1108,31 @@ class ProactiveChat:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
             triggered = data.get("last_triggered", {})
             if isinstance(triggered, dict):
-                self._last_triggered = {
-                    str(key): parsed
-                    for key, value in triggered.items()
-                    if (parsed := _parse_datetime(value)) is not None
-                }
-            self._last_any_triggered = _parse_datetime(data.get("last_any_triggered"))
-            self._last_proactive_at = _parse_datetime(data.get("last_proactive_at"))
-            self._last_user_activity = _parse_datetime(data.get("last_user_activity"))
+                # Prune stale cooldown ledger entries (older than 30 days) so
+                # the state file cannot grow without bound. Memory recall uses
+                # this ledger for its dedicated 24h cooldown, so pruning must
+                # never discard entries younger than that window.
+                now = datetime.now()
+                stale_cutoff = now - timedelta(days=30)
+                parsed_entries: dict[str, datetime] = {}
+                for key, value in triggered.items():
+                    parsed = _parse_datetime(value)
+                    if parsed is None:
+                        continue
+                    # Normalise tz-aware ISO timestamps to naive so the cutoff
+                    # comparison is well-defined regardless of what wrote them.
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.replace(tzinfo=None)
+                    if parsed >= stale_cutoff:
+                        parsed_entries[str(key)] = parsed
+                self._last_triggered = parsed_entries
+
+            def _as_naive(value: datetime | None) -> datetime | None:
+                return value.replace(tzinfo=None) if value is not None and value.tzinfo is not None else value
+
+            self._last_any_triggered = _as_naive(_parse_datetime(data.get("last_any_triggered")))
+            self._last_proactive_at = _as_naive(_parse_datetime(data.get("last_proactive_at")))
+            self._last_user_activity = _as_naive(_parse_datetime(data.get("last_user_activity")))
             self._last_user_message = str(data.get("last_user_message", ""))[:500]
             self._last_proactive_replied = bool(data.get("last_proactive_replied", True))
             counts = data.get("daily_trigger_count", {})

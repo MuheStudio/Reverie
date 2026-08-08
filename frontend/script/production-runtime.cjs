@@ -16,13 +16,20 @@ const PYTHON_RUNTIME = Object.freeze({
 });
 
 const OMITTED_SOURCE_MODULES = Object.freeze([
+  'affairs',
+  'ambient',
   'anime_service',
-  'download_service',
-  'image_service',
+  'archive',
+  'backup',
+  'diary',
+  'interest',
   'lorebook',
-  'neko_core',
+  'notifications',
   'tests',
+  'timeline',
   'ui',
+  'web',
+  'work_manager',
 ]);
 
 const FORBIDDEN_RUNTIME_NAMES = Object.freeze([
@@ -33,11 +40,8 @@ const FORBIDDEN_RUNTIME_NAMES = Object.freeze([
   '__fixtures__',
   '__tests__',
   'anime_service',
-  'download_service',
-  'image_service',
   'lancedb',
   'lorebook',
-  'neko_core',
   'playwright',
   'pytest',
   'sentence_transformers',
@@ -324,7 +328,7 @@ function preparePythonRuntime({ projectRoot, frontendRoot, destination, stagingR
       '-c',
       [
         'import json,sys',
-        'import cryptography,httpx,numpy,ollama,openai,pydantic,sqlite_vec,websockets',
+        'import cryptography,httpx,numpy,ollama,openai,pydantic,sqlcipher3,sqlite_vec,websockets',
         'from PIL import Image',
         'print(json.dumps({"version":sys.version.split()[0],"bits":__import__("struct").calcsize("P")*8}))',
       ].join(';'),
@@ -352,7 +356,10 @@ function shouldCopyProductionPythonSource(source, stat, sourceRoot) {
   const relative = path.relative(path.resolve(sourceRoot), path.resolve(source));
   if (relative.startsWith('..') || path.isAbsolute(relative)) return false;
   const parts = relative.split(path.sep).filter(Boolean);
-  if (parts.some((part) => OMITTED_SOURCE_MODULES.includes(part))) return false;
+  if (parts.some((part) => (
+    OMITTED_SOURCE_MODULES.includes(part)
+    || OMITTED_SOURCE_MODULES.includes(path.parse(part).name)
+  ))) return false;
   const name = path.basename(source).toLowerCase();
   if (stat.isDirectory()) {
     return !['__pycache__', '.pytest_cache'].includes(name);
@@ -445,7 +452,7 @@ function writeProductionInventory({
     schema: 'reverie.production-inventory.v1',
     generatedAtUtc: new Date().toISOString(),
     localFirst: true,
-    transport: 'electron-parent-framed-stdio-v3',
+    transport: 'electron-parent-framed-stdio-v4',
     python: runtime,
     sourcePolicy: {
       packagedRoot: 'src',

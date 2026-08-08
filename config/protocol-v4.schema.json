@@ -1,0 +1,1734 @@
+{
+  "$defs": {
+    "CommandEnvelopeV4": {
+      "$defs": {
+        "PersonaScopeV4": {
+          "additionalProperties": false,
+          "properties": {
+            "epoch": {
+              "minimum": 1,
+              "title": "Epoch",
+              "type": "integer"
+            },
+            "fingerprint": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Fingerprint",
+              "type": "string"
+            },
+            "persona_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "persona_id",
+            "epoch",
+            "fingerprint"
+          ],
+          "title": "PersonaScopeV4",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "command": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "created_at_utc": {
+          "title": "Created At Utc",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "persona": {
+          "$ref": "#/$defs/PersonaScopeV4"
+        },
+        "protocol_version": {
+          "default": 4,
+          "title": "Protocol Version",
+          "type": "integer"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "persona"
+      ],
+      "title": "CommandEnvelopeV4",
+      "type": "object"
+    },
+    "CommandPayloadsV4": {
+      "ai_usage:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "ai_usage:grant": {
+        "additionalProperties": false,
+        "description": "Per-feature consent grant. Booleans must be exactly ``True`` to mirror\nthe bridge handler's ``is not True`` checks (no truthy coercion).",
+        "properties": {
+          "api_cost_acknowledged": {
+            "title": "Api Cost Acknowledged",
+            "type": "boolean"
+          },
+          "consent_digest": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Consent Digest",
+            "type": "string"
+          },
+          "feature": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Feature",
+            "type": "string"
+          },
+          "user_confirmed": {
+            "title": "User Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "feature",
+          "consent_digest",
+          "api_cost_acknowledged",
+          "user_confirmed"
+        ],
+        "title": "AIUsageGrantPayload",
+        "type": "object"
+      },
+      "ai_usage:revoke": {
+        "additionalProperties": false,
+        "properties": {
+          "feature": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Feature",
+            "type": "string"
+          }
+        },
+        "required": [
+          "feature"
+        ],
+        "title": "AIUsageRevokePayload",
+        "type": "object"
+      },
+      "ambient:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "anti_ai:status": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "api:budget:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "archive:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "archive:migrate": {
+        "additionalProperties": false,
+        "description": "Archive write; deep validation happens in the archive store.",
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          },
+          "expected_revision": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "title": "ArchivePutPayload",
+        "type": "object"
+      },
+      "archive:put": {
+        "additionalProperties": false,
+        "description": "Archive write; deep validation happens in the archive store.",
+        "properties": {
+          "archive": {
+            "additionalProperties": true,
+            "title": "Archive",
+            "type": "object"
+          },
+          "expected_revision": {
+            "default": 0,
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "title": "ArchivePutPayload",
+        "type": "object"
+      },
+      "backup:export": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "backup:import": {
+        "additionalProperties": false,
+        "description": "Restore the complete local memory state from a JSON-safe payload.",
+        "properties": {
+          "backup": {
+            "additionalProperties": true,
+            "title": "Backup",
+            "type": "object"
+          }
+        },
+        "title": "BackupImportPayload",
+        "type": "object"
+      },
+      "chat:cancel": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "ChatTargetPayload",
+        "type": "object"
+      },
+      "chat:history": {
+        "$defs": {
+          "ChatHistoryCursor": {
+            "additionalProperties": false,
+            "properties": {
+              "sequence": {
+                "minimum": 1,
+                "title": "Sequence",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sequence"
+            ],
+            "title": "ChatHistoryCursor",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ChatHistoryCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "conversation_id": {
+            "default": "dream-room",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 300,
+            "maximum": 300,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "ChatHistoryPayload",
+        "type": "object"
+      },
+      "chat:reveal": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id"
+        ],
+        "title": "ChatTargetPayload",
+        "type": "object"
+      },
+      "chat:send": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "default": "dream-room",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "sent_at_utc": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sent At Utc"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ChatSendPayload",
+        "type": "object"
+      },
+      "chat:stop": {
+        "additionalProperties": false,
+        "description": "Legacy stop alias.\n\n``request_id`` is optional because ``handle_chat_stop`` answers with a\ndedicated ERROR frame instead of a generic validation failure when the\ncontroller does not name a specific request (global cancellation is\nforbidden by design).",
+        "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          }
+        },
+        "title": "ChatStopPayload",
+        "type": "object"
+      },
+      "diary:request": {
+        "additionalProperties": false,
+        "description": "Request diary data; optional unlock_key action for the easter egg.",
+        "properties": {
+          "action": {
+            "default": "list",
+            "enum": [
+              "list",
+              "read",
+              "unlock_key"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "date": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Date",
+            "type": "string"
+          },
+          "host_date": {
+            "default": "",
+            "maxLength": 32,
+            "title": "Host Date",
+            "type": "string"
+          }
+        },
+        "title": "DiaryRequestPayload",
+        "type": "object"
+      },
+      "emotion:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "game_state:get": {
+        "additionalProperties": false,
+        "description": "Read persisted state for one local mini-game.",
+        "properties": {
+          "game_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9._-]{0,63}$",
+            "title": "Game Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "title": "GameStateGetPayload",
+        "type": "object"
+      },
+      "game_state:put": {
+        "additionalProperties": false,
+        "description": "Persist bounded state for one local mini-game.",
+        "properties": {
+          "expected_revision": {
+            "default": 0,
+            "maximum": 1000000,
+            "minimum": 0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "game_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9._-]{0,63}$",
+            "title": "Game Id",
+            "type": "string"
+          },
+          "state": {
+            "additionalProperties": true,
+            "title": "State",
+            "type": "object"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "title": "GameStatePutPayload",
+        "type": "object"
+      },
+      "group:request": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "group:send": {
+        "additionalProperties": false,
+        "description": "Send one message into the local role-world group chat.",
+        "properties": {
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "thread_id": {
+            "default": "local-friends",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "user_name": {
+            "default": "你",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "User Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "GroupSendPayload",
+        "type": "object"
+      },
+      "image:random": {
+        "additionalProperties": false,
+        "description": "Request a random image from the optional local image service.",
+        "properties": {
+          "mode": {
+            "default": "sfw",
+            "enum": [
+              "sfw",
+              "nsfw",
+              "random"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "ImageRandomPayload",
+        "type": "object"
+      },
+      "immersion:closeup": {
+        "additionalProperties": false,
+        "description": "Request a multimodal close-up generation plan.",
+        "properties": {
+          "kind": {
+            "default": "meal",
+            "enum": [
+              "meal",
+              "cooking",
+              "bath",
+              "shopping"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "title": "ImmersionCloseupPayload",
+        "type": "object"
+      },
+      "immersion:nearby": {
+        "additionalProperties": false,
+        "description": "Request nearby life context from a user-granted coarse location.",
+        "properties": {
+          "latitude": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Latitude",
+            "type": "number"
+          },
+          "longitude": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Longitude",
+            "type": "number"
+          },
+          "place_types": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Place Types",
+            "type": "array"
+          },
+          "radius_m": {
+            "default": 1200,
+            "maximum": 5000,
+            "minimum": 300,
+            "title": "Radius M",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "ImmersionNearbyPayload",
+        "type": "object"
+      },
+      "immersion:smart_home": {
+        "additionalProperties": false,
+        "description": "Issue a safe dry-run smart-home command envelope.",
+        "properties": {
+          "action": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "device": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Device",
+            "type": "string"
+          },
+          "provider": {
+            "default": "manual",
+            "enum": [
+              "manual",
+              "xiaomi",
+              "huawei"
+            ],
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device",
+          "action"
+        ],
+        "title": "ImmersionSmartHomePayload",
+        "type": "object"
+      },
+      "keepsake:add": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "default": "",
+            "maxLength": 1200,
+            "title": "Content",
+            "type": "string"
+          },
+          "importance": {
+            "default": 0.5,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Importance",
+            "type": "number"
+          },
+          "kind": {
+            "default": "text",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_data_url": {
+            "default": "",
+            "maxLength": 2097152,
+            "title": "Media Data Url",
+            "type": "string"
+          },
+          "source_path": {
+            "default": "",
+            "maxLength": 1000,
+            "title": "Source Path",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Tags",
+            "type": "array"
+          },
+          "title": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "KeepsakeAddPayload",
+        "type": "object"
+      },
+      "keepsake:list": {
+        "additionalProperties": false,
+        "description": "List collected keepsakes.",
+        "properties": {
+          "limit": {
+            "default": 20,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "KeepsakeListPayload",
+        "type": "object"
+      },
+      "memory:candidates:confirm": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "pattern": "^mc_[a-f0-9]{32}$",
+            "title": "Candidate Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id"
+        ],
+        "title": "MemoryCandidateDecisionPayload",
+        "type": "object"
+      },
+      "memory:candidates:list": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 100,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "confirmed",
+              "rejected",
+              "all"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "MemoryCandidateListPayload",
+        "type": "object"
+      },
+      "memory:candidates:reject": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "pattern": "^mc_[a-f0-9]{32}$",
+            "title": "Candidate Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id"
+        ],
+        "title": "MemoryCandidateDecisionPayload",
+        "type": "object"
+      },
+      "memory:delete": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Memory Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id"
+        ],
+        "title": "MemoryTargetPayload",
+        "type": "object"
+      },
+      "memory:edit": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Memory Id",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id",
+          "text"
+        ],
+        "title": "MemoryEditPayload",
+        "type": "object"
+      },
+      "memory:list": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 100,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "MemoryListPayload",
+        "type": "object"
+      },
+      "memory:query": {
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "maximum": 50,
+            "minimum": 1,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "MemoryQueryPayload",
+        "type": "object"
+      },
+      "memory:settings:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "memory:store": {
+        "additionalProperties": false,
+        "description": "Store a user-selected chat record in a memory layer.\n\n``permanent`` marks a precious memory (never decays, never confused);\n``long_term``/``short_term`` remain forgettable.",
+        "properties": {
+          "layer": {
+            "default": "long_term",
+            "enum": [
+              "long_term",
+              "short_term",
+              "permanent"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "MemoryStorePayload",
+        "type": "object"
+      },
+      "module:control": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Action",
+            "type": "string"
+          },
+          "module_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9._-]{0,63}$",
+            "title": "Module Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "module_id",
+          "action"
+        ],
+        "title": "ModuleControlPayload",
+        "type": "object"
+      },
+      "module:list": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "persona:activate": {
+        "additionalProperties": false,
+        "description": "Explicit identity switch. ``expected_persona_*`` is injected by the\nbridge from the active scope, not part of the client contract.",
+        "properties": {
+          "actor": {
+            "enum": [
+              "owner",
+              "local_admin"
+            ],
+            "title": "Actor",
+            "type": "string"
+          },
+          "confirmed_profile_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Confirmed Profile Id",
+            "type": "string"
+          },
+          "identity_change_confirmed": {
+            "title": "Identity Change Confirmed",
+            "type": "boolean"
+          },
+          "profile_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id",
+          "identity_change_confirmed",
+          "confirmed_profile_id",
+          "actor",
+          "reason"
+        ],
+        "title": "PersonaActivatePayload",
+        "type": "object"
+      },
+      "persona:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "persona:import": {
+        "additionalProperties": false,
+        "description": "Untrusted SillyTavern JSON card; the importer re-validates size/depth.\n\nThe wire field is ``json``; the attribute is ``json_text`` (serialized\nback as ``json`` via the alias) to avoid shadowing pydantic's historical\n``json`` helper attribute.",
+        "properties": {
+          "filename": {
+            "default": "character.json",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "json": {
+            "maxLength": 2000000,
+            "minLength": 1,
+            "title": "Json",
+            "type": "string"
+          }
+        },
+        "required": [
+          "json"
+        ],
+        "title": "PersonaImportPayload",
+        "type": "object"
+      },
+      "relationship:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "settings:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "settings:update": {
+        "additionalProperties": false,
+        "description": "The small settings surface that exists in the current MVP.",
+        "properties": {
+          "allow_environment_description": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Environment Description"
+          },
+          "completed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed"
+          },
+          "decay_lambda": {
+            "anyOf": [
+              {
+                "maximum": 0.1,
+                "minimum": 0.0001,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Decay Lambda"
+          },
+          "forgetting_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Forgetting Enabled"
+          },
+          "long_term_forget_days": {
+            "anyOf": [
+              {
+                "maximum": 365,
+                "minimum": 60,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Long Term Forget Days"
+          },
+          "long_term_forget_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.1,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Long Term Forget Probability"
+          },
+          "long_term_forgetting_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Long Term Forgetting Enabled"
+          },
+          "minimum_retrieval_retention": {
+            "anyOf": [
+              {
+                "maximum": 0.95,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Minimum Retrieval Retention"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "mvp",
+                  "dream"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mode"
+          },
+          "personality_flaws_disclaimer_acknowledged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Personality Flaws Disclaimer Acknowledged"
+          },
+          "personality_flaws_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Personality Flaws Enabled"
+          },
+          "proactive_chat_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Chat Enabled"
+          },
+          "proactive_daily_limit": {
+            "anyOf": [
+              {
+                "maximum": 12,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Daily Limit"
+          },
+          "proactive_min_interval_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440,
+                "minimum": 15,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Min Interval Minutes"
+          },
+          "proactive_notifications_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Notifications Enabled"
+          },
+          "recall_reinforcement_alpha": {
+            "anyOf": [
+              {
+                "maximum": 0.5,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Recall Reinforcement Alpha"
+          },
+          "reply_delay_max": {
+            "anyOf": [
+              {
+                "maximum": 60.0,
+                "minimum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply Delay Max"
+          },
+          "reply_delay_min": {
+            "anyOf": [
+              {
+                "maximum": 60.0,
+                "minimum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply Delay Min"
+          },
+          "retention_days": {
+            "anyOf": [
+              {
+                "enum": [
+                  365,
+                  730,
+                  1095
+                ],
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retention Days"
+          },
+          "section": {
+            "enum": [
+              "onboarding",
+              "memory",
+              "chat",
+              "personality",
+              "features",
+              "ui"
+            ],
+            "title": "Section",
+            "type": "string"
+          },
+          "short_term_forget_days": {
+            "anyOf": [
+              {
+                "maximum": 59,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Short Term Forget Days"
+          },
+          "short_term_forget_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.1,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Short Term Forget Probability"
+          },
+          "short_term_forgetting_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Short Term Forgetting Enabled"
+          },
+          "split_messages": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Split Messages"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "online",
+                  "busy",
+                  "away",
+                  "sleeping"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Status"
+          },
+          "typing_indicator": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Typing Indicator"
+          },
+          "user_selected_flaws": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Selected Flaws"
+          }
+        },
+        "required": [
+          "section"
+        ],
+        "title": "SettingsUpdatePayload",
+        "type": "object"
+      },
+      "sticker:collect": {
+        "additionalProperties": false,
+        "description": "Collect a user-provided sticker image or text with emotion/style tags.",
+        "properties": {
+          "emotions": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 24,
+            "title": "Emotions",
+            "type": "array"
+          },
+          "image_data_url": {
+            "default": "",
+            "maxLength": 16000000,
+            "title": "Image Data Url",
+            "type": "string"
+          },
+          "style_tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 24,
+            "title": "Style Tags",
+            "type": "array"
+          },
+          "text": {
+            "default": "",
+            "maxLength": 400,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "StickerCollectPayload",
+        "type": "object"
+      },
+      "sticker:list": {
+        "additionalProperties": false,
+        "description": "List user-collected and default stickers.",
+        "properties": {
+          "limit": {
+            "default": 100,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "StickerListPayload",
+        "type": "object"
+      },
+      "sticker:react": {
+        "additionalProperties": false,
+        "description": "Record user feedback for sticker reuse preferences.",
+        "properties": {
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "liked": {
+            "default": true,
+            "title": "Liked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "StickerReactPayload",
+        "type": "object"
+      },
+      "timeline:request": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "user:profile:get": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "user:profile:update": {
+        "$defs": {
+          "UserProfileData": {
+            "additionalProperties": false,
+            "properties": {
+              "age": {
+                "anyOf": [
+                  {
+                    "maximum": 120,
+                    "minimum": 18,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Age"
+              },
+              "birthday": {
+                "default": "",
+                "maxLength": 10,
+                "title": "Birthday",
+                "type": "string"
+              },
+              "favorite_anime": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "title": "Favorite Anime",
+                "type": "array"
+              },
+              "favorite_games": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "title": "Favorite Games",
+                "type": "array"
+              },
+              "favorite_topics": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "title": "Favorite Topics",
+                "type": "array"
+              },
+              "hobbies": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "title": "Hobbies",
+                "type": "array"
+              },
+              "identity": {
+                "default": "",
+                "maxLength": 500,
+                "title": "Identity",
+                "type": "string"
+              },
+              "important_dates": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "maxProperties": 50,
+                "title": "Important Dates",
+                "type": "object"
+              },
+              "interests": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "title": "Interests",
+                "type": "array"
+              },
+              "name": {
+                "default": "",
+                "maxLength": 80,
+                "title": "Name",
+                "type": "string"
+              },
+              "nickname": {
+                "default": "",
+                "maxLength": 80,
+                "title": "Nickname",
+                "type": "string"
+              },
+              "schedule": {
+                "default": "",
+                "maxLength": 200,
+                "title": "Schedule",
+                "type": "string"
+              }
+            },
+            "title": "UserProfileData",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "$ref": "#/$defs/UserProfileData"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "UserProfileUpdatePayload",
+        "type": "object"
+      }
+    },
+    "CommandResultV4": {
+      "$defs": {
+        "DomainError": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            "details": {
+              "additionalProperties": true,
+              "title": "Details",
+              "type": "object"
+            },
+            "message": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Message",
+              "type": "string"
+            },
+            "retryable": {
+              "default": false,
+              "title": "Retryable",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "title": "DomainError",
+          "type": "object"
+        },
+        "ErrorCode": {
+          "enum": [
+            "INVALID_REQUEST",
+            "STALE_PERSONA",
+            "MODULE_UNAVAILABLE",
+            "MODULE_DEGRADED",
+            "CONSENT_REQUIRED",
+            "LOCAL_MODE_BLOCKED",
+            "PROVIDER_UNAVAILABLE",
+            "PROVIDER_OUTCOME_UNKNOWN",
+            "CONFLICT",
+            "STORAGE_UNAVAILABLE",
+            "INTERNAL"
+          ],
+          "title": "ErrorCode",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DomainError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "protocol_version": {
+          "default": 4,
+          "title": "Protocol Version",
+          "type": "integer"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id",
+        "ok"
+      ],
+      "title": "CommandResultV4",
+      "type": "object"
+    },
+    "DomainEventV4": {
+      "$defs": {
+        "PersonaScopeV4": {
+          "additionalProperties": false,
+          "properties": {
+            "epoch": {
+              "minimum": 1,
+              "title": "Epoch",
+              "type": "integer"
+            },
+            "fingerprint": {
+              "pattern": "^[a-f0-9]{64}$",
+              "title": "Fingerprint",
+              "type": "string"
+            },
+            "persona_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Persona Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "persona_id",
+            "epoch",
+            "fingerprint"
+          ],
+          "title": "PersonaScopeV4",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        },
+        "occurred_at_utc": {
+          "title": "Occurred At Utc",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "payload_version": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Payload Version",
+          "type": "integer"
+        },
+        "persona": {
+          "$ref": "#/$defs/PersonaScopeV4"
+        },
+        "protocol_version": {
+          "default": 4,
+          "title": "Protocol Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_type",
+        "persona"
+      ],
+      "title": "DomainEventV4",
+      "type": "object"
+    }
+  },
+  "$id": "https://reverie.local/schemas/protocol-v4.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reverie Protocol V4"
+}

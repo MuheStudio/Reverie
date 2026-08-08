@@ -37,7 +37,7 @@ def auth(secret: str, *, client_id: str = "desktop_controller_01") -> str:
             "payload": {
                 "secret": secret,
                 "client_id": client_id,
-                "protocolVersion": 2,
+                "protocolVersion": 4,
                 "conversation_id": "conversation_a",
                 "persona_id": "default",
             },
@@ -91,7 +91,7 @@ async def test_bridge_authenticates_one_controller_and_rejects_second(monkeypatc
         await first.send(auth(secret))
         auth_ok = json.loads(await first.recv())
         assert auth_ok["type"] == "bridge:auth_ok"
-        assert auth_ok["payload"]["protocol_version"] == 2
+        assert auth_ok["payload"]["protocol_version"] == 4
         runtime = json.loads(await first.recv())
         assert runtime["type"] == ws_bridge.MsgType.RUNTIME_ACTIVITY
 
@@ -116,11 +116,20 @@ async def test_direct_response_echoes_only_its_valid_request_id(monkeypatch) -> 
     ws_bridge._connections.clear()
     ws_bridge._client_contexts.clear()
     monkeypatch.setattr(ws_bridge, "_controller_ws", None)
+    monkeypatch.setattr(
+        ws_bridge,
+        "_active_persona_scope",
+        lambda: {
+            "persona_id": "persona_test",
+            "persona_epoch": 1,
+            "persona_fingerprint": "a" * 64,
+        },
+    )
 
-    async def echo(payload, _ws):
-        return {"value": payload.get("value")}
+    async def echo(_payload, _ws):
+        return {"value": "alpha"}
 
-    monkeypatch.setitem(ws_bridge._handlers, "test:echo", echo)
+    monkeypatch.setitem(ws_bridge._handlers, ws_bridge.MsgType.EMOTION_GET, echo)
     async with websockets.serve(
         ws_bridge.websocket_handler,
         "127.0.0.1",
@@ -138,26 +147,26 @@ async def test_direct_response_echoes_only_its_valid_request_id(monkeypatch) -> 
             assert json.loads(await client.recv())["type"] == ws_bridge.MsgType.RUNTIME_ACTIVITY
 
             await client.send(json.dumps({
-                "type": "test:echo",
+                "type": ws_bridge.MsgType.EMOTION_GET,
                 "request_id": "request_alpha_01",
-                "payload": {"value": "alpha"},
+                "payload": {},
             }))
             response = json.loads(await client.recv())
             assert response == {
-                "type": "test_echo_result",
+                "type": ws_bridge.MsgType.EMOTION_UPDATE,
                 "request_id": "request_alpha_01",
                 "payload": {"value": "alpha"},
             }
 
             await client.send(json.dumps({
-                "type": "test:echo",
+                "type": ws_bridge.MsgType.EMOTION_GET,
                 "request_id": "../invalid",
-                "payload": {"value": "must not run"},
+                "payload": {},
             }))
             error = json.loads(await client.recv())
             assert error["type"] == ws_bridge.MsgType.ERROR
             assert "request_id" not in error
-            assert error["payload"]["message"] == "invalid request_id"
+            assert error["payload"]["message"] == "The command was rejected"
 
 
 @pytest.mark.asyncio
@@ -167,7 +176,7 @@ async def test_production_dispatch_rejects_stale_persona_before_module_handler(
     endpoint = CapturingEndpoint()
     context = ws_bridge.BridgeClientContext(
         client_id="electron_stdio_test",
-        protocol_version=3,
+        protocol_version=4,
         authenticated=True,
     )
     monkeypatch.setitem(ws_bridge._client_contexts, endpoint, context)
@@ -330,7 +339,7 @@ async def test_bridge_ready_line_matches_electron_contract(monkeypatch, capsys) 
     assert ready["host"] == "127.0.0.1"
     assert 0 < ready["port"] <= 65535
     assert ready["secretSha256"] == hashlib.sha256(secret.encode()).hexdigest()
-    assert ready["protocolVersion"] == 2
+    assert ready["protocolVersion"] == 4
 
 
 @pytest.mark.asyncio

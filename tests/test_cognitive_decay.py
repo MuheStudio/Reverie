@@ -1,6 +1,8 @@
 import asyncio
 import time
 
+import pytest
+
 from src.memory.catalog import MemoryCatalog
 from src.memory.cognitive_decay import (
     CognitiveDecaySystem,
@@ -160,4 +162,133 @@ def test_identity_and_procedural_facts_can_never_enter_fuzzy_recall(monkeypatch,
 
     assert rendered == [protected]
     assert events == []
+    catalog.close()
+
+
+def test_misremember_probability_scales_with_age_between_baseline_and_threshold(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    now = time.time()
+    catalog = MemoryCatalog(tmp_path / "memory.db")
+    add_memory(
+        catalog,
+        memory_id="young",
+        text="用户一直喜欢玩《明日方舟》这款游戏",
+        timestamp=now - 95 * 86400,
+        importance=0.6,
+    )
+    add_memory(
+        catalog,
+        memory_id="middle",
+        text="用户后来也玩过《异环》这款游戏",
+        timestamp=now - 150 * 86400,
+        importance=0.6,
+    )
+    add_memory(
+        catalog,
+        memory_id="old",
+        text="用户还玩过《终末地》这款游戏",
+        timestamp=now - 400 * 86400,
+        importance=0.6,
+    )
+    system = CognitiveDecaySystem(
+        CatalogStore(catalog),  # type: ignore[arg-type]
+        misremembering_enabled=True,
+        long_term_misremembering_enabled=True,
+        long_term_forget_days=180,
+        long_term_misremember_probability=0.10,
+    )
+    # baseline day (90): 0.5x -> 0.05
+    assert system._row_confusion_probability(catalog.get("young")) == pytest.approx(0.05, rel=0.02)  # type: ignore[arg-type]
+    # beyond baseline but below threshold (150 of 180): 0.5 + 0.1 * (60/90) -> 0.5666...
+    middle = system._row_confusion_probability(catalog.get("middle"))  # type: ignore[arg-type]
+    assert middle == pytest.approx(0.10 * (0.5 + 0.1 * ((150 - 90) / 90)))
+    # far past threshold (400): caps at 0.6x -> 0.06, never full configured value
+    assert system._row_confusion_probability(catalog.get("old")) == pytest.approx(0.06)  # type: ignore[arg-type]
+    catalog.close()
+
+
+def test_misremember_stays_disabled_before_baseline_and_for_short_term_gate(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    now = time.time()
+    catalog = MemoryCatalog(tmp_path / "memory.db")
+    add_memory(
+        catalog,
+        memory_id="lt-young",
+        text="用户喜欢玩《明日方舟》这款游戏",
+        timestamp=now - 80 * 86400,
+        importance=0.6,
+    )
+    add_memory(
+        catalog,
+        memory_id="st-young",
+        text="用户今天吃了牛肉面",
+        timestamp=now - 3 * 86400,
+        importance=0.6,
+        layer="short_term",
+    )
+    add_memory(
+        catalog,
+        memory_id="st-old",
+        text="用户上周看了《慎重勇者》",
+        timestamp=now - 30 * 86400,
+        importance=0.6,
+        layer="short_term",
+    )
+    system = CognitiveDecaySystem(
+        CatalogStore(catalog),  # type: ignore[arg-type]
+        misremembering_enabled=True,
+        long_term_misremembering_enabled=True,
+        short_term_misremembering_enabled=True,
+        long_term_forget_days=90,
+        short_term_forget_days=30,
+        long_term_misremember_probability=0.10,
+        short_term_misremember_probability=0.10,
+    )
+    # Long-term memory younger than the 90-day baseline cannot be misremembered.
+    assert system._row_confusion_probability(catalog.get("lt-young")) == 0.0  # type: ignore[arg-type]
+    # Short-term memory younger than the 5-day baseline cannot be misremembered.
+    assert system._row_confusion_probability(catalog.get("st-young")) == 0.0  # type: ignore[arg-type]
+    # Short-term memory at 30 days: baseline 5, ceiling 30 -> 0.5 + 0.1 * (25/25) = 0.6x
+    assert system._row_confusion_probability(catalog.get("st-old")) == pytest.approx(0.06)  # type: ignore[arg-type]
+    catalog.close()
+
+
+def test_misremember_is_disabled_when_forget_threshold_is_below_baseline(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    now = time.time()
+    catalog = MemoryCatalog(tmp_path / "memory.db")
+    add_memory(
+        catalog,
+        memory_id="lt-old",
+        text="用户喜欢玩《明日方舟》这款游戏",
+        timestamp=now - 300 * 86400,
+        importance=0.6,
+    )
+    add_memory(
+        catalog,
+        memory_id="st-old",
+        text="用户上周看了《慎重勇者》",
+        timestamp=now - 40 * 86400,
+        importance=0.6,
+        layer="short_term",
+    )
+    system = CognitiveDecaySystem(
+        CatalogStore(catalog),  # type: ignore[arg-type]
+        misremembering_enabled=True,
+        long_term_misremembering_enabled=True,
+        short_term_misremembering_enabled=True,
+        # Thresholds below the 90/5-day baselines must forbid misremembering.
+        long_term_forget_days=60,
+        short_term_forget_days=3,
+        long_term_misremember_probability=0.10,
+        short_term_misremember_probability=0.10,
+    )
+    assert system._row_confusion_probability(catalog.get("lt-old")) == 0.0  # type: ignore[arg-type]
+    assert system._row_confusion_probability(catalog.get("st-old")) == 0.0  # type: ignore[arg-type]
     catalog.close()

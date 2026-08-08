@@ -47,9 +47,6 @@ export class ProviderTestError extends Error {
 
 export interface ProviderTestReceipt {
   receipt: string;
-  expiresAt: string;
-  provider: string;
-  model: string;
   latencyMs: number;
 }
 
@@ -194,13 +191,10 @@ export async function testConfig(config: LLMConfig): Promise<ProviderTestReceipt
     customHeaders: config.customHeaders?.trim(),
   });
   if (!result.ok) {
-    throw new ProviderTestError(result.message, result.code, result.retryable);
+    throw new ProviderTestError(result.message, result.code);
   }
   return {
     receipt: result.receipt,
-    expiresAt: result.expiresAt,
-    provider: result.provider,
-    model: result.model,
     latencyMs: result.latencyMs,
   };
 }

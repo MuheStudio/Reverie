@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config.settings import WORLD_STATE_DB
+from ..storage.encrypted_sqlite import connect_database
 
 if TYPE_CHECKING:
     from ..config.settings import FeatureSettings
@@ -28,8 +29,7 @@ class ApiBudgetTracker:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
-        connection.row_factory = sqlite3.Row
+        connection = connect_database(self.path, timeout=30.0, isolation_level=None)
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")

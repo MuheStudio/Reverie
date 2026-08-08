@@ -63,11 +63,11 @@ def test_memory_manager_applies_runtime_forgetting_settings(tmp_path) -> None:
         long_term_forget_days=120,
         short_term_forget_days=12,
         long_term_forget_probability=0.07,
-        short_term_forget_probability=0.02,
+        short_term_forget_probability=0.008,
         long_term_misremembering_enabled=False,
         short_term_misremembering_enabled=True,
-        long_term_misremember_probability=0.008,
-        short_term_misremember_probability=0.004,
+        long_term_misremember_probability=0.05,
+        short_term_misremember_probability=0.02,
     )
     next_features = FeatureSettings(
         autonomous_memory_enabled=True,
@@ -86,13 +86,16 @@ def test_memory_manager_applies_runtime_forgetting_settings(tmp_path) -> None:
     assert memory.forgetting.long_term_forgetting_enabled is False
     assert memory.forgetting.short_term_forget_days == 12
     assert memory.forgetting.long_term_misremembering_enabled is False
-    assert memory.forgetting.short_term_misremember_probability == 0.004
+    assert memory.forgetting.short_term_misremember_probability == 0.02
     assert snapshot["long_term_forget_probability"] == 0.07
-    assert snapshot["short_term_forget_probability"] == 0.02
-    assert snapshot["long_term_misremember_probability"] == 0.008
-    assert snapshot["short_term_misremember_probability"] == 0.004
+    assert snapshot["short_term_forget_probability"] == 0.008
+    assert snapshot["long_term_misremember_probability"] == 0.05
+    assert snapshot["short_term_misremember_probability"] == 0.02
     assert snapshot["self_growth_from_web_enabled"] is False
-    assert snapshot["reembedding_state"] in {"ready", "organizing"}
+    assert snapshot["reembedding_state"] in {"ready", "organizing", "lexical_only"}
+    if snapshot["reembedding_state"] == "lexical_only":
+        assert snapshot["semantic_recall_available"] is False
+        assert "词法检索" in snapshot["embedding_diagnostic"]
     assert snapshot["self_growth_interval_days"] == 45
 
 

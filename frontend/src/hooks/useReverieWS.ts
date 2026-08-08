@@ -13,7 +13,7 @@ import {
   type ChatMessageV2,
   type ChatRequestState,
 } from '@/components/DreamRoom/chatDeliveryMachine';
-import { WSMsgType } from '@/contracts/protocolV3.generated';
+import { WSMsgType } from '@/contracts/protocolV4.generated';
 import {
   ElectronBridgeSocket,
   isElectronIpcBridge,
@@ -22,11 +22,11 @@ import {
 export {
   PROTOCOL_VERSION,
   WSMsgType,
-  type CommandEnvelopeV3,
-  type CommandResultV3,
-  type DomainEventV3,
-  type PersonaScopeV3,
-} from '@/contracts/protocolV3.generated';
+  type CommandEnvelopeV4,
+  type CommandResultV4,
+  type DomainEventV4,
+  type PersonaScopeV4,
+} from '@/contracts/protocolV4.generated';
 
 export const WS_RESPONSE_ALIASES: Record<string, string[]> = {
   [WSMsgType.MEMORY_RESULT]: ['memory_query_result', 'memory_store_result'],
@@ -63,16 +63,9 @@ export const INITIAL_STATE_REQUEST_TYPES = [
   WSMsgType.EMOTION_GET,
   WSMsgType.PERSONA_GET,
   WSMsgType.RELATIONSHIP_GET,
-  WSMsgType.DIARY_REQUEST,
-  WSMsgType.TIMELINE_REQUEST,
-  WSMsgType.AMBIENT_GET,
-  WSMsgType.API_BUDGET_GET,
-  WSMsgType.GROUP_REQUEST,
   WSMsgType.USER_PROFILE_GET,
-  WSMsgType.KEEPSAKE_LIST,
-  WSMsgType.STICKER_LIST,
   WSMsgType.ANTI_AI_STATUS,
-  WSMsgType.AI_USAGE_GET,
+  WSMsgType.MEMORY_SETTINGS_GET,
   WSMsgType.SETTINGS_GET,
 ] as const;
 
@@ -888,13 +881,13 @@ export function useReverieWS(wsUrl?: string) {
         connection = await window.electronAPI.bridge.getConnectionConfig();
       } else if (import.meta.env.DEV && wsUrl) {
         // Explicit URLs are reserved for isolated browser tests/development.
-        connection = { url: wsUrl, secret: '', protocolVersion: 2 };
+        connection = { url: wsUrl, secret: '', protocolVersion: 4 };
       }
     } catch {
       connection = null;
     }
     if (!mountedRef.current || attempt !== connectAttemptRef.current) return;
-    if (!connection?.url || connection.protocolVersion !== 2) {
+    if (!connection?.url || connection.protocolVersion !== 4) {
       setConnState('unavailable');
       return;
     }
@@ -956,7 +949,7 @@ export function useReverieWS(wsUrl?: string) {
         if (transition.action === 'accept_auth') {
           if (
             !isRecord(msg.payload)
-            || msg.payload.protocol_version !== 2
+            || msg.payload.protocol_version !== 4
             || !optionalString(msg.payload.client_id)
           ) {
             throw new Error('invalid bridge authentication response');
@@ -1035,7 +1028,9 @@ export function useReverieWS(wsUrl?: string) {
     };
 
     ws.onerror = () => {
-      if (wsRef.current === ws) ws.close();
+      // A single rejected frame must not close the bridge. Genuine loss is
+      // reported by onChanged(ready=false) for the IPC transport and by the
+      // browser calling onclose after a transport-level error in dev mode.
     };
   }, [rejectPendingRequests, rememberPersonaScope, wsUrl]);
 
@@ -1208,7 +1203,13 @@ export function useReverieWS(wsUrl?: string) {
       setLocalModePending(false);
     }
   }, [applyAuthoritativeLocalMode]);
-  const stopChat = useCallback(() => send(WSMsgType.CHAT_STOP), [send]);
+  const stopChat = useCallback((): boolean => {
+    const generating = Object.entries(chatRequestStates).find(
+      ([, request]) => request.state === 'generating',
+    );
+    if (!generating) return false;
+    return send(WSMsgType.CHAT_STOP, { request_id: generating[0] });
+  }, [send, chatRequestStates]);
   const queryMemory = useCallback((query: string, topK = 10) => send(WSMsgType.MEMORY_QUERY, { query, top_k: topK }), [send]);
   const storeMemory = useCallback((text: string, layer: 'long_term' | 'short_term') =>
     send(WSMsgType.MEMORY_STORE, { text, layer }), [send]);
@@ -1252,6 +1253,11 @@ export function useReverieWS(wsUrl?: string) {
   const revealSentRef = useRef(new Set<string>());
   const [isTyping, setIsTyping] = useState(false);
   const [currentChunk, setCurrentChunk] = useState('');
+  // Mirror of currentChunk kept outside the render cycle. CHAT_CHUNK writes
+  // both the ref (authoritative) and the state (render); CHAT_DONE reads the
+  // ref so no state-updater side effect is needed, which keeps every updater
+  // pure (React StrictMode double-invokes updaters).
+  const currentChunkRef = useRef('');
   const [chatPresence, setChatPresence] = useState<ChatPresence>({
     status: 'online',
     label: '在线',
@@ -1436,6 +1442,7 @@ export function useReverieWS(wsUrl?: string) {
       // are not represented as the other person physically typing.
       const isActivelyTyping = payload?.status === 'typing' || payload?.status === 'delivering';
       setIsTyping(isActivelyTyping);
+      currentChunkRef.current = '';
       setCurrentChunk('');
       const presence = payload?.presence;
       setChatPresence({
@@ -1447,11 +1454,13 @@ export function useReverieWS(wsUrl?: string) {
       });
     }));
     unsubs.push(subscribe(WSMsgType.CHAT_CHUNK, (p: ChatChunk) => {
-      setCurrentChunk((prev) => prev + (p.text || ''));
+      currentChunkRef.current += p.text || '';
+      setCurrentChunk(currentChunkRef.current);
     }));
     unsubs.push(subscribe(WSMsgType.CHAT_BUBBLE, (payload: ChatBubble) => {
       const content = payload?.text?.trim();
       if (!content) return;
+      currentChunkRef.current = '';
       setCurrentChunk('');
       setChatMessages((prev) => {
         if (
@@ -1489,51 +1498,51 @@ export function useReverieWS(wsUrl?: string) {
           is_available: optionalBoolean(presence.is_available),
         });
       }
-      setCurrentChunk((chunk) => {
-        const payloadMessages = Array.isArray(payload?.messages)
-          ? payload.messages.map((item: unknown) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
-          : [];
-          const requestId = optionalString(payload?.request_id);
-          const messages = payload?.incremental_delivery
-            ? []
-          : (payloadMessages.length ? payloadMessages : (chunk ? [chunk] : []));
-        const sticker = coerceSticker(payload?.sticker);
-        if (messages.length || sticker) {
-          setChatMessages((prev) => {
-            const deliveryId = optionalString(payload?.delivery_id);
-            const shouldAddSticker = sticker && !(
-              deliveryId
-              && prev.some((message) => message.deliveryId === deliveryId && message.bubbleIndex === -1)
-            );
-            const next = [
-              ...prev,
-              ...messages.map((content: string) => ({
-                ...makeChatMessage('assistant', content, nextMessageId('msg'), {
-                  request_id: requestId || null,
-                  conversation_id: optionalString(payload?.conversation_id) || 'dream-room',
-                  persona_id: optionalString(payload?.persona_id) || null,
-                  delivery_state: 'done',
-                }),
-              })),
-              ...(shouldAddSticker ? [{
-                ...makeChatMessage('assistant', sticker.text || '', nextMessageId('stk'), {
-                  request_id: requestId || null,
-                  conversation_id: optionalString(payload?.conversation_id) || 'dream-room',
-                  persona_id: optionalString(payload?.persona_id) || null,
-                  delivery_state: 'done',
-                  delivery_id: deliveryId,
-                  bubble_index: -1,
-                }),
-                sticker,
-                deliveryId,
-                bubbleIndex: -1,
-              }] : []),
-            ];
-            return next;
-          });
-        }
-        return '';
-      });
+      const chunk = currentChunkRef.current;
+      const payloadMessages = Array.isArray(payload?.messages)
+        ? payload.messages.map((item: unknown) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+        : [];
+      const requestId = optionalString(payload?.request_id);
+      const messages = payload?.incremental_delivery
+        ? []
+        : (payloadMessages.length ? payloadMessages : (chunk ? [chunk] : []));
+      const sticker = coerceSticker(payload?.sticker);
+      currentChunkRef.current = '';
+      setCurrentChunk('');
+      if (messages.length || sticker) {
+        setChatMessages((prev) => {
+          const deliveryId = optionalString(payload?.delivery_id);
+          const shouldAddSticker = sticker && !(
+            deliveryId
+            && prev.some((message) => message.deliveryId === deliveryId && message.bubbleIndex === -1)
+          );
+          const next = [
+            ...prev,
+            ...messages.map((content: string) => ({
+              ...makeChatMessage('assistant', content, nextMessageId('msg'), {
+                request_id: requestId || null,
+                conversation_id: optionalString(payload?.conversation_id) || 'dream-room',
+                persona_id: optionalString(payload?.persona_id) || null,
+                delivery_state: 'done',
+              }),
+            })),
+            ...(shouldAddSticker ? [{
+              ...makeChatMessage('assistant', sticker.text || '', nextMessageId('stk'), {
+                request_id: requestId || null,
+                conversation_id: optionalString(payload?.conversation_id) || 'dream-room',
+                persona_id: optionalString(payload?.persona_id) || null,
+                delivery_state: 'done',
+                delivery_id: deliveryId,
+                bubble_index: -1,
+              }),
+              sticker,
+              deliveryId,
+              bubbleIndex: -1,
+            }] : []),
+          ];
+          return next;
+        });
+      }
     }));
     unsubs.push(subscribe(WSMsgType.CHAT_RETRACT, (payload: ChatRetractPayload) => {
       setChatMessages((prev) => {

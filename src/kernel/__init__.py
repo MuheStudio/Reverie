@@ -6,11 +6,11 @@ conversation history, consent policy, and domain-event journal must remain.
 
 from .command_bus import CommandBus
 from .contracts import (
-    CommandEnvelopeV3,
-    CommandResultV3,
+    CommandEnvelopeV4,
+    CommandResultV4,
     DomainError,
-    DomainEventV3,
-    PersonaScopeV3,
+    DomainEventV4,
+    PersonaScopeV4,
 )
 from .modules import CapabilityManifest, ModuleRegistry, ModuleState
 from .storage import KernelStore
@@ -18,12 +18,12 @@ from .storage import KernelStore
 __all__ = [
     "CapabilityManifest",
     "CommandBus",
-    "CommandEnvelopeV3",
-    "CommandResultV3",
+    "CommandEnvelopeV4",
+    "CommandResultV4",
     "DomainError",
-    "DomainEventV3",
+    "DomainEventV4",
     "KernelStore",
     "ModuleRegistry",
     "ModuleState",
-    "PersonaScopeV3",
+    "PersonaScopeV4",
 ]

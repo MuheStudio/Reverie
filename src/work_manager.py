@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .persona.persona_card import Persona
     from .affairs import PersonalAffairManager
     from .interest import InterestTracker
+    from .memory.manager import MemoryManager
     from .world import WorldClock
     from .persona.identity import PersonaEpochToken
     from .persona.state_scope import PersonaModuleState
@@ -70,6 +71,7 @@ class WorkManager:
         late_night_message_callback: Callable[[str], Awaitable[bool] | bool] | None = None,
         affair_manager: "PersonalAffairManager | None" = None,
         interest_tracker: "InterestTracker | None" = None,
+        memory: "MemoryManager | None" = None,
         world_clock: "WorldClock | None" = None,
         ambient_presence: "AmbientPresence | None" = None,
         state_scope: "PersonaModuleState | None" = None,
@@ -95,6 +97,7 @@ class WorkManager:
         self.late_night_message_callback = late_night_message_callback
         self.affair_manager = affair_manager
         self.interest_tracker = interest_tracker
+        self.memory = memory
         self.ambient_presence = ambient_presence
         if world_clock is None:
             from .world import WorldClock
@@ -176,7 +179,22 @@ class WorkManager:
             logger.exception("Personal affair advancement failed; life loop continues")
         try:
             if self.interest_tracker is not None:
-                self.interest_tracker.advance_due(now)
+                grown = self.interest_tracker.advance_due(now)
+                # Self-initiated growth becomes a long-term memory so the
+                # character can later recall and reference it (self-growth spec).
+                if (
+                    grown is not None
+                    and self.memory is not None
+                    and self.feature_settings.self_growth_from_memory_enabled
+                ):
+                    try:
+                        self.memory.store_fact(
+                            f"自我成长：{grown.name} 兴趣进度 {grown.progress:.0f}%",
+                            layer="long_term",
+                            source_type="self_growth",
+                        )
+                    except Exception:
+                        logger.exception("Self-growth memory write failed; life loop continues")
         except StalePersonaEpoch:
             raise
         except Exception:

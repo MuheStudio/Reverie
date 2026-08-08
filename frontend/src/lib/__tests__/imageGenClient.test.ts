@@ -23,10 +23,10 @@ const MOCK_IG_CONFIG: ImageGenConfig = {
 const PUBLIC_IG_CONFIG: ImageGenConfig = { ...MOCK_IG_CONFIG, apiKey: '' };
 
 const MOCK_LLM_CONFIG = {
-  provider: 'openai',
+  provider: 'custom',
   apiKey: 'sk-llm',
-  baseUrl: 'https://api.openai.com',
-  model: 'gpt-4',
+  baseUrl: 'https://gateway.example.test/v1',
+  model: 'gateway-model',
 };
 const providerGet = vi.fn();
 const providerSet = vi.fn();
@@ -144,9 +144,9 @@ describe('saveImageGenConfig()', () => {
     await saveImageGenConfig(MOCK_IG_CONFIG);
     expect(providerSet).toHaveBeenCalledWith({
       llm: {
-        provider: 'openai',
-        baseUrl: 'https://api.openai.com',
-        model: 'gpt-4',
+        provider: 'custom',
+        baseUrl: 'https://gateway.example.test/v1',
+        model: 'gateway-model',
       },
       imageGen: {
         provider: 'openai',

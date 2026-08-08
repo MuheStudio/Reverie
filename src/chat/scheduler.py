@@ -53,7 +53,7 @@ class MessageScheduler:
     """Calculates reply delays, splits, and typing indicators."""
 
     reply_delay_min: float = 3.0   # seconds
-    reply_delay_max: float = 25.0  # seconds
+    reply_delay_max: float = 30.0  # seconds (ordinary messages cap here)
     split_messages: bool = True
     typing_indicator: bool = True
     status: Status = "online"
@@ -217,6 +217,16 @@ class MessageScheduler:
 
         delay = (base + typing_delay + complexity * 8.0) * emotion_modifier
 
+        # Ordinary exchanges cap their thinking/reading base at the configured
+        # ceiling (default 30s), while long replies keep their natural typing
+        # time so a 500-character answer still feels human (up to 60s).
+        long_message = max(len(user_message or ""), reply_length) > 200
+        if long_message:
+            delay = max(delay, float(self.reply_delay_max))
+        else:
+            base_share = min(base, float(self.reply_delay_max))
+            delay = min(delay, base_share + typing_delay + complexity * 8.0)
+
         # Status modifiers. Non-rest status is capped by the user-facing 1-60s threshold.
         status = self.current_status()
         if status == "sleeping" and not status_delay_applied:
@@ -225,8 +235,6 @@ class MessageScheduler:
             delay = min(delay * 3, 60.0)
         elif status == "busy" and not status_delay_applied:
             delay = min(delay * 1.8, 60.0)
-        else:
-            delay = min(delay, 60.0)
 
         # Small random wobble: real people do not reply on a metronome.
         delay *= random.uniform(0.75, 1.35)
@@ -313,17 +321,26 @@ class MessageScheduler:
             self._record_length_bucket(text)
             return text
 
+        # Important/serious exchanges (birthdays, reminders, distress) always
+        # keep their full length; the casual 70/25/5 distribution must not
+        # truncate them.
+        if allow_long:
+            self._record_length_bucket(text)
+            return text
+
         roll = random.random()
         if roll < 0.70:
             limit = 20
         elif roll < 0.95:
             limit = 80
         else:
+            # Long bucket (5%): reserved for serious contexts. When the caller
+            # did not mark the exchange important, the long reply is trimmed to
+            # 80 chars but still counted as a long-bucket message.
+            self.length_stats["long"] += 1
+            self.length_stats["total"] += 1
             if not allow_long and len(text) > 80:
-                shaped = self._trim_at_natural_break(text, 80)
-                self._record_length_bucket(shaped)
-                return shaped
-            self._record_length_bucket(text)
+                return self._trim_at_natural_break(text, 80)
             return text
 
         if len(text) <= limit:

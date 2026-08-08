@@ -322,11 +322,11 @@ const DEFAULT_MEMORY_SETTINGS: MemoryForgetSettings = {
   autonomous_memory_enabled: true,
   autonomous_memory_llm_enabled: false,
   misremembering_enabled: false,
-  misremember_probability: 0.01,
+  misremember_probability: 0.05,
   long_term_misremembering_enabled: true,
   short_term_misremembering_enabled: true,
-  long_term_misremember_probability: 0.01,
-  short_term_misremember_probability: 0.01,
+  long_term_misremember_probability: 0.05,
+  short_term_misremember_probability: 0.05,
   self_growth_enabled: true,
   self_growth_from_web_enabled: false,
   self_growth_from_memory_enabled: true,
@@ -594,7 +594,7 @@ function normalizeForgetProbability(value: unknown, fallback: number): number {
 function normalizeMisrememberProbability(value: unknown, fallback: number): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
-  return Math.min(0.01, Math.max(0.001, Math.round(numeric * 1000) / 1000));
+  return Math.min(0.1, Math.max(0.01, Math.round(numeric * 100) / 100));
 }
 
 function normalizeBoundedNumber(
@@ -1600,8 +1600,8 @@ export function AntiAiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
 export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
   const [settings, setSettings] = useState<MemoryForgetSettings>(DEFAULT_MEMORY_SETTINGS);
   const [status, setStatus] = useState('');
-  const longTermMisrememberPercent = Math.round(settings.long_term_misremember_probability * 1000) / 10;
-  const shortTermMisrememberPercent = Math.round(settings.short_term_misremember_probability * 1000) / 10;
+  const longTermMisrememberPercent = Math.round(settings.long_term_misremember_probability * 100);
+  const shortTermMisrememberPercent = Math.round(settings.short_term_misremember_probability * 100);
   const longTermMisrememberAvailable = settings.long_term_forget_days >= 90;
   const shortTermMisrememberAvailable = settings.short_term_forget_days >= 5;
 
@@ -1826,9 +1826,9 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           <span>长期混淆概率 {longTermMisrememberPercent}%</span>
           <input
             type="range"
-            min="0.001"
-            max="0.01"
-            step="0.001"
+            min="0.01"
+            max="0.10"
+            step="0.01"
             value={settings.long_term_misremember_probability}
             disabled={
               !settings.misremembering_enabled ||
@@ -1851,9 +1851,9 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           <span>短期混淆概率 {shortTermMisrememberPercent}%</span>
           <input
             type="range"
-            min="0.001"
-            max="0.01"
-            step="0.001"
+            min="0.01"
+            max="0.10"
+            step="0.01"
             value={settings.short_term_misremember_probability}
             disabled={
               !settings.misremembering_enabled ||

@@ -143,7 +143,10 @@ def test_prompt_builder_injects_user_context_and_emotional_behavior_rules() -> N
 
     assert "USER PROFILE & EMOTIONAL MEMORIES" in prompt
     assert "白夜喜欢明日方舟" in prompt
-    assert "get jealous" in prompt
+    assert "AI-driven fictional companion character" in prompt
+    assert "real person, not an AI" not in prompt
+    assert "Never use jealousy" in prompt
+    assert "offline relationships" in prompt
     assert "never recite them like a database" in prompt
 
 

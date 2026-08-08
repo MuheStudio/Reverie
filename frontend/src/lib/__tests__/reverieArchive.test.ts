@@ -353,10 +353,10 @@ describe('reverieArchive', () => {
       },
       onboarding: createOnboardingPreferences(2),
       llmConfig: {
-        provider: 'openai',
+        provider: 'custom',
         apiKey: 'sk-test',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4o',
+        baseUrl: 'https://gateway.example.test/v1',
+        model: 'gateway-model',
         customHeaders: 'Authorization: backup-secret-canary',
       },
       worldState: {
@@ -386,11 +386,11 @@ describe('reverieArchive', () => {
       schema: REVERIE_BACKUP_SCHEMA,
       archive: createDefaultArchive(),
       llmConfig: {
-        provider: 'openai',
+        provider: 'custom',
         apiKey: 'legacy-key-canary',
         customHeaders: 'Authorization: legacy-header-canary',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-4o',
+        baseUrl: 'https://gateway.example.test/v1',
+        model: 'gateway-model',
       },
       imageGenConfig: {
         provider: 'openai',
@@ -402,9 +402,9 @@ describe('reverieArchive', () => {
     });
 
     expect(parsed?.llmConfig).toEqual({
-      provider: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
+      provider: 'custom',
+      baseUrl: 'https://gateway.example.test/v1',
+      model: 'gateway-model',
     });
     expect(parsed?.securityWarnings).toHaveLength(1);
     expect(JSON.stringify(parsed)).not.toContain('legacy-key-canary');

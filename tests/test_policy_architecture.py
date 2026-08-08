@@ -52,16 +52,20 @@ def test_retention_rejects_values_between_choices(days: int) -> None:
 def test_probability_boundaries_remain_strict_after_assignment() -> None:
     settings = MemorySettings(
         long_term_forget_probability=0.01,
-        short_term_forget_probability=0.10,
-        misremember_probability=0.01,
+        short_term_forget_probability=0.001,
+        misremember_probability=0.05,
     )
     for field, value in (
         ("long_term_forget_probability", 0.009),
-        ("short_term_forget_probability", 0.101),
-        ("misremember_probability", 0.011),
+        ("short_term_forget_probability", 0.0009),
+        ("misremember_probability", 0.101),
     ):
         with pytest.raises(ValidationError):
             setattr(settings, field, value)
+    with pytest.raises(ValidationError):
+        MemorySettings(short_term_forget_probability=0.011)
+    with pytest.raises(ValidationError):
+        MemorySettings(misremember_probability=0.009)
     with pytest.raises(ValidationError):
         FeatureSettings(late_night_probability=0.009)
     with pytest.raises(ValidationError):
@@ -87,7 +91,7 @@ def test_consent_denial_precedes_budget_and_provider(monkeypatch) -> None:
             raise AssertionError(f"budget touched before consent: {name}")
 
     adapter = LLMAdapter(
-        LLMSettings(provider="openai", model="test"),
+        LLMSettings(provider="ollama", model="test"),
         budget_tracker=ExplodingBudget(),
         local_mode_gate=_AllowRemote(),
         usage_policy=policy,
@@ -132,7 +136,7 @@ def test_optional_ai_consent_is_bound_to_provider_origin_and_never_resurrects() 
     policy = _policy(settings)
     policy.grant("proactive_chat")
     grant = settings.ai_usage.proactive_chat
-    assert (grant.provider, grant.origin) == ("deepseek", "https://api.deepseek.com")
+    assert (grant.provider, grant.origin) == ("ollama", "http://localhost:11434")
     assert policy.allowed("proactive_chat") is True
 
     settings.llm.provider = "openai"
@@ -154,7 +158,7 @@ def test_revocation_blocks_provider_that_suppresses_cancellation(monkeypatch) ->
         policy = _policy(settings)
         policy.grant("proactive_chat")
         adapter = LLMAdapter(
-            LLMSettings(provider="openai", model="test"),
+            LLMSettings(provider="ollama", model="test"),
             local_mode_gate=_AllowRemote(),
             usage_policy=policy,
         )
@@ -173,7 +177,7 @@ def test_revocation_blocks_provider_that_suppresses_cancellation(monkeypatch) ->
             purpose="proactive_chat",
             background=True,
         ))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=1.0)
         assert policy.revoke("proactive_chat") == 1
         with pytest.raises(UsagePolicyRevoked):
             await task
@@ -211,7 +215,7 @@ def test_core_chat_succeeds_with_one_provider_call_when_optional_passes_are_deni
     async def scenario() -> None:
         settings = _Settings(features=FeatureSettings(emotion_system_enabled=True))
         adapter = LLMAdapter(
-            LLMSettings(provider="openai", model="test"),
+            LLMSettings(provider="ollama", model="test"),
             local_mode_gate=_AllowRemote(),
             usage_policy=_policy(settings),
         )

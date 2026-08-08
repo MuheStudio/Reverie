@@ -190,20 +190,104 @@ def test_sleep_schedule_allows_early_rest_and_late_sleep(tmp_path: Path) -> None
     assert late._rest_event_date(datetime(2099, 1, 2, 0, 30)) == "2099-01-01"
 
 
-def test_relationship_stage_changes_proactive_frequency() -> None:
+def test_relationship_stage_never_shortens_configured_proactive_cooldown() -> None:
     now = datetime(2099, 1, 1, 18, 0)
     initial = ProactiveChat(
         default_persona(), None, FakeEmotion(),
         relationship=RelationshipTracker(0),
         min_interval_minutes=120,
     )
-    special = ProactiveChat(
+    enduring = ProactiveChat(
         default_persona(), None, FakeEmotion(),
         relationship=RelationshipTracker(2200),
         min_interval_minutes=120,
     )
     initial._last_any_triggered = now - timedelta(minutes=80)
-    special._last_any_triggered = now - timedelta(minutes=80)
+    enduring._last_any_triggered = now - timedelta(minutes=80)
 
     assert initial._can_trigger("check", now) is False
-    assert special._can_trigger("check", now) is True
+    assert enduring._can_trigger("check", now) is False
+
+    initial._last_any_triggered = now - timedelta(minutes=130)
+    enduring._last_any_triggered = now - timedelta(minutes=130)
+
+    assert initial._can_trigger("check", now) is False
+    assert enduring._can_trigger("check", now) is True
+
+
+class FakeInterest:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def advance_due(self, now):
+        self.calls += 1
+        class _Grown:
+            name = "画画"
+            progress = 42.0
+        return _Grown()
+
+
+class FakeMemory:
+    def __init__(self) -> None:
+        self.facts: list[tuple[str, str, str]] = []
+
+    def store_fact(self, text: str, layer: str = "long_term", *, source_type: str = "local_fact") -> str:
+        self.facts.append((text, layer, source_type))
+        return f"fact_{len(self.facts)}"
+
+
+def test_self_growth_advance_writes_long_term_memory(tmp_path: Path) -> None:
+    diary = FakeDiary()
+    scheduler = MessageScheduler()
+    settings = FeatureSettings(
+        diary_enabled=False,
+        late_night_enabled=False,
+        self_growth_from_memory_enabled=True,
+    )
+    interest = FakeInterest()
+    memory = FakeMemory()
+    manager = WorkManager(
+        persona=default_persona(),
+        scheduler=scheduler,
+        diary=diary,
+        feature_settings=settings,
+        state_path=tmp_path / "state.json",
+        interest_tracker=interest,  # type: ignore[arg-type]
+        memory=memory,  # type: ignore[arg-type]
+    )
+
+    asyncio.run(manager.run_once(datetime(2099, 1, 1, 12, 0)))
+
+    assert interest.calls == 1
+    assert len(memory.facts) == 1
+    text, layer, source = memory.facts[0]
+    assert layer == "long_term"
+    assert source == "self_growth"
+    assert "画画" in text
+    assert "42%" in text
+
+
+def test_self_growth_skips_memory_write_when_disabled(tmp_path: Path) -> None:
+    diary = FakeDiary()
+    scheduler = MessageScheduler()
+    settings = FeatureSettings(
+        diary_enabled=False,
+        late_night_enabled=False,
+        self_growth_from_memory_enabled=False,
+    )
+    interest = FakeInterest()
+    memory = FakeMemory()
+    manager = WorkManager(
+        persona=default_persona(),
+        scheduler=scheduler,
+        diary=diary,
+        feature_settings=settings,
+        state_path=tmp_path / "state.json",
+        interest_tracker=interest,  # type: ignore[arg-type]
+        memory=memory,  # type: ignore[arg-type]
+    )
+
+    asyncio.run(manager.run_once(datetime(2099, 1, 1, 12, 0)))
+
+    assert interest.calls == 1
+    assert memory.facts == []

@@ -18,7 +18,9 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from src.storage.private_documents import PrivateDocumentStore
 
 if TYPE_CHECKING:
     from ..api.adapter import LLMAdapter
@@ -58,6 +60,7 @@ class EmotionSystem:
     values: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_BASELINE))
     baseline: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_BASELINE))
     state_path: Path | None = None
+    document_store: PrivateDocumentStore | None = None
     enabled: bool = True
     inertia_factor: float = INERTIA_FACTOR
     carryover_days: int = 3
@@ -235,52 +238,75 @@ class EmotionSystem:
         self.carryover_days = max(1, min(7, int(self.carryover_days)))
 
     def _load_state(self) -> None:
+        if self.document_store is not None:
+            stored = self.document_store.read_private_document("persona_emotion_state")
+            if stored is not None:
+                self._apply_state(stored)
+                return
         if self.state_path is None or not self.state_path.exists():
             return
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
-            if isinstance(data.get("values"), dict):
-                for name in EMOTION_NAMES:
-                    if name in data["values"]:
-                        self.values[name] = float(data["values"][name])
-            if isinstance(data.get("baseline"), dict):
-                for name in EMOTION_NAMES:
-                    if name in data["baseline"]:
-                        self.baseline[name] = float(data["baseline"][name])
-            if isinstance(data.get("last_updated"), str):
-                self._last_updated = data["last_updated"]
-            if isinstance(data.get("enabled"), bool):
-                self.enabled = data["enabled"]
-            if data.get("carryover_days") is not None:
-                self.carryover_days = int(data["carryover_days"])
-            if data.get("inertia_factor") is not None:
-                self.inertia_factor = float(data["inertia_factor"])
-            self._normalise_all()
+            if not isinstance(data, dict):
+                raise ValueError("emotion state root must be an object")
+            self._apply_state(data)
+            if self.document_store is not None:
+                self._save_state()
+                if (
+                    self.document_store.read_private_document("persona_emotion_state")
+                    != self._state_payload()
+                ):
+                    raise RuntimeError("encrypted emotion-state migration verification failed")
+                self.state_path.unlink()
         except Exception:
             logger.exception("Failed to load emotion state from %s", self.state_path)
 
     def _save_state(self) -> None:
+        if self.document_store is not None:
+            self.document_store.write_private_document(
+                "persona_emotion_state",
+                self._state_payload(),
+            )
+            return
         if self.state_path is None:
             return
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             self.state_path.write_text(
-                json.dumps(
-                    {
-                        "values": self.values,
-                        "baseline": self.baseline,
-                        "last_updated": self._last_updated,
-                        "enabled": self.enabled,
-                        "carryover_days": self.carryover_days,
-                        "inertia_factor": self.inertia_factor,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
+                json.dumps(self._state_payload(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception:
             logger.exception("Failed to save emotion state to %s", self.state_path)
+
+    def _apply_state(self, data: dict[str, Any]) -> None:
+        if isinstance(data.get("values"), dict):
+            for name in EMOTION_NAMES:
+                if name in data["values"]:
+                    self.values[name] = float(data["values"][name])
+        if isinstance(data.get("baseline"), dict):
+            for name in EMOTION_NAMES:
+                if name in data["baseline"]:
+                    self.baseline[name] = float(data["baseline"][name])
+        if isinstance(data.get("last_updated"), str):
+            self._last_updated = data["last_updated"]
+        if isinstance(data.get("enabled"), bool):
+            self.enabled = data["enabled"]
+        if data.get("carryover_days") is not None:
+            self.carryover_days = int(data["carryover_days"])
+        if data.get("inertia_factor") is not None:
+            self.inertia_factor = float(data["inertia_factor"])
+        self._normalise_all()
+
+    def _state_payload(self) -> dict[str, Any]:
+        return {
+            "values": dict(self.values),
+            "baseline": dict(self.baseline),
+            "last_updated": self._last_updated,
+            "enabled": self.enabled,
+            "carryover_days": self.carryover_days,
+            "inertia_factor": self.inertia_factor,
+        }
 
     # ── LLM-driven analysis ──────────────────────────────
 

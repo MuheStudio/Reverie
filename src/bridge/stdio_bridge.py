@@ -12,11 +12,12 @@ from typing import Any
 
 from .stdio_transport import read_frame, write_frame
 from . import ws_bridge
-from ..kernel.contracts import CommandEnvelopeV3
+from ..kernel.contracts import CommandEnvelopeV4, MUTATING_COMMAND_NAMES
+from ..kernel.storage import IdempotencyConflict
 
 
-READY_SCHEMA = "reverie.bridge.stdio.ready.v3"
-CONTROL_SCHEMA = "reverie.bridge.stdio.control.v3"
+READY_SCHEMA = "reverie.bridge.stdio.ready.v4"
+CONTROL_SCHEMA = "reverie.bridge.stdio.control.v4"
 
 
 class StdioController:
@@ -54,7 +55,7 @@ def _control_failure(
         "type": control_type,
         "ok": False,
         "code": str(getattr(error, "code", "") or "REVERIE_CONTROL_REJECTED")[:80],
-        "error": str(error)[:240],
+        "error": "The requested local control operation was rejected",
     }
     if control_type == "local_mode:set":
         from src.local_mode import get_local_mode_gate
@@ -75,6 +76,18 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
     control_type = str(message.get("type") or "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
         raise ValueError("invalid requestId")
+    allowed_fields = {
+        "local_mode:set": {"active", "epoch", "sessionId"},
+        "credentials:set": {"credentials"},
+        "provider:get": set(),
+        "provider:configure": {"llm"},
+        "provider:test": {"llm", "credential"},
+    }.get(control_type)
+    if allowed_fields is None:
+        raise ValueError("unsupported control type")
+    envelope_fields = {"kind", "schema", "type", "requestId"}
+    if set(message) - envelope_fields - allowed_fields:
+        raise ValueError("control message has unsupported fields")
     result: dict[str, Any] = {
         "kind": "control_result",
         "schema": CONTROL_SCHEMA,
@@ -103,8 +116,14 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
             sessionId=state.get("session_id") or None,
         )
     elif control_type == "credentials:set":
+        credentials = message.get("credentials")
+        if (
+            not isinstance(credentials, dict)
+            or set(credentials) - {"llm"}
+        ):
+            raise ValueError("credentials payload is invalid")
         result["applied"] = await ws_bridge._apply_runtime_credentials(  # noqa: SLF001
-            message.get("credentials")
+            credentials
         )
     elif control_type == "provider:get":
         result["llm"] = ws_bridge._provider_settings_snapshot()  # noqa: SLF001
@@ -119,43 +138,6 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
             message.get("credential"),
         )
         result.update(tested)
-    elif control_type in {"backup:file:export", "backup:file:import"}:
-        operation = "export" if control_type.endswith(":export") else "import"
-        result.update(
-            await ws_bridge._run_native_backup(  # noqa: SLF001
-                operation,
-                message.get("path"),
-            )
-        )
-    elif control_type == "sticker:file:import":
-        if os.getenv("REVERIE_BRIDGE_MODE", "").strip() != "1":
-            raise PermissionError("native sticker import requires the Electron owner")
-        manager = ws_bridge.bridge_state.stickers
-        if manager is None:
-            raise RuntimeError("sticker module is unavailable")
-        raw_path = message.get("path")
-        if not isinstance(raw_path, str) or not raw_path or len(raw_path) > 32_767:
-            raise ValueError("sticker path is invalid")
-        metadata = message.get("metadata") or {}
-        if not isinstance(metadata, dict):
-            raise ValueError("sticker metadata is invalid")
-        item = await asyncio.to_thread(
-            manager.collect_from_file,
-            raw_path,
-            text=str(metadata.get("text") or "")[:120],
-            emotions=metadata.get("emotions")
-            if isinstance(metadata.get("emotions"), list)
-            else None,
-            style_tags=metadata.get("styleTags")
-            if isinstance(metadata.get("styleTags"), list)
-            else None,
-        )
-        result.update(
-            item=item.to_dict(),
-            items=[entry.to_dict() for entry in manager.list_items(100)],
-        )
-    else:
-        raise ValueError("unsupported control type")
     return result
 
 
@@ -180,7 +162,7 @@ async def start_stdio_bridge() -> None:
         "transport": "stdio-framed",
         "pid": os.getpid(),
         "secretSha256": hashlib.sha256(secret.encode("utf-8")).hexdigest(),
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "localModeEpoch": gate_snapshot.epoch,
         "localModeSessionId": gate_snapshot.session_id or None,
         "personaId": persona_scope["persona_id"],
@@ -193,10 +175,9 @@ async def start_stdio_bridge() -> None:
 
     context = ws_bridge.BridgeClientContext(
         client_id=f"electron_stdio_{os.getpid()}",
-        # The renderer still speaks through the temporary V2 projection, but
-        # production commands are V3-scoped and must carry a current persona
-        # proof before the compatibility dispatcher may invoke a handler.
-        protocol_version=3,
+        # The renderer receives a compatibility event projection, while every
+        # production command is a strict V4 envelope with a host-owned proof.
+        protocol_version=4,
         authenticated=True,
         conversation_id="dream-room",
         persona_id=str(persona_scope["persona_id"]),
@@ -205,8 +186,6 @@ async def start_stdio_bridge() -> None:
     ws_bridge._client_contexts[controller] = context  # noqa: SLF001
     ws_bridge._controller_ws = controller  # noqa: SLF001
 
-    proactive_task = asyncio.create_task(ws_bridge._proactive_broadcast_loop())  # noqa: SLF001
-    activity_task = asyncio.create_task(ws_bridge._runtime_activity_loop())  # noqa: SLF001
     parent_task = asyncio.create_task(ws_bridge._parent_watch_loop(shutdown_event))  # noqa: SLF001
     if ws_bridge.bridge_state.session is not None:
         await ws_bridge._get_chat_coordinator().resume(  # noqa: SLF001
@@ -221,11 +200,12 @@ async def start_stdio_bridge() -> None:
             except EOFError:
                 break
             except Exception as exc:
+                del exc
                 await controller.write(
                     {
                         "kind": "fatal_error",
                         "code": "REVERIE_STDIO_FRAME_INVALID",
-                        "error": str(exc)[:240],
+                        "error": "The private bridge received an invalid frame",
                     }
                 )
                 break
@@ -233,25 +213,101 @@ async def start_stdio_bridge() -> None:
                 break
             kind = message.get("kind")
             if kind == "renderer_command":
-                if message.get("schema") != "reverie.command.v3":
-                    raise ValueError("invalid command envelope schema")
-                envelope = CommandEnvelopeV3.model_validate(message.get("envelope"))
+                try:
+                    if message.get("schema") != "reverie.command.v4":
+                        raise ValueError("invalid command envelope schema")
+                    envelope = CommandEnvelopeV4.model_validate(message.get("envelope"))
+                except Exception:
+                    await controller.write(
+                        {
+                            "kind": "fatal_error",
+                            "code": "REVERIE_COMMAND_REJECTED",
+                            "error": "The private bridge rejected an invalid command",
+                        }
+                    )
+                    break
                 scoped_payload = dict(envelope.payload)
-                # The V3 persona proof is authoritative over any values the
+                # The V4 persona proof is authoritative over any values the
                 # renderer attempted to place in its compatibility payload.
                 scoped_payload.update(
                     expected_persona_id=envelope.persona.persona_id,
                     expected_persona_epoch=envelope.persona.epoch,
                     expected_persona_fingerprint=envelope.persona.fingerprint,
                 )
-                await ws_bridge.dispatch_authenticated_message(
+                store = ws_bridge.bridge_state.kernel_store
+                if envelope.command in MUTATING_COMMAND_NAMES and store is not None:
+                    try:
+                        existing = store.begin_command(envelope)
+                    except IdempotencyConflict:
+                        await ws_bridge.send_to_frontend(
+                            controller,
+                            ws_bridge.MsgType.ERROR,
+                            {
+                                "message": "Duplicate command identity was rejected",
+                                "code": "idempotency_conflict",
+                            },
+                            request_id=envelope.request_id,
+                        )
+                        continue
+                    if existing.state == "committed":
+                        await ws_bridge.send_to_frontend(
+                            controller,
+                            ws_bridge.response_type_for_request(envelope.command),
+                            existing.result,
+                            request_id=envelope.request_id,
+                        )
+                        continue
+                    if existing.state in {"failed", "outcome_unknown"}:
+                        await ws_bridge.send_to_frontend(
+                            controller,
+                            ws_bridge.MsgType.ERROR,
+                            {
+                                "message": "The previous command did not complete safely",
+                                "code": "command_terminal",
+                            },
+                            request_id=envelope.request_id,
+                        )
+                        continue
+                is_mutating = (
+                    envelope.command in MUTATING_COMMAND_NAMES
+                    and store is not None
+                )
+                result = await ws_bridge.dispatch_authenticated_message(
                     {
                         "type": envelope.command,
                         "payload": scoped_payload,
                         "request_id": envelope.request_id,
                     },
                     controller,
+                    emit_result=not is_mutating,
                 )
+                if is_mutating and result is not None:
+                    try:
+                        committed = store.commit_command_result(envelope, result)
+                    except Exception:
+                        try:
+                            store.fail_command(
+                                envelope.request_id,
+                                error_code="TRANSPORT_COMMIT_FAILED",
+                            )
+                        except Exception:
+                            pass
+                        await ws_bridge.send_to_frontend(
+                            controller,
+                            ws_bridge.MsgType.ERROR,
+                            {
+                                "message": "The command result could not be committed safely",
+                                "code": "storage_unavailable",
+                            },
+                            request_id=envelope.request_id,
+                        )
+                    else:
+                        await ws_bridge.send_to_frontend(
+                            controller,
+                            ws_bridge.response_type_for_request(envelope.command),
+                            committed.result,
+                            request_id=envelope.request_id,
+                        )
                 continue
             if kind == "control":
                 request_id = str(message.get("requestId") or "")
@@ -273,12 +329,8 @@ async def start_stdio_bridge() -> None:
     finally:
         controller.closed = True
         shutdown_event.set()
-        proactive_task.cancel()
-        activity_task.cancel()
         parent_task.cancel()
         await asyncio.gather(
-            proactive_task,
-            activity_task,
             parent_task,
             return_exceptions=True,
         )

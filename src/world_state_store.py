@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config.settings import WORLD_STATE_DB
+from .storage.encrypted_sqlite import connect_database
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,15 @@ class WorldStateStore:
         return payload
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        # The complete backup snapshot (memory archive, user profile, diary,
+        # emotion/relationship state) is written here, so it must use the same
+        # fail-closed SQLCipher path as every other durable database. Without a
+        # key the dev/test fallback stays plaintext.
+        connection = connect_database(
+            self.path,
+            timeout=30.0,
+            isolation_level=None,
+        )
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")

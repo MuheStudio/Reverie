@@ -9,7 +9,7 @@ import logging
 import threading
 from typing import Protocol, runtime_checkable
 
-from .contracts import DomainEventV3
+from .contracts import DomainEventV4
 from .storage import KernelStore
 
 
@@ -42,7 +42,7 @@ class CapabilityModule(Protocol):
 
     def stop(self) -> None: ...
 
-    def handle_event(self, event: DomainEventV3) -> None: ...
+    def handle_event(self, event: DomainEventV4) -> None: ...
 
     def health(self) -> dict: ...
 

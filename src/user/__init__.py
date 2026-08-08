@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from ..config.settings import USER_DIR
 
@@ -207,9 +207,15 @@ class UserManager:
         user_mgr.save()
     """
 
-    def __init__(self, data_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path | None = None,
+        *,
+        document_store: Any | None = None,
+    ) -> None:
         self.data_dir = data_dir or USER_DIR
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.document_store = document_store
         self.profile = UserProfile()
         self.emotional_memories: list[EmotionalMemory] = []
         self._load()
@@ -441,6 +447,12 @@ class UserManager:
     # ── Persistence ───────────────────────────────────────
 
     def save(self) -> None:
+        if self.document_store is not None:
+            self.document_store.write_private_document(
+                "user_profile",
+                self.profile.to_dict(),
+            )
+            return
         filepath = self.data_dir / "profile.json"
         temp_path = filepath.with_suffix(".tmp")
         temp_path.write_text(
@@ -450,16 +462,36 @@ class UserManager:
         temp_path.replace(filepath)
 
     def _load(self) -> None:
+        if self.document_store is not None:
+            stored = self.document_store.read_private_document("user_profile")
+            if stored is not None:
+                self.profile = UserProfile.from_dict(stored)
+                return
         filepath = self.data_dir / "profile.json"
         if not filepath.exists():
             return
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 self.profile = UserProfile.from_dict(json.load(f))
+            if self.document_store is not None:
+                self.save()
+                if self.document_store.read_private_document("user_profile") != self.profile.to_dict():
+                    raise RuntimeError("encrypted profile migration verification failed")
+                filepath.unlink()
         except Exception:
             logger.exception("Failed to load user profile")
 
     def _load_emotional_memories(self) -> None:
+        if self.document_store is not None:
+            stored = self.document_store.read_private_document("user_emotional_memories")
+            if stored is not None:
+                items = stored.get("memories", [])
+                self.emotional_memories = [
+                    EmotionalMemory.from_dict(item)
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+                return
         filepath = self.data_dir / "emotional_memories.json"
         if not filepath.exists():
             return
@@ -472,10 +504,26 @@ class UserManager:
                 for item in items
                 if isinstance(item, dict)
             ]
+            if self.document_store is not None:
+                self._save_emotional_memories()
+                verified = self.document_store.read_private_document(
+                    "user_emotional_memories",
+                )
+                if verified != {
+                    "memories": [memory.to_dict() for memory in self.emotional_memories],
+                }:
+                    raise RuntimeError("encrypted emotional-memory migration verification failed")
+                filepath.unlink()
         except Exception:
             logger.exception("Failed to load emotional memories")
 
     def _save_emotional_memories(self) -> None:
+        if self.document_store is not None:
+            self.document_store.write_private_document(
+                "user_emotional_memories",
+                {"memories": [memory.to_dict() for memory in self.emotional_memories]},
+            )
+            return
         filepath = self.data_dir / "emotional_memories.json"
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(

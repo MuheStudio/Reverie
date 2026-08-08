@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+import hashlib
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from typing import Callable, Iterable, TYPE_CHECKING
 from ..config.settings import FeatureSettings, MemorySettings, load_settings
 from ..persona.identity import identity_attack_flags, require_identity_safe_memory
 from .catalog import memory_terms
+from .candidates import explicit_fact_key, extract_memory_candidate
 from .cognitive_decay import CognitiveDecaySystem
 from .layers import MemoryLayers
 from .versioned_store import VersionedVectorStore
@@ -144,8 +146,9 @@ class MemoryManager:
         *,
         emotion_intensity: float = 0.0,
         emotions: dict[str, float] | None = None,
-    ) -> None:
-        """Store a user+assistant exchange pair as memory.
+        source_uri: str = "",
+    ) -> dict | None:
+        """Store user-authored evidence from an exchange as memory.
 
         Classification logic:
         - With autonomous memory enabled, routine low-signal exchanges may be skipped
@@ -156,16 +159,23 @@ class MemoryManager:
         self._require_current()
         self._last_memory_activity_at = time.monotonic()
         self.forgetting.resolve_user_correction(user_message)
-        text = f"事件记忆：用户说：{user_message} | 她回复：{assistant_reply}"
+        # Assistant output is not evidence about the user. The canonical chat
+        # ledger already preserves the reply with its role; memory recall keeps
+        # only the user-authored source so a hallucination cannot become a fact.
+        text = f"事件记忆：用户说：{user_message}"
         if not self.settings.interaction_capture_enabled:
-            return
-        attack_flags = identity_attack_flags(text, self.persona.identity_envelope)
+            return None
+        attack_flags = identity_attack_flags(
+            user_message,
+            self.persona.identity_envelope,
+            allow_user_self_claims=True,
+        )
         if attack_flags:
             logger.warning(
                 "Interaction excluded from long-term memory because it attempted identity drift: %s",
                 ",".join(attack_flags),
             )
-            return
+            return None
         importance = self._score_importance(
             user_message,
             assistant_reply,
@@ -187,17 +197,42 @@ class MemoryManager:
                 )
             if not should_remember:
                 logger.debug("Skipped memory by autonomous memory gate")
-                return
+                return None
+        candidate: dict | None = None
+
         def commit_interaction() -> None:
+            nonlocal candidate
+            source_hash = hashlib.sha256(
+                user_message.encode("utf-8", errors="strict")
+            ).hexdigest()
+            candidate = self._propose_statement_candidate(
+                user_message,
+                source_uri=source_uri,
+                source_hash=source_hash,
+            )
             if importance > 0.6:
-                self.layers.store_long_term(text, importance=importance, emotions=emotions)
+                self.layers.store_long_term(
+                    text,
+                    importance=importance,
+                    emotions=emotions,
+                    source_type="user_interaction",
+                    source_uri=source_uri,
+                    source_hash=source_hash,
+                )
                 logger.debug("Stored as long-term (importance=%.2f)", importance)
             elif random.random() < self.settings.short_term_capture_probability:
-                self.layers.store_short_term(text, importance=importance, emotions=emotions)
+                self.layers.store_short_term(
+                    text,
+                    importance=importance,
+                    emotions=emotions,
+                    source_type="user_interaction",
+                    source_uri=source_uri,
+                    source_hash=source_hash,
+                )
                 logger.debug("Stored as short-term (importance=%.2f)", importance)
-            self._store_explicit_semantic_statement(user_message, importance)
 
         self._commit(commit_interaction)
+        return candidate
 
     def store_fact(
         self,
@@ -282,34 +317,212 @@ class MemoryManager:
         return self._commit(commit_reactivation)
 
     def store_manual_memory(self, text: str, layer: str) -> str:
-        """Store a user-selected chat record in a forgettable memory layer."""
+        """Store a user-selected chat record in the requested memory layer.
+
+        ``permanent`` marks a precious memory that never decays or gets
+        confused (permanent memories are excluded from forgetting and
+        misremembering); ``long_term``/``short_term`` remain forgettable.
+        """
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Memory text is empty")
-        if layer not in {"long_term", "short_term"}:
+        if layer not in {"long_term", "short_term", "permanent"}:
             raise ValueError(f"Unsupported manual memory layer: {layer}")
-        label = "Manual long-term memory" if layer == "long_term" else "Manual short-term memory"
+        label = {
+            "long_term": "Manual long-term memory",
+            "short_term": "Manual short-term memory",
+            "permanent": "Precious memory",
+        }[layer]
         return self.store_fact(f"{label}: {cleaned}", layer=layer)
 
-    def _store_explicit_semantic_statement(self, user_message: str, importance: float) -> None:
-        """Keep explicit user facts separate from the surrounding episode."""
-        cleaned = user_message.strip()
-        markers = (
-            "我叫", "我的生日", "我生日", "我喜欢", "我讨厌", "我害怕",
-            "我的目标", "我的计划", "我习惯", "记住", "别忘",
-            "my name", "my birthday", "i like", "i hate", "my goal",
-        )
-        if not cleaned or len(cleaned) > 500 or not any(marker in cleaned.lower() for marker in markers):
-            return
-        digest = uuid.uuid5(uuid.NAMESPACE_URL, cleaned).hex[:16]
-        self.store.add(
-            id=f"sem_{digest}",
-            text=f"用户明确陈述：{cleaned}",
-            layer="long_term",
-            cognitive_layer="semantic",
-            importance=max(0.65, importance),
+    def _propose_statement_candidate(
+        self,
+        user_message: str,
+        *,
+        source_uri: str = "",
+        source_hash: str = "",
+    ) -> dict | None:
+        candidate = extract_memory_candidate(user_message)
+        if candidate is None:
+            return None
+        evidence_hash = source_hash or hashlib.sha256(
+            user_message.encode("utf-8", errors="strict")
+        ).hexdigest()
+        return self.store.catalog.create_candidate(
+            fact_key=candidate.fact_key,
+            proposed_text=candidate.proposed_text,
+            source_text=user_message,
             source_type="user_statement",
+            source_uri=source_uri,
+            source_hash=evidence_hash,
+            confidence=candidate.confidence,
         )
+
+    def list_memory_candidates(
+        self,
+        *,
+        status: str = "pending",
+        limit: int = 100,
+    ) -> list[dict]:
+        self._require_current()
+        return self.store.catalog.list_candidates(status=status, limit=limit)
+
+    def confirm_memory_candidate(self, candidate_id: str) -> dict:
+        self._require_current()
+        result = self._commit(
+            lambda: self.store.catalog.confirm_candidate(
+                candidate_id,
+                embedding_model_version=self.store.runtime.model_version,
+            )
+        )
+        self._last_memory_activity_at = time.monotonic()
+        return result
+
+    def reject_memory_candidate(self, candidate_id: str) -> dict:
+        self._require_current()
+        return self._commit(
+            lambda: self.store.catalog.reject_candidate(candidate_id)
+        )
+
+    @staticmethod
+    def _confirmed_memory_view(row: dict) -> dict:
+        """Project the review surface without vector or internal scoring data."""
+
+        return {
+            "id": str(row.get("id", "")),
+            "text": str(row.get("text", "")),
+            "fact_key": str(row.get("fact_key", "")),
+            "fact_revision": int(row.get("fact_revision", 0) or 0),
+            "source_type": str(row.get("source_type", "")),
+            "source_uri": str(row.get("source_uri", "")),
+            "source_hash": str(row.get("source_hash", "")),
+            "confirmation_state": str(row.get("confirmation_state", "")),
+            "lifecycle_state": str(row.get("lifecycle_state", "")),
+            "updated_at": float(row.get("updated_at", 0.0) or 0.0),
+        }
+
+    def list_confirmed_memories(self, *, limit: int = 100) -> list[dict]:
+        self._require_current()
+        return [
+            self._confirmed_memory_view(row)
+            for row in self.store.catalog.list_confirmed(limit=limit)
+        ]
+
+    def correct_confirmed_memory(
+        self,
+        memory_id: str,
+        text: str,
+        *,
+        source_uri: str = "",
+    ) -> dict:
+        """Create an auditable replacement revision for a confirmed fact."""
+
+        self._require_current()
+        cleaned = str(text).strip()
+        if not cleaned:
+            raise ValueError("Memory correction is empty")
+        require_identity_safe_memory(
+            cleaned,
+            self.persona.identity_envelope,
+            allow_user_self_claims=True,
+        )
+        current = self.store.catalog.get(str(memory_id))
+        if (
+            current is None
+            or current.get("confirmation_state") != "confirmed"
+            or current.get("lifecycle_state") != "active"
+        ):
+            raise KeyError("Confirmed active memory not found")
+        source_hash = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+
+        def commit_correction() -> dict:
+            candidate = self.store.catalog.create_candidate(
+                fact_key=str(current.get("fact_key") or explicit_fact_key(cleaned)),
+                proposed_text=cleaned,
+                source_text=cleaned,
+                source_type="user_correction",
+                source_uri=source_uri or f"reverie-memory://correction/{memory_id}",
+                source_hash=source_hash,
+                confidence=1.0,
+            )
+            return self.store.catalog.confirm_candidate(
+                str(candidate["id"]),
+                embedding_model_version=self.store.runtime.model_version,
+                decision_reason="user_corrected",
+            )
+
+        result = self._commit(commit_correction)
+        self._last_memory_activity_at = time.monotonic()
+        memory = result.get("memory")
+        return {
+            **result,
+            "memory": self._confirmed_memory_view(memory) if memory else None,
+        }
+
+    def delete_confirmed_memory(self, memory_id: str) -> dict:
+        """Purge a current confirmed fact and its candidate evidence."""
+
+        self._require_current()
+        current = self.store.catalog.get(str(memory_id))
+        if (
+            current is None
+            or current.get("confirmation_state") != "confirmed"
+            or current.get("lifecycle_state") != "active"
+        ):
+            raise KeyError("Confirmed active memory not found")
+        fact_key = str(current.get("fact_key") or "")
+        deleted_ids = self._commit(
+            lambda: self.store.delete_fact_lineage(fact_key)
+        )
+        return {
+            "memory_id": str(memory_id),
+            "deleted": str(memory_id) in deleted_ids,
+            "purged_revisions": len(deleted_ids),
+        }
+
+    def confirm_explicit_statement(
+        self,
+        text: str,
+        *,
+        source_uri: str = "",
+    ) -> dict:
+        """Commit an explicit “remember this” instruction through the same ledger."""
+
+        cleaned = str(text).strip()
+        if not cleaned:
+            raise ValueError("Confirmed memory text is empty")
+        require_identity_safe_memory(
+            cleaned,
+            self.persona.identity_envelope,
+            allow_user_self_claims=True,
+        )
+        extracted = extract_memory_candidate(cleaned)
+        proposed_text = (
+            extracted.proposed_text
+            if extracted is not None
+            else f"用户明确要求记住：{cleaned}"
+        )
+        source_hash = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+
+        def commit_confirmed() -> dict:
+            candidate = self.store.catalog.create_candidate(
+                fact_key=explicit_fact_key(cleaned),
+                proposed_text=proposed_text,
+                source_text=cleaned,
+                source_type="user_confirmed_statement",
+                source_uri=source_uri,
+                source_hash=source_hash,
+                confidence=1.0,
+            )
+            return self.store.catalog.confirm_candidate(
+                str(candidate["id"]),
+                embedding_model_version=self.store.runtime.model_version,
+                decision_reason="explicit_remember_instruction",
+            )
+
+        result = self._commit(commit_confirmed)
+        self._last_memory_activity_at = time.monotonic()
+        return result
 
     def apply_settings(
         self,
@@ -399,6 +612,8 @@ class MemoryManager:
             "memory_stack": ["working", "episodic", "semantic", "procedural"],
             "embedding_model_version": migration["model_version"],
             "embedding_backend": migration["backend"],
+            "semantic_recall_available": migration["semantic_available"],
+            "embedding_diagnostic": migration["diagnostic"],
             "vector_index_backend": migration["vector_backend"],
             "embedding_dimensions": migration["dimensions"],
             "vector_partition_strategy": migration["partition_strategy"],
@@ -1094,6 +1309,10 @@ class MemoryManager:
             "sanitizer_flags": list(row.get("sanitizer_flags", [])) if isinstance(row.get("sanitizer_flags"), list) else [],
             "embedding_model_version": str(row.get("embedding_model_version", "")),
             "lifecycle_state": str(row.get("lifecycle_state", "active")),
+            "fact_key": str(row.get("fact_key", "")),
+            "fact_revision": int(row.get("fact_revision", 0) or 0),
+            "supersedes_id": str(row.get("supersedes_id", "")),
+            "confirmation_state": str(row.get("confirmation_state", "observed")),
         }
 
     def _adjust_memory_importance(self, memory_id: str, delta: float, *, touch: bool) -> bool:

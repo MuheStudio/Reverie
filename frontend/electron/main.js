@@ -21,9 +21,9 @@ const path = require('path');
 const { Worker } = require('worker_threads');
 const { installAppProtocol } = require('./app-protocol.cjs');
 const { BridgeHostProxy } = require('./bridge-host-proxy.cjs');
-const { CompanionPreferencesStore } = require('./companion-preferences.cjs');
 const { FramedBridgeSupervisor } = require('./framed-bridge-supervisor.cjs');
 const { CredentialVault } = require('./credential-vault.cjs');
+const { StorageKeyVault } = require('./storage-key-vault.cjs');
 const { registerDesktopSchemes } = require('./desktop-schemes.cjs');
 const { reconcileFocusNetworkGate } = require('./focus-gate-recovery.cjs');
 const { enterLocalModeWithDegradedBridge } = require('./focus-local-mode-transition.cjs');
@@ -33,7 +33,6 @@ const {
   ProviderConfigStore,
   normalizeProviderConfig,
   providerBinding,
-  sameLlmConnection,
 } = require('./provider-config-store.cjs');
 const {
   assertPlainObject,
@@ -58,16 +57,17 @@ function optionalExport(modulePath, exportName) {
 
 const AvatarManager = optionalExport('./avatar-manager.cjs', 'AvatarManager');
 const installAvatarProtocol = optionalExport('./avatar-protocol.cjs', 'installAvatarProtocol');
-const FocusManager = optionalExport('./focus-manager.cjs', 'FocusManager');
-const FocusSoundManager = optionalExport('./focus-sound-manager.cjs', 'FocusSoundManager');
-const installFocusSoundProtocol = optionalExport('./focus-sound-protocol.cjs', 'installFocusSoundProtocol');
+const FocusManager = null;
+const FocusSoundManager = null;
+const installFocusSoundProtocol = null;
 const evaluateLive2DRuntime = optionalExport('./live2d-release-gate.cjs', 'evaluateLive2DRuntime');
-const stageNativeBackupSource = optionalExport('./backup-file-stage.cjs', 'stageNativeBackupSource');
-const WindowsLocationProvider = optionalExport('./windows-location.cjs', 'WindowsLocationProvider');
-const installStickerAssetProtocol = optionalExport(
-  './sticker-asset-protocol.cjs',
-  'installStickerAssetProtocol',
+const readRuntimeAssetsManifest = optionalExport(
+  './live2d-runtime-assets.cjs',
+  'readRuntimeAssetsManifest',
 );
+const stageNativeBackupSource = null;
+const WindowsLocationProvider = null;
+const installStickerAssetProtocol = null;
 const installLive2DCoreProtocol = optionalExport(
   './live2d-core-protocol.cjs',
   'installLive2DCoreProtocol',
@@ -105,7 +105,7 @@ let networkGate = null;
 let bridge = null;
 let bridgeHostProxy = null;
 let credentialVault = null;
-let companionPreferencesStore = null;
+let storageKeyVault = null;
 let providerConfigStore = null;
 let avatarManager = null;
 let focusManager = null;
@@ -119,6 +119,7 @@ let unregisterLive2DCoreProtocol = null;
 let stickerAssetsRoot = null;
 let live2dCorePath = null;
 let live2dRuntimeAvailable = false;
+let live2dRuntimeAssets = null;
 let ipcRegistrar = null;
 let notificationPollTimer = null;
 let inactivityTimer = null;
@@ -155,23 +156,28 @@ function getLive2DCorePath() {
   if (process.env.REVERIE_LIVE2D_CORE_PATH) {
     return path.resolve(process.env.REVERIE_LIVE2D_CORE_PATH);
   }
-  // Development-only reuse of the owner's local Luna-ts checkout. The
-  // proprietary Core remains there and is never copied into a package.
-  return path.resolve(
-    getRuntimeRoot(),
-    '..',
-    '..',
-    'Cloning-project',
-    'Luna-ts',
-    'packages',
-    'web',
-    'public',
-    'live2dcubismcore.min.js',
-  );
+  // Dev-only convenience: run `pnpm prepare:live2d-dev` to stage the Cubism
+  // Core into the gitignored .runtime-cache (see script/prepare-live2d-dev.cjs).
+  return path.join(__dirname, '..', '.runtime-cache', 'Live2DCubismCore.js');
 }
 
 function probeLive2DRuntime() {
   const corePath = getLive2DCorePath();
+  if (!IS_DEV) {
+    try {
+      live2dRuntimeAssets = readRuntimeAssetsManifest
+        ? readRuntimeAssetsManifest(process.resourcesPath)
+        : null;
+      return {
+        coreAvailable: Boolean(live2dRuntimeAssets),
+        rendererAvailable: live2dRuntimeAssets?.renderer?.embedded === true,
+      };
+    } catch (error) {
+      live2dRuntimeAssets = null;
+      console.error('[Electron] Packaged Live2D assets failed verification', error);
+      return { coreAvailable: false, rendererAvailable: false };
+    }
+  }
   let rendererAvailable = false;
   try {
     require.resolve('pixi-live2d-display/cubism4', {
@@ -225,10 +231,42 @@ function prepareWritableDataDir() {
   return dataDir;
 }
 
+function applyBundledYumiMapping(record) {
+  if (!avatarManager || !record || record.kind !== 'live2d') return record;
+  const available = new Set(record.detected?.expressions || []);
+  const mappings = {
+    joy: '爱心眼',
+    touched: '爱心眼',
+    excitement: '爱心眼',
+    sad: '泪汪汪',
+    sadness: '泪汪汪',
+    angry: '黑脸',
+    anger: '黑脸',
+    surprised: '星星眼',
+  };
+  for (const [emotion, expression] of Object.entries(mappings)) {
+    if (available.has(expression)) {
+      avatarManager.setMapping(record.id, 'expression', emotion, `expression:${expression}`);
+    }
+  }
+  const clips = new Set(record.detected?.animationClips || []);
+  const actionMappings = {
+    wave: 'wave',
+    tear: 'tear',
+  };
+  for (const [action, clip] of Object.entries(actionMappings)) {
+    if (clips.has(clip)) {
+      avatarManager.setMapping(record.id, 'action', action, `clip:${clip}`);
+    }
+  }
+  const snapshot = avatarManager.list();
+  return snapshot.records.find((item) => item.id === record.id) || record;
+}
+
 function getWindowIconPath() {
   return IS_DEV
-    ? path.join(__dirname, '..', 'public', 'favicon.jpg')
-    : path.join(__dirname, '..', 'dist', 'favicon.jpg');
+    ? path.join(__dirname, '..', 'public', 'icon.ico')
+    : path.join(process.resourcesPath, 'icon.ico');
 }
 
 function broadcast(channel, payload) {
@@ -272,9 +310,8 @@ function publicCredentialStatus(extra = {}) {
       available: false,
       persistentAvailable: false,
       corrupted: false,
-        llm: { hasApiKey: false, hasCustomHeaders: false },
-        imageGen: { hasApiKey: false, hasCustomHeaders: false },
-      };
+      llm: { hasApiKey: false, hasCustomHeaders: false },
+    };
   return { ...status, ...extra };
 }
 
@@ -287,9 +324,7 @@ function broadcastCredentialStatus(extra = {}) {
 function hasStoredCredentials(status) {
   return Boolean(
     status?.llm?.hasApiKey
-    || status?.llm?.hasCustomHeaders
-    || status?.imageGen?.hasApiKey
-    || status?.imageGen?.hasCustomHeaders,
+    || status?.llm?.hasCustomHeaders,
   );
 }
 
@@ -307,15 +342,6 @@ function publicProviderFromRuntime(llm) {
   };
 }
 
-function readImageProviderCache() {
-  try {
-    return providerConfigStore?.get()?.imageGen || null;
-  } catch (error) {
-    console.error('[Electron] Image provider recovery cache is unavailable', error);
-    return null;
-  }
-}
-
 async function authoritativeProviderConfig() {
   if (!bridge?.ready) {
     const error = new Error('The Python settings authority is not ready');
@@ -323,11 +349,7 @@ async function authoritativeProviderConfig() {
     throw error;
   }
   const llm = publicProviderFromRuntime(await bridge.getProviderConfig());
-  const imageGen = readImageProviderCache();
-  return {
-    llm,
-    ...(imageGen ? { imageGen } : {}),
-  };
+  return { llm };
 }
 
 async function syncCredentialVault(options = {}) {
@@ -348,15 +370,12 @@ async function syncCredentialVault(options = {}) {
       stored: hasStoredCredentials(status),
       runtimeApplied: false,
       runtimePending: true,
-      runtimeAppliedScopes: { llm: false, imageGen: false },
+      runtimeAppliedScopes: { llm: false },
     });
   }
   const providers = await authoritativeProviderConfig();
   const bindings = {
     llm: providerBinding('llm', providers),
-    ...(providers.imageGen
-      ? { imageGen: providerBinding('imageGen', providers) }
-      : {}),
   };
   const runtimeCredentials = credentialVault.readForRuntime({ bindings });
   for (const scope of options.clearScopes || []) runtimeCredentials[scope] = null;
@@ -366,14 +385,9 @@ async function syncCredentialVault(options = {}) {
       (status.llm.hasApiKey || status.llm.hasCustomHeaders)
       && !runtimeCredentials.llm,
     ),
-    imageGen: Boolean(
-      (status.imageGen.hasApiKey || status.imageGen.hasCustomHeaders)
-      && !runtimeCredentials.imageGen,
-    ),
   };
   const applied = {
     llm: result.applied.llm === true && !bindingMismatch.llm,
-    imageGen: result.applied.imageGen === true && !bindingMismatch.imageGen,
   };
   return broadcastCredentialStatus({
     stored: hasStoredCredentials(status),
@@ -525,30 +539,58 @@ function setupLogging() {
 function spawnBridgeChild(context) {
   const dataDir = prepareWritableDataDir();
   const command = getPythonCommand();
+  const storageKey = storageKeyVault.getOrCreateKey();
   const args = [
     path.join(getRuntimeRoot(), 'src', 'main.py'),
     '--stdio-bridge',
   ];
   logger?.addSecret(context.secret);
-  return spawn(command, args, {
-    cwd: getRuntimeRoot(),
-    windowsHide: true,
-    env: {
-      ...process.env,
-      PYTHONIOENCODING: 'utf-8',
-      PYTHONUNBUFFERED: '1',
-      PYTHONDONTWRITEBYTECODE: '1',
-      REVERIE_BRIDGE_MODE: '1',
-      REVERIE_BRIDGE_PROTOCOL_VERSION: '3',
-      REVERIE_BRIDGE_SECRET: context.secret,
-      REVERIE_PARENT_PID: String(process.pid),
-      REVERIE_DATA_DIR: dataDir,
-      REVERIE_LOCAL_MODE: context.localMode.active ? '1' : '0',
-      REVERIE_LOCAL_MODE_EPOCH: String(context.localMode.epoch || 0),
-      REVERIE_LOCAL_MODE_SESSION_ID: String(context.localMode.sessionId || ''),
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  let child;
+  try {
+    child = spawn(command, args, {
+      cwd: getRuntimeRoot(),
+      windowsHide: true,
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUNBUFFERED: '1',
+        PYTHONDONTWRITEBYTECODE: '1',
+        REVERIE_BRIDGE_MODE: '1',
+        REVERIE_BRIDGE_PROTOCOL_VERSION: '4',
+        REVERIE_BRIDGE_SECRET: context.secret,
+        REVERIE_PARENT_PID: String(process.pid),
+        REVERIE_DATA_DIR: dataDir,
+        REVERIE_LOCAL_MODE: context.localMode.active ? '1' : '0',
+        REVERIE_LOCAL_MODE_EPOCH: String(context.localMode.epoch || 0),
+        REVERIE_LOCAL_MODE_SESSION_ID: String(context.localMode.sessionId || ''),
+        REVERIE_REQUIRE_ENCRYPTED_STORAGE: '1',
+        // This descriptor number is not secret. The key itself only traverses
+        // the inherited anonymous pipe below and is zeroed after the write.
+        REVERIE_STORAGE_KEY_FD: '3',
+      },
+      stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+    });
+    const bootstrap = child.stdio[3];
+    if (!bootstrap) throw new Error('Database key bootstrap pipe was not created');
+    let cleared = false;
+    const clearKey = () => {
+      if (cleared) return;
+      cleared = true;
+      storageKey.fill(0);
+    };
+    bootstrap.once('error', (error) => {
+      clearKey();
+      try { child.kill('SIGKILL'); } catch {}
+      console.error('[Electron] Database key bootstrap failed', error);
+    });
+    child.once('error', clearKey);
+    bootstrap.end(storageKey, clearKey);
+    return child;
+  } catch (error) {
+    storageKey.fill(0);
+    try { child?.kill('SIGKILL'); } catch {}
+    throw error;
+  }
 }
 
 function scheduleBridgeRestart(reason) {
@@ -726,11 +768,16 @@ function createRuntimeModules() {
     storageDir: path.join(runtimeDir, 'credentials'),
     safeStorage,
   });
+  storageKeyVault = new StorageKeyVault({
+    storageDir: path.join(runtimeDir, 'storage-key'),
+    safeStorage,
+  });
+  // Fail before opening a renderer if DPAPI is unavailable or the existing
+  // protected key cannot be decrypted for this Windows user.
+  const storageProbe = storageKeyVault.getOrCreateKey();
+  storageProbe.fill(0);
   providerConfigStore = new ProviderConfigStore({
     storageDir: path.join(runtimeDir, 'provider-config'),
-  });
-  companionPreferencesStore = new CompanionPreferencesStore({
-    storageDir: path.join(runtimeDir, 'companion-preferences'),
   });
   if (WindowsLocationProvider) {
     try {
@@ -769,6 +816,9 @@ function createRuntimeModules() {
         ? evaluateLive2DRuntime({
             ...probeLive2DRuntime(),
             isPackaged: app.isPackaged,
+            testOnly: !IS_DEV
+              && live2dRuntimeAssets?.mode === 'internal-test'
+              && fs.existsSync(path.join(path.dirname(process.resourcesPath), 'TEST-BUILD-DO-NOT-RELEASE.json')),
             licensePath,
             developmentEnabled: IS_DEV && isRegularUnlinkedFile(getLive2DCorePath())
               ? '1'
@@ -788,19 +838,27 @@ function createRuntimeModules() {
       live2dCorePath = getLive2DCorePath();
       live2dRuntimeAvailable = live2dRuntime.available === true;
       avatarManager = new AvatarManager({
-        storageDir: path.join(app.getPath('userData'), 'avatars'),
+        storageDir: path.join(app.getPath('userData'), 'bundled-character'),
         live2dRuntime,
       });
-      if (IS_DEV && live2dRuntime.developmentOnly && live2dRuntime.available) {
-        const yumiSource = path.resolve(
-          process.env.REVERIE_YUMI_SOURCE
-            || path.join(getRuntimeRoot(), '..', '..', '皮套-yumi'),
-        );
+      if (live2dRuntime.available) {
+        const yumiSource = IS_DEV
+          ? path.resolve(
+              process.env.REVERIE_YUMI_SOURCE
+                || path.join(getRuntimeRoot(), '..', '..', '皮套-yumi'),
+            )
+          : path.join(process.resourcesPath, 'character');
         if (fs.existsSync(yumiSource) && avatarManager.list().records.length === 0) {
-          avatarManager.installTrustedDefaultDirectory(yumiSource, {
+          const installed = avatarManager.installTrustedDefaultDirectory(yumiSource, {
             name: 'Yumi',
             trustedOwnerAsset: true,
           });
+          applyBundledYumiMapping(installed);
+        } else if (avatarManager.list().records.length > 0) {
+          const current = avatarManager.list();
+          const active = current.records.find((record) => record.id === current.activeId)
+            || current.records[0];
+          applyBundledYumiMapping(active);
         }
       }
     } catch (error) {
@@ -1160,7 +1218,6 @@ async function configureAuthoritativeProvider(input) {
         ? { customProviderName: normalized.llm.customProviderName }
         : {}),
     },
-    ...(normalized.imageGen ? { imageGen: normalized.imageGen } : {}),
   };
   try {
     // Recovery/migration cache only. Reads shown to the renderer always come
@@ -1240,28 +1297,33 @@ async function testProviderConfiguration(input = {}) {
     return {
       ok: true,
       receipt,
-      expiresAt: new Date(expiresAt).toISOString(),
-      provider: result.provider,
-      model: result.model,
       latencyMs: result.latencyMs,
+      finishReason: typeof result.finishReason === 'string'
+        ? result.finishReason
+        : typeof result.finish_reason === 'string' ? result.finish_reason : 'stop',
     };
   } catch (error) {
     const code = String(error?.code || 'PROVIDER_FAILURE');
     const messages = {
       PROVIDER_UNAUTHORIZED: 'API 密钥或账户权限未通过验证。',
+      PROVIDER_AUTH_FAILED: 'API 密钥或账户权限未通过验证。',
       PROVIDER_RATE_LIMITED: '供应商正在限流，请稍后手动重试测试。',
       PROVIDER_TIMEOUT: '测试请求超时；结果未知，不会自动重试。',
+      PROVIDER_UNREACHABLE: '无法连接到供应商，请检查网络、DNS、TLS 和请求地址。',
       PROVIDER_CONNECTION_FAILED: '无法连接到供应商，请检查网络和请求地址。',
       PROVIDER_INVALID_RESPONSE: '供应商返回了无法解析的响应。',
+      PROVIDER_INVALID_RESPONSE_SCHEMA: '供应商响应不符合 Chat Completions 协议。',
       PROVIDER_EMPTY_RESPONSE: '供应商返回了空响应。',
+      PROVIDER_REASONING_ONLY_RESPONSE: '供应商只返回了思考过程，没有可显示的最终回答。',
+      PROVIDER_OUTPUT_TRUNCATED: '供应商输出达到长度上限，请检查模型兼容性。',
+      PROVIDER_CONTENT_FILTERED: '供应商过滤了本次测试输出。',
+      PROVIDER_TOOL_ONLY_RESPONSE: '供应商只返回了工具调用，当前聊天界面无法显示。',
       REVERIE_LOCAL_MODE: '本地模式已启用，远程 API 测试被底层门禁阻止。',
     };
     return {
       ok: false,
       code,
       message: messages[code] || 'API 测试失败；配置和密钥均未保存。',
-      retryable: ['PROVIDER_RATE_LIMITED', 'PROVIDER_TIMEOUT', 'PROVIDER_CONNECTION_FAILED']
-        .includes(code),
     };
   }
 }
@@ -1360,7 +1422,7 @@ async function commitProviderConfiguration(input = {}) {
       stored: hasStoredCredentials(publicCredentialStatus()),
       runtimeApplied: false,
       runtimePending: true,
-      runtimeAppliedScopes: { llm: false, imageGen: false },
+      runtimeAppliedScopes: { llm: false },
     });
   }
   providerTestReceipts.delete(receipt);
@@ -1375,7 +1437,7 @@ async function commitProviderConfiguration(input = {}) {
   };
 }
 
-function registerIpcHandlers() {
+function registerLegacyIpcHandlers() {
   if (ipcRegistrar) return;
   ipcRegistrar = createSecureIpcRegistrar(ipcMain, () => mainWindow, trustPolicy);
   const { handle } = ipcRegistrar;
@@ -1879,6 +1941,219 @@ function registerIpcHandlers() {
   });
 }
 
+function bundledCharacterSnapshot() {
+  const unavailable = {
+    record: null,
+    runtime: {
+      live2d: {
+        available: false,
+        licenseAccepted: false,
+        reason: 'The bundled character is unavailable',
+      },
+    },
+  };
+  if (!avatarManager) return unavailable;
+  const library = avatarManager.list();
+  const record = library.records.find((item) => (
+    item.id === library.activeId
+    && item.kind === 'live2d'
+    && item.status === 'ready'
+  )) || null;
+  return {
+    record,
+    runtime: library.runtime,
+  };
+}
+
+/**
+ * The production renderer receives one narrow capability interface. The old
+ * platform handlers remain above only as migration reference and are never
+ * registered; an XSS therefore cannot reach files, location, notifications,
+ * custom avatars, games, backups, focus timers, or image generation.
+ */
+// ── cat-catch download service (GPL-3.0, Muhe Studio adaptation) ──
+// Vendored at src/download_service/electron_adapter.js. Registered through the
+// secure IPC registrar only; every handler fails closed unless the owner
+// enabled features.download_service_enabled in data/config.json.
+let downloadAdapter = null;
+function getDownloadAdapter() {
+  if (downloadAdapter !== null) return downloadAdapter;
+  try {
+    downloadAdapter = require(path.join(
+      getRuntimeRoot(),
+      'src',
+      'download_service',
+      'electron_adapter.js',
+    ));
+  } catch (error) {
+    downloadAdapter = null;
+    console.error('[Electron] cat-catch download adapter unavailable', error);
+  }
+  return downloadAdapter;
+}
+
+function downloadServiceEnabled() {
+  if (!getDownloadAdapter()) return false;
+  try {
+    const configPath = path.join(dataDir, 'config.json');
+    const raw = fs.readFileSync(configPath, 'utf8');
+    return Boolean(JSON.parse(raw)?.features?.download_service_enabled);
+  } catch {
+    return false;
+  }
+}
+
+function requireDownloadAdapter() {
+  if (!downloadServiceEnabled()) {
+    throw new Error('REVERIE_DOWNLOAD_SERVICE_DISABLED');
+  }
+  return getDownloadAdapter();
+}
+
+function registerDownloadHandlers(handle) {
+  handle('sniff:resources', () => {
+    requireDownloadAdapter();
+    if (!mainWindow || mainWindow.isDestroyed()) return [];
+    return mainWindow.webContents.executeJavaScript(`
+      (() => {
+        const resources = [];
+        document.querySelectorAll('video, audio').forEach((el) => {
+          const src = el.currentSrc || el.src;
+          if (src) resources.push({ url: src, type: el.tagName.toLowerCase(), title: document.title });
+          el.querySelectorAll('source').forEach((s) => {
+            if (s.src) resources.push({ url: s.src, type: s.type || 'media', title: document.title });
+          });
+        });
+        document.querySelectorAll('img').forEach((el) => {
+          if (el.src && el.naturalWidth > 100) {
+            resources.push({ url: el.src, type: 'image/' + (el.src.split('.').pop() || 'jpg'), title: el.alt || document.title, size: el.naturalWidth * el.naturalHeight });
+          }
+        });
+        return resources;
+      })()
+    `).catch(() => []);
+  });
+
+  handle('sniff:m3u8', async (_event, url) => {
+    const adapter = requireDownloadAdapter();
+    const target = boundedString(url, { label: 'm3u8 url', max: 2048 });
+    try {
+      const response = await fetch(target);
+      const content = await response.text();
+      return adapter.parseM3U8(content);
+    } catch (error) {
+      return { error: String(error?.message || error) };
+    }
+  });
+
+  handle('download:m3u8', async (event, input) => {
+    const adapter = requireDownloadAdapter();
+    assertPlainObject(input, 'm3u8 download');
+    if (typeof input.url !== 'string' || input.url.length > 2048
+      || typeof input.m3u8Content !== 'string' || input.m3u8Content.length > 8 * 1024 * 1024) {
+      throw new TypeError('m3u8 download payload is invalid');
+    }
+    const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : '';
+    const onProgress = (progress) => {
+      try { event.sender.send('download:progress', progress); } catch {}
+    };
+    const buffer = await adapter.downloadM3U8Segments(
+      input.url,
+      baseUrl,
+      input.m3u8Content,
+      onProgress,
+    );
+    const tmpDir = path.join(require('os').tmpdir(), 'reverie-downloads');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpFile = path.join(
+      tmpDir,
+      `m3u8_${Date.now()}_${Math.random().toString(16).slice(2)}.ts`,
+    );
+    fs.writeFileSync(tmpFile, buffer);
+    return { path: tmpFile, size: buffer.length };
+  });
+
+  handle('download:direct', async (_event, input) => {
+    requireDownloadAdapter();
+    assertPlainObject(input, 'direct download');
+    const url = boundedString(input.url, { label: 'download url', max: 2048 });
+    const filename = input.filename == null ? '' : boundedString(input.filename, { label: 'download filename', max: 512 });
+    if (!/^https?:\/\//i.test(url)) throw new TypeError('download url must be http(s)');
+    const savePath = dialog.showSaveDialogSync(mainWindow, {
+      defaultPath: filename || path.basename(new URL(url).pathname) || 'download',
+    });
+    if (!savePath) return { cancelled: true };
+    mainWindow.webContents.downloadURL(url);
+    return new Promise((resolve) => {
+      mainWindow.webContents.session.once('will-download', (_ev, item) => {
+        item.setSavePath(savePath);
+        item.on('updated', () => {
+          if (item.isPaused()) return;
+          mainWindow.webContents.send('download:progress', {
+            current: item.getReceivedBytes(),
+            total: item.getTotalBytes(),
+            percentage: item.getTotalBytes()
+              ? Math.round((item.getReceivedBytes() / item.getTotalBytes()) * 100)
+              : 0,
+          });
+        });
+        item.on('done', (_e, state) => {
+          resolve({
+            path: savePath,
+            size: item.getReceivedBytes(),
+            state,
+            cancelled: state === 'cancelled',
+          });
+        });
+      });
+    });
+  });
+}
+
+function registerIpcHandlers() {
+  if (ipcRegistrar) return;
+  ipcRegistrar = createSecureIpcRegistrar(ipcMain, () => mainWindow, trustPolicy);
+  const { handle } = ipcRegistrar;
+
+  handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
+  handle('bridge:send', (_event, frame) => bridgeHostProxy.sendFromRenderer(frame));
+  handle('app:getVersion', () => app.getVersion());
+  handle('localMode:get', () => publicLocalModeState());
+  handle('localMode:set', async (_event, input = {}) => {
+    assertPlainObject(input, 'local mode');
+    if (Object.keys(input).some((key) => key !== 'enabled')
+      || typeof input.enabled !== 'boolean') {
+      throw new TypeError('local mode payload is invalid');
+    }
+    return setManualLocalMode(input.enabled);
+  });
+  handle('credentials:status', () => publicCredentialStatus());
+  handle('credentials:clear', async (_event, input = {}) => {
+    assertPlainObject(input, 'credential clear');
+    if (Object.keys(input).some((key) => key !== 'scope') || input.scope !== 'llm') {
+      throw new TypeError('only the LLM credential scope may be cleared');
+    }
+    credentialVault.clear('llm');
+    try {
+      return await syncCredentialVault({ clearScopes: ['llm'] });
+    } catch (error) {
+      console.error('[Electron] Cleared credential runtime synchronization failed', error);
+      if (!bridge?.child) startBridge();
+      return broadcastCredentialStatus({
+        stored: false,
+        runtimeApplied: false,
+        runtimePending: true,
+        runtimeAppliedScopes: { llm: false },
+      });
+    }
+  });
+  handle('providerConfig:get', () => authoritativeProviderConfig());
+  handle('providerConfig:test', (_event, input) => testProviderConfiguration(input));
+  handle('providerConfig:commit', (_event, input) => commitProviderConfiguration(input));
+  handle('character:getBundled', () => bundledCharacterSnapshot());
+  registerDownloadHandlers(handle);
+}
+
 function createTray() {
   if (tray) return;
   tray = new Tray(getWindowIconPath());
@@ -1946,7 +2221,11 @@ function createWindow() {
   // fast renderer can request geolocation in the small gap before the global
   // handler is registered and receive a false denial.
   installPermissionPolicy(mainWindow.webContents.session, trustPolicy, () => mainWindow);
-  mainWindow.webContents.session.on('will-download', (event) => event.preventDefault());
+  mainWindow.webContents.session.on('will-download', (event) => {
+    // Downloads stay blocked unless the owner enabled the vendored cat-catch
+    // download service (features.download_service_enabled in config.json).
+    if (!downloadServiceEnabled()) event.preventDefault();
+  });
   if (IS_DEV) {
     mainWindow.loadURL(FRONTEND_DEV_URL).catch((error) => {
       console.error('[Electron] Failed to load development renderer', error);
@@ -2045,9 +2324,6 @@ if (hasSingleInstanceLock) {
     createTray();
     installPowerEvents();
     startBridge();
-    pollNotificationOutbox();
-    notificationPollTimer = setInterval(pollNotificationOutbox, 5000);
-    notificationPollTimer.unref?.();
 
     app.on('activate', () => {
       if (!mainWindow || mainWindow.isDestroyed()) createWindow();

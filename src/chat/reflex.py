@@ -200,6 +200,7 @@ class ReflexSystem:
             "reminder": "reminder",
             "user_care": "care",
             "friend_silence": "care",
+            "wake_care": "care",
             "late_night_checkin": "rest",
         }
         return self.choose(mapping.get(trigger, "care"), context=context)

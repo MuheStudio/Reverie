@@ -101,6 +101,32 @@ def test_speech_habits_persist_and_emotion_changes_punctuation(tmp_path: Path, m
     assert restored.usage[default_persona().catchphrases[0]] == 1
 
 
+def test_low_mood_collapses_bangs_and_appends_ellipsis(tmp_path: Path, monkeypatch) -> None:
+    engine = SpeechHabitEngine(default_persona(), data_dir=tmp_path)
+    engine.since_catchphrase = 0
+    monkeypatch.setattr("src.persona.speech_habits.random.random", lambda: 0.0)
+
+    # Sadness must not shout: double bangs collapse and an ellipsis follows.
+    result = engine.apply(
+        "我今天真的很难过！！",
+        emotions={"sadness": 60.0},
+    )
+    assert "！！" not in result
+    assert result.endswith("……")
+
+
+def test_high_arousal_drops_trailing_ellipsis(tmp_path: Path, monkeypatch) -> None:
+    engine = SpeechHabitEngine(default_persona(), data_dir=tmp_path)
+    engine.since_catchphrase = 0
+    monkeypatch.setattr("src.persona.speech_habits.random.random", lambda: 0.0)
+
+    result = engine.apply(
+        "好耶我们赢啦……",
+        emotions={"joy": 90.0},
+    )
+    assert not result.endswith("……")
+
+
 def test_chinese_typo_is_light_and_protects_links_and_dates(monkeypatch) -> None:
     monkeypatch.setattr("src.chat.typo.random.random", lambda: 0.0)
     monkeypatch.setattr("src.chat.typo.random.choice", lambda items: items[0])
@@ -270,6 +296,43 @@ def test_proactive_reminders_care_and_state_survive_restart(tmp_path: Path) -> N
     assert care["reason"] == "distress_followup"
 
 
+def test_proactive_wake_care_asks_about_late_night_activity(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 13, 9, 30)
+    proactive = ProactiveChat(
+        default_persona(),
+        QueueAdapter(["昨天晚上怎么那么晚才睡呀"]),
+        StableEmotion(),
+        state_path=tmp_path / "proactive.json",
+    )
+    # User was active at 02:30; she is awake at 09:30 the same morning.
+    proactive.mark_user_replied("还没睡")
+    proactive._last_user_activity = datetime(2026, 7, 13, 2, 30)
+    proactive._last_any_triggered = None
+    proactive._daily_trigger_count.clear()
+
+    trigger, context = proactive._check_triggers(now)
+    assert trigger == "wake_care"
+    assert context["last_active_hour"] == 2
+    proactive._record_successful_trigger(trigger, context)
+
+    # The same morning it must not repeat.
+    assert proactive._check_triggers(now) == (None, None)
+
+    # A normal bedtime (23:30) must not trigger wake care.
+    proactive2 = ProactiveChat(
+        default_persona(),
+        QueueAdapter([]),
+        StableEmotion(),
+        state_path=tmp_path / "proactive2.json",
+    )
+    proactive2.mark_user_replied("晚安")
+    proactive2._last_user_activity = datetime(2026, 7, 13, 23, 30)
+    proactive2._last_any_triggered = None
+    proactive2._daily_trigger_count.clear()
+    trigger2, _ = proactive2._check_triggers(now)
+    assert trigger2 != "wake_care"
+
+
 def test_timeline_verifies_continuity_and_restores_event_facts(tmp_path: Path, monkeypatch) -> None:
     adapter = QueueAdapter([
         "画稿今天终于完成了",
@@ -324,3 +387,58 @@ def test_timeline_contradiction_fails_closed_without_template_only_generation(tm
     assert post is not None
     assert post.consistency_status == "grounded_fallback"
     assert "已经全部完成" not in post.content
+
+class RecallMemory:
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = texts
+
+    def retrieve_relevant(self, _query: str, k: int = 6) -> list[str]:
+        return self.texts[:k]
+
+
+def test_memory_recall_has_dedicated_24h_cooldown(tmp_path: Path) -> None:
+    proactive = ProactiveChat(
+        default_persona(),
+        QueueAdapter(["记得我们约好了下个月一起去漫展"]),
+        StableEmotion(),
+        memory=RecallMemory(["我们约好了下个月一起去漫展"]),
+        state_path=tmp_path / "proactive.json",
+    )
+    now = datetime.now()
+    assert proactive._memory_recall_due(now) is True
+    trigger, context = proactive._check_triggers(now)
+    assert trigger == "memory_recall"
+    assert context["memory"]
+    proactive._record_successful_trigger(trigger, context)
+
+    # Same day: cooldown blocks another memory recall even after any-trigger reset.
+    later = now + timedelta(hours=2)
+    assert proactive._memory_recall_due(later) is False
+    proactive._last_any_triggered = None  # greetings must not starve it, but 24h still holds
+    assert proactive._check_triggers(later) != ("memory_recall", None)
+
+    # After 24h the beat becomes due again.
+    next_day = now + timedelta(hours=25)
+    assert proactive._memory_recall_due(next_day) is True
+
+
+def test_last_triggered_ledger_prunes_stale_entries(tmp_path: Path) -> None:
+    proactive = ProactiveChat(
+        default_persona(),
+        QueueAdapter([]),
+        StableEmotion(),
+        state_path=tmp_path / "proactive.json",
+    )
+    proactive._last_triggered = {
+        "memory_recall_old": datetime.now() - timedelta(days=60),
+        "reminder_still_fresh": datetime.now() - timedelta(days=2),
+    }
+    proactive._save_state()
+    restored = ProactiveChat(
+        default_persona(),
+        QueueAdapter([]),
+        StableEmotion(),
+        state_path=tmp_path / "proactive.json",
+    )
+    assert "memory_recall_old" not in restored._last_triggered
+    assert "reminder_still_fresh" in restored._last_triggered

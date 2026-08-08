@@ -1328,6 +1328,17 @@ function SettingsHubPanel({
           <RefreshCw size={15} />
           <span>刷新动态</span>
         </button>
+        <button
+          type="button"
+          disabled={!connected}
+          onClick={() => {
+            ws.send(WSMsgType.SETTINGS_UPDATE, { section: 'ui', mode: 'mvp' });
+            window.location.reload();
+          }}
+        >
+          <SettingsIcon size={15} />
+          <span>返回主界面</span>
+        </button>
       </div>
 
       <section className={styles.keepsakeList} aria-label="可选模块状态">

@@ -1,0 +1,12 @@
+{
+  "schema": "reverie.character-rights.v1",
+  "applicationId": "studio.muhe.reverie",
+  "assetId": "yumi",
+  "evidenceId": "yumi-free-public-skin-2026",
+  "rightsHolder": "Yumi Live2D model creator (free public skin)",
+  "grants": [
+    "commercial-use",
+    "modification",
+    "redistribution-with-application"
+  ]
+}

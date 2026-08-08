@@ -34,6 +34,7 @@ test('host proxy exposes only framed stdio and forwards declared typed frames', 
   const renderer = await proxy.connect();
   assert.equal(renderer.transport, 'electron-ipc');
   assert.equal(renderer.secret, '');
+  assert.equal(renderer.protocolVersion, 4);
 
   supervisor.emit('message', { type: 'emotion:update', payload: { joy: 2 } });
   assert.deepEqual(broadcasts.at(-1), {
@@ -72,6 +73,6 @@ test('renderer bridge frames reject prototypes, invalid IDs, arrays, and oversiz
   assert.throws(() => normalizeFrame({ type: 'ok', payload: {}, request_id: 'x' }, { renderer: true }));
   assert.throws(() => normalizeFrame({
     type: 'memory:query',
-    payload: { data: 'x'.repeat(4 * 1024 * 1024) },
+    payload: { data: 'x'.repeat(256 * 1024) },
   }, { renderer: true }), /large/i);
 });

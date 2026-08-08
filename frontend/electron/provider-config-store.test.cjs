@@ -16,14 +16,9 @@ test('provider metadata store persists a closed-world projection without credent
   const store = new ProviderConfigStore({ storageDir: root });
   const value = {
     llm: {
-      provider: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-5',
-    },
-    imageGen: {
-      provider: 'openai',
-      baseUrl: 'https://api.openai.com',
-      model: 'gpt-image-1',
+      provider: 'custom',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'companion-model',
     },
   };
   assert.deepEqual(store.set(value), value);
@@ -38,9 +33,9 @@ test('provider metadata store rejects credential fields even if a compromised re
   const store = new ProviderConfigStore({ storageDir: root });
   assert.throws(() => store.set({
     llm: {
-      provider: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-5',
+      provider: 'custom',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'companion-model',
       apiKey: 'must-never-land',
     },
   }), /forbidden field/i);
@@ -67,10 +62,10 @@ test('provider metadata replacement is repeatable on Windows and endpoint bindin
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-replace-'));
   const store = new ProviderConfigStore({ storageDir: root });
   const first = {
-    llm: { provider: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5' },
+    llm: { provider: 'custom', baseUrl: 'https://api.example.com/v1', model: 'companion-a' },
   };
   const second = {
-    llm: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+    llm: { provider: 'custom', baseUrl: 'https://other.example.com/v1', model: 'companion-b' },
   };
   store.set(first);
   store.set(second);
@@ -85,20 +80,31 @@ test('provider metadata replacement is repeatable on Windows and endpoint bindin
 
 test('untested metadata updates cannot change the LLM connection tuple', () => {
   const current = {
-    llm: { provider: 'deepseek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
+    llm: { provider: 'custom', baseUrl: 'https://api.example.com/v1', model: 'companion-a' },
   };
   assert.equal(sameLlmConnection(current, {
-    ...current,
-    imageGen: {
-      provider: 'openai',
-      baseUrl: 'https://api.openai.com',
-      model: 'gpt-image-1.5',
-    },
+    llm: { ...current.llm, customProviderName: 'My endpoint' },
   }), true);
   assert.equal(sameLlmConnection(current, {
-    llm: { ...current.llm, model: 'deepseek-reasoner' },
+    llm: { ...current.llm, model: 'companion-b' },
   }), false);
   assert.equal(sameLlmConnection(current, {
     llm: { ...current.llm, baseUrl: 'https://proxy.invalid/v1' },
   }), false);
+});
+
+test('provider metadata accepts every supported provider and rejects unknown/top-level sections', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-closed-world-'));
+  const store = new ProviderConfigStore({ storageDir: root });
+  for (const provider of ['openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm']) {
+    const value = { llm: { provider, baseUrl: 'https://api.example.com/v1', model: 'model' } };
+    assert.deepEqual(store.set(value), value);
+  }
+  assert.throws(() => store.set({
+    llm: { provider: 'unknown', baseUrl: 'https://api.example.com/v1', model: 'model' },
+  }), /invalid/);
+  assert.throws(() => store.set({
+    llm: { provider: 'custom', baseUrl: 'https://api.example.com/v1', model: 'model' },
+    imageGen: { provider: 'custom', baseUrl: 'https://images.example.com', model: 'image' },
+  }), /non-MVP section/);
 });

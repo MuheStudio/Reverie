@@ -98,7 +98,6 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     resolve: {
       alias: {
         '@': resolve(__dirname, './src'),
-        '@gui/vibe-container': resolve(__dirname, './src/lib/vibeContainerMock.ts'),
       },
     },
     base: getBase(),

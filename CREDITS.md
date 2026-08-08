@@ -50,8 +50,15 @@
 - **原作者**: Alan-Yu-2077 及 Luna-ts 贡献者 (Copyright 2026)
 - **原始仓库**: 用户提供的本地 `Cloning-project/Luna-ts`
 - **许可证**: MIT（其携带的 Live2D Cubism Core 不属于 MIT）
-- **在 Reverie 中的角色**: 参考并适配头部中心、按距离缩放的鼠标视线跟随算法
-- **边界**: Reverie 开发模式只从原仓库位置读取 Cubism Core，不复制或重新授权该专有文件
+- **在 Reverie 中的角色**: 参考并适配头部中心、按距离缩放的鼠标视线跟随算法；本机开发辅助脚本可从该检出目录暂存 Cubism Core
+- **Core 边界**: `Live2DCubismCore.js` 是 Live2D Inc. 软件，不属于 Luna-ts 的 MIT 许可或 Reverie 的 GPL-3.0 源码；开发副本只进入 gitignored 的 `frontend/.runtime-cache`
+- **发布门禁**: 公开构建仅从 `REVERIE_LIVE2D_CORE_PATH` 暂存 Core，并要求当前有效的 Live2D 应用出版许可证；缺失、失效或占位许可均拒绝打包
+
+### pixi-live2d-display — Cubism 4 Web 渲染运行时
+- **原作者**: guansss 及 pixi-live2d-display 贡献者
+- **上游版本**: 0.4.0（MIT）
+- **使用范围**: `frontend/vendor/pixi-live2d-display` 只保留 Cubism 4 运行所需构建与类型；删除上游误列为生产依赖、但仅用于发布文档的 `gh-pages`
+- **许可证**: MIT（镜像全文见 `LICENSES_CREDITS/LICENSE-MIT-pixi-live2d-display.txt`）；随本地运行时镜像保留 `frontend/vendor/pixi-live2d-display/LICENSE`
 
 ### foxgirls.club — 随机狐娘图片服务
 - **原作者**: foxgirls.org (Copyright 2026)
@@ -89,10 +96,15 @@
 
 ## 非代码参考
 
-### Yumi 公共皮套预览
+### Yumi Live2D 角色素材
 - **来源**: 项目所有者于 2026-07-25 提供的本地 `皮套-yumi` 文件夹
-- **当前使用范围**: 普通构建仅包含 `yumi.png` 静态主界面预览
-- **发布边界**: `.moc3`、纹理、动作、表情与 Cubism 运行库不进入未获许可的发行包
+- **授权性质**: 免费公开皮套（free public avatar skin），可随本应用使用、修改与再分发
+- **内容**: `yumi.moc3`、8192 像素纹理、物理配置、`tear`/`wave` 动作及 17 个表情
+- **Live2D 授权**: 运行时基于 Live2D Cubism SDK 免费许可条款分发（`LICENSES_CREDITS/LIVE2D_PUBLICATION_LICENSE.json`）
+- **当前使用范围**: 开发模式、带 `TEST-BUILD-DO-NOT-RELEASE` 标记的内部测试包，或同时通过角色权利与 Live2D 出版许可门禁的公开包
+- **发布边界**: 普通或未获授权的公开包不包含 `.moc3`、纹理、动作、表情或 Cubism Core
+- **修改说明**: Live2D 构建会把超过 4096 像素的引用纹理确定性缩小，以降低显存峰值；角色权利清单必须明确包含修改与随应用再分发授权
+- **权利门禁**: `LICENSES_CREDITS/YUMI_CHARACTER_RIGHTS.json` 记录项目所有者提供的权利声明；该声明不能替代原作者与来源证据
 - **待补信息**: 正式公开分发前需补记原作者、来源链接与资源再分发条款
 - **详细记录**: `LICENSES_CREDITS/YUMI-ASSET-NOTICE.txt`
 

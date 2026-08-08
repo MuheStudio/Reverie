@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-test('sandboxed preload exposes the authority and Companion APIs without local require', () => {
+test('sandboxed preload exposes only the MVP authority without local require', () => {
   const source = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
   const exposed = new Map();
   const handlers = new Map();
@@ -41,7 +41,55 @@ test('sandboxed preload exposes the authority and Companion APIs without local r
 
   const api = exposed.get('electronAPI');
   assert.ok(api, 'electronAPI was not exposed');
+  assert.deepEqual(
+    Object.keys(api).sort(),
+    [
+      'bridge',
+      'character',
+      'credentials',
+      'download',
+      'getAppVersion',
+      'localMode',
+      'onAppLifecycle',
+      'platform',
+      'providerConfig',
+    ],
+  );
+  assert.deepEqual(Object.keys(api.bridge).sort(), [
+    'getConnectionConfig',
+    'onChanged',
+    'onMessage',
+    'send',
+  ]);
+  assert.deepEqual(Object.keys(api.credentials).sort(), [
+    'clear',
+    'onChanged',
+    'set',
+    'setSession',
+    'status',
+  ]);
+  assert.deepEqual(Object.keys(api.providerConfig).sort(), ['commit', 'get', 'test']);
+  assert.deepEqual(Object.keys(api.character), ['get']);
+  assert.deepEqual(Object.keys(api.download).sort(), [
+    'downloadDirect',
+    'downloadM3u8',
+    'onProgress',
+    'sniffM3u8',
+    'sniffResources',
+  ]);
   assert.equal(typeof api.providerConfig.commit, 'function');
-  assert.equal(typeof api.focus.start, 'function');
-  assert.equal(typeof api.focusSound.list, 'function');
+  for (const forbidden of [
+    'avatar',
+    'backup',
+    'companionPreferences',
+    'files',
+    'focus',
+    'focusSound',
+    'getCurrentWindowsLocation',
+    'openLocationSettings',
+    'showNotification',
+    'stickers',
+  ]) {
+    assert.equal(api[forbidden], undefined, `${forbidden} must not cross the preload boundary`);
+  }
 });

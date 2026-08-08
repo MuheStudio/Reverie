@@ -131,7 +131,7 @@ class CognitiveDecaySystem:
 
     @staticmethod
     def _bounded_confusion_probability(value: float) -> float:
-        return max(0.0, min(0.01, float(value)))
+        return max(0.0, min(0.10, float(value)))
 
     def retention(self, memory: dict, *, now: float | None = None) -> float:
         """Return R in [0, 1] from time, salience, emotion, and references."""
@@ -311,14 +311,44 @@ class CognitiveDecaySystem:
         except (TypeError, ValueError):
             return 0.0
         if layer == "long_term":
-            if not self.long_term_misremembering_enabled or age_days < min(90, self.long_term_forget_days):
+            if not self.long_term_misremembering_enabled:
                 return 0.0
-            return self._bounded_confusion_probability(self.long_term_misremember_probability)
+            baseline = 90
+            # The system is forbidden when the configured forgetting threshold
+            # is below the 90-day baseline (the human forgetting curve).
+            if int(self.long_term_forget_days) < baseline or age_days < baseline:
+                return 0.0
+            configured = self._bounded_confusion_probability(self.long_term_misremember_probability)
+            return configured * self._age_scale(age_days, baseline, int(self.long_term_forget_days))
         if layer == "short_term":
-            if not self.short_term_misremembering_enabled or age_days < min(5, self.short_term_forget_days):
+            if not self.short_term_misremembering_enabled:
                 return 0.0
-            return self._bounded_confusion_probability(self.short_term_misremember_probability)
+            baseline = 5
+            # The system is forbidden when the configured forgetting threshold
+            # is below the 5-day baseline (the human forgetting curve).
+            if int(self.short_term_forget_days) < baseline or age_days < baseline:
+                return 0.0
+            configured = self._bounded_confusion_probability(self.short_term_misremember_probability)
+            return configured * self._age_scale(age_days, baseline, int(self.short_term_forget_days))
         return 0.0
+
+    @staticmethod
+    def _age_scale(age_days: float, baseline: int, ceiling: int) -> float:
+        """Scale misremember probability with age.
+
+        At the baseline day the configured probability is halved; it grows
+        linearly and caps at 60% of the configured value when a memory reaches
+        the configured forgetting threshold. Older memories never exceed that
+        cap, so misremembering stays bounded and forget-table memories are
+        never confused at full configured strength.
+        """
+        if ceiling <= baseline:
+            # Threshold equals the baseline: every eligible memory is already
+            # at (or past) the ceiling, so use the full in-window cap.
+            return 0.6
+        span = float(ceiling - baseline)
+        ratio = max(0.0, min(1.0, (age_days - baseline) / span))
+        return 0.5 + 0.1 * ratio
 
     @staticmethod
     def _is_protected(row: dict) -> bool:

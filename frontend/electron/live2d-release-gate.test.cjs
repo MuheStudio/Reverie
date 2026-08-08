@@ -8,6 +8,7 @@ const test = require('node:test');
 const {
   assertLive2DReleaseGate,
   evaluateLive2DRuntime,
+  validateCharacterRights,
   scanForbiddenLive2DFiles,
   validateLive2DLicense,
 } = require('./live2d-release-gate.cjs');
@@ -80,4 +81,38 @@ test('runtime needs both build/runtime gates and a valid manifest', () => {
     coreAvailable: true,
     rendererAvailable: true,
   }).available, false);
+});
+
+test('packaged internal test runtime is allowed only with explicit test evidence', () => {
+  assert.equal(evaluateLive2DRuntime({
+    isPackaged: true,
+    testOnly: true,
+    coreAvailable: true,
+    rendererAvailable: true,
+  }).available, true);
+  assert.equal(evaluateLive2DRuntime({
+    isPackaged: true,
+    testOnly: false,
+    coreAvailable: true,
+    rendererAvailable: true,
+  }).available, false);
+});
+
+test('Yumi publication rights require use, modification, and bundled redistribution', () => {
+  const rights = {
+    schema: 'reverie.character-rights.v1',
+    applicationId: 'studio.muhe.reverie',
+    assetId: 'yumi',
+    evidenceId: 'owner-contract-1',
+    rightsHolder: 'Owner',
+    grants: ['commercial-use', 'modification', 'redistribution-with-application'],
+  };
+  assert.equal(validateCharacterRights(rights).assetId, 'yumi');
+  assert.throws(
+    () => validateCharacterRights({
+      ...rights,
+      grants: ['commercial-use', 'modification'],
+    }),
+    /redistribution/i,
+  );
 });

@@ -68,7 +68,7 @@ PROVIDERS: dict[str, ProviderInfo] = {
     ),
     "glm": ProviderInfo(
         name="Z.AI (GLM)",
-        base_url="https://open.bigmodel.cn/api/paas/v4",
+        base_url="https://api.z.ai/api/paas/v4",
         api_key_env="GLM_API_KEY",
         models=["glm-5.2", "glm-5", "glm-5-code", "glm-4.7", "glm-4.5-flash"],
     ),

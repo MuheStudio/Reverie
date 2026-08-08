@@ -104,7 +104,7 @@ test('secure IPC does not expose unexpected filesystem errors to the renderer', 
   }
 });
 
-test('permission policy allows geolocation only for the trusted main window and denies every device permission', () => {
+test('permission policy allows geolocation only for the trusted main frame', () => {
   let checkHandler;
   let requestHandler;
   let deviceHandler;
@@ -118,14 +118,17 @@ test('permission policy allows geolocation only for the trusted main window and 
   const webContents = { mainFrame, isDestroyed: () => false };
   installPermissionPolicy(electronSession, policy, () => ({ webContents }));
 
+  // Trusted main frame geolocation is granted for user-triggered immersion.
   assert.equal(checkHandler(webContents, 'geolocation', '', {
     requestingUrl: mainFrame.url,
     isMainFrame: true,
   }), true);
+  // Everything else stays denied.
   assert.equal(checkHandler(webContents, 'notifications', '', {
     requestingUrl: mainFrame.url,
     isMainFrame: true,
   }), false);
+  // Untrusted sender, destroyed webContents, and subframes stay denied.
   assert.equal(checkHandler({}, 'geolocation', '', {
     requestingUrl: mainFrame.url,
     isMainFrame: true,
@@ -145,5 +148,11 @@ test('permission policy allows geolocation only for the trusted main window and 
     isMainFrame: true,
   });
   assert.equal(allowed, true);
+  let mediaDenied = null;
+  requestHandler(webContents, 'media', (value) => { mediaDenied = value; }, {
+    requestingUrl: mainFrame.url,
+    isMainFrame: true,
+  });
+  assert.equal(mediaDenied, false);
   assert.equal(deviceHandler({ deviceType: 'usb' }), false);
 });

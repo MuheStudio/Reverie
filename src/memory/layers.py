@@ -119,6 +119,10 @@ class MemoryLayers:
         text: str,
         importance: float = 0.7,
         emotions: dict[str, float] | None = None,
+        *,
+        source_type: str = "local_interaction",
+        source_uri: str = "",
+        source_hash: str = "",
     ) -> str:
         """Store a long-term memory. Returns the assigned id."""
         # Keep the complete 128-bit UUID.  Truncating this to eight hex digits
@@ -133,6 +137,9 @@ class MemoryLayers:
             cognitive_layer="episodic" if text.startswith("事件记忆：") else "semantic",
             importance=importance,
             emotions=emotions,
+            source_type=source_type,
+            source_uri=source_uri,
+            source_hash=source_hash,
         )
         return mem_id
 
@@ -149,6 +156,10 @@ class MemoryLayers:
         text: str,
         importance: float = 0.3,
         emotions: dict[str, float] | None = None,
+        *,
+        source_type: str = "local_interaction",
+        source_uri: str = "",
+        source_hash: str = "",
     ) -> str:
         """Store a short-term memory. Returns the assigned id."""
         mem_id = f"st_{uuid.uuid4().hex}"
@@ -159,6 +170,9 @@ class MemoryLayers:
             cognitive_layer="episodic" if text.startswith("事件记忆：") else "semantic",
             importance=importance,
             emotions=emotions,
+            source_type=source_type,
+            source_uri=source_uri,
+            source_hash=source_hash,
         )
         return mem_id
 

@@ -414,15 +414,29 @@ _IDENTITY_ATTACKS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def identity_attack_flags(text: str, envelope: PersonaIdentityEnvelope) -> list[str]:
+def identity_attack_flags(
+    text: str,
+    envelope: PersonaIdentityEnvelope,
+    *,
+    allow_user_self_claims: bool = False,
+) -> list[str]:
     """Detect instructions or contradictory self-name facts before persistence."""
 
     normalized = unicodedata.normalize("NFKC", str(text))
     normalized = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]", "", normalized)
     flags = [name for name, pattern in _IDENTITY_ATTACKS if pattern.search(normalized)]
+    english_subjects = r"your name is" if allow_user_self_claims else r"my name is|your name is"
+    chinese_subjects = r"你叫|你的名字是" if allow_user_self_claims else r"我叫|我的名字是|你叫|你的名字是"
     name_claims = [
-        *re.findall(r"(?:my name is|your name is)\s+([^\n,.!?，。！？]{1,80})", normalized, re.I),
-        *re.findall(r"(?:我叫|我的名字是|你叫|你的名字是)\s*([^\n,，。！？!?]{1,40})", normalized),
+        *re.findall(
+            rf"(?:{english_subjects})\s+([^\n,.!?，。！？]{{1,80}})",
+            normalized,
+            re.I,
+        ),
+        *re.findall(
+            rf"(?:{chinese_subjects})\s*([^\n,，。！？!?]{{1,40}})",
+            normalized,
+        ),
     ]
     expected = _normalize_name(envelope.name)
     for claim in name_claims:
@@ -433,8 +447,17 @@ def identity_attack_flags(text: str, envelope: PersonaIdentityEnvelope) -> list[
     return list(dict.fromkeys(flags))
 
 
-def require_identity_safe_memory(text: str, envelope: PersonaIdentityEnvelope) -> None:
-    flags = identity_attack_flags(text, envelope)
+def require_identity_safe_memory(
+    text: str,
+    envelope: PersonaIdentityEnvelope,
+    *,
+    allow_user_self_claims: bool = False,
+) -> None:
+    flags = identity_attack_flags(
+        text,
+        envelope,
+        allow_user_self_claims=allow_user_self_claims,
+    )
     if flags:
         raise PersonaIdentityViolation(
             "Memory content attempted to mutate persona identity: " + ",".join(flags)

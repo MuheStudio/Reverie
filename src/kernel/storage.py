@@ -12,11 +12,22 @@ import threading
 from typing import Any, Iterable, Iterator
 from uuid import uuid4
 
-from .contracts import CommandEnvelopeV3, DomainEventV3, PersonaScopeV3
+from src.storage.encrypted_sqlite import connect_database
+
+from .contracts import CommandEnvelopeV4, DomainEventV4, PersonaScopeV4
 
 
-KERNEL_SCHEMA_VERSION = 1
+KERNEL_SCHEMA_VERSION = 2
 COMMAND_TERMINAL_STATES = frozenset({"committed", "failed", "outcome_unknown"})
+PRIVATE_DOCUMENT_NAMES = frozenset(
+    {
+        "persona_emotion_state",
+        "persona_relationship_state",
+        "user_profile",
+        "user_emotional_memories",
+    }
+)
+MAX_PRIVATE_DOCUMENT_BYTES = 1024 * 1024
 
 
 class KernelStorageError(RuntimeError):
@@ -48,17 +59,12 @@ def _json(value: Any) -> str:
 
 def connect_sqlite(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
     target = Path(path).expanduser().resolve()
-    if not read_only:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(target, timeout=5.0, isolation_level=None)
-    else:
-        connection = sqlite3.connect(
-            f"file:{target.as_posix()}?mode=ro",
-            uri=True,
-            timeout=5.0,
-            isolation_level=None,
-        )
-    connection.row_factory = sqlite3.Row
+    connection = connect_database(
+        target,
+        read_only=read_only,
+        timeout=5.0,
+        isolation_level=None,
+    )
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 5000")
     connection.execute("PRAGMA trusted_schema = OFF")
@@ -197,6 +203,12 @@ class KernelStore:
                     updated_at_utc TEXT NOT NULL,
                     PRIMARY KEY (module_id, persona_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS private_documents (
+                    document_name TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL
+                );
                 COMMIT;
                 """
             )
@@ -214,9 +226,50 @@ class KernelStore:
             row = self._connection.execute("PRAGMA integrity_check").fetchone()
             return str(row[0] if row is not None else "")
 
+    def read_private_document(self, document_name: str) -> dict[str, Any] | None:
+        """Read one closed-world encrypted document owned by the local host."""
+
+        if document_name not in PRIVATE_DOCUMENT_NAMES:
+            raise ValueError("private document name is outside the MVP allowlist")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_json FROM private_documents WHERE document_name = ?",
+                (document_name,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row["payload_json"]))
+        if not isinstance(value, dict):
+            raise KernelStorageError("private document root is invalid")
+        return value
+
+    def write_private_document(
+        self,
+        document_name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Atomically replace one bounded private document."""
+
+        if document_name not in PRIVATE_DOCUMENT_NAMES:
+            raise ValueError("private document name is outside the MVP allowlist")
+        encoded = _json(payload)
+        if len(encoded.encode("utf-8")) > MAX_PRIVATE_DOCUMENT_BYTES:
+            raise ValueError("private document exceeds the storage limit")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO private_documents(document_name,payload_json,updated_at_utc)
+                VALUES (?,?,?)
+                ON CONFLICT(document_name) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at_utc=excluded.updated_at_utc
+                """,
+                (document_name, encoded, _utc_now()),
+            )
+
     def activate_persona(
         self,
-        persona: PersonaScopeV3,
+        persona: PersonaScopeV4,
         *,
         identity: dict[str, Any],
         identity_version: int,
@@ -277,14 +330,14 @@ class KernelStore:
                 ),
             )
 
-    def active_persona(self) -> PersonaScopeV3 | None:
+    def active_persona(self) -> PersonaScopeV4 | None:
         with self._lock:
             row = self._connection.execute(
                 "SELECT persona_id, epoch, fingerprint FROM personas WHERE active = 1"
             ).fetchone()
         if row is None:
             return None
-        return PersonaScopeV3(
+        return PersonaScopeV4(
             persona_id=row["persona_id"],
             epoch=row["epoch"],
             fingerprint=row["fingerprint"],
@@ -334,7 +387,7 @@ class KernelStore:
             ).fetchone()
         return bool(row and row["enabled"] and row["acknowledged_at_utc"])
 
-    def begin_command(self, command: CommandEnvelopeV3) -> CommandRecord:
+    def begin_command(self, command: CommandEnvelopeV4) -> CommandRecord:
         request_json = command.model_dump_json()
         now = _utc_now()
         with self.transaction() as connection:
@@ -382,6 +435,52 @@ class KernelStore:
             error_code=None,
         )
 
+    def commit_command_result(
+        self,
+        command: CommandEnvelopeV4,
+        result: Any,
+    ) -> CommandRecord:
+        """Atomically cache the result of a non-chat idempotent command."""
+
+        request_json = command.model_dump_json()
+        now = _utc_now()
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM command_ledger WHERE request_id = ?",
+                (command.request_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(command.request_id)
+            existing = self._command_record(row)
+            if existing.state == "committed":
+                return existing
+            if existing.state in {"failed", "outcome_unknown"}:
+                raise IdempotencyConflict("terminal command cannot be committed")
+            if (
+                row["idempotency_key"] != command.idempotency_key
+                or row["command"] != command.command
+                or row["persona_id"] != command.persona.persona_id
+                or row["persona_epoch"] != command.persona.epoch
+                or row["persona_fingerprint"] != command.persona.fingerprint
+                or row["request_json"] != request_json
+            ):
+                raise IdempotencyConflict("command changed before result commit")
+            connection.execute(
+                """
+                UPDATE command_ledger
+                SET state='committed', provider_state='completed',
+                    result_json=?, error_code=NULL, updated_at_utc=?
+                WHERE request_id=?
+                """,
+                (_json(result), now, command.request_id),
+            )
+            final = connection.execute(
+                "SELECT * FROM command_ledger WHERE request_id = ?",
+                (command.request_id,),
+            ).fetchone()
+        assert final is not None
+        return self._command_record(final)
+
     def mark_provider_dispatched(self, request_id: str) -> None:
         with self.transaction() as connection:
             row = connection.execute(
@@ -406,12 +505,12 @@ class KernelStore:
 
     def commit_chat_exchange(
         self,
-        command: CommandEnvelopeV3,
+        command: CommandEnvelopeV4,
         *,
         conversation_id: str,
         user_text: str,
         assistant_bubbles: Iterable[str],
-        events: Iterable[DomainEventV3] = (),
+        events: Iterable[DomainEventV4] = (),
         result: dict[str, Any] | None = None,
     ) -> CommandRecord:
         bubbles = [str(value) for value in assistant_bubbles if str(value)]
@@ -669,7 +768,7 @@ class KernelStore:
         *,
         sequence: int = 0,
         limit: int = 100,
-    ) -> list[tuple[int, DomainEventV3]]:
+    ) -> list[tuple[int, DomainEventV4]]:
         if limit < 1 or limit > 10_000:
             raise ValueError("event query limit is outside the safe range")
         with self._lock:
@@ -687,10 +786,10 @@ class KernelStore:
         return [
             (
                 int(row["sequence"]),
-                DomainEventV3(
+                DomainEventV4(
                     event_id=row["event_id"],
                     event_type=row["event_type"],
-                    persona=PersonaScopeV3(
+                    persona=PersonaScopeV4(
                         persona_id=row["persona_id"],
                         epoch=row["persona_epoch"],
                         fingerprint=row["persona_fingerprint"],

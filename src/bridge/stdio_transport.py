@@ -1,7 +1,7 @@
 """Length-prefixed JSON transport for Electron parent ↔ Python child.
 
 The renderer never receives this pipe.  A development-only WebSocket adapter
-may translate to the same V3 envelopes without becoming a second domain API.
+may translate to the same V4 envelopes without becoming a second domain API.
 """
 
 from __future__ import annotations
@@ -12,7 +12,8 @@ import struct
 from typing import Any, BinaryIO
 
 
-MAX_FRAME_BYTES = 16 * 1024 * 1024
+# The MVP carries text and small settings objects, never files or images.
+MAX_FRAME_BYTES = 1024 * 1024
 _HEADER = struct.Struct(">I")
 
 

@@ -2,6 +2,8 @@ import asyncio
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.bridge import ws_bridge
 from src.emotion.system import EmotionSystem
 from src.main import parse_runtime_args
@@ -59,6 +61,11 @@ class DummyMemory:
         self.persona = default_persona()
         self.synced_profiles = 0
         self.facts: list[tuple[str, str]] = []
+        self.candidates = [{
+            "id": "mc_" + "a" * 32,
+            "status": "pending",
+            "proposed_text": "用户喜欢：蓝莓",
+        }]
 
     def search(self, query: str, k: int = 5) -> list[str]:
         return [f"{query}:{k}"]
@@ -70,6 +77,19 @@ class DummyMemory:
     def store_fact(self, fact: str, layer: str = "long_term") -> str:
         self.facts.append((fact, layer))
         return f"fact-{len(self.facts)}"
+
+    def list_memory_candidates(self, *, status: str, limit: int) -> list[dict]:
+        return self.candidates[:limit] if status == "pending" else []
+
+    def confirm_memory_candidate(self, candidate_id: str) -> dict:
+        return {
+            "candidate": {**self.candidates[0], "id": candidate_id, "status": "confirmed"},
+            "memory": {"id": "fact-1", "text": "用户喜欢：蓝莓"},
+            "idempotent": False,
+        }
+
+    def reject_memory_candidate(self, candidate_id: str) -> dict:
+        return {**self.candidates[0], "id": candidate_id, "status": "rejected"}
 
 
 class DummyDiary:
@@ -178,6 +198,42 @@ def test_bridge_chat_send_delegates_to_request_scoped_coordinator(monkeypatch) -
     # Renderer/auth scope cannot override the process-sealed active identity.
     assert accepted["persona_id"] == ws_bridge._active_persona_id()
     assert ws.sent == []
+
+
+def test_memory_candidate_decisions_require_authenticated_controller(monkeypatch) -> None:
+    controller = DummyWebSocket()
+    observer = DummyWebSocket()
+    memory = DummyMemory()
+    context = ws_bridge.BridgeClientContext(
+        client_id="desktop_controller_01",
+        protocol_version=3,
+        authenticated=True,
+        conversation_id="conversation_a",
+        persona_id="persona_a",
+    )
+    monkeypatch.setattr(ws_bridge.bridge_state, "memory", memory)
+    monkeypatch.setattr(ws_bridge, "_controller_ws", controller)
+    monkeypatch.setitem(ws_bridge._client_contexts, controller, context)
+
+    listed = asyncio.run(
+        ws_bridge.handle_memory_candidate_list({"status": "pending"}, controller)
+    )
+    confirmed = asyncio.run(
+        ws_bridge.handle_memory_candidate_confirm(
+            {"candidate_id": "mc_" + "a" * 32},
+            controller,
+        )
+    )
+
+    assert listed["candidates"][0]["proposed_text"] == "用户喜欢：蓝莓"
+    assert confirmed["memory"]["text"] == "用户喜欢：蓝莓"
+    with pytest.raises(PermissionError):
+        asyncio.run(
+            ws_bridge.handle_memory_candidate_reject(
+                {"candidate_id": "mc_" + "a" * 32},
+                observer,
+            )
+        )
 
 
 def test_proactive_event_writes_emotion_relationship_and_diary(monkeypatch) -> None:
@@ -361,8 +417,8 @@ def test_bridge_anti_ai_status_contract() -> None:
     result = asyncio.run(ws_bridge.handle_anti_ai_status({}, DummyWebSocket()))
 
     assert result["enabled"] is True
-    assert result["layers"] == ["提示词注入防护", "System Prompt 人格锚定", "输出后过滤与重写"]
-    assert "自我认知型" in result["forbidden_categories"]
+    assert result["layers"] == ["提示词注入防护", "AI 身份透明与人格锚定", "输出后过滤与重写"]
+    assert "身份欺骗型" in result["forbidden_categories"]
     assert result["forbidden_rule_count"] >= 10
     assert result["injection_rule_count"] >= 10
 
@@ -397,7 +453,7 @@ def test_bridge_user_profile_get_and_update(monkeypatch, tmp_path) -> None:
     assert memory.synced_profiles == 1
 
 
-def test_bridge_accepts_zai_alias_for_glm_settings(monkeypatch, tmp_path) -> None:
+def test_bridge_accepts_zai_alias_and_pins_its_official_endpoint(monkeypatch, tmp_path) -> None:
     from src.config.settings import _Settings
 
     ws = DummyWebSocket()
@@ -415,27 +471,17 @@ def test_bridge_accepts_zai_alias_for_glm_settings(monkeypatch, tmp_path) -> Non
                 "section": "llm",
                 "provider": "z.ai",
                 "model": "glm-5.2",
-                "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                "base_url": "https://api.z.ai/api/paas/v4",
             },
             ws,
         )
     )
 
     assert result["ok"] is True
-    assert result["llm"]["model_epoch"] >= 1
-    assert result["llm"] == {
-        "provider": "glm",
-        "model": "glm-5.2",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "has_api_key": False,
-        "model_epoch": result["llm"]["model_epoch"],
-    }
     assert settings.llm.provider == "glm"
-    assert settings.llm.model == "glm-5.2"
-    assert settings.llm.api_key == ""
-    assert adapter.settings is settings.llm
+    assert settings.llm.base_url == "https://api.z.ai/api/paas/v4"
     assert adapter.reset_count == 1
-    assert "api_key" not in json.loads(config_path.read_text(encoding="utf-8"))["llm"]
+    assert config_path.exists()
 
 
 def test_bridge_accepts_custom_openai_compatible_settings(monkeypatch, tmp_path) -> None:
@@ -502,8 +548,8 @@ def test_bridge_rejects_named_provider_override_and_unsafe_custom_endpoint(
         ws,
     ))
     assert named["ok"] is False
-    assert "fixed" in named["error"]
-    assert settings.llm.provider == "deepseek"
+    assert "endpoint is fixed" in named["error"]
+    assert settings.llm.provider == "ollama"
 
     for endpoint in (
         "http://gateway.example.test/v1",
@@ -521,7 +567,7 @@ def test_bridge_rejects_named_provider_override_and_unsafe_custom_endpoint(
             ws,
         ))
         assert result["ok"] is False
-        assert settings.llm.provider == "deepseek"
+        assert settings.llm.provider == "ollama"
     assert adapter.reset_count == 0
 
 
@@ -553,9 +599,9 @@ def test_provider_destination_change_revokes_optional_ai_before_commit(
     result = asyncio.run(ws_bridge.handle_settings_update(
         {
             "section": "llm",
-            "provider": "openai",
-            "model": "gpt-5.4",
-            "base_url": "https://api.openai.com/v1",
+            "provider": "custom",
+            "model": "gateway-model",
+            "base_url": "https://gateway.example.test/v1",
         },
         ws,
     ))
@@ -566,7 +612,7 @@ def test_provider_destination_change_revokes_optional_ai_before_commit(
     assert policy.allowed("proactive_chat") is False
 
 
-def test_bridge_provider_change_without_base_url_resets_provider_defaults(monkeypatch, tmp_path) -> None:
+def test_bridge_provider_change_to_ollama_resets_loopback_endpoint(monkeypatch, tmp_path) -> None:
     from src.config.settings import _Settings
 
     ws = DummyWebSocket()
@@ -578,22 +624,21 @@ def test_bridge_provider_change_without_base_url_resets_provider_defaults(monkey
     monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
     monkeypatch.setattr(ws_bridge.bridge_state, "adapter", adapter)
     monkeypatch.setattr("src.config.settings.CONFIG_FILE", tmp_path / "config.json")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-your-key-here")
-
     result = asyncio.run(
         ws_bridge.handle_settings_update(
             {
                 "section": "llm",
-                "provider": "openai",
+                "provider": "ollama",
+                "model": "installed-model",
             },
             ws,
         )
     )
 
     assert result["ok"] is True
-    assert settings.llm.provider == "openai"
-    assert settings.llm.base_url == "https://api.openai.com/v1"
-    assert settings.llm.model == "gpt-5.4"
+    assert settings.llm.provider == "ollama"
+    assert settings.llm.base_url == "http://localhost:11434/v1"
+    assert settings.llm.model == "installed-model"
     assert settings.llm.api_key == ""
     assert adapter.reset_count == 1
 

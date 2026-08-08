@@ -6,10 +6,9 @@ const crypto = require('crypto');
 
 const SCHEMA = 'reverie.provider-config.v1';
 const LLM_PROVIDERS = new Set([
-  'openai', 'custom', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi',
-  'z.ai', 'ollama', 'llama.cpp', 'minimax', 'openrouter',
+  'openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm',
+  'ollama', 'custom',
 ]);
-const IMAGE_PROVIDERS = new Set(['openai', 'gemini']);
 
 function text(value, label, max = 2048) {
   if (typeof value !== 'string' || value.length < 1 || value.length > max
@@ -35,12 +34,14 @@ function normalizeProviderConfig(value) {
     throw new TypeError('provider config must be an object');
   }
   const llm = value.llm;
-  if (!llm || typeof llm !== 'object' || Array.isArray(llm)
-    || !LLM_PROVIDERS.has(llm.provider)) {
+  if (!llm || typeof llm !== 'object' || Array.isArray(llm)) {
     throw new TypeError('LLM provider config is invalid');
   }
   if (Object.keys(llm).some((key) => !['provider', 'baseUrl', 'model', 'customProviderName'].includes(key))) {
     throw new TypeError('LLM provider config contains a forbidden field');
+  }
+  if (!LLM_PROVIDERS.has(llm.provider)) {
+    throw new TypeError('LLM provider config is invalid');
   }
   const normalized = {
     schema: SCHEMA,
@@ -57,31 +58,17 @@ function normalizeProviderConfig(value) {
       160,
     );
   }
-  if (value.imageGen != null) {
-    const image = value.imageGen;
-    if (!image || typeof image !== 'object' || Array.isArray(image)
-      || !IMAGE_PROVIDERS.has(image.provider)
-      || Object.keys(image).some((key) => !['provider', 'baseUrl', 'model'].includes(key))) {
-      throw new TypeError('image provider config is invalid');
-    }
-    normalized.imageGen = {
-      provider: image.provider,
-      baseUrl: providerUrl(image.baseUrl, 'image base URL'),
-      model: text(image.model, 'image model', 512),
-    };
+  if (Object.keys(value).some((key) => !['schema', 'llm'].includes(key))) {
+    throw new TypeError('provider config contains a non-MVP section');
   }
   return normalized;
 }
 
 function providerBinding(scope, value) {
+  if (scope !== 'llm') throw new TypeError('only the LLM credential scope is supported');
   const normalized = normalizeProviderConfig(value);
-  const config = scope === 'llm' ? normalized.llm : normalized.imageGen;
-  if (!config) throw new TypeError(`${scope} provider config is unavailable`);
-  const provider = {
-    'z.ai': 'glm',
-    zai: 'glm',
-    claude: 'anthropic',
-  }[config.provider] || config.provider;
+  const config = normalized.llm;
+  const provider = config.provider;
   return crypto.createHash('sha256').update(
     `${scope}\0${provider}\0${config.baseUrl}`,
     'utf8',

@@ -4,25 +4,26 @@ from src.relationship.tracker import RelationshipTracker, build_relationship_pro
 def test_relationship_growth_stages_are_chinese_and_thresholded() -> None:
     assert RelationshipTracker(0).stage == "初识期"
     assert RelationshipTracker(100).stage == "熟悉期"
-    assert RelationshipTracker(500).stage == "依赖期"
-    assert RelationshipTracker(2000).stage == "特殊关系期"
+    assert RelationshipTracker(500).stage == "信任期"
+    assert RelationshipTracker(2000).stage == "长久陪伴期"
 
 
 def test_relationship_snapshot_exposes_growth_rules() -> None:
     snapshot = RelationshipTracker(520).snapshot()
 
-    assert snapshot["stage"] == "依赖期"
-    assert snapshot["stage_key"] == "dependent"
+    assert snapshot["stage"] == "信任期"
+    assert snapshot["stage_key"] == "trusted"
     assert snapshot["stage_number"] == 3
-    assert "委屈" in snapshot["stage_detail"]
+    assert "现实关系" in snapshot["stage_detail"]
     assert "昵称" in snapshot["address_style"]
-    assert snapshot["proactive_multiplier"] == 1.35
+    assert snapshot["proactive_multiplier"] == 0.9
     assert [item["label"] for item in snapshot["thresholds"]] == [
         "初识期",
         "熟悉期",
-        "依赖期",
-        "特殊关系期",
+        "信任期",
+        "长久陪伴期",
     ]
+    assert max(item["proactive_multiplier"] for item in snapshot["thresholds"]) <= 1.0
 
 
 def test_relationship_prompt_context_prevents_instant_max_affection() -> None:
@@ -82,6 +83,15 @@ def test_emotional_outcome_changes_relationship_history() -> None:
     assert tracker.positive_interactions == 1
     assert tracker.negative_interactions == 1
     assert tracker.intimacy == 101
+
+
+def test_silence_never_reduces_relationship_or_rewards_reengagement() -> None:
+    tracker = RelationshipTracker(800)
+
+    tracker.on_user_ignores()
+    tracker.on_daily_decay()
+
+    assert tracker.intimacy == 800
 
 
 def test_early_stage_strips_unearned_intimate_addressing() -> None:

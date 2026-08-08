@@ -8,7 +8,7 @@ const VAULT_SCHEMA = 'reverie.credential-vault.v2';
 const LEGACY_VAULT_SCHEMA = 'reverie.credential-vault.v1';
 const MAX_SECRET_LENGTH = 16 * 1024;
 const MAX_VAULT_BYTES = 256 * 1024;
-const SCOPES = new Set(['llm', 'imageGen']);
+const SCOPES = new Set(['llm']);
 
 function vaultError(message, code = 'REVERIE_SECURE_STORAGE_UNAVAILABLE') {
   const error = new Error(message);
@@ -94,11 +94,9 @@ class CredentialVault {
       schema: VAULT_SCHEMA,
       credentials: {
         llm: {},
-        imageGen: {},
       },
       bindings: {
         llm: null,
-        imageGen: null,
       },
     };
   }
@@ -375,7 +373,6 @@ class CredentialVault {
         corrupted: this.corrupted,
         lastErrorCode: this.lastErrorCode || 'REVERIE_SECURE_STORAGE_UNAVAILABLE',
         llm: sessionScope('llm'),
-        imageGen: sessionScope('imageGen'),
       };
     }
     let vault;
@@ -397,7 +394,6 @@ class CredentialVault {
         corrupted: error?.code === 'REVERIE_VAULT_CORRUPT',
         lastErrorCode: this.lastErrorCode,
         llm: sessionScope('llm'),
-        imageGen: sessionScope('imageGen'),
       };
     }
     const publicScope = (scope) => ({
@@ -416,7 +412,6 @@ class CredentialVault {
       corrupted: false,
       lastErrorCode: this.lastErrorCode,
       llm: publicScope('llm'),
-      imageGen: publicScope('imageGen'),
     };
   }
 }

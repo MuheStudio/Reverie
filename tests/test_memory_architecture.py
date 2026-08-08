@@ -1,12 +1,20 @@
 import math
+import asyncio
 from datetime import datetime, timedelta
+import hashlib
 
 import numpy as np
 import pytest
 
-from src.config.settings import MemorySettings
+from src.config.settings import FeatureSettings, MemorySettings
 from src.memory.catalog import MemoryCatalog
-from src.memory.embedding import EmbeddingRuntime
+from src.memory.embedding import (
+    DEFAULT_MODEL,
+    EmbeddingRuntime,
+    EmbeddingUnavailable,
+    embed_query,
+    embedding_runtime_info,
+)
 from src.memory.manager import MemoryManager
 from src.memory.versioned_store import VersionedVectorStore
 from src.persona.persona_card import default_persona
@@ -35,6 +43,183 @@ def test_vector_failure_keeps_bounded_lexical_recall(monkeypatch, tmp_path) -> N
 
     assert any(target in item for item in recalled)
     assert len(recalled) <= 14
+
+
+def test_missing_embedding_model_is_explicit_lexical_mode(monkeypatch) -> None:
+    monkeypatch.setattr("src.memory.embedding.get_embedding_model", lambda _name: None)
+
+    runtime = embedding_runtime_info(DEFAULT_MODEL)
+
+    assert runtime.backend == "unavailable"
+    assert runtime.model_version.startswith("unavailable:")
+    with pytest.raises(EmbeddingUnavailable):
+        embed_query("这不是一个伪向量")
+
+
+def test_assistant_reply_never_becomes_user_memory_evidence(tmp_path) -> None:
+    memory = MemoryManager(
+        default_persona(),
+        MemorySettings(lancedb_path=str(tmp_path / "vectors")),
+        feature_settings=FeatureSettings(autonomous_memory_enabled=False),
+    )
+
+    asyncio.run(
+        memory.store_interaction(
+            "我喜欢蓝莓。",
+            "用户其实讨厌蓝莓，而且住在火星。",
+            emotion_intensity=1.0,
+        )
+    )
+
+    rows = [
+        row
+        for row in memory.store.catalog.all()
+        if row.get("layer") != "permanent"
+    ]
+    assert rows
+    assert all("用户其实讨厌蓝莓" not in row["text"] for row in rows)
+    assert all("住在火星" not in row["text"] for row in rows)
+    episode = next(row for row in rows if row["source_type"] == "user_interaction")
+    assert episode["text"] == "事件记忆：用户说：我喜欢蓝莓。"
+    assert episode["source_hash"] == hashlib.sha256(
+        "我喜欢蓝莓。".encode("utf-8")
+    ).hexdigest()
+    memory.store.close()
+
+
+def test_semantic_user_fact_stays_pending_until_confirmed(tmp_path) -> None:
+    memory = MemoryManager(
+        default_persona(),
+        MemorySettings(
+            lancedb_path=str(tmp_path / "vectors"),
+            sqlite_path=str(tmp_path / "memory.db"),
+        ),
+        feature_settings=FeatureSettings(autonomous_memory_enabled=False),
+    )
+
+    candidate = asyncio.run(
+        memory.store_interaction(
+            "我叫小夜。",
+            "很高兴认识你。",
+            source_uri="reverie-chat://request/r1",
+        )
+    )
+
+    assert candidate is not None
+    assert candidate["status"] == "pending"
+    assert candidate["fact_key"] == "user:identity:name"
+    semantic = [
+        row for row in memory.store.catalog.all()
+        if row.get("fact_key") == "user:identity:name"
+    ]
+    assert semantic == []
+
+    confirmed = memory.confirm_memory_candidate(candidate["id"])
+    assert confirmed["memory"]["text"] == "用户姓名：小夜"
+    assert confirmed["memory"]["confirmation_state"] == "confirmed"
+    assert confirmed["memory"]["source_uri"] == "reverie-chat://request/r1"
+    assert confirmed["memory"]["fact_revision"] == 1
+    memory.store.close()
+
+
+def test_confirmed_conflict_creates_auditable_superseding_revision(tmp_path) -> None:
+    memory = MemoryManager(
+        default_persona(),
+        MemorySettings(
+            lancedb_path=str(tmp_path / "vectors"),
+            sqlite_path=str(tmp_path / "memory.db"),
+        ),
+        feature_settings=FeatureSettings(autonomous_memory_enabled=False),
+    )
+
+    first = asyncio.run(memory.store_interaction("我叫小夜。", "知道了。"))
+    first_result = memory.confirm_memory_candidate(first["id"])
+    second = asyncio.run(memory.store_interaction("我叫白夜。", "我记下候选了。"))
+    second_result = memory.confirm_memory_candidate(second["id"])
+
+    old = memory.store.catalog.get(first_result["memory"]["id"])
+    current = memory.store.catalog.get(second_result["memory"]["id"])
+    assert old["lifecycle_state"] == "superseded"
+    assert current["lifecycle_state"] == "active"
+    assert current["fact_revision"] == 2
+    assert current["supersedes_id"] == old["id"]
+    assert second_result["candidate"]["conflict_memory_id"] == old["id"]
+    memory.store.close()
+
+
+def test_rejected_candidate_never_becomes_canonical_memory(tmp_path) -> None:
+    memory = MemoryManager(
+        default_persona(),
+        MemorySettings(
+            lancedb_path=str(tmp_path / "vectors"),
+            sqlite_path=str(tmp_path / "memory.db"),
+        ),
+        feature_settings=FeatureSettings(autonomous_memory_enabled=False),
+    )
+    candidate = asyncio.run(memory.store_interaction("我害怕雷声。", "我会陪着你。"))
+
+    rejected = memory.reject_memory_candidate(candidate["id"])
+
+    assert rejected["status"] == "rejected"
+    assert all(
+        row.get("fact_key") != candidate["fact_key"]
+        for row in memory.store.catalog.all()
+    )
+    with pytest.raises(ValueError, match="Rejected"):
+        memory.confirm_memory_candidate(candidate["id"])
+    memory.store.close()
+
+
+def test_confirmed_memory_can_be_listed_and_corrected_as_a_new_revision(tmp_path) -> None:
+    memory = MemoryManager(
+        default_persona(),
+        MemorySettings(
+            lancedb_path=str(tmp_path / "vectors"),
+            sqlite_path=str(tmp_path / "memory.db"),
+        ),
+        feature_settings=FeatureSettings(autonomous_memory_enabled=False),
+    )
+    candidate = asyncio.run(memory.store_interaction("我叫小夜。", "知道了。"))
+    original = memory.confirm_memory_candidate(candidate["id"])["memory"]
+
+    corrected = memory.correct_confirmed_memory(
+        original["id"],
+        "用户姓名：白夜",
+    )
+    listed = memory.list_confirmed_memories()
+
+    assert corrected["memory"]["fact_revision"] == 2
+    assert corrected["memory"]["source_type"] == "user_correction"
+    assert listed == [corrected["memory"]]
+    assert memory.store.catalog.get(original["id"])["lifecycle_state"] == "superseded"
+    memory.store.close()
+
+
+def test_delete_confirmed_memory_purges_entire_fact_lineage_and_evidence(tmp_path) -> None:
+    memory = MemoryManager(
+        default_persona(),
+        MemorySettings(
+            lancedb_path=str(tmp_path / "vectors"),
+            sqlite_path=str(tmp_path / "memory.db"),
+        ),
+        feature_settings=FeatureSettings(autonomous_memory_enabled=False),
+    )
+    first = asyncio.run(memory.store_interaction("我喜欢蓝莓。", "记下候选。"))
+    original = memory.confirm_memory_candidate(first["id"])["memory"]
+    corrected = memory.correct_confirmed_memory(
+        original["id"],
+        "用户喜欢：草莓",
+    )["memory"]
+
+    result = memory.delete_confirmed_memory(corrected["id"])
+
+    assert result["deleted"] is True
+    assert result["purged_revisions"] == 2
+    assert memory.store.catalog.get(original["id"]) is None
+    assert memory.store.catalog.get(corrected["id"]) is None
+    assert memory.list_confirmed_memories() == []
+    assert memory.store.catalog.list_candidates(status="all", limit=100) == []
+    memory.store.close()
 
 
 def test_first_event_survives_more_noise_than_candidate_limit(monkeypatch, tmp_path) -> None:
