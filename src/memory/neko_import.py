@@ -57,6 +57,10 @@ _WHITESPACE = re.compile(r"\s+")
 # 与 N.E.K.O facts.py 的 _fact_content_hash 保持一致的截断长度。
 HASH_LENGTH = 16
 
+# 导入文件与单条目的安全上限，防止大文件/长文本把模糊去重变成 O(n·m) 卡死。
+_MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024
+_MAX_ENTRY_TEXT_CHARS = 10_000
+
 
 class NekoImportError(RuntimeError):
     """N.E.K.O 记忆导入失败。"""
@@ -78,6 +82,10 @@ def normalize_entry(entry: Any) -> dict[str, Any] | None:
     text = _normalize_text(entry.get("text") or entry.get("content") or "")
     if not text:
         return None
+    # Bound the text so the fuzzy dedupe SequenceMatcher never runs against
+    # an unbounded string (O(n*m) with the retrieved candidates).
+    if len(text) > _MAX_ENTRY_TEXT_CHARS:
+        text = text[:_MAX_ENTRY_TEXT_CHARS]
     importance = entry.get("importance")
     try:
         importance = int(importance)
@@ -154,12 +162,24 @@ def import_entries(
 
     imported = 0
     skipped = 0
+    seen_hashes: set[str] = set()
     for entry in entries:
         text = _normalize_text(entry.get("text") or "")
         if not text:
             skipped += 1
             continue
+        if len(text) > _MAX_ENTRY_TEXT_CHARS:
+            text = text[:_MAX_ENTRY_TEXT_CHARS]
+        # Exact-hash dedupe first: O(1) per entry and cheap to run across the
+        # whole batch, so the fuzzy SequenceMatcher below only sees genuinely
+        # new candidates instead of every duplicate re-entering embedding
+        # search + fuzzy comparison.
+        entry_hash = entry.get("hash") or content_hash(text)
         if dedupe:
+            if entry_hash in seen_hashes:
+                skipped += 1
+                continue
+            seen_hashes.add(entry_hash)
             existing = search(memory, text, layer=layer, top_k=3)
             if _is_duplicate(existing, text, fuzzy_threshold=fuzzy_threshold):
                 skipped += 1
@@ -175,6 +195,8 @@ def import_entries(
 
 def _load_json_list(path: Path) -> list[Any]:
     try:
+        if path.stat().st_size > _MAX_IMPORT_FILE_BYTES:
+            raise NekoImportError(f"导入文件过大: {path}")
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:

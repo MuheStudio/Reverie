@@ -781,6 +781,7 @@ export function useReverieWS(wsUrl?: string) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   const mountedRef = useRef(false);
   const connectAttemptRef = useRef(0);
+  const consecutiveFailureRef = useRef(0);
   const authenticatedRef = useRef(false);
   const authPhaseRef = useRef<BridgeAuthPhase>('idle');
   const handlerRef = useRef<Map<string, Set<(payload: any) => void>>>(new Map());
@@ -794,6 +795,11 @@ export function useReverieWS(wsUrl?: string) {
   const personaScopeRef = useRef<PersonaScope | null>(null);
   const localModeOperationRef = useRef(false);
   const [connState, setConnState] = useState<ConnectionState>('disconnected');
+  const connStateRef = useRef<ConnectionState>('disconnected');
+  const updateConnState = useCallback((next: ConnectionState) => {
+    connStateRef.current = next;
+    setConnState(next);
+  }, []);
   const [personaScope, setPersonaScope] = useState<PersonaScope | null>(null);
   const [localMode, setLocalModeState] = useState(false);
   const [localModePending, setLocalModePending] = useState(false);
@@ -874,7 +880,7 @@ export function useReverieWS(wsUrl?: string) {
     if (currentState === WebSocket.OPEN || currentState === WebSocket.CONNECTING) return;
     const attempt = connectAttemptRef.current + 1;
     connectAttemptRef.current = attempt;
-    setConnState('connecting');
+    updateConnState('connecting');
     let connection: BridgeConnectionConfig | null = null;
     try {
       if (window.electronAPI?.bridge?.getConnectionConfig) {
@@ -888,7 +894,7 @@ export function useReverieWS(wsUrl?: string) {
     }
     if (!mountedRef.current || attempt !== connectAttemptRef.current) return;
     if (!connection?.url || connection.protocolVersion !== 4) {
-      setConnState('unavailable');
+      updateConnState('unavailable');
       return;
     }
     let ws: BridgeSocketLike;
@@ -897,7 +903,7 @@ export function useReverieWS(wsUrl?: string) {
     } else if (import.meta.env.DEV) {
       ws = new WebSocket(connection.url);
     } else {
-      setConnState('unavailable');
+      updateConnState('unavailable');
       return;
     }
     wsRef.current = ws;
@@ -910,7 +916,7 @@ export function useReverieWS(wsUrl?: string) {
         return;
       }
       authPhaseRef.current = 'awaiting_auth';
-      setConnState('authenticating');
+      updateConnState('authenticating');
       ws.send(JSON.stringify({
         type: WSMsgType.BRIDGE_AUTH,
         payload: {
@@ -956,7 +962,8 @@ export function useReverieWS(wsUrl?: string) {
           }
           authenticatedRef.current = true;
           rememberPersonaScope(msg.payload);
-          setConnState('connected');
+          consecutiveFailureRef.current = 0;
+          updateConnState('connected');
           INITIAL_STATE_REQUEST_TYPES.forEach((type) => {
             ws.send(JSON.stringify({ type, payload: {} }));
           });
@@ -964,7 +971,7 @@ export function useReverieWS(wsUrl?: string) {
         }
         if (transition.action === 'reject') {
           authenticatedRef.current = false;
-          setConnState('unavailable');
+          updateConnState('unavailable');
           rejectPendingRequests('Bridge authentication was rejected');
           ws.close(
             msg.type === WSMsgType.BRIDGE_AUTH_ERROR ? 4003 : 1002,
@@ -1010,7 +1017,7 @@ export function useReverieWS(wsUrl?: string) {
       } catch {
         authenticatedRef.current = false;
         authPhaseRef.current = 'failed';
-        setConnState('unavailable');
+        updateConnState('unavailable');
         rejectPendingRequests('The bridge sent an invalid frame');
         ws.close(1002, 'invalid bridge frame');
       }
@@ -1023,8 +1030,22 @@ export function useReverieWS(wsUrl?: string) {
       authPhaseRef.current = 'idle';
       rejectPendingRequests('The bridge connection closed');
       if (!mountedRef.current) return;
-      setConnState((current) => current === 'unavailable' ? current : 'disconnected');
-      reconnectTimer.current = setTimeout(() => void connect(), 5000);
+      // A terminal unavailable state (auth rejected, invalid protocol,
+      // explicit failure) must never be re-armed by this loop.
+      const terminal = connStateRef.current === 'unavailable';
+      updateConnState(connStateRef.current === 'unavailable' ? 'unavailable' : 'disconnected');
+      if (terminal) return;
+      // Exponential backoff with a hard stop: a bridge that keeps dying on
+      // connect (invalid frames, auth rejects, IPC loss) must not spin an
+      // endless reconnect/re-auth loop. After 5 consecutive failures the
+      // bridge is marked unavailable and the user/UI must re-arm it.
+      consecutiveFailureRef.current += 1;
+      if (consecutiveFailureRef.current >= 5) {
+        updateConnState('unavailable');
+        return;
+      }
+      const delay = Math.min(1000 * (2 ** consecutiveFailureRef.current), 30_000);
+      reconnectTimer.current = setTimeout(() => void connect(), delay);
     };
 
     ws.onerror = () => {
@@ -1214,6 +1235,11 @@ export function useReverieWS(wsUrl?: string) {
   const storeMemory = useCallback((text: string, layer: 'long_term' | 'short_term') =>
     send(WSMsgType.MEMORY_STORE, { text, layer }), [send]);
   const getRandomImage = useCallback((mode: 'sfw' | 'nsfw' | 'random' = 'sfw') => send(WSMsgType.IMAGE_RANDOM, { mode }), [send]);
+  const listTTS = useCallback(() => send(WSMsgType.TTS_LIST, {}), [send]);
+  const synthesizeSpeech = useCallback((
+    text: string,
+    options: { voice?: string; provider?: string } = {},
+  ) => send(WSMsgType.TTS_SYNTHESIZE, { text, ...options }), [send]);
   const refreshDiary = useCallback(() => send(WSMsgType.DIARY_REQUEST, {}), [send]);
   const refreshTimeline = useCallback(() => send(WSMsgType.TIMELINE_REQUEST, {}), [send]);
   const refreshAmbient = useCallback(() => send(WSMsgType.AMBIENT_GET, {}), [send]);
@@ -1651,6 +1677,7 @@ export function useReverieWS(wsUrl?: string) {
   return {
     connState, send, request, subscribe,
     sendChat, cancelChat, revealChat: revealRequest, stopChat, setLocalMode, queryMemory, storeMemory, getRandomImage,
+    listTTS, synthesizeSpeech,
     refreshDiary, refreshTimeline, refreshAmbient, refreshApiBudget, refreshGroup,
     refreshKeepsakes, refreshStickers,
     sendGroupMessage, unlockDiaryKey, readDiaryEntry,

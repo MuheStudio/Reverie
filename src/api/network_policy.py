@@ -60,3 +60,11 @@ async def assert_provider_destination(provider: str, base_url: str) -> None:
         addresses = await asyncio.to_thread(_resolve_addresses, host, port)
         if any(not address.is_global for address in addresses):
             raise PermissionError("Custom provider DNS resolved to a non-public address")
+        # NOTE: `is_global` covers private, loopback, link-local, CGNAT
+        # (100.64.0.0/10), benchmark (198.18.0.0/15) and IPv4-mapped IPv6
+        # (::ffff:x.x.x.x) ranges. A DNS-rebinding TOCTOU remains in theory
+        # (a hostile resolver returning a public answer for the check above
+        # and a private one for the later connect), but pinning the resolved
+        # address would break TLS hostname verification for the official
+        # HTTPS transport, so the residual window is accepted and the
+        # check is defense-in-depth rather than a boundary guarantee.

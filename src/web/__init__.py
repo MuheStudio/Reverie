@@ -647,7 +647,15 @@ def is_in_any_time_window(now: datetime, windows: list[str]) -> bool:
 
 
 async def _is_public_https_url(url: str) -> bool:
-    """Reject credentials, non-HTTPS schemes and non-public destination IPs."""
+    """Reject credentials, non-HTTPS schemes and non-public destination IPs.
+
+    The ``is_global`` checks cover private, loopback, link-local, CGNAT and
+    benchmark ranges plus IPv4-mapped IPv6. Like the provider destination
+    check, this is defense-in-depth: pinning the resolved address would break
+    TLS hostname verification, so a hostile resolver switching answers
+    between this check and the actual connect remains a documented residual
+    risk for user-configured (or imported) feed URLs.
+    """
     parsed = urlparse(url)
     if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
         return False

@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 def atomic_write_json(path: Path, payload: Any) -> None:
-    """Write JSON through a sibling temp file so interruption keeps old state."""
+    """Write JSON through a unique sibling temp file so interruption keeps
+    the old state and concurrent writers never clobber each other's temp
+    file mid-write (os.replace is atomic, last committed writer wins)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path = path.with_suffix(path.suffix + f".{uuid4().hex}.tmp")
     temp_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

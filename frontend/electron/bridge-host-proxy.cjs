@@ -62,7 +62,14 @@ class BridgeHostProxy extends EventEmitter {
     const config = await this.supervisor.waitUntilReady();
     if (!this.framedListener) {
       this.framedListener = (frame) => {
-        this.broadcast('bridge:message', normalizeFrame(frame));
+        try {
+          this.broadcast('bridge:message', normalizeFrame(frame));
+        } catch (error) {
+          // An oversized or malformed host frame (e.g. a sticker data URL
+          // beyond the frame cap) must degrade to a dropped frame, never
+          // crash the emitter loop or block subsequent messages.
+          console.error('[BridgeHostProxy] dropped host frame:', error?.message || error);
+        }
       };
       this.supervisor.on('message', this.framedListener);
     }

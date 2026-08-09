@@ -90,6 +90,7 @@ function useAuthoritativeGameState<T>(
   const pendingRef = useRef<T | null>(null);
   const committedJsonRef = useRef('');
   const retryTimerRef = useRef<number | null>(null);
+  const retryCountRef = useRef(0);
   const flushRef = useRef<() => Promise<void>>(async () => undefined);
   const validRef = useRef(valid);
   const fallbackRef = useRef(fallback);
@@ -140,10 +141,20 @@ function useAuthoritativeGameState<T>(
         && hydratedRef.current
         && retryTimerRef.current === null
       ) {
+        // Exponential backoff with a hard stop: a persistently failing
+        // backend must not spin an endless poll; the next user interaction
+        // resets the delay and re-arms a flush.
+        const failures = retryCountRef.current;
+        if (failures >= 5) {
+          retryCountRef.current = 0;
+          return;
+        }
+        retryCountRef.current += 1;
+        const delay = Math.min(1500 * (2 ** failures), 30_000);
         retryTimerRef.current = window.setTimeout(() => {
           retryTimerRef.current = null;
           void flushRef.current();
-        }, 1_500);
+        }, delay);
       }
     }
   }, [gameId, request]);
@@ -194,6 +205,7 @@ function useAuthoritativeGameState<T>(
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
+      retryCountRef.current = 0;
     };
   }, [connected, gameId, legacyKey, request]);
 
@@ -202,6 +214,7 @@ function useAuthoritativeGameState<T>(
     const serialized = JSON.stringify(state);
     if (serialized === committedJsonRef.current) return;
     pendingRef.current = state;
+    retryCountRef.current = 0;
     void flush();
   }, [flush, state]);
 

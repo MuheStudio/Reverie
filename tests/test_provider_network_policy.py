@@ -34,7 +34,18 @@ def test_custom_provider_accepts_only_all_public_dns_answers(monkeypatch) -> Non
 
 @pytest.mark.parametrize(
     "address",
-    ["127.0.0.1", "10.0.0.5", "169.254.169.254", "192.168.1.5", "::1", "fe80::1"],
+    [
+        "127.0.0.1",
+        "10.0.0.5",
+        "169.254.169.254",
+        "192.168.1.5",
+        "::1",
+        "fe80::1",
+        "100.64.0.1",  # CGNAT shared address range
+        "198.18.0.1",  # benchmark/testing range
+        "::ffff:10.0.0.1",  # IPv4-mapped IPv6 private
+        "::ffff:127.0.0.1",  # IPv4-mapped IPv6 loopback
+    ],
 )
 def test_custom_provider_rejects_private_or_special_dns_answers(
     monkeypatch,

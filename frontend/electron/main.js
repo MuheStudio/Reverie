@@ -98,6 +98,7 @@ const trustPolicy = createRendererTrustPolicy({
 installWebContentsSecurity(app, trustPolicy);
 
 let mainWindow = null;
+let petWindow = null;
 let tray = null;
 let logger = null;
 let restoreConsole = null;
@@ -2037,9 +2038,49 @@ function registerDownloadHandlers(handle) {
   handle('sniff:m3u8', async (_event, url) => {
     const adapter = requireDownloadAdapter();
     const target = boundedString(url, { label: 'm3u8 url', max: 2048 });
+    if (!/^https?:\/\//i.test(target)) {
+      throw new TypeError('m3u8 url must be http(s)');
+    }
+    // Guard against SSRF-style use of the sniff endpoint: local focus mode
+    // blocks outbound fetches (global fetch is gate-wrapped), but outside
+    // local mode the URL must still be http(s) and the response bounded.
+    if (networkGate?.snapshot?.()?.active && !/^https:\/\//i.test(target)) {
+      throw new TypeError('m3u8 sniffing is restricted during local focus mode');
+    }
     try {
-      const response = await fetch(target);
-      const content = await response.text();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
+      let response;
+      try {
+        response = await fetch(target, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!response.ok) {
+        return { error: `m3u8 source returned HTTP ${response.status}` };
+      }
+      const MAX_M3U8_BYTES = 1 * 1024 * 1024;
+      const reader = response.body?.getReader?.();
+      let content = '';
+      if (reader) {
+        // Stream and bound the body so a hostile server cannot make the
+        // sniff endpoint buffer unbounded data before the size check.
+        const decoder = new TextDecoder();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          content += decoder.decode(value, { stream: true });
+          if (content.length > MAX_M3U8_BYTES) {
+            await reader.cancel?.();
+            return { error: 'm3u8 manifest exceeds the safe size limit' };
+          }
+        }
+      } else {
+        content = await response.text();
+      }
+      if (content.length > MAX_M3U8_BYTES) {
+        return { error: 'm3u8 manifest exceeds the safe size limit' };
+      }
       return adapter.parseM3U8(content);
     } catch (error) {
       return { error: String(error?.message || error) };
@@ -2052,6 +2093,9 @@ function registerDownloadHandlers(handle) {
     if (typeof input.url !== 'string' || input.url.length > 2048
       || typeof input.m3u8Content !== 'string' || input.m3u8Content.length > 8 * 1024 * 1024) {
       throw new TypeError('m3u8 download payload is invalid');
+    }
+    if (!/^https?:\/\//i.test(input.url)) {
+      throw new TypeError('m3u8 download url must be http(s)');
     }
     const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : '';
     const onProgress = (progress) => {
@@ -2152,6 +2196,10 @@ function registerIpcHandlers() {
   handle('providerConfig:commit', (_event, input) => commitProviderConfiguration(input));
   handle('character:getBundled', () => bundledCharacterSnapshot());
   registerDownloadHandlers(handle);
+  handle('pet:toggle', () => togglePetWindow());
+  handle('pet:show', () => showPetWindow());
+  handle('pet:hide', () => hidePetWindow());
+  handle('pet:isVisible', () => Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible()));
 }
 
 function createTray() {
@@ -2160,6 +2208,13 @@ function createTray() {
   tray.setToolTip('Reverie');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Reverie', click: showMainWindow },
+    { type: 'separator' },
+    {
+      label: petWindow && !petWindow.isDestroyed() && petWindow.isVisible()
+        ? '隐藏桌宠'
+        : '显示桌宠',
+      click: togglePetWindow,
+    },
     { type: 'separator' },
     {
       label: '退出',
@@ -2258,6 +2313,85 @@ function createWindow() {
     sendLifecycle('active');
   });
   return mainWindow;
+}
+
+const PET_WINDOW_SIZE = { width: 260, height: 360 };
+
+function petWindowIsAlive() {
+  return Boolean(petWindow && !petWindow.isDestroyed());
+}
+
+function createPetWindow() {
+  if (petWindowIsAlive()) return petWindow;
+  const bounds = mainWindow?.getBounds?.() || { x: 0, y: 0 };
+  petWindow = new BrowserWindow({
+    width: PET_WINDOW_SIZE.width,
+    height: PET_WINDOW_SIZE.height,
+    x: Math.max(0, bounds.x + bounds.width - PET_WINDOW_SIZE.width - 24),
+    y: Math.max(0, bounds.y + 24),
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    title: 'Reverie 桌宠',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      webviewTag: false,
+      navigateOnDragDrop: false,
+      safeDialogs: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+    },
+  });
+  petWindow.setAlwaysOnTop(true, 'floating');
+  if (IS_DEV) {
+    petWindow.loadURL(FRONTEND_DEV_URL + '#pet').catch((error) => {
+      console.error('[Electron] Failed to load development pet renderer', error);
+    });
+  } else {
+    petWindow.loadURL(`${packagedRendererUrl}#pet`).catch((error) => {
+      console.error('[Electron] Failed to load packaged pet renderer', error);
+    });
+  }
+  petWindow.once('ready-to-show', () => {
+    if (petWindowIsAlive()) petWindow.showInactive();
+  });
+  petWindow.on('closed', () => { petWindow = null; });
+  return petWindow;
+}
+
+function showPetWindow() {
+  const windowRef = createPetWindow();
+  if (windowRef.isVisible()) return true;
+  // ready-to-show fires only once; a hidden window is shown here directly.
+  if (!windowRef.webContents.isLoading()) windowRef.showInactive();
+  windowRef.setAlwaysOnTop(true, 'floating');
+  return true;
+}
+
+function hidePetWindow() {
+  if (!petWindowIsAlive()) return true;
+  petWindow.hide();
+  return true;
+}
+
+function togglePetWindow() {
+  if (petWindowIsAlive() && petWindow.isVisible()) {
+    hidePetWindow();
+    return false;
+  }
+  showPetWindow();
+  return true;
 }
 
 function installPowerEvents() {

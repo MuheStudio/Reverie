@@ -50,6 +50,9 @@ from .config.settings import (
 
 
 BACKUP_SCHEMA = "reverie.full_local_backup.v3"
+# Whole-file ceiling for restore: total backup cannot exceed 1GiB, and each
+# individual JSON value is bounded separately by the incremental reader.
+_MAX_BACKUP_FILE_BYTES = 1024 * 1024 * 1024
 LEGACY_BACKUP_SCHEMAS = {
     "reverie.full_local_backup.v1",
     "reverie.full_local_backup.v2",
@@ -62,6 +65,7 @@ class _IncrementalJSONReader:
     """Small stdlib-only JSON cursor that bounds memory to one decoded value."""
 
     CHUNK_SIZE = 64 * 1024
+    MAX_BUFFER_BYTES = 100 * 1024 * 1024  # single JSON value ceiling
 
     def __init__(self, stream) -> None:
         self.stream = stream
@@ -69,18 +73,24 @@ class _IncrementalJSONReader:
         self.buffer = ""
         self.position = 0
         self.eof = False
+        self._buffer_bytes = 0
 
     def _fill(self) -> bool:
         chunk = self.stream.read(self.CHUNK_SIZE)
         if chunk:
             self.buffer += chunk
+            self._buffer_bytes += len(chunk.encode("utf-8"))
+            if self._buffer_bytes > self.MAX_BUFFER_BYTES:
+                raise ValueError("Backup JSON value exceeds the safe size limit")
             return True
         self.eof = True
         return False
 
     def _compact(self) -> None:
         if self.position >= self.CHUNK_SIZE:
-            self.buffer = self.buffer[self.position:]
+            dropped = self.buffer[: self.position]
+            self.buffer = self.buffer[self.position :]
+            self._buffer_bytes -= len(dropped.encode("utf-8"))
             self.position = 0
 
     def _skip_space(self) -> None:
@@ -199,7 +209,7 @@ class LocalBackupManager:
             "schema": BACKUP_SCHEMA,
             "exported_at": datetime.now().isoformat(),
             "storage_policy": "local-first",
-            "cloud_status": "寮€鍙戜腑",
+            "cloud_status": "开发中",
             "persona_identity": self._persona_identity(),
             "emotion": self.emotion.to_dict(),
             "relationship": self.relationship.to_dict(),
@@ -655,6 +665,8 @@ class LocalBackupManager:
         """Restore a complete local backup file."""
         if not path.exists():
             raise FileNotFoundError(f"Backup not found: {path}")
+        if path.stat().st_size > _MAX_BACKUP_FILE_BYTES:
+            raise ValueError("Backup file exceeds the safe size limit")
         payload, staged_memory, _count = self._stage_backup_file(path)
         try:
             if not hasattr(self.memory, "import_stream"):
