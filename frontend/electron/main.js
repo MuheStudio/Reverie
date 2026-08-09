@@ -1440,7 +1440,7 @@ async function commitProviderConfiguration(input = {}) {
 
 function registerLegacyIpcHandlers() {
   if (ipcRegistrar) return;
-  ipcRegistrar = createSecureIpcRegistrar(ipcMain, () => mainWindow, trustPolicy);
+  ipcRegistrar = createSecureIpcRegistrar(ipcMain, trustedWindows, trustPolicy);
   const { handle } = ipcRegistrar;
 
   handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
@@ -2156,7 +2156,7 @@ function registerDownloadHandlers(handle) {
 
 function registerIpcHandlers() {
   if (ipcRegistrar) return;
-  ipcRegistrar = createSecureIpcRegistrar(ipcMain, () => mainWindow, trustPolicy);
+  ipcRegistrar = createSecureIpcRegistrar(ipcMain, trustedWindows, trustPolicy);
   const { handle } = ipcRegistrar;
 
   handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
@@ -2316,6 +2316,14 @@ function createWindow() {
 }
 
 const PET_WINDOW_SIZE = { width: 260, height: 360 };
+
+function trustedWindows() {
+  // The registrar accepts IPC only from these windows. The desktop pet shares
+  // the same preload/trusted origin (reverie-app://app/index.html#pet), so it
+  // may use the pet:* surface; every other channel stays gated to the main
+  // window by the shared sender/frame/URL checks.
+  return [mainWindow, petWindow].filter((windowRef) => Boolean(windowRef));
+}
 
 function petWindowIsAlive() {
   return Boolean(petWindow && !petWindow.isDestroyed());

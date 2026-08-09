@@ -397,14 +397,22 @@ class RecallMemory:
 
 
 def test_memory_recall_has_dedicated_24h_cooldown(tmp_path: Path) -> None:
+    # Fix the wall clock to mid-morning so evening-checkin priority rules can
+    # never shadow the memory-recall path regardless of when CI runs.
+    from datetime import timezone
+    from src.world.clock import WorldClock
+
+    fixed = datetime(2026, 6, 15, 10, 0, tzinfo=timezone.utc)
+    world_clock = WorldClock("Asia/Shanghai", now_provider=lambda: fixed)
     proactive = ProactiveChat(
         default_persona(),
         QueueAdapter(["记得我们约好了下个月一起去漫展"]),
         StableEmotion(),
         memory=RecallMemory(["我们约好了下个月一起去漫展"]),
         state_path=tmp_path / "proactive.json",
+        world_clock=world_clock,
     )
-    now = datetime.now()
+    now = world_clock.now().replace(tzinfo=None)
     assert proactive._memory_recall_due(now) is True
     trigger, context = proactive._check_triggers(now)
     assert trigger == "memory_recall"

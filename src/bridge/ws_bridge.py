@@ -313,13 +313,22 @@ async def broadcast(msg_type: str, payload: Any):
     if not _connections:
         return
     msg = json.dumps({"type": msg_type, "payload": payload}, ensure_ascii=False)
-    closed = set()
-    for ws in _connections:
+
+    async def send_one(ws: WebSocketServerProtocol) -> bool:
         try:
-            await ws.send(msg)
-        except websockets.ConnectionClosed:
-            closed.add(ws)
-    _connections.difference_update(closed)
+            await asyncio.wait_for(ws.send(msg), timeout=5.0)
+            return True
+        except (asyncio.TimeoutError, websockets.ConnectionClosed):
+            return False
+
+    snapshot = tuple(_connections)
+    results = await asyncio.gather(
+        *(send_one(ws) for ws in snapshot),
+        return_exceptions=True,
+    )
+    dead = [ws for ws, ok in zip(snapshot, results) if not ok]
+    if dead:
+        _connections.difference_update(dead)
 
 
 def _runtime_activity_payload() -> dict[str, Any]:

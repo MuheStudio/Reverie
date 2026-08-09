@@ -41,15 +41,20 @@ function createRendererTrustPolicy(options = {}) {
   }
 
   function assertTrustedEvent(event, expectedWindow) {
-    const webContents = expectedWindow?.webContents;
-    if (!event || !webContents || webContents.isDestroyed?.()) {
+    const windows = Array.isArray(expectedWindow)
+      ? expectedWindow
+      : [expectedWindow];
+    const senders = windows
+      .filter((windowRef) => windowRef && !windowRef.isDestroyed?.())
+      .map((windowRef) => windowRef.webContents);
+    if (!event || !senders.length) {
       throw securityError('The application window is unavailable');
     }
-    if (event.sender !== webContents) {
+    if (!senders.includes(event.sender)) {
       throw securityError('IPC sender is not the Reverie window');
     }
     const frame = event.senderFrame;
-    if (!frame || frame !== webContents.mainFrame || frame.parent) {
+    if (!frame || frame !== event.sender.mainFrame || frame.parent) {
       throw securityError('IPC is only accepted from the trusted main frame');
     }
     if (!isTrustedUrl(frame.url)) {

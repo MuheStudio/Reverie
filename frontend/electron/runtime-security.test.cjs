@@ -156,3 +156,53 @@ test('permission policy allows geolocation only for the trusted main frame', () 
   assert.equal(mediaDenied, false);
   assert.equal(deviceHandler({ deviceType: 'usb' }), false);
 });
+
+test('secure IPC trusts the main window and the desktop pet window only', async () => {
+  const handlers = new Map();
+  const ipcMain = {
+    handle(channel, handler) { handlers.set(channel, handler); },
+    removeHandler(channel) { handlers.delete(channel); },
+  };
+  const mainFrame = { url: 'reverie-app://app/index.html', parent: null };
+  const petFrame = { url: 'reverie-app://app/index.html#pet', parent: null };
+  const mainWebContents = { mainFrame, isDestroyed: () => false };
+  const petWebContents = { mainFrame: petFrame, isDestroyed: () => false };
+  const policy = createRendererTrustPolicy({
+    isDev: false,
+    packagedUrl: 'reverie-app://app/index.html',
+  });
+  const registrar = createSecureIpcRegistrar(
+    ipcMain,
+    () => [{ webContents: mainWebContents }, { webContents: petWebContents }],
+    policy,
+  );
+  registrar.handle('pet:test', (_event, value) => value);
+
+  // Main window and pet window (same trusted origin, hash-only difference) pass.
+  assert.equal(
+    await handlers.get('pet:test')({ sender: mainWebContents, senderFrame: mainFrame }, 1),
+    1,
+  );
+  assert.equal(
+    await handlers.get('pet:test')({ sender: petWebContents, senderFrame: petFrame }, 2),
+    2,
+  );
+  // A window outside the trusted set is rejected.
+  const foreignWebContents = { mainFrame: { url: mainFrame.url, parent: null }, isDestroyed: () => false };
+  await assert.rejects(
+    handlers.get('pet:test')({ sender: foreignWebContents, senderFrame: foreignWebContents.mainFrame }, 3),
+    /sender/i,
+  );
+  const deadPet = { webContents: { mainFrame: petFrame, isDestroyed: () => true } };
+  const registrarWithDead = createSecureIpcRegistrar(
+    ipcMain,
+    () => [{ webContents: mainWebContents }, deadPet],
+    policy,
+  );
+  registrarWithDead.handle('pet:dead', () => 'ok');
+  await assert.rejects(
+    handlers.get('pet:dead')({ sender: petWebContents, senderFrame: petFrame }, 5),
+    /sender/i,
+  );
+  registrar.dispose();
+});
