@@ -104,7 +104,6 @@ def normalize_provider_error(error: BaseException) -> ProviderRequestError:
     if not isinstance(status, int):
         response = getattr(error, "response", None)
         status = getattr(response, "status_code", None)
-    name = error.__class__.__name__.lower()
     if status in {401, 403}:
         return ProviderRequestError(
             "PROVIDER_UNAUTHORIZED",
@@ -119,21 +118,21 @@ def normalize_provider_error(error: BaseException) -> ProviderRequestError:
             outcome_unknown=False,
             status_code=status,
         )
-    if isinstance(error, (TimeoutError, httpx.TimeoutException)) or "timeout" in name:
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
         return ProviderRequestError(
             "PROVIDER_TIMEOUT",
             retryable=True,
             outcome_unknown=True,
             status_code=status,
         )
-    if isinstance(error, (ConnectionError, httpx.NetworkError)) or "connection" in name:
+    if isinstance(error, (ConnectionError, httpx.NetworkError)):
         return ProviderRequestError(
             "PROVIDER_UNREACHABLE",
             retryable=True,
             outcome_unknown=True,
             status_code=status,
         )
-    if isinstance(error, (json.JSONDecodeError, UnicodeError)) or "json" in name:
+    if isinstance(error, (json.JSONDecodeError, UnicodeError)):
         return ProviderRequestError(
             "PROVIDER_INVALID_RESPONSE",
             retryable=False,

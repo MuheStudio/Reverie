@@ -17,7 +17,7 @@ function redact(value, secrets = []) {
     if (typeof secret === 'string' && secret.length >= 8) text = text.split(secret).join('[REDACTED]');
   }
   return text
-    .replace(/\b(sk|api[-_]?key|token|secret|authorization)(["'\s:=]+)[^\s,"'}]+/gi, '$1$2[REDACTED]')
+    .replace(/\b(sk|api[-_]?key|token|secret|authorization|password)(["'\s:=]+)[^\s,"'}]+/gi, '$1$2[REDACTED]')
     .replace(/([?&](?:key|token|secret|auth|signature)=)[^&#\s]+/gi, '$1[REDACTED]')
     .replace(/\b(?:[A-Za-z]:\\|\/Users\/|\/home\/)[^\s"']+/g, '[LOCAL_PATH]');
 }

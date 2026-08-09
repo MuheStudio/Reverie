@@ -288,7 +288,10 @@ class MvpDesktopRuntime:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        self._user_manager.save()
+        try:
+            self._user_manager.save()
+        except Exception:
+            self._logger.exception("User profile save during shutdown failed")
         try:
             await self._session.close()
         except Exception:

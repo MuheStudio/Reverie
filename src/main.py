@@ -842,7 +842,10 @@ async def main():
         )
 
         # Save user profile
-        user_mgr.save()
+        try:
+            user_mgr.save()
+        except Exception:
+            logger.exception("User profile save during shutdown failed")
         try:
             backup_manager.checkpoint()
         except Exception:

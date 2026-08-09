@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +85,7 @@ class WorldStateStore:
     def checkpoint(self, payload: dict[str, Any]) -> None:
         """Atomically replace the authoritative complete snapshot."""
         text, checksum = self._encode(payload)
-        now = datetime.now().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -139,7 +139,7 @@ class WorldStateStore:
                         before_checksum,
                         after_text,
                         after_checksum,
-                        datetime.now().isoformat(),
+                        datetime.now(timezone.utc).isoformat(),
                     ),
                 )
                 connection.execute("COMMIT")

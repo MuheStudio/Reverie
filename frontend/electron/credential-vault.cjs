@@ -191,6 +191,9 @@ class CredentialVault {
     let fd;
     let previousMoved = false;
     try {
+      // 0o600 is POSIX-only and ignored on Windows; the vault content is
+      // DPAPI-encrypted and the temp name is unpredictable ('wx'), so the
+      // missing ACL is compensated by encryption rather than file mode.
       fd = this.fs.openSync(temporary, 'wx', 0o600);
       this.fs.writeFileSync(fd, encrypted);
       this.fs.fsyncSync(fd);
