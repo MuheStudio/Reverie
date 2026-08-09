@@ -27,6 +27,8 @@ interface CharacterStageProps {
   personaName: string;
   identityLine: string;
   activity: CharacterActivity;
+  speaking?: boolean;
+  mouthLevel?: number;
 }
 
 function focusableNodes(root: HTMLElement): HTMLElement[] {
@@ -39,6 +41,8 @@ export default function CharacterStage({
   personaName,
   identityLine,
   activity,
+  speaking = false,
+  mouthLevel,
 }: CharacterStageProps) {
   const { t } = useTranslation();
   const avatars = useAvatarLibrary();
@@ -194,6 +198,8 @@ export default function CharacterStage({
               avatar={avatars.activeAvatar}
               live2dRuntime={avatars.runtime}
               activity={previewAction || activity}
+              speaking={speaking}
+              mouthLevel={mouthLevel}
               expressionOverride={previewExpression}
               onCapabilitiesDetected={setActiveDetected}
             />

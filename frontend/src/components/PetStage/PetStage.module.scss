@@ -1,0 +1,119 @@
+.petStage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+}
+
+.dragRegion {
+  position: absolute;
+  inset: 0;
+  -webkit-app-region: drag;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.avatarCanvas {
+  width: 100%;
+  height: 100%;
+}
+
+.staticAvatar {
+  width: 180px;
+  height: 240px;
+  margin-bottom: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 28px;
+  background: linear-gradient(160deg, rgba(64, 76, 130, 0.5), rgba(20, 23, 39, 0.65));
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.petFace {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #f2e3cf, #d9b98f 60%, #b98a5e);
+  position: relative;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: 34px;
+    width: 10px;
+    height: 14px;
+    border-radius: 50%;
+    background: #3b2f2a;
+  }
+
+  &::before {
+    left: 26px;
+  }
+
+  &::after {
+    right: 26px;
+  }
+}
+
+.bubble {
+  position: absolute;
+  left: 12px;
+  right: 36px;
+  top: 16px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: rgba(20, 23, 39, 0.88);
+  color: #eef0f6;
+  font-size: 13px;
+  line-height: 1.55;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  -webkit-app-region: no-drag;
+  max-height: 45%;
+  overflow: hidden;
+
+  p {
+    margin: 0;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 6;
+    -webkit-box-orient: vertical;
+  }
+}
+
+.bubbleTail {
+  position: absolute;
+  bottom: -8px;
+  left: 32px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 10px solid rgba(20, 23, 39, 0.88);
+}
+
+.closeButton {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(20, 23, 39, 0.55);
+  color: #cdd2e0;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  z-index: 2;
+
+  &:hover {
+    background: rgba(20, 23, 39, 0.85);
+    color: #fff;
+  }
+}

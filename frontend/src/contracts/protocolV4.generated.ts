@@ -38,6 +38,8 @@ export const WSMsgType = {
   GROUP_REQUEST: "group:request",
   GROUP_SEND: "group:send",
   IMAGE_RANDOM: "image:random",
+  TTS_LIST: "tts:list",
+  TTS_SYNTHESIZE: "tts:synthesize",
   SETTINGS_UPDATE: "settings:update",
   SETTINGS_GET: "settings:get",
   AI_USAGE_GET: "ai_usage:get",
@@ -86,6 +88,7 @@ export const WSMsgType = {
   API_BUDGET_RESULT: "api:budget:result",
   GROUP_RESULT: "group:result",
   IMAGE_RESULT: "image:result",
+  TTS_RESULT: "tts:result",
   USER_PROFILE_RESULT: "user:profile:result",
   KEEPSAKE_RESULT: "keepsake:result",
   BACKUP_RESULT: "backup:result",
@@ -101,7 +104,7 @@ export const WSMsgType = {
 } as const;
 
 export type LegacyMessageType = typeof WSMsgType[keyof typeof WSMsgType];
-export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "emotion:get" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:list" | "memory:candidates:reject" | "memory:delete" | "memory:edit" | "memory:list" | "memory:query" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:list" | "sticker:react" | "timeline:request" | "user:profile:get" | "user:profile:update";
+export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "emotion:get" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:list" | "memory:candidates:reject" | "memory:delete" | "memory:edit" | "memory:list" | "memory:query" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:list" | "sticker:react" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update";
 
 export interface PersonaScopeV4 {
   persona_id: string;

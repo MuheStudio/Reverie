@@ -37,6 +37,8 @@ interface AvatarStageProps {
   avatar: AvatarRecord | null;
   live2dRuntime?: AvatarListResult['runtime'];
   activity: CharacterActivity;
+  speaking?: boolean;
+  mouthLevel?: number;
   expressionOverride?: AvatarExpressionKey | null;
   lowPower?: boolean;
   onStatusChange?: (status: 'empty' | 'loading' | 'ready' | 'paused' | 'error') => void;
@@ -116,6 +118,8 @@ export default function AvatarStage({
   avatar,
   live2dRuntime,
   activity,
+  speaking = false,
+  mouthLevel,
   expressionOverride = null,
   lowPower = false,
   onStatusChange,
@@ -574,6 +578,8 @@ export default function AvatarStage({
           modelUrl={avatar.entryUrl}
           expression={live2dExpression}
           motion={live2dCapabilities.actionMatches[activity] || ''}
+          speaking={speaking}
+          mouthLevel={mouthLevel}
           onStateChange={handleLive2DState}
         />
       )}

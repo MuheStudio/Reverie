@@ -51,6 +51,8 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "sticker:list",
   "sticker:react",
   "timeline:request",
+  "tts:list",
+  "tts:synthesize",
   "user:profile:get",
   "user:profile:update"
 ]));
@@ -91,6 +93,7 @@ const MESSAGE_NAMES = Object.freeze(new Set([
   "settings:update:result",
   "sticker:data",
   "timeline:result",
+  "tts:result",
   "user:profile:result"
 ]));
 

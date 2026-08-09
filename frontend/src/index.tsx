@@ -63,6 +63,7 @@ class RootErrorBoundary extends React.Component<
 // compact MvpRoom shell stays fast to boot; the Python host decides the active
 // mode via settings.ui.mode (mvp | dream).
 const DreamRoom = lazy(() => import('@/components/DreamRoom'));
+const PetStage = lazy(() => import('@/components/PetStage/PetStage'));
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -123,6 +124,17 @@ function AppShell() {
 }
 
 function ReverieApp() {
+  const [petMode, setPetMode] = useState(false);
+  useEffect(() => {
+    setPetMode(window.location.hash === '#pet');
+  }, []);
+  if (petMode) {
+    return (
+      <Suspense fallback={null}>
+        <PetStage />
+      </Suspense>
+    );
+  }
   return <AppShell />;
 }
 

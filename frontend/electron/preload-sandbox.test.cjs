@@ -51,6 +51,7 @@ test('sandboxed preload exposes only the MVP authority without local require', (
       'getAppVersion',
       'localMode',
       'onAppLifecycle',
+      'pet',
       'platform',
       'providerConfig',
     ],
@@ -70,6 +71,7 @@ test('sandboxed preload exposes only the MVP authority without local require', (
   ]);
   assert.deepEqual(Object.keys(api.providerConfig).sort(), ['commit', 'get', 'test']);
   assert.deepEqual(Object.keys(api.character), ['get']);
+  assert.deepEqual(Object.keys(api.pet).sort(), ['hide', 'isVisible', 'show', 'toggle']);
   assert.deepEqual(Object.keys(api.download).sort(), [
     'downloadDirect',
     'downloadM3u8',

@@ -10,6 +10,7 @@ Reverie WebSocket Bridge — Python 后端与前端的实时通信层。
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -140,6 +141,8 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.GROUP_REQUEST: MsgType.GROUP_RESULT,
     MsgType.GROUP_SEND: MsgType.GROUP_RESULT,
     MsgType.IMAGE_RANDOM: MsgType.IMAGE_RESULT,
+    MsgType.TTS_LIST: MsgType.TTS_RESULT,
+    MsgType.TTS_SYNTHESIZE: MsgType.TTS_RESULT,
     MsgType.USER_PROFILE_GET: MsgType.USER_PROFILE_RESULT,
     MsgType.USER_PROFILE_UPDATE: MsgType.USER_PROFILE_RESULT,
     MsgType.KEEPSAKE_LIST: MsgType.KEEPSAKE_RESULT,
@@ -185,6 +188,8 @@ _POST_PERSONA_SWITCH_ALLOWED = frozenset({
     MsgType.MODULE_CONTROL,
     MsgType.GAME_STATE_GET,
     MsgType.GAME_STATE_PUT,
+    MsgType.TTS_LIST,
+    MsgType.TTS_SYNTHESIZE,
 })
 
 
@@ -213,6 +218,8 @@ _DEGRADED_KERNEL_ALLOWED = frozenset({
     MsgType.MODULE_CONTROL,
     MsgType.GAME_STATE_GET,
     MsgType.GAME_STATE_PUT,
+    MsgType.TTS_LIST,
+    MsgType.TTS_SYNTHESIZE,
 })
 
 
@@ -1370,6 +1377,79 @@ async def handle_image_random(payload: dict, _ws: WebSocketServerProtocol) -> di
             policy.finish(lease)
 
 
+@register_handler(MsgType.TTS_LIST)
+async def handle_tts_list(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """枚举可用 TTS 提供方与当前选择/可用状态。"""
+    from src.tts import registered_providers
+
+    settings = bridge_state.settings.tts if bridge_state.settings else None
+    providers = [
+        {
+            "key": provider.key,
+            "label": provider.label,
+            "kind": provider.kind,
+            "voices": list(provider.voice_options),
+        }
+        for provider in registered_providers()
+    ]
+    active = settings.provider if settings else None
+    return {
+        "providers": providers,
+        "active": active,
+        "enabled": bool(settings and settings.enabled),
+        "voice": settings.voice if settings else "",
+        "configured": bool(settings and settings.resolved_api_key),
+    }
+
+
+@register_handler(MsgType.TTS_SYNTHESIZE)
+async def handle_tts_synthesize(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """将文本合成为有序音频片段（并发合成、按句序返回）。"""
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return {"error": "文本不能为空"}
+    if len(text) > 5000:
+        text = text[:5000]
+    if not bridge_state.settings:
+        return {"error": "设置系统未初始化"}
+    from src.tts import TTSUnavailableError, build_selected, synthesize_ordered
+
+    tts_settings = bridge_state.settings.tts
+    if not tts_settings.enabled:
+        return {"error": "语音合成未启用", "code": "tts_disabled"}
+    if not tts_settings.resolved_api_key:
+        return {"error": "所选语音提供方未配置 API 密钥", "code": "tts_not_configured"}
+    voice = str(payload.get("voice") or tts_settings.voice or "").strip()
+    settings = {
+        "provider": tts_settings.provider,
+        "api_key": tts_settings.resolved_api_key,
+        "model": tts_settings.model,
+        "voice": voice,
+        "timeout": 60.0,
+    }
+    try:
+        synthesize = build_selected(settings)
+        if synthesize is None:
+            return {"error": f"未知语音提供方: {tts_settings.provider}"}
+        audio_parts = await synthesize_ordered(synthesize, text, voice)
+        if not audio_parts:
+            return {"error": "语音合成未产生音频"}
+        return {
+            "parts": [
+                {"audio": base64.b64encode(part).decode("ascii"), "index": i}
+                for i, part in enumerate(audio_parts)
+            ],
+            "provider": tts_settings.provider,
+            "voice": voice,
+            "count": len(audio_parts),
+        }
+    except TTSUnavailableError as exc:
+        return {"error": str(exc), "code": "tts_unavailable"}
+    except Exception as exc:
+        logger.exception("TTS 合成失败")
+        return {"error": str(exc), "code": "tts_failed"}
+
+
 @register_handler(MsgType.DIARY_REQUEST)
 async def handle_diary_request(payload: dict, ws: WebSocketServerProtocol) -> dict:
     """获取日记列表。"""
@@ -1657,7 +1737,9 @@ async def handle_game_state_put(payload: dict, _ws: WebSocketServerProtocol) -> 
             "error": "Game-state module is unavailable",
         }
     raw_revision = payload.get("expected_revision", 0)
-    if isinstance(raw_revision, bool):
+    if isinstance(raw_revision, bool) or not isinstance(raw_revision, (int, float)):
+        return {"ok": False, "code": "invalid_request", "error": "Invalid game revision"}
+    if isinstance(raw_revision, float) and not raw_revision.is_integer():
         return {"ok": False, "code": "invalid_request", "error": "Invalid game revision"}
     try:
         expected_revision = int(raw_revision)
@@ -2130,6 +2212,10 @@ async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> d
         ),
         "features": settings.features.model_dump(),
         "ui": settings.ui.model_dump(),
+        "tts": {
+            **settings.tts.model_dump(),
+            "configured": bool(settings.tts.resolved_api_key),
+        },
         "llm": _provider_settings_snapshot(),
     }
 
@@ -2204,6 +2290,34 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             return {
                 "ok": True,
                 "features": bridge_state.settings.features.model_dump(),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    elif section == "tts":
+        try:
+            from src.config.settings import save_settings
+
+            if not bridge_state.settings:
+                return {"ok": False, "error": "Settings are not initialized"}
+            tts = bridge_state.settings.tts
+            if "tts_enabled" in payload:
+                tts.enabled = bool(payload["tts_enabled"])
+            if "tts_provider" in payload:
+                provider = str(payload["tts_provider"])
+                if provider not in {"gemini", "openai"}:
+                    return {"ok": False, "error": f"unknown TTS provider: {provider}"}
+                tts.provider = provider
+            if "tts_voice" in payload:
+                tts.voice = str(payload["tts_voice"])[:64]
+            if "tts_model" in payload:
+                tts.model = str(payload["tts_model"])[:128]
+            save_settings(bridge_state.settings)
+            return {
+                "ok": True,
+                "tts": {
+                    **bridge_state.settings.tts.model_dump(),
+                    "configured": bool(bridge_state.settings.tts.resolved_api_key),
+                },
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}

@@ -378,6 +378,14 @@ def test_bridge_uses_canonical_frontend_response_types() -> None:
         ws_bridge.response_type_for_request(ws_bridge.MsgType.BACKUP_IMPORT)
         == ws_bridge.MsgType.BACKUP_RESULT
     )
+    assert (
+        ws_bridge.response_type_for_request(ws_bridge.MsgType.TTS_LIST)
+        == ws_bridge.MsgType.TTS_RESULT
+    )
+    assert (
+        ws_bridge.response_type_for_request(ws_bridge.MsgType.TTS_SYNTHESIZE)
+        == ws_bridge.MsgType.TTS_RESULT
+    )
     assert ws_bridge.response_type_for_request("future:request") == "future_request_result"
 
 
@@ -1105,3 +1113,54 @@ def test_degraded_persona_kernel_fails_feature_operations_closed(monkeypatch) ->
     assert ws_bridge.degraded_runtime_blocks(ws_bridge.MsgType.PERSONA_GET) is False
     assert ws_bridge.degraded_runtime_blocks(ws_bridge.MsgType.PERSONA_IMPORT) is False
     assert ws_bridge.degraded_runtime_blocks(ws_bridge.MsgType.LOCAL_MODE_SET) is False
+
+
+def test_tts_list_reports_providers_and_selection(monkeypatch) -> None:
+    from src.config.settings import _Settings
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    settings = _Settings()
+    settings.tts.enabled = True
+    settings.tts.voice = "Kore"
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+    monkeypatch.setattr(ws_bridge.bridge_state, "runtime_unavailable", ())
+
+    result = asyncio.run(ws_bridge.handle_tts_list({}, DummyWebSocket()))
+    keys = {provider["key"] for provider in result["providers"]}
+    assert {"gemini", "openai"} <= keys
+    assert result["active"] == "gemini"
+    assert result["enabled"] is True
+    assert result["voice"] == "Kore"
+    assert result["configured"] is False
+
+
+def test_tts_synthesize_fails_closed_when_disabled_or_unconfigured(monkeypatch) -> None:
+    from src.config.settings import _Settings
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    settings = _Settings()
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+    monkeypatch.setattr(ws_bridge.bridge_state, "runtime_unavailable", ())
+
+    disabled = asyncio.run(ws_bridge.handle_tts_synthesize(
+        {"text": "你好"},
+        DummyWebSocket(),
+    ))
+    assert disabled["code"] == "tts_disabled"
+
+    settings.tts.enabled = True
+    unconfigured = asyncio.run(ws_bridge.handle_tts_synthesize(
+        {"text": "你好"},
+        DummyWebSocket(),
+    ))
+    assert unconfigured["code"] == "tts_not_configured"
+
+    empty = asyncio.run(ws_bridge.handle_tts_synthesize(
+        {"text": "   "},
+        DummyWebSocket(),
+    ))
+    assert "error" in empty

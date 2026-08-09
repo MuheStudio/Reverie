@@ -1220,6 +1220,7 @@
               "chat",
               "personality",
               "features",
+              "tts",
               "ui"
             ],
             "title": "Section",
@@ -1294,6 +1295,60 @@
             ],
             "default": null,
             "title": "Status"
+          },
+          "tts_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Enabled"
+          },
+          "tts_model": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Model"
+          },
+          "tts_provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "gemini",
+                  "openai"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Provider"
+          },
+          "tts_voice": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Voice"
           },
           "typing_indicator": {
             "anyOf": [
@@ -1404,6 +1459,55 @@
         "additionalProperties": false,
         "properties": {},
         "title": "EmptyPayload",
+        "type": "object"
+      },
+      "tts:list": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "tts:synthesize": {
+        "additionalProperties": false,
+        "description": "Synthesize speech audio for a text chunk via the active TTS provider.",
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "text": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Voice"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TTSSynthesizePayload",
         "type": "object"
       },
       "user:profile:get": {

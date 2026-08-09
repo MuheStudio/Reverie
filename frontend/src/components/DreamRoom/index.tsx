@@ -63,6 +63,9 @@ import {
   type RoomPanelId,
 } from './roomState';
 import { loadReverieChatDraft, saveReverieChatDraft } from '@/lib/reverieChatStorage';
+import { useTTSPlayer, type TTSAudioPart } from '@/hooks/useTTSPlayer';
+import GlassCommandPalette, { type CommandPaletteItem } from '@/components/ui/glass/GlassCommandPalette';
+import { GlassToastStack, useGlassToasts } from '@/components/ui/glass/GlassToast';
 import RoomScene from './RoomScene';
 import CompanionDock, { type DockTab } from './CompanionDock';
 import FirstRunGuide from './FirstRunGuide';
@@ -1792,6 +1795,9 @@ function GamePanel({
 
 export default function DreamRoom() {
   const ws = useReverieWS();
+  const { play: playSpeech, stop: stopSpeech } = useTTSPlayer();
+  const { toasts, push: pushToast, dismiss: dismissToast } = useGlassToasts();
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [dockTab, setDockTab] = useState<DockTab>('status');
   const [focusActive, setFocusActive] = useState(false);
   const [companionWeather, setCompanionWeather] = useState<'none' | 'rain' | 'wind'>('none');
@@ -1830,6 +1836,59 @@ export default function DreamRoom() {
   });
 
   useDiaryWritingSound(connected && ws.runtimeActivity.diary_writing);
+
+  const ttsEnabled = Boolean(ws.settingsSnapshot?.tts?.enabled);
+  const ttsVoice = typeof ws.settingsSnapshot?.tts?.voice === 'string'
+    ? ws.settingsSnapshot.tts.voice
+    : '';
+  const [mouthLevel, setMouthLevel] = useState(0);
+  const speechPartRef = useRef<TTSAudioPart[] | null>(null);
+  const speechRequestSeqRef = useRef(0);
+  const speechChunkRef = useRef('');
+  useEffect(() => {
+    if (!ttsEnabled) return undefined;
+    const unsubscribers = [
+      ws.subscribe(WSMsgType.CHAT_CHUNK, (payload: any) => {
+        const text = typeof payload?.text === 'string' ? payload.text : '';
+        if (text) speechChunkRef.current += text;
+      }),
+      ws.subscribe(WSMsgType.CHAT_RETRACT, () => {
+        speechChunkRef.current = '';
+      }),
+      ws.subscribe(WSMsgType.CHAT_DONE, (payload: any) => {
+        const replyText = (Array.isArray(payload?.messages) ? payload.messages : [])
+          .filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+          .join('')
+          .trim() || speechChunkRef.current.trim();
+        speechChunkRef.current = '';
+        if (!replyText) return;
+        if (speechPartRef.current) {
+          stopSpeech();
+          speechPartRef.current = null;
+        }
+        const sequence = speechRequestSeqRef.current + 1;
+        speechRequestSeqRef.current = sequence;
+        void ws.request<{ parts?: TTSAudioPart[] }>(
+          WSMsgType.TTS_SYNTHESIZE,
+          { text: replyText, voice: ttsVoice || undefined },
+          { expectedType: WSMsgType.TTS_RESULT, timeout: 60_000 },
+        ).then((result) => {
+          if (sequence !== speechRequestSeqRef.current) return; // stale reply
+          const parts = Array.isArray(result?.parts) ? result.parts : [];
+          if (!parts.length) return;
+          speechPartRef.current = parts;
+          void playSpeech(parts, {
+            onAmplitude: setMouthLevel,
+            onEnd: () => setMouthLevel(0),
+          });
+        }).catch(() => { /* TTS failure is non-fatal for chat delivery */ });
+      }),
+    ];
+    return () => {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      speechChunkRef.current = '';
+    };
+  }, [ttsEnabled, ttsVoice, ws, playSpeech, stopSpeech]);
 
   useEffect(() => {
     if (onboardingCompleted === true) setOnboardingDone(true);
@@ -1887,6 +1946,68 @@ export default function DreamRoom() {
   }, [activePanel, ws]);
 
   const closePanel = useCallback(() => setActivePanel(null), []);
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setPaletteOpen((value) => !value);
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, []);
+
+  const paletteItems = useMemo<CommandPaletteItem[]>(() => [
+    {
+      id: 'pet',
+      label: '显示 / 隐藏桌宠',
+      hint: '透明置顶小窗',
+      icon: '🐾',
+      onRun: () => void window.electronAPI?.pet?.toggle?.(),
+    },
+    {
+      id: 'diary',
+      label: '写日记',
+      hint: 'Diary',
+      icon: '📔',
+      onRun: () => openPanel('diary'),
+    },
+    {
+      id: 'timeline',
+      label: '查看时间线',
+      hint: 'Timeline',
+      icon: '🗓',
+      onRun: () => openPanel('timeline'),
+    },
+    {
+      id: 'memory',
+      label: '回忆收藏',
+      hint: 'Keepsakes',
+      icon: '🧩',
+      onRun: () => openPanel('memory'),
+    },
+    {
+      id: 'tts-toggle',
+      label: '朗读开关',
+      hint: ws.settingsSnapshot?.tts?.enabled ? '当前开启' : '当前关闭',
+      icon: '🔊',
+      onRun: () => {
+        void ws.request(
+          WSMsgType.SETTINGS_UPDATE,
+          { section: 'tts', tts_enabled: !ws.settingsSnapshot?.tts?.enabled },
+          { expectedType: WSMsgType.SETTINGS_UPDATE_RESULT },
+        ).then(() => {
+          pushToast(
+            'info',
+            ws.settingsSnapshot?.tts?.enabled ? '已关闭朗读' : '已开启朗读',
+          );
+        }).catch(() => {
+          pushToast('error', '朗读开关失败');
+        });
+      },
+    },
+  ], [ws, openPanel, pushToast]);
   const characterActivity: CharacterActivity = deriveCharacterActivity({
     focusActive,
     isTyping: ws.isTyping,
@@ -1908,6 +2029,7 @@ export default function DreamRoom() {
           personaName={personaName}
           identityLine={personaIdentity}
           activity={characterActivity}
+          mouthLevel={mouthLevel}
           diaryWriting={ws.runtimeActivity.diary_writing}
           phoneAttention={phoneAttention || ws.ambient.pending_thoughts > 0}
           bookPage={ws.ambient.book_page}
@@ -2026,6 +2148,12 @@ export default function DreamRoom() {
       {connected && onboardingCompleted === false && !onboardingDone && (
         <FirstRunGuide ws={ws} onComplete={() => setOnboardingDone(true)} />
       )}
+      <GlassCommandPalette
+        items={paletteItems}
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+      />
+      <GlassToastStack toasts={toasts} onDismiss={dismissToast} />
     </main>
   );
 }

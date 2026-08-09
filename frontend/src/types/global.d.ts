@@ -207,6 +207,12 @@ declare global {
           runtime?: AvatarRuntime;
         }>;
       };
+      pet?: {
+        toggle: () => Promise<boolean>;
+        show: () => Promise<boolean>;
+        hide: () => Promise<boolean>;
+        isVisible: () => Promise<boolean>;
+      };
       // DreamRoom / legacy surface (kept for the switchable her-room view)
       showNotification?: (title: string, body: string) => Promise<boolean>;
       getNotificationStatus?: () => Promise<{ supported: boolean; enabled: boolean }>;

@@ -53,6 +53,8 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "sticker:list",
   "sticker:react",
   "timeline:request",
+  "tts:list",
+  "tts:synthesize",
   "user:profile:get",
   "user:profile:update"
 ]));
@@ -227,6 +229,13 @@ const api = Object.freeze({
 
   character: Object.freeze({
     get: () => ipcRenderer.invoke('character:getBundled'),
+  }),
+
+  pet: Object.freeze({
+    toggle: () => ipcRenderer.invoke('pet:toggle'),
+    show: () => ipcRenderer.invoke('pet:show'),
+    hide: () => ipcRenderer.invoke('pet:hide'),
+    isVisible: () => ipcRenderer.invoke('pet:isVisible'),
   }),
 
   download: Object.freeze({

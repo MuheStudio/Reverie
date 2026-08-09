@@ -51,6 +51,18 @@ function ensureLive2DCore(): Promise<void> {
       script.src = LIVE2D_CORE_URL;
       script.async = true;
       document.head.appendChild(script);
+    } else {
+      // A pre-existing script may have already fired (or never fire again)
+      // its load event; the load listener alone would wait out the full
+      // timeout. Probe for the core instead, which resolves as soon as the
+      // runtime actually lands.
+      const probe = window.setInterval(() => {
+        if (runtime.Live2DCubismCore) {
+          window.clearInterval(probe);
+          finish();
+        }
+      }, 100);
+      window.setTimeout(() => window.clearInterval(probe), 10_000);
     }
   });
   return coreLoadPromise;
@@ -580,6 +592,10 @@ export function useLive2D(config: Live2DConfig) {
     rendererRef.current?.setMouthOpen(speaking ? 0.7 : 0.0);
   }, []);
 
+  const setMouth = useCallback((ratio: number) => {
+    rendererRef.current?.setMouthOpen(ratio);
+  }, []);
+
   const playMotion = useCallback((group: string) => {
     rendererRef.current?.playMotion(group);
   }, []);
@@ -591,6 +607,7 @@ export function useLive2D(config: Live2DConfig) {
     loadModel,
     setExpression,
     setSpeaking,
+    setMouth,
     setActive,
     playMotion,
   };
@@ -603,6 +620,7 @@ export function Live2DCanvas({
   modelUrl,
   expression = 'neutral',
   speaking = false,
+  mouthLevel,
   motion = '',
   className,
   onStateChange,
@@ -611,6 +629,7 @@ export function Live2DCanvas({
   modelUrl?: string;
   expression?: string;
   speaking?: boolean;
+  mouthLevel?: number;
   motion?: string;
   className?: string;
   onStateChange?: (state: Live2DState, error: string | null) => void;
@@ -622,6 +641,7 @@ export function Live2DCanvas({
     loadModel,
     setExpression,
     setSpeaking,
+    setMouth,
     playMotion,
   } = useLive2D(config);
   const loadedModelUrlRef = useRef('');
@@ -664,8 +684,12 @@ export function Live2DCanvas({
   }, [expression, setExpression]);
 
   useEffect(() => {
-    setSpeaking(speaking);
-  }, [speaking, setSpeaking]);
+    if (typeof mouthLevel === 'number') {
+      setMouth(mouthLevel);
+    } else {
+      setSpeaking(speaking);
+    }
+  }, [speaking, mouthLevel, setMouth, setSpeaking]);
 
   useEffect(() => {
     if (modelReadyUrl === modelUrl && motion) {

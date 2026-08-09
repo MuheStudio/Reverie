@@ -58,6 +58,8 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("GROUP_REQUEST", "group:request"),
     ("GROUP_SEND", "group:send"),
     ("IMAGE_RANDOM", "image:random"),
+    ("TTS_LIST", "tts:list"),
+    ("TTS_SYNTHESIZE", "tts:synthesize"),
     ("SETTINGS_UPDATE", "settings:update"),
     ("SETTINGS_GET", "settings:get"),
     ("AI_USAGE_GET", "ai_usage:get"),
@@ -106,6 +108,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("API_BUDGET_RESULT", "api:budget:result"),
     ("GROUP_RESULT", "group:result"),
     ("IMAGE_RESULT", "image:result"),
+    ("TTS_RESULT", "tts:result"),
     ("USER_PROFILE_RESULT", "user:profile:result"),
     ("KEEPSAKE_RESULT", "keepsake:result"),
     ("BACKUP_RESULT", "backup:result"),
@@ -164,6 +167,8 @@ MVP_COMMAND_NAMES = frozenset(
         "BACKUP_IMPORT",
         "IMAGE_RANDOM",
         "EMOTION_GET",
+        "TTS_LIST",
+        "TTS_SYNTHESIZE",
         "PERSONA_GET",
         "PERSONA_IMPORT",
         "PERSONA_ACTIVATE",
@@ -208,6 +213,7 @@ MVP_EVENT_NAMES = frozenset(
         "KEEPSAKE_RESULT",
         "BACKUP_RESULT",
         "IMAGE_RESULT",
+        "TTS_RESULT",
         "PROACTIVE_MESSAGE",
         "RUNTIME_ACTIVITY",
         "PERSONA_DATA",
@@ -578,12 +584,25 @@ class ImageRandomPayload(_PayloadModel):
     mode: Literal["sfw", "nsfw", "random"] = "sfw"
 
 
+class TTSSynthesizePayload(_PayloadModel):
+    """Synthesize speech audio for a text chunk via the active TTS provider."""
+
+    text: str = Field(min_length=1, max_length=5000)
+    voice: str | None = Field(default=None, max_length=64)
+    provider: str | None = Field(default=None, max_length=32)
+
+
 class SettingsUpdatePayload(_PayloadModel):
     """The small settings surface that exists in the current MVP."""
 
-    section: Literal["onboarding", "memory", "chat", "personality", "features", "ui"]
+    section: Literal["onboarding", "memory", "chat", "personality", "features", "tts", "ui"]
     completed: bool | None = None
     mode: Literal["mvp", "dream"] | None = None
+
+    tts_enabled: bool | None = None
+    tts_provider: Literal["gemini", "openai"] | None = None
+    tts_voice: str | None = Field(default=None, max_length=64)
+    tts_model: str | None = Field(default=None, max_length=128)
 
     retention_days: Literal[365, 730, 1095] | None = None
     forgetting_enabled: bool | None = None
@@ -656,6 +675,13 @@ class SettingsUpdatePayload(_PayloadModel):
             "ui": {
                 "section",
                 "mode",
+            },
+            "tts": {
+                "section",
+                "tts_enabled",
+                "tts_provider",
+                "tts_voice",
+                "tts_model",
             },
         }[self.section]
         unexpected = self.model_fields_set - allowed
@@ -748,6 +774,8 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "backup:export": EmptyPayload,
     "backup:import": BackupImportPayload,
     "image:random": ImageRandomPayload,
+    "tts:list": EmptyPayload,
+    "tts:synthesize": TTSSynthesizePayload,
     "emotion:get": EmptyPayload,
     "persona:get": EmptyPayload,
     "persona:import": PersonaImportPayload,

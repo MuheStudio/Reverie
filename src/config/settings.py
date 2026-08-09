@@ -392,6 +392,33 @@ class FeatureSettings(_ValidatedSettingsModel):
         return self
 
 
+TTS_PROVIDER_ENV_KEYS = {
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+class TTSSettings(_ValidatedSettingsModel):
+    """Text-to-speech backend selection (non-secret parts only).
+
+    Like LLMSettings, the API key is never persisted to config.json; it is
+    resolved from the environment at runtime via :func:`environment_api_key`.
+    """
+
+    provider: Literal["gemini", "openai"] = Field(default="gemini")
+    model: str = Field(default="")
+    voice: str = Field(default="")
+    enabled: bool = Field(default=False)
+
+    @property
+    def resolved_api_key(self) -> str:
+        """Current environment credential for the selected provider (never persisted)."""
+        env_key = TTS_PROVIDER_ENV_KEYS.get(self.provider)
+        if not env_key:
+            return ""
+        return environment_api_key(env_key)
+
+
 class UISettings(_ValidatedSettingsModel):
     """Durable non-secret renderer preferences owned by the Python host."""
 
@@ -406,6 +433,7 @@ class _Settings(_ValidatedSettingsModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
     features: FeatureSettings = Field(default_factory=FeatureSettings)
+    tts: TTSSettings = Field(default_factory=TTSSettings)
     ui: UISettings = Field(default_factory=UISettings)
     ai_usage: AIUsageSettings = Field(default_factory=AIUsageSettings)
     # Cloud service mode: "local" (default) or "cloud" (future)

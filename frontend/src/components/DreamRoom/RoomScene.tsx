@@ -14,6 +14,8 @@ interface RoomSceneProps {
   personaName: string;
   identityLine: string;
   activity: CharacterActivity;
+  speaking?: boolean;
+  mouthLevel?: number;
   diaryWriting: boolean;
   phoneAttention: boolean;
   bookPage: number;
@@ -33,6 +35,8 @@ export default function RoomScene({
   personaName,
   identityLine,
   activity,
+  speaking = false,
+  mouthLevel,
   diaryWriting,
   phoneAttention,
   bookPage,
@@ -79,6 +83,8 @@ export default function RoomScene({
         personaName={personaName}
         identityLine={identityLine}
         activity={activity}
+        speaking={speaking}
+        mouthLevel={mouthLevel}
       />
     </section>
   );
