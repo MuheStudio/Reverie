@@ -8,6 +8,7 @@ const {
 } = require('../electron/live2d-release-gate.cjs');
 const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
 const { createTextureTransformer } = require('./live2d-build-assets.cjs');
+const { createSeedConfig } = require('./seed-config.cjs');
 const {
   assertProductionPayload,
   copyProductionPythonSource,
@@ -212,39 +213,7 @@ function prepareSeedData() {
   ];
   for (const dir of dirs) ensureDir(path.join(dataRoot, dir));
 
-  writeJson(path.join(dataRoot, 'config.json'), {
-    llm: {
-      provider: 'ollama', model: '', api_key: '',
-      base_url: 'http://localhost:11434/v1', temperature: 0.82, max_tokens: 2048,
-    },
-    memory: {
-      embedding_model: 'BAAI/bge-small-zh-v1.5', retention_days: 730,
-      forgetting_enabled: true, long_term_forget_days: 90,
-      short_term_forget_days: 7, forget_probability: 0.05,
-      decay_lambda: 0.0077, recall_reinforcement_alpha: 0.12,
-      minimum_retrieval_retention: 0.05,
-      misremembering_enabled: false, misremember_probability: 0.001,
-      long_term_misremember_probability: 0.001,
-      short_term_misremember_probability: 0.001,
-    },
-    chat: {
-      reply_delay_min: 3, reply_delay_max: 25,
-      split_messages: true, typing_indicator: true,
-    },
-    features: {
-      web_surfing_enabled: false, web_disclaimer_acknowledged: false,
-      web_allowed_topics: [
-        '\u70ed\u95e8\u6897', '\u65b0\u756a/\u52a8\u6f2b\u8d44\u8baf',
-        '\u4e8c\u6b21\u5143\u5185\u5bb9', '\u6e38\u620f\u66f4\u65b0',
-      ],
-      web_refresh_interval_minutes: 180, diary_enabled: false,
-      diary_privacy_enabled: true, diary_peek_enabled: true,
-      timeline_enabled: false, proactive_chat_enabled: false,
-      late_night_enabled: false, late_night_probability: 0.1,
-      autonomous_memory_enabled: true, autonomous_memory_llm_enabled: false,
-    },
-    cloud_mode: 'local',
-  });
+  writeJson(path.join(dataRoot, 'config.json'), createSeedConfig());
   writeJson(path.join(dataRoot, 'user', 'profile.json'), {
     name: '', nickname: '', birthday: '', interests: [], hobbies: [],
     favorite_topics: [], important_dates: {}, sticker_preferences: {},

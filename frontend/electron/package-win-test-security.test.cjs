@@ -17,6 +17,20 @@ const {
   assertProductionPayload,
   shouldCopyProductionPythonSource,
 } = require('../script/production-runtime.cjs');
+const { createSeedConfig } = require('../script/seed-config.cjs');
+
+test('release and test packages share a valid current settings seed', () => {
+  const config = createSeedConfig();
+  assert.equal(config.llm.provider, 'ollama');
+  assert.equal(config.memory.short_term_forget_probability, 0.005);
+  for (const field of [
+    'misremember_probability',
+    'long_term_misremember_probability',
+    'short_term_misremember_probability',
+  ]) {
+    assert.ok(config.memory[field] >= 0.01 && config.memory[field] <= 0.10);
+  }
+});
 
 test('portable package filter excludes tests and fixture directories', () => {
   const file = { isDirectory: () => false };

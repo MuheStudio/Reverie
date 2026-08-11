@@ -174,8 +174,9 @@ class LLMSettings(_ValidatedSettingsModel):
         return self
 
     def resolve(self) -> None:
-        """Fill in defaults for the selected provider. Env always wins over config.json."""
+        """Resolve defaults and credentials without overriding an explicit endpoint."""
         info = PROVIDER_DEFAULTS.get(self.provider, {})
+        requested_base_url = str(self.base_url or "").strip()
         self.base_url = normalize_provider_endpoint(self.provider, self.base_url)
         # Always read API key from env if available (never trust cached config.json)
         env_key = info.get("env_key")
@@ -185,7 +186,7 @@ class LLMSettings(_ValidatedSettingsModel):
                 self.api_key = env_val
         # Ollama needs no API key.  An environment override remains subject to
         # the same loopback-only validation as a UI value.
-        if self.provider == "ollama":
+        if self.provider == "ollama" and not requested_base_url:
             self.base_url = normalize_provider_endpoint(
                 "ollama",
                 os.getenv("OLLAMA_BASE_URL", self.base_url),
@@ -512,7 +513,7 @@ def load_settings() -> _Settings:
 
 
 def _migrate_legacy_memory_settings(data: object) -> None:
-    """Clamp pre-2.1 confusion rates before strict Pydantic validation."""
+    """Clamp pre-2.1 confusion rates into the current valid range."""
     if not isinstance(data, dict):
         return
     memory = data.get("memory")
@@ -528,9 +529,9 @@ def _migrate_legacy_memory_settings(data: object) -> None:
         try:
             value = float(memory[key])
         except (TypeError, ValueError):
-            memory[key] = 0.001
+            memory[key] = 0.05
             continue
-        memory[key] = min(0.01, max(0.0, value))
+        memory[key] = min(0.10, max(0.01, value))
 
 
 def _backup_invalid_config(path: Path) -> Path | None:

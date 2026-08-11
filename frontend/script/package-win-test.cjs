@@ -4,6 +4,7 @@ const { spawnSync } = require('child_process');
 const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
 const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
 const { createTextureTransformer } = require('./live2d-build-assets.cjs');
+const { createSeedConfig } = require('./seed-config.cjs');
 const {
   assertProductionPayload,
   copyProductionPythonSource,
@@ -162,52 +163,7 @@ function copyDataSkeleton() {
     ensureDir(path.join(dataDir, dir));
   }
 
-  writeJson(path.join(dataDir, 'config.json'), {
-    llm: {
-      provider: 'ollama',
-      model: '',
-      base_url: 'http://localhost:11434/v1',
-      temperature: 0.82,
-      max_tokens: 2048,
-    },
-    memory: {
-      embedding_model: 'BAAI/bge-small-zh-v1.5',
-      retention_days: 730,
-      forgetting_enabled: true,
-      long_term_forget_days: 90,
-      short_term_forget_days: 7,
-      forget_probability: 0.05,
-      decay_lambda: 0.0077,
-      recall_reinforcement_alpha: 0.12,
-      minimum_retrieval_retention: 0.05,
-      misremembering_enabled: false,
-      misremember_probability: 0.001,
-      long_term_misremember_probability: 0.001,
-      short_term_misremember_probability: 0.001,
-    },
-    chat: {
-      reply_delay_min: 3,
-      reply_delay_max: 25,
-      split_messages: true,
-      typing_indicator: true,
-    },
-    features: {
-      web_surfing_enabled: false,
-      web_disclaimer_acknowledged: false,
-      web_allowed_topics: ['热门梗', '新番/动漫资讯', '二次元内容', '游戏更新'],
-      web_refresh_interval_minutes: 180,
-      diary_enabled: false,
-      diary_privacy_enabled: true,
-      diary_peek_enabled: true,
-      timeline_enabled: false,
-      proactive_chat_enabled: false,
-      late_night_enabled: false,
-      late_night_probability: 0.1,
-      autonomous_memory_enabled: true,
-      autonomous_memory_llm_enabled: false,
-    },
-    cloud_mode: 'local',
-  });
+  writeJson(path.join(dataDir, 'config.json'), createSeedConfig());
 
   copyIfExists(
     path.join(projectRoot, 'data', 'persona', 'active.json'),
