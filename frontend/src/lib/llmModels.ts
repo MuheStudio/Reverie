@@ -12,6 +12,8 @@ export interface LLMConfig {
   baseUrl: string;
   model: string;
   customHeaders?: string;
+  clearApiKey?: boolean;
+  clearCustomHeaders?: boolean;
   customProviderName?: string;
 }
 

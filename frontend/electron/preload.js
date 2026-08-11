@@ -90,11 +90,16 @@ function optionalCredentialValue(value = {}) {
   const result = {};
   for (const field of ['apiKey', 'customHeaders']) {
     if (value[field] == null || value[field] === '') continue;
-    if (typeof value[field] !== 'string' || value[field].length > 64 * 1024
+    if (typeof value[field] !== 'string' || value[field].length > 16 * 1024
       || value[field].includes('\u0000')) {
       throw new TypeError(`${field} is invalid`);
     }
     result[field] = value[field];
+  }
+  for (const field of ['clearApiKey', 'clearCustomHeaders']) {
+    if (value[field] == null || value[field] === false) continue;
+    if (value[field] !== true) throw new TypeError(`${field} is invalid`);
+    result[field] = true;
   }
   return Object.keys(result).length ? result : undefined;
 }
@@ -137,7 +142,16 @@ function bridgeFrame(value) {
   };
 }
 
-function publicProviderConfig(value = {}) {  if (!value || typeof value !== 'object' || Array.isArray(value)
+// Closed-world provider surface. Must stay in sync with LLM_PROVIDERS in
+// provider-config-store.cjs and SUPPORTED_PROVIDER_NAMES in src/config/settings.py.
+// The sandboxed preload cannot require local modules, so the list is inlined.
+const SUPPORTED_LLM_PROVIDERS = Object.freeze([
+  'openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm',
+  'ollama', 'custom',
+]);
+
+function publicProviderConfig(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
     || !value.llm || typeof value.llm !== 'object' || Array.isArray(value.llm)) {
     throw new TypeError('provider config is invalid');
   }
@@ -151,8 +165,8 @@ function publicProviderConfig(value = {}) {  if (!value || typeof value !== 'obj
     baseUrl: boundedText(value.llm.baseUrl, 'LLM base URL', 2048),
     model: boundedText(value.llm.model, 'LLM model', 512),
   };
-  if (!['ollama', 'custom'].includes(llm.provider)) {
-    throw new TypeError('LLM provider is outside the MVP allowlist');
+  if (!SUPPORTED_LLM_PROVIDERS.includes(llm.provider)) {
+    throw new TypeError('不支持的 LLM 供应商');
   }
   if (value.llm.customProviderName) {
     llm.customProviderName = boundedText(
@@ -190,21 +204,7 @@ const api = Object.freeze({
 
   credentials: Object.freeze({
     status: () => ipcRenderer.invoke('credentials:status'),
-    clear: () => ipcRenderer.invoke('credentials:clear', {
-      scope: 'llm',
-    }),
-    set: (scope, value) => {
-      if (scope !== 'imageGen') throw new TypeError('credential scope is forbidden');
-      const credential = optionalCredentialValue(value);
-      if (!credential) throw new TypeError('credential value is empty');
-      return ipcRenderer.invoke('credentials:set', { scope, value: credential });
-    },
-    setSession: (scope, value) => {
-      if (scope !== 'imageGen') throw new TypeError('credential scope is forbidden');
-      const credential = optionalCredentialValue(value);
-      if (!credential) throw new TypeError('credential value is empty');
-      return ipcRenderer.invoke('credentials:setSession', { scope, value: credential });
-    },
+    clear: () => ipcRenderer.invoke('credentials:clear', { scope: 'llm' }),
     onChanged: (callback) => subscribe('credentials:changed', callback),
   }),
 

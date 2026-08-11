@@ -235,6 +235,7 @@ class FramedBridgeSupervisor extends EventEmitter {
     if (frame.ok !== true) {
       const error = new Error(String(frame.error || 'Bridge rejected the control request'));
       error.code = typeof frame.code === 'string' ? frame.code : 'REVERIE_CONTROL_REJECTED';
+      error.retryable = frame.retryable === true;
       pending.reject(error);
       return;
     }

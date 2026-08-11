@@ -48,6 +48,7 @@ export class ProviderTestError extends Error {
 export interface ProviderTestReceipt {
   receipt: string;
   latencyMs: number;
+  model: string;
 }
 
 function readLegacyPublicConfig(): PublicLLMConfig | null {
@@ -100,6 +101,9 @@ export async function saveConfig(
   const publicConfig = sanitizeLLMConfig(config);
   if (!publicConfig) throw new TypeError('LLM configuration metadata is invalid');
   const publicImageConfig = imageGenConfig ? sanitizeImageGenConfig(imageGenConfig) : null;
+  if (imageGenConfig) {
+    throw new Error('图片生成配置权威通道尚未启用');
+  }
 
   const persisted: import('./configPersistence').PersistedConfig = {
     llm: publicConfig,
@@ -112,6 +116,8 @@ export async function saveConfig(
   const credential = {
     apiKey: config.apiKey.trim(),
     customHeaders: config.customHeaders?.trim(),
+    ...(config.clearApiKey === true ? { clearApiKey: true } : {}),
+    ...(config.clearCustomHeaders === true ? { clearCustomHeaders: true } : {}),
   };
   const api = globalThis.window?.electronAPI?.providerConfig;
   if (!api?.commit) {
@@ -157,20 +163,6 @@ export async function saveConfig(
       credentialStorage === 'persistent',
     );
   }
-  if (imageGenConfig) {
-    const imageCredential = {
-      apiKey: imageGenConfig.apiKey.trim(),
-      customHeaders: imageGenConfig.customHeaders?.trim(),
-    };
-    if (imageCredential.apiKey || imageCredential.customHeaders) {
-      const credentialApi = globalThis.window?.electronAPI?.credentials;
-      const setter = credentialStorage === 'session'
-        ? credentialApi?.setSession
-        : credentialApi?.set;
-      if (!setter) throw new Error('图片生成凭据安全通道不可用');
-      await setter('imageGen', imageCredential);
-    }
-  }
   removeLegacyPublicConfig();
 }
 
@@ -189,13 +181,16 @@ export async function testConfig(config: LLMConfig): Promise<ProviderTestReceipt
   }, {
     apiKey: config.apiKey.trim(),
     customHeaders: config.customHeaders?.trim(),
+    ...(config.clearApiKey === true ? { clearApiKey: true } : {}),
+    ...(config.clearCustomHeaders === true ? { clearCustomHeaders: true } : {}),
   });
   if (!result.ok) {
-    throw new ProviderTestError(result.message, result.code);
+    throw new ProviderTestError(result.message, result.code, result.retryable === true);
   }
   return {
     receipt: result.receipt,
     latencyMs: result.latencyMs,
+    model: result.model,
   };
 }
 
@@ -204,7 +199,7 @@ export async function clearConfigCredentials(): Promise<void> {
   if (!api?.clear) {
     throw new Error('Secure operating-system credential storage is unavailable');
   }
-  await api.clear('llm');
+  await api.clear();
 }
 
 export function loadConfigSync(): LLMConfig | null {

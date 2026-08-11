@@ -284,11 +284,13 @@ class LLMAdapter:
         local_mode_gate: LocalModeGate | None = None,
         usage_policy: UsagePolicy | None = None,
         custom_headers: dict[str, str] | None = None,
+        resolve_settings: bool = True,
     ) -> None:
         self.settings = (settings or load_settings().llm).model_copy(deep=True)
         if self.settings.provider not in SUPPORTED_PROVIDER_NAMES:
             raise ValueError("LLM provider is unsupported")
-        self.settings.resolve()
+        if resolve_settings:
+            self.settings.resolve()
         self._client: AsyncOpenAI | None = None
         self._client_signature: tuple[str, str, str, str] | None = None
         self._anthropic_client: httpx.AsyncClient | None = None

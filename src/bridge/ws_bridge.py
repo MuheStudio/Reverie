@@ -2083,8 +2083,10 @@ async def _configure_runtime_provider(payload: Any) -> dict[str, Any]:
     candidate = previous_llm.model_copy(deep=True)
     provider_changed = candidate.provider != provider
     candidate.provider = provider
-    if "model" in payload and str(payload.get("model") or "").strip():
-        candidate.model = str(payload["model"]).strip()
+    if "model" in payload and (
+        str(payload.get("model") or "").strip() or provider == "ollama"
+    ):
+        candidate.model = str(payload.get("model") or "").strip()
     elif provider_changed:
         from src.api.providers import get_provider
 
@@ -2099,7 +2101,6 @@ async def _configure_runtime_provider(payload: Any) -> dict[str, Any]:
         requested_base_url = candidate.base_url
 
     candidate.base_url = normalize_provider_endpoint(provider, requested_base_url)
-    candidate.resolve()
     destination_changed = (
         previous_llm.provider != candidate.provider
         or previous_llm.base_url.rstrip("/") != candidate.base_url.rstrip("/")
@@ -2111,25 +2112,34 @@ async def _configure_runtime_provider(payload: Any) -> dict[str, Any]:
         provider_env_key = str(PROVIDER_DEFAULTS.get(provider, {}).get("env_key") or "")
         candidate.api_key = environment_api_key(provider_env_key)
 
-    cancelled_optional = 0
     adapter = bridge_state.adapter
     policy = getattr(adapter, "usage_policy", None)
-    if destination_changed and policy is not None:
-        cancelled_optional = policy.revoke_all_for_provider_change()
-
     bridge_state.settings.llm = candidate
     try:
         save_settings(bridge_state.settings)
     except Exception:
         bridge_state.settings.llm = previous_llm
         raise
+    cancelled_optional = 0
+    if destination_changed and policy is not None:
+        try:
+            cancelled_optional = policy.revoke_all_for_provider_change()
+        except Exception:
+            logger.exception("Optional AI consent revocation failed after settings commit")
+    try:
+        await _get_chat_coordinator().cancel_all(reason="model_changed")
+    except Exception:
+        logger.exception("Chat cancellation failed after settings commit")
     if adapter:
         adapter.settings = candidate
+        if destination_changed:
+            adapter.custom_headers = {}
         reset_client = getattr(adapter, "reset_client", None)
         if callable(reset_client):
-            reset_client()
-
-    await _get_chat_coordinator().cancel_all(reason="model_changed")
+            try:
+                reset_client()
+            except Exception:
+                logger.exception("Provider client reset failed after settings commit")
     bridge_state.model_epoch = int(bridge_state.model_epoch or 0) + 1
     return {
         "ok": True,
@@ -2153,7 +2163,12 @@ async def _test_runtime_provider(payload: Any, credential: Any) -> dict[str, Any
 
     from src.api.adapter import LLMAdapter, ProviderRequestError, parse_custom_headers
     from src.api.provider_probe import ProviderProbe
-    from src.config.settings import SUPPORTED_PROVIDER_NAMES, normalize_provider_endpoint
+    from src.config.settings import (
+        PROVIDER_DEFAULTS,
+        SUPPORTED_PROVIDER_NAMES,
+        environment_api_key,
+        normalize_provider_endpoint,
+    )
 
     provider = str(payload.get("provider", "")).strip().lower()
     provider = {"z.ai": "glm", "zai": "glm", "claude": "anthropic"}.get(
@@ -2172,24 +2187,34 @@ async def _test_runtime_provider(payload: Any, credential: Any) -> dict[str, Any
     api_key = str(credential.get("apiKey") or "")
     if len(api_key) > 16 * 1024 or "\x00" in api_key or "\r" in api_key or "\n" in api_key:
         raise ValueError("provider API key is invalid")
-    if provider != "ollama" and not api_key:
-        raise ProviderRequestError(
-            "PROVIDER_UNAUTHORIZED",
-            retryable=False,
-            outcome_unknown=False,
-        )
     headers = parse_custom_headers(str(credential.get("customHeaders") or ""))
 
     candidate = bridge_state.settings.llm.model_copy(deep=True)
     candidate.provider = provider
     candidate.model = model
     candidate.base_url = base_url
-    candidate.api_key = api_key
+    # Resolve the selected provider's environment fallback first, then let an
+    # explicitly submitted credential override it. This supports env-managed
+    # installations without ever testing a different key from the one entered.
+    env_key = str(PROVIDER_DEFAULTS.get(provider, {}).get("env_key") or "")
+    candidate.api_key = environment_api_key(env_key) if env_key else ""
+    if api_key:
+        candidate.api_key = api_key
+    if provider != "ollama" and not candidate.api_key:
+        raise ProviderRequestError(
+            "PROVIDER_UNAUTHORIZED",
+            retryable=False,
+            outcome_unknown=False,
+        )
     owner_adapter = bridge_state.adapter
     candidate_adapter = LLMAdapter(
         settings=candidate,
         local_mode_gate=getattr(owner_adapter, "local_mode_gate", None),
         custom_headers=headers,
+        # The candidate endpoint is already normalized and the submitted key
+        # must remain authoritative for this one-shot proof. Resolving again
+        # would replace it with an environment key and test the wrong secret.
+        resolve_settings=False,
     )
     try:
         result = await ProviderProbe(candidate_adapter).run(
@@ -2933,29 +2958,33 @@ async def _apply_runtime_credentials(value: Any) -> dict[str, bool]:
         raise RuntimeError("settings are not initialized")
     llm = bridge_state.settings.llm
     previous_key = str(getattr(llm, "api_key", "") or "")
+    adapter = bridge_state.adapter
+    previous_headers = dict(getattr(adapter, "custom_headers", {}) or {})
     llm_credentials = credentials.get("llm", ...)
     if llm_credentials is None:
         next_key = ""
-    elif llm_credentials is ... or "apiKey" not in llm_credentials:
+    elif llm_credentials is ...:
         next_key = previous_key
     else:
-        next_key = llm_credentials["apiKey"]
-    llm.api_key = next_key
-    adapter = bridge_state.adapter
-    if adapter:
+        next_key = str(llm_credentials.get("apiKey") or "")
+    next_headers = previous_headers
+    if llm_credentials is None:
+        next_headers = {}
+    elif llm_credentials is not ...:
         from src.api.adapter import parse_custom_headers
 
+        next_headers = parse_custom_headers(
+            str(llm_credentials.get("customHeaders") or "")
+        )
+    credentials_changed = previous_key != next_key or previous_headers != next_headers
+    llm.api_key = next_key
+    if adapter:
         adapter.settings = llm
-        if llm_credentials is None:
-            adapter.custom_headers = {}
-        elif llm_credentials is not ...:
-            adapter.custom_headers = parse_custom_headers(
-                str(llm_credentials.get("customHeaders") or "")
-            )
+        adapter.custom_headers = next_headers
         reset_client = getattr(adapter, "reset_client", None)
         if callable(reset_client):
             reset_client()
-    if previous_key != next_key:
+    if credentials_changed:
         await _get_chat_coordinator().cancel_all(reason="credentials_changed")
         bridge_state.model_epoch = int(bridge_state.model_epoch or 0) + 1
     # The current Python image service doesn't consume a generation-provider

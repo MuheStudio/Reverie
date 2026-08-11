@@ -68,3 +68,50 @@ test('production dependencies are the exact renderer MVP closure', () => {
     'three',
   ]);
 });
+
+test('GLM remains the canonical provider identifier across the desktop boundary', () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  const modelSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'llmModels.ts'),
+    'utf8',
+  );
+
+  assert.match(modelSource, /\| 'glm'/);
+  assert.doesNotMatch(modelSource, /\| 'z\.ai'/);
+  assert.doesNotMatch(mainSource, /glm:\s*'z\.ai'/);
+  assert.match(
+    mainSource,
+    /provider:\s*String\(llm\.provider \|\| ''\)\.toLowerCase\(\)/,
+  );
+});
+
+test('provider test receipts retain a completed result for lost acknowledgements', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  const start = source.indexOf('async function commitProviderConfigurationUnlocked(');
+  const end = source.indexOf('\nfunction registerLegacyIpcHandlers()', start);
+  const commit = source.slice(start, end);
+
+  const completed = commit.indexOf('tested.completedResult = completedResult;');
+  const runtimeSync = commit.indexOf('status = await syncCredentialVault(');
+  assert.ok(start >= 0 && end > start, 'provider commit function was not found');
+  assert.ok(completed >= 0, 'provider completion is not retained');
+  assert.ok(
+    completed > runtimeSync,
+    'completed receipt must be recorded only after the full commit succeeds',
+  );
+});
+
+test('provider commits are serialized through one main-process queue', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  assert.match(source, /const providerMutationQueue = new ProviderMutationQueue\(\)/);
+  const commitStart = source.indexOf('function commitProviderConfiguration(input = {})');
+  const commitEnd = source.indexOf('\nfunction enqueueProviderMutation(', commitStart);
+  const commitWrapper = source.slice(commitStart, commitEnd);
+  assert.match(commitWrapper, /enqueueProviderMutation\(async \(\) =>/);
+  assert.match(commitWrapper, /commitProviderConfigurationUnlocked\(input\)/);
+  assert.match(source, /return providerMutationQueue\.enqueue\(operation\)/);
+  const registrarStart = source.indexOf('function registerIpcHandlers()');
+  const clearStart = source.indexOf("handle('credentials:clear'", registrarStart);
+  const clearEnd = source.indexOf("handle('providerConfig:get'", clearStart);
+  assert.match(source.slice(clearStart, clearEnd), /enqueueProviderMutation\(async \(\) =>/);
+});

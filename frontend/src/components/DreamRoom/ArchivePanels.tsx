@@ -73,7 +73,7 @@ const REQUESTED_PROVIDER_ORDER: LLMProvider[] = [
   'grok',
   'deepseek',
   'kimi',
-  'z.ai',
+  'glm',
   'ollama',
 ];
 
@@ -1038,6 +1038,8 @@ export function AiSettingsPanel() {
   const [baseUrl, setBaseUrl] = useState(fallback.baseUrl);
   const [model, setModel] = useState(fallback.model);
   const [customHeaders, setCustomHeaders] = useState('');
+  const [clearApiKey, setClearApiKey] = useState(false);
+  const [clearCustomHeaders, setClearCustomHeaders] = useState(false);
   const [customProviderName, setCustomProviderName] = useState('');
   const [status, setStatus] = useState('');
   const [credentialStatus, setCredentialStatus] = useState<CredentialStatus | null>(null);
@@ -1058,6 +1060,8 @@ export function AiSettingsPanel() {
     baseUrl: baseUrl.trim(),
     model: model.trim(),
     customHeaders: customHeaders.trim(),
+    clearApiKey,
+    clearCustomHeaders,
     customProviderName: provider === 'custom' ? customProviderName.trim() : '',
   });
   const isCurrentDraftTested = testedDraft?.key === draftKey;
@@ -1087,7 +1091,6 @@ export function AiSettingsPanel() {
       available: false,
       corrupted: false,
       llm: { hasApiKey: false, hasCustomHeaders: false },
-      imageGen: { hasApiKey: false, hasCustomHeaders: false },
     };
     if (!api) {
       setCredentialStatus(unavailable);
@@ -1112,6 +1115,8 @@ export function AiSettingsPanel() {
       baseUrl: baseUrl.trim(),
       model: model.trim(),
       customHeaders: customHeaders.trim() || undefined,
+      clearApiKey,
+      clearCustomHeaders,
       customProviderName: provider === 'custom' ? customProviderName.trim() || '自定义' : undefined,
   });
 
@@ -1145,6 +1150,8 @@ export function AiSettingsPanel() {
       setTestedDraft(null);
       setApiKey('');
       setCustomHeaders('');
+      setClearApiKey(false);
+      setClearCustomHeaders(false);
       setStatus('API 测试结果、供应商设置和加密凭据已通过同一权威通道提交。');
     } catch (error) {
       if (error instanceof CredentialWriteError && error.canUseSessionStorage) {
@@ -1168,6 +1175,8 @@ export function AiSettingsPanel() {
       });
       setApiKey('');
       setCustomHeaders('');
+      setClearApiKey(false);
+      setClearCustomHeaders(false);
       setSessionFallbackConfig(null);
       setTestedDraft(null);
       setStatus('密钥仅保存在本次 Reverie 运行的内存中，退出后会消失；没有明文落盘。');
@@ -1233,6 +1242,26 @@ export function AiSettingsPanel() {
             : 'Ollama 不需要密钥'}
         />
         <TextAreaField label="自定义请求头" value={customHeaders} onChange={setCustomHeaders} rows={3} />
+        {credentialStatus?.llm.hasApiKey && (
+          <label>
+            <input
+              type="checkbox"
+              checked={clearApiKey}
+              onChange={(event) => setClearApiKey(event.target.checked)}
+            />
+            <span>本次保存时删除已存 API Key</span>
+          </label>
+        )}
+        {credentialStatus?.llm.hasCustomHeaders && (
+          <label>
+            <input
+              type="checkbox"
+              checked={clearCustomHeaders}
+              onChange={(event) => setClearCustomHeaders(event.target.checked)}
+            />
+            <span>本次保存时删除已存自定义请求头</span>
+          </label>
+        )}
       </div>
 
       <div className={styles.actionRow}>

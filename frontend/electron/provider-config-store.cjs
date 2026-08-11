@@ -64,6 +64,20 @@ function normalizeProviderConfig(value) {
   return normalized;
 }
 
+function normalizeRecoveryProviderConfig(value) {
+  try {
+    return normalizeProviderConfig(value);
+  } catch (error) {
+    if (value?.llm?.provider !== 'ollama' || value?.llm?.model !== '') throw error;
+    const normalized = normalizeProviderConfig({
+      ...value,
+      llm: { ...value.llm, model: '__unconfigured_ollama__' },
+    });
+    normalized.llm.model = '';
+    return normalized;
+  }
+}
+
 function providerBinding(scope, value) {
   if (scope !== 'llm') throw new TypeError('only the LLM credential scope is supported');
   const normalized = normalizeProviderConfig(value);
@@ -162,6 +176,7 @@ module.exports = {
   ProviderConfigStore,
   SCHEMA,
   normalizeProviderConfig,
+  normalizeRecoveryProviderConfig,
   providerBinding,
   providerUrl,
   sameLlmConnection,

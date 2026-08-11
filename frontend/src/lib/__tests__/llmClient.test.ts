@@ -202,12 +202,14 @@ describe('loadConfig()', () => {
         llm: MOCK_OPENAI_CONFIG,
         imageGen: { provider: 'openai', apiKey: 'k', baseUrl: 'u', model: 'm' },
       });
+      const mockFetch = vi.fn();
+      globalThis.fetch = mockFetch;
 
       const result = await loadConfig();
 
       expect(result).toEqual(PUBLIC_OPENAI_CONFIG);
       expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
-      expect(globalThis.fetch).not.toHaveBeenCalled;
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 
@@ -291,19 +293,30 @@ describe('saveConfig()', () => {
     }, { apiKey: 'sk-test-key', customHeaders: undefined }, 'persistent', 'provider-test-receipt');
   });
 
-  it('includes imageGen when provided', async () => {
-    const igConfig = { provider: 'openai' as const, apiKey: 'k', baseUrl: 'u', model: 'm' };
-    await saveConfig(MOCK_OPENAI_CONFIG, igConfig, TEST_OPTIONS);
+  it('forwards explicit per-field credential deletion intent', async () => {
+    await saveConfig({
+      ...MOCK_OPENAI_CONFIG,
+      clearApiKey: true,
+      clearCustomHeaders: true,
+    }, undefined, TEST_OPTIONS);
 
-    const body = providerCommit.mock.calls[0][0];
-    expect(body.llm).toEqual({
-      provider: 'custom',
-      baseUrl: 'https://gateway.example.test/v1',
-      model: 'gateway-model',
-    });
-    expect(body.imageGen).toEqual({ provider: 'openai', baseUrl: 'u', model: 'm' });
-    expect(JSON.stringify(body)).not.toContain('sk-test-key');
-    expect(JSON.stringify(body)).not.toContain('"apiKey"');
+    expect(providerCommit).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        clearApiKey: true,
+        clearCustomHeaders: true,
+      }),
+      'persistent',
+      'provider-test-receipt',
+    );
+  });
+
+  it('rejects image generation metadata before committing partial settings', async () => {
+    const igConfig = { provider: 'openai' as const, apiKey: 'k', baseUrl: 'u', model: 'm' };
+    await expect(saveConfig(MOCK_OPENAI_CONFIG, igConfig, TEST_OPTIONS)).rejects.toThrow(
+      '图片生成配置权威通道尚未启用',
+    );
+    expect(providerCommit).not.toHaveBeenCalled();
   });
 
   it('fails closed when Electron provider persistence is missing', async () => {
@@ -434,6 +447,22 @@ describe('testConfig()', () => {
     });
   });
 
+  it('binds explicit credential deletion intent into the test receipt', async () => {
+    await testConfig({
+      ...MOCK_OPENAI_CONFIG,
+      clearApiKey: true,
+      clearCustomHeaders: true,
+    });
+
+    expect(providerTest).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        clearApiKey: true,
+        clearCustomHeaders: true,
+      }),
+    );
+  });
+
   it('does not convert a failed probe into a saveable receipt', async () => {
     providerTest.mockResolvedValueOnce({
       ok: false,
@@ -446,6 +475,19 @@ describe('testConfig()', () => {
       retryable: false,
     });
     expect(providerCommit).not.toHaveBeenCalled();
+  });
+
+  it('preserves retryability from the desktop authority', async () => {
+    providerTest.mockResolvedValueOnce({
+      ok: false,
+      code: 'REVERIE_BRIDGE_NOT_READY',
+      message: '聊天后端正在启动，请稍后再测试。',
+      retryable: true,
+    });
+    await expect(testConfig(MOCK_OPENAI_CONFIG)).rejects.toMatchObject({
+      code: 'REVERIE_BRIDGE_NOT_READY',
+      retryable: true,
+    });
   });
 });
 

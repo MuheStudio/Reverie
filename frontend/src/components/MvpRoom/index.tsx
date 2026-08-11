@@ -37,6 +37,8 @@ type ProviderDraft = {
   customProviderName: string;
   apiKey: string;
   customHeaders: string;
+  clearApiKey: boolean;
+  clearCustomHeaders: boolean;
 };
 
 const DEFAULT_PROVIDER: ProviderDraft = {
@@ -46,6 +48,8 @@ const DEFAULT_PROVIDER: ProviderDraft = {
   customProviderName: '',
   apiKey: '',
   customHeaders: '',
+  clearApiKey: false,
+  clearCustomHeaders: false,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,9 +63,10 @@ function text(value: unknown): string {
 function ProviderSettings() {
   const [draft, setDraft] = useState<ProviderDraft>(DEFAULT_PROVIDER);
   const [credentialMode, setCredentialMode] = useState<'persistent' | 'session'>('persistent');
-  const [receipt, setReceipt] = useState('');
+  const [testedDraft, setTestedDraft] = useState<{ key: string; receipt: string } | null>(null);
   const [status, setStatus] = useState('正在读取当前 Provider…');
   const [busy, setBusy] = useState(false);
+  const operationRef = useRef(false);
 
   useEffect(() => {
     let disposed = false;
@@ -99,7 +104,15 @@ function ProviderSettings() {
   const credential = useMemo(() => ({
     apiKey: draft.apiKey,
     customHeaders: draft.customHeaders,
-  }), [draft.apiKey, draft.customHeaders]);
+    clearApiKey: draft.clearApiKey,
+    clearCustomHeaders: draft.clearCustomHeaders,
+  }), [draft.apiKey, draft.clearApiKey, draft.clearCustomHeaders, draft.customHeaders]);
+  const draftKey = useMemo(
+    () => JSON.stringify({ config: publicConfig, credential }),
+    [credential, publicConfig],
+  );
+  const draftKeyRef = useRef(draftKey);
+  draftKeyRef.current = draftKey;
 
   const update = <K extends keyof ProviderDraft>(key: K, value: ProviderDraft[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -107,38 +120,65 @@ function ProviderSettings() {
 
   const testProvider = async () => {
     const api = window.electronAPI?.providerConfig;
-    if (!api?.test) return;
+    if (!api?.test || operationRef.current) return;
+    operationRef.current = true;
     setBusy(true);
     setStatus('正在测试连接…');
+    const testedKey = draftKey;
     try {
       const result = await api.test(publicConfig, credential);
       if (result.ok) {
-        setReceipt(result.receipt);
-        setStatus(`连接成功（${result.latencyMs}ms，${result.finishReason}）。可以保存了。`);
+        if (draftKeyRef.current !== testedKey) {
+          setTestedDraft(null);
+          setStatus('测试期间输入已变化，请重新测试当前配置。');
+        } else {
+          setTestedDraft({ key: testedKey, receipt: result.receipt });
+          setStatus(`连接成功（${result.latencyMs}ms，${result.finishReason}）。可以保存了。`);
+        }
       } else {
-        setReceipt('');
+        setTestedDraft(null);
         setStatus(`测试失败：${result.message}`);
       }
-    } catch {
-      setReceipt('');
-      setStatus('测试失败：本地服务未响应。');
+    } catch (error) {
+      setTestedDraft(null);
+      setStatus(error instanceof Error
+        ? `测试失败：${error.message}`
+        : '测试失败：本地服务未响应。');
     } finally {
+      operationRef.current = false;
       setBusy(false);
     }
   };
 
   const saveProvider = async () => {
     const api = window.electronAPI?.providerConfig;
-    if (!api?.commit || !receipt) return;
+    if (!api?.commit || testedDraft?.key !== draftKey || operationRef.current) return;
+    operationRef.current = true;
+    const savedKey = draftKey;
+    const receipt = testedDraft.receipt;
+    setTestedDraft(null);
     setBusy(true);
     setStatus('正在保存并应用…');
     try {
-      await api.commit(publicConfig, credential, credentialMode, receipt);
-      setReceipt('');
-      setStatus('已保存并应用到本地服务。');
+      const result = await api.commit(
+        publicConfig,
+        credential,
+        credentialMode,
+        receipt,
+      );
+      if (result.status.writeError) {
+        setStatus(`保存失败：${result.status.writeError.message}`);
+      } else if (draftKeyRef.current !== savedKey) {
+        setStatus('上一份配置已保存；当前输入已变化，请重新测试后保存。');
+      } else if (result.status.runtimePending || result.status.runtimeApplied === false) {
+        setStatus('配置已安全保存，聊天后端仍在同步；稍后即可使用。');
+      } else {
+        setStatus('已保存并应用到本地服务。');
+      }
     } catch {
       setStatus('保存失败：本地服务拒绝了这次提交。');
     } finally {
+      operationRef.current = false;
       setBusy(false);
     }
   };
@@ -229,6 +269,23 @@ function ProviderSettings() {
           <option value="session">只保留到本次退出</option>
         </select>
       </label>
+      <label>
+        <span>凭据删除意图</span>
+        <span>
+          <input
+            type="checkbox"
+            checked={draft.clearApiKey}
+            onChange={(event) => update('clearApiKey', event.target.checked)}
+          /> 删除已存 API Key
+        </span>
+        <span>
+          <input
+            type="checkbox"
+            checked={draft.clearCustomHeaders}
+            onChange={(event) => update('clearCustomHeaders', event.target.checked)}
+          /> 删除已存自定义请求头
+        </span>
+      </label>
       <div className={styles.actionRow}>
         <button
           type="button"
@@ -239,7 +296,7 @@ function ProviderSettings() {
         </button>
         <button
           type="button"
-          disabled={busy || !receipt}
+          disabled={busy || testedDraft?.key !== draftKey}
           onClick={() => void saveProvider()}
         >
           测试通过后保存

@@ -211,6 +211,27 @@ test('framed supervisor correlates private controls and business events without 
     finishReason: 'stop',
   });
 
+  const failedProviderTest = supervisor.testProvider({
+    provider: 'openai',
+    model: 'gpt-test',
+    base_url: 'https://api.openai.com/v1',
+  }, { apiKey: 'private-canary' });
+  await new Promise((resolve) => setImmediate(resolve));
+  const failedFrame = sent.at(-1);
+  child.stdout.write(encodeFrame({
+    kind: 'control_result',
+    schema: 'reverie.bridge.stdio.control.v4',
+    type: 'provider:test',
+    requestId: failedFrame.requestId,
+    ok: false,
+    code: 'PROVIDER_TIMEOUT',
+    error: 'The requested local control operation was rejected',
+    retryable: true,
+  }));
+  await assert.rejects(failedProviderTest, (error) => (
+    error.code === 'PROVIDER_TIMEOUT' && error.retryable === true
+  ));
+
   supervisor.sendBusinessFrame({
     type: 'memory:query',
     payload: {

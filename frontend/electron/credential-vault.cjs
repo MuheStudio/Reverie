@@ -4,8 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VAULT_SCHEMA = 'reverie.credential-vault.v2';
-const LEGACY_VAULT_SCHEMA = 'reverie.credential-vault.v1';
+const VAULT_SCHEMA = 'reverie.credential-vault.v3';
+const LEGACY_VAULT_SCHEMAS = new Set([
+  'reverie.credential-vault.v1',
+  'reverie.credential-vault.v2',
+]);
 const MAX_SECRET_LENGTH = 16 * 1024;
 const MAX_VAULT_BYTES = 256 * 1024;
 const SCOPES = new Set(['llm']);
@@ -59,17 +62,27 @@ function normalizeBinding(value) {
   return value.toLowerCase();
 }
 
+function normalizeTransactionId(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/i.test(value)) {
+    throw new TypeError('credential transaction ID is invalid');
+  }
+  return value.toLowerCase();
+}
+
 class CredentialVault {
   constructor(options = {}) {
     if (!options.storageDir) throw new TypeError('CredentialVault requires storageDir');
     if (!options.safeStorage) throw new TypeError('CredentialVault requires safeStorage');
     this.storageDir = path.resolve(options.storageDir);
     this.vaultPath = path.join(this.storageDir, 'credentials.vault');
+    this.backupPath = path.join(this.storageDir, 'credentials.vault.backup');
     this.safeStorage = options.safeStorage;
     this.fs = options.fs || fs;
     this.corrupted = false;
     this.sessionCredentials = this._empty().credentials;
     this.sessionBindings = this._empty().bindings;
+    this.sessionTransactionIds = this._empty().transactionIds;
     this.lastErrorCode = '';
   }
 
@@ -98,11 +111,15 @@ class CredentialVault {
       bindings: {
         llm: null,
       },
+      transactionIds: {
+        llm: null,
+      },
     };
   }
 
   _read() {
     this._requireAvailable();
+    this._recoverInterruptedWrite();
     let encrypted;
     try {
       const stat = this.fs.lstatSync(this.vaultPath);
@@ -127,15 +144,18 @@ class CredentialVault {
     try {
       const plaintext = this.safeStorage.decryptString(encrypted);
       const value = JSON.parse(plaintext);
-      if (![VAULT_SCHEMA, LEGACY_VAULT_SCHEMA].includes(value?.schema) || !value.credentials
+      if (value?.schema !== VAULT_SCHEMA && !LEGACY_VAULT_SCHEMAS.has(value?.schema) || !value.credentials
         || typeof value.credentials !== 'object' || Array.isArray(value.credentials)) {
         throw new Error('invalid schema');
       }
       const result = this._empty();
       for (const scope of SCOPES) {
         result.credentials[scope] = normalizeSecretRecord(value.credentials[scope] || {});
-        result.bindings[scope] = value.schema === VAULT_SCHEMA
+        result.bindings[scope] = value.schema !== 'reverie.credential-vault.v1'
           ? normalizeBinding(value.bindings?.[scope])
+          : null;
+        result.transactionIds[scope] = value.schema === VAULT_SCHEMA
+          ? normalizeTransactionId(value.transactionIds?.[scope])
           : null;
       }
       this.corrupted = false;
@@ -147,6 +167,49 @@ class CredentialVault {
         'REVERIE_VAULT_CORRUPT',
       );
     }
+  }
+
+  _isValidCiphertext(filePath) {
+    try {
+      const stat = this.fs.lstatSync(filePath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_VAULT_BYTES) {
+        return false;
+      }
+      const value = JSON.parse(this.safeStorage.decryptString(this.fs.readFileSync(filePath)));
+      if (value?.schema !== VAULT_SCHEMA && !LEGACY_VAULT_SCHEMAS.has(value?.schema)
+        || !value.credentials || typeof value.credentials !== 'object'
+        || Array.isArray(value.credentials)) return false;
+      for (const scope of SCOPES) {
+        normalizeSecretRecord(value.credentials[scope] || {});
+        if (value.schema !== 'reverie.credential-vault.v1') normalizeBinding(value.bindings?.[scope]);
+        if (value.schema === VAULT_SCHEMA) normalizeTransactionId(value.transactionIds?.[scope]);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _recoverInterruptedWrite() {
+    const primaryExists = this.fs.existsSync(this.vaultPath);
+    const backupExists = this.fs.existsSync(this.backupPath);
+    if (!backupExists) return;
+    if (!primaryExists) {
+      if (!this._isValidCiphertext(this.backupPath)) {
+        throw vaultError('The credential vault backup is corrupt', 'REVERIE_VAULT_CORRUPT');
+      }
+      this.fs.renameSync(this.backupPath, this.vaultPath);
+      return;
+    }
+    if (this._isValidCiphertext(this.vaultPath)) {
+      this.fs.unlinkSync(this.backupPath);
+      return;
+    }
+    if (!this._isValidCiphertext(this.backupPath)) {
+      throw vaultError('Both credential vault copies are corrupt', 'REVERIE_VAULT_CORRUPT');
+    }
+    this.fs.unlinkSync(this.vaultPath);
+    this.fs.renameSync(this.backupPath, this.vaultPath);
   }
 
   _write(value) {
@@ -184,10 +247,7 @@ class CredentialVault {
       this.storageDir,
       `.credentials.${process.pid}.${crypto.randomBytes(12).toString('hex')}.tmp`,
     );
-    const backup = path.join(
-      this.storageDir,
-      `.credentials.${process.pid}.${crypto.randomBytes(12).toString('hex')}.backup`,
-    );
+    const backup = this.backupPath;
     let fd;
     let previousMoved = false;
     try {
@@ -200,6 +260,9 @@ class CredentialVault {
       this.fs.closeSync(fd);
       fd = undefined;
       if (this.fs.existsSync(this.vaultPath)) {
+        try { this.fs.unlinkSync(backup); } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
         this.fs.renameSync(this.vaultPath, backup);
         previousMoved = true;
       }
@@ -239,14 +302,18 @@ class CredentialVault {
       throw new TypeError('at least one credential value is required');
     }
     const vault = this._read();
-    vault.credentials[scope] = {
-      ...vault.credentials[scope],
-      ...normalized,
-    };
+    vault.credentials[scope] = normalized;
     if ('binding' in options) {
       vault.bindings[scope] = normalizeBinding(options.binding);
     }
+    vault.transactionIds[scope] = normalizeTransactionId(options.transactionId);
     this._write(vault);
+    // An explicit durable write switches this scope out of session mode. Keep
+    // the old overlay until disk commit succeeds, then remove it so runtime
+    // reads cannot silently prefer a stale session credential.
+    this.sessionCredentials[scope] = {};
+    this.sessionBindings[scope] = null;
+    this.sessionTransactionIds[scope] = null;
     return this.status();
   }
 
@@ -256,13 +323,11 @@ class CredentialVault {
     if (Object.keys(normalized).length === 0) {
       throw new TypeError('at least one credential value is required');
     }
-    this.sessionCredentials[scope] = {
-      ...this.sessionCredentials[scope],
-      ...normalized,
-    };
+    this.sessionCredentials[scope] = normalized;
     if ('binding' in options) {
       this.sessionBindings[scope] = normalizeBinding(options.binding);
     }
+    this.sessionTransactionIds[scope] = normalizeTransactionId(options.transactionId);
     return this.status();
   }
 
@@ -278,12 +343,14 @@ class CredentialVault {
       persistent = {
         credential: { ...vault.credentials[scope] },
         binding: vault.bindings[scope],
+        transactionId: vault.transactionIds[scope],
       };
     }
     return {
       persistent,
       sessionCredential: { ...this.sessionCredentials[scope] },
       sessionBinding: this.sessionBindings[scope],
+      sessionTransactionId: this.sessionTransactionIds[scope],
     };
   }
 
@@ -296,12 +363,14 @@ class CredentialVault {
       snapshot.sessionCredential || {},
     );
     this.sessionBindings[scope] = normalizeBinding(snapshot.sessionBinding);
+    this.sessionTransactionIds[scope] = normalizeTransactionId(snapshot.sessionTransactionId);
     if (snapshot.persistent) {
       const vault = this._read();
       vault.credentials[scope] = normalizeSecretRecord(
         snapshot.persistent.credential || {},
       );
       vault.bindings[scope] = normalizeBinding(snapshot.persistent.binding);
+      vault.transactionIds[scope] = normalizeTransactionId(snapshot.persistent.transactionId);
       this._write(vault);
     }
     return this.status();
@@ -309,8 +378,6 @@ class CredentialVault {
 
   clear(scope) {
     validateScope(scope);
-    this.sessionCredentials[scope] = {};
-    this.sessionBindings[scope] = null;
     let vault;
     let recoveredCorruptVault = false;
     try {
@@ -324,7 +391,11 @@ class CredentialVault {
     }
     vault.credentials[scope] = {};
     vault.bindings[scope] = null;
+    vault.transactionIds[scope] = null;
     this._write(vault);
+    this.sessionCredentials[scope] = {};
+    this.sessionBindings[scope] = null;
+    this.sessionTransactionIds[scope] = null;
     return { ...this.status(), recoveredCorruptVault };
   }
 
@@ -424,7 +495,7 @@ module.exports = {
   MAX_SECRET_LENGTH,
   MAX_VAULT_BYTES,
   VAULT_SCHEMA,
-  LEGACY_VAULT_SCHEMA,
+  LEGACY_VAULT_SCHEMAS,
   normalizeBinding,
   normalizeSecretRecord,
   validateScope,

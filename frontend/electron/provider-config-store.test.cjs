@@ -96,8 +96,19 @@ test('untested metadata updates cannot change the LLM connection tuple', () => {
 test('provider metadata accepts every supported provider and rejects unknown/top-level sections', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-closed-world-'));
   const store = new ProviderConfigStore({ storageDir: root });
-  for (const provider of ['openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm']) {
-    const value = { llm: { provider, baseUrl: 'https://api.example.com/v1', model: 'model' } };
+  for (const provider of [
+    'openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm',
+    'ollama', 'custom',
+  ]) {
+    const value = {
+      llm: {
+        provider,
+        baseUrl: provider === 'ollama'
+          ? 'http://localhost:11434/v1'
+          : 'https://api.example.com/v1',
+        model: 'model',
+      },
+    };
     assert.deepEqual(store.set(value), value);
   }
   assert.throws(() => store.set({

@@ -241,3 +241,20 @@ def test_public_control_failure_never_reflects_exception_secrets() -> None:
     assert "sk-secret-token" not in serialized
     assert "private\\vault.json" not in serialized
     assert result["error"] == "The requested local control operation was rejected"
+
+
+def test_public_control_failure_preserves_only_sanitized_retryability() -> None:
+    from src.api.adapter import ProviderRequestError
+
+    result = _control_failure(
+        "control_request_02",
+        "provider:test",
+        ProviderRequestError(
+            "PROVIDER_TIMEOUT",
+            retryable=True,
+            outcome_unknown=True,
+        ),
+    )
+
+    assert result["code"] == "PROVIDER_TIMEOUT"
+    assert result["retryable"] is True

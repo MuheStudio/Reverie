@@ -63,6 +63,92 @@ test('explicit session-only credentials work without OS encryption and never tou
   assert.equal(fs.existsSync(path.join(root, 'credentials.vault')), false);
 });
 
+test('a committed persistent credential replaces any stale session overlay', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  const binding = 'f'.repeat(64);
+  vault.setSession('llm', { apiKey: 'old-session-key' }, { binding });
+
+  const status = vault.set('llm', { apiKey: 'new-persistent-key' }, { binding });
+
+  assert.equal(status.llm.sessionOnly, false);
+  assert.deepEqual(vault.readForRuntime({ bindings: { llm: binding } }).llm, {
+    apiKey: 'new-persistent-key',
+  });
+});
+
+test('credential replacement does not retain invisible fields from the old record', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  vault.set('llm', {
+    apiKey: 'old-key',
+    customHeaders: 'X-Old: invisible',
+  });
+
+  vault.set('llm', { apiKey: 'new-key' });
+
+  assert.deepEqual(vault.readForRuntime().llm, { apiKey: 'new-key' });
+});
+
+test('startup restores the deterministic backup after interruption before promote', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const safeStorage = fakeSafeStorage();
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  vault.set('llm', { apiKey: 'last-known-good' });
+  fs.renameSync(
+    path.join(root, 'credentials.vault'),
+    path.join(root, 'credentials.vault.backup'),
+  );
+
+  const restarted = new CredentialVault({ storageDir: root, safeStorage });
+
+  assert.deepEqual(restarted.readForRuntime().llm, { apiKey: 'last-known-good' });
+  assert.equal(fs.existsSync(path.join(root, 'credentials.vault.backup')), false);
+});
+
+test('startup prefers a valid primary and removes a stale deterministic backup', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const safeStorage = fakeSafeStorage();
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  vault.set('llm', { apiKey: 'old' });
+  fs.copyFileSync(
+    path.join(root, 'credentials.vault'),
+    path.join(root, 'credentials.vault.backup'),
+  );
+  vault.set('llm', { apiKey: 'new' });
+
+  assert.deepEqual(vault.readForRuntime().llm, { apiKey: 'new' });
+  assert.equal(fs.existsSync(path.join(root, 'credentials.vault.backup')), false);
+});
+
+test('startup keeps the valid backup when the primary has only a recognized schema', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const safeStorage = fakeSafeStorage();
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  vault.set('llm', { apiKey: 'recover-me' });
+  fs.renameSync(
+    path.join(root, 'credentials.vault'),
+    path.join(root, 'credentials.vault.backup'),
+  );
+  fs.writeFileSync(
+    path.join(root, 'credentials.vault'),
+    safeStorage.encryptString(JSON.stringify({ schema: 'reverie.credential-vault.v3' })),
+  );
+
+  assert.deepEqual(vault.readForRuntime().llm, { apiKey: 'recover-me' });
+});
+
+test('failed durable clear preserves the session credential', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const safeStorage = fakeSafeStorage();
+  const vault = new CredentialVault({ storageDir: root, safeStorage });
+  vault.setSession('llm', { apiKey: 'session-key' });
+  safeStorage.encryptString = () => { throw new Error('injected encryption failure'); };
+
+  assert.throws(() => vault.clear('llm'), /encrypt/);
+  assert.deepEqual(vault.readForRuntime().llm, { apiKey: 'session-key' });
+});
+
 test('Windows encryption failure preserves an existing credential and returns a stable code', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();

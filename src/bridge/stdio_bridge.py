@@ -57,6 +57,9 @@ def _control_failure(
         "code": str(getattr(error, "code", "") or "REVERIE_CONTROL_REJECTED")[:80],
         "error": "The requested local control operation was rejected",
     }
+    retryable = getattr(error, "retryable", None)
+    if isinstance(retryable, bool):
+        result["retryable"] = retryable
     if control_type == "local_mode:set":
         from src.local_mode import get_local_mode_gate
 

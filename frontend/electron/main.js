@@ -32,8 +32,15 @@ const { parseNotificationTimestamp } = require('./notification-outbox.cjs');
 const {
   ProviderConfigStore,
   normalizeProviderConfig,
+  normalizeRecoveryProviderConfig,
   providerBinding,
 } = require('./provider-config-store.cjs');
+const {
+  ProviderTransactionJournal,
+  SCHEMA: PROVIDER_TRANSACTION_SCHEMA,
+  recoveryAction,
+} = require('./provider-transaction-journal.cjs');
+const { ProviderMutationQueue } = require('./provider-mutation-queue.cjs');
 const {
   assertPlainObject,
   boundedString,
@@ -108,6 +115,7 @@ let bridgeHostProxy = null;
 let credentialVault = null;
 let storageKeyVault = null;
 let providerConfigStore = null;
+let providerTransactionJournal = null;
 let avatarManager = null;
 let focusManager = null;
 let focusSoundManager = null;
@@ -138,6 +146,7 @@ let focusGateRecovery = { available: true, reason: '', gateState: null };
 let shutdownStarted = false;
 const providerTestReceipts = new Map();
 const PROVIDER_TEST_RECEIPT_TTL_MS = 5 * 60 * 1000;
+const providerMutationQueue = new ProviderMutationQueue();
 
 function getRuntimeRoot() {
   return IS_DEV ? path.join(__dirname, '..', '..') : process.resourcesPath;
@@ -329,15 +338,9 @@ function hasStoredCredentials(status) {
   );
 }
 
-function rendererProviderName(value) {
-  return {
-    glm: 'z.ai',
-  }[String(value || '').toLowerCase()] || String(value || '').toLowerCase();
-}
-
 function publicProviderFromRuntime(llm) {
   return {
-    provider: rendererProviderName(llm.provider),
+    provider: String(llm.provider || '').toLowerCase(),
     baseUrl: String(llm.baseUrl || ''),
     model: String(llm.model || ''),
   };
@@ -619,7 +622,10 @@ function startBridge() {
     backendRestartAttempts = 0;
     await bridgeHostProxy.connect();
     try {
-      await syncCredentialVault();
+      await enqueueProviderMutation(async () => {
+        await recoverProviderTransaction();
+        return syncCredentialVault();
+      });
     } catch (error) {
       console.error('[Electron] Credential runtime synchronization failed', error);
       broadcastCredentialStatus({ runtimeApplied: false });
@@ -779,6 +785,9 @@ function createRuntimeModules() {
   storageProbe.fill(0);
   providerConfigStore = new ProviderConfigStore({
     storageDir: path.join(runtimeDir, 'provider-config'),
+  });
+  providerTransactionJournal = new ProviderTransactionJournal({
+    storageDir: path.join(runtimeDir, 'provider-transaction'),
   });
   if (WindowsLocationProvider) {
     try {
@@ -1195,8 +1204,10 @@ async function saveRendererJson(input) {
   }
 }
 
-async function configureAuthoritativeProvider(input) {
-  const normalized = normalizeProviderConfig(input);
+async function configureAuthoritativeProvider(input, options = {}) {
+  const normalized = options.allowUnconfiguredOllama
+    ? normalizeRecoveryProviderConfig(input)
+    : normalizeProviderConfig(input);
   if (!bridge?.ready) {
     if (!bridge?.child) startBridge();
     const error = new Error('The Python settings authority is starting; retry after it connects');
@@ -1230,6 +1241,31 @@ async function configureAuthoritativeProvider(input) {
   return committed;
 }
 
+function sameProviderConnection(left, right) {
+  const first = normalizeRecoveryProviderConfig(left).llm;
+  const second = normalizeRecoveryProviderConfig(right).llm;
+  return first.provider === second.provider
+    && first.baseUrl === second.baseUrl
+    && first.model === second.model;
+}
+
+async function recoverProviderTransaction() {
+  const transaction = providerTransactionJournal?.read();
+  if (!transaction || !bridge?.ready) return;
+  const current = await authoritativeProviderConfig();
+  const action = recoveryAction(
+    transaction,
+    current,
+    credentialVault.snapshotScope('llm'),
+  );
+  if (action === 'rollback') {
+    await configureAuthoritativeProvider(transaction.oldConfig, {
+      allowUnconfiguredOllama: true,
+    });
+  }
+  providerTransactionJournal.clear();
+}
+
 function effectiveProviderCredential(normalized, submitted) {
   const binding = providerBinding('llm', normalized);
   let stored = {};
@@ -1241,10 +1277,16 @@ function effectiveProviderCredential(normalized, submitted) {
     const code = String(error?.code || '');
     if (!code.startsWith('REVERIE_')) throw error;
   }
-  return {
-    ...stored,
-    ...(submitted || {}),
-  };
+  const effective = { ...stored };
+  if (typeof submitted?.apiKey === 'string' && submitted.apiKey) {
+    effective.apiKey = submitted.apiKey;
+  }
+  if (typeof submitted?.customHeaders === 'string' && submitted.customHeaders) {
+    effective.customHeaders = submitted.customHeaders;
+  }
+  if (submitted?.clearApiKey === true) delete effective.apiKey;
+  if (submitted?.clearCustomHeaders === true) delete effective.customHeaders;
+  return effective;
 }
 
 function providerTestDigest(normalized, credential) {
@@ -1298,6 +1340,7 @@ async function testProviderConfiguration(input = {}) {
     return {
       ok: true,
       receipt,
+      model: result.model,
       latencyMs: result.latencyMs,
       finishReason: typeof result.finishReason === 'string'
         ? result.finishReason
@@ -1325,11 +1368,23 @@ async function testProviderConfiguration(input = {}) {
       ok: false,
       code,
       message: messages[code] || 'API 测试失败；配置和密钥均未保存。',
+      retryable: error?.retryable === true,
     };
   }
 }
 
-async function commitProviderConfiguration(input = {}) {
+function commitProviderConfiguration(input = {}) {
+  return enqueueProviderMutation(async () => {
+    await recoverProviderTransaction();
+    return commitProviderConfigurationUnlocked(input);
+  });
+}
+
+function enqueueProviderMutation(operation) {
+  return providerMutationQueue.enqueue(operation);
+}
+
+async function commitProviderConfigurationUnlocked(input = {}) {
   assertPlainObject(input, 'provider configuration commit');
   const normalized = normalizeProviderConfig(input.config);
   const credential = input.credential;
@@ -1359,10 +1414,11 @@ async function commitProviderConfiguration(input = {}) {
       },
     };
   }
-
-  let snapshot;
+  if (tested.completedResult) return tested.completedResult;
+  let oldConfig;
   try {
-    snapshot = credentialVault.snapshotScope('llm');
+    credentialVault.snapshotScope('llm');
+    oldConfig = await authoritativeProviderConfig();
   } catch (error) {
     const code = String(error?.code || 'REVERIE_VAULT_IO');
     return {
@@ -1376,47 +1432,87 @@ async function commitProviderConfiguration(input = {}) {
       },
     };
   }
-  if (credential != null) {
-    const hasCredential = Boolean(credential.apiKey || credential.customHeaders);
-    if (hasCredential) {
-      const binding = providerBinding('llm', normalized);
-      try {
-        if (mode === 'session') {
-          credentialVault.setSession('llm', credential, { binding });
-        } else {
-          credentialVault.set('llm', credential, { binding });
-        }
-      } catch (error) {
-        const code = String(error?.code || '');
-        if (!code.startsWith('REVERIE_')) throw error;
-        console.error('[Electron] Endpoint-bound credential write failed', code);
-        return {
-          config: normalized,
-          status: {
-            ...publicCredentialStatus(),
-            writeError: {
-              code,
-              message: 'Windows 安全存储未完成写入；配置和原有密钥均未更改。',
-            },
-          },
-        };
-      }
-    }
-  }
+  const transaction = {
+    schema: PROVIDER_TRANSACTION_SCHEMA,
+    id: crypto.randomUUID(),
+    phase: 'prepared',
+    credentialAction: credential == null
+      ? 'preserve'
+      : Object.keys(effectiveCredential).length === 0 ? 'clear' : 'replace',
+    newBinding: providerBinding('llm', normalized),
+    credentialTransactionId: credential == null ? null : crypto.randomUUID(),
+    oldConfig,
+    newConfig: normalized,
+  };
+  providerTransactionJournal.write(transaction);
   let committed;
   try {
     committed = await configureAuthoritativeProvider(normalized);
   } catch (error) {
     try {
-      credentialVault.restoreScope('llm', snapshot);
-    } catch (rollbackError) {
-      console.error('[Electron] Provider credential rollback failed', rollbackError);
+      const current = await authoritativeProviderConfig();
+      if (sameProviderConnection(current, normalized)) {
+        committed = current;
+      } else {
+        if (sameProviderConnection(current, oldConfig)) providerTransactionJournal.clear();
+        throw error;
+      }
+    } catch (recoveryError) {
+      if (recoveryError === error) throw error;
+      throw error;
     }
-    throw error;
+  }
+  if (credential != null) {
+    const binding = providerBinding('llm', normalized);
+    try {
+      if (Object.keys(effectiveCredential).length === 0) {
+        credentialVault.clear('llm');
+      } else if (mode === 'session') {
+        credentialVault.setSession('llm', effectiveCredential, {
+          binding,
+          transactionId: transaction.credentialTransactionId,
+        });
+      } else {
+        credentialVault.set('llm', effectiveCredential, {
+          binding,
+          transactionId: transaction.credentialTransactionId,
+        });
+      }
+    } catch (error) {
+      const code = String(error?.code || 'REVERIE_VAULT_IO');
+      try {
+        await configureAuthoritativeProvider(oldConfig, {
+          allowUnconfiguredOllama: true,
+        });
+        providerTransactionJournal.clear();
+      } catch (rollbackError) {
+        providerTestReceipts.delete(receipt);
+        console.error('[Electron] Provider metadata rollback is pending recovery', rollbackError);
+        throw error;
+      }
+      console.error('[Electron] Endpoint-bound credential write failed', code);
+      return {
+        config: oldConfig,
+        status: {
+          ...publicCredentialStatus(),
+          writeError: {
+            code,
+            message: 'Windows 安全存储未完成写入；配置和原有密钥均未更改。',
+          },
+        },
+      };
+    }
+  }
+  try {
+    providerTransactionJournal.clear();
+  } catch (error) {
+    console.error('[Electron] Completed provider transaction journal cleanup failed', error);
   }
   let status;
   try {
-    status = await syncCredentialVault();
+    status = await syncCredentialVault({
+      ...(transaction.credentialAction === 'clear' ? { clearScopes: ['llm'] } : {}),
+    });
   } catch (error) {
     console.error('[Electron] Provider commit runtime synchronization failed', error);
     status = broadcastCredentialStatus({
@@ -1426,8 +1522,7 @@ async function commitProviderConfiguration(input = {}) {
       runtimeAppliedScopes: { llm: false },
     });
   }
-  providerTestReceipts.delete(receipt);
-  return {
+  const completedResult = {
     config: committed,
     status: {
       ...status,
@@ -1436,6 +1531,8 @@ async function commitProviderConfiguration(input = {}) {
         : {}),
     },
   };
+  tested.completedResult = completedResult;
+  return completedResult;
 }
 
 function registerLegacyIpcHandlers() {
@@ -2172,24 +2269,34 @@ function registerIpcHandlers() {
     return setManualLocalMode(input.enabled);
   });
   handle('credentials:status', () => publicCredentialStatus());
-  handle('credentials:clear', async (_event, input = {}) => {
+  handle('credentials:clear', (_event, input = {}) => {
     assertPlainObject(input, 'credential clear');
     if (Object.keys(input).some((key) => key !== 'scope') || input.scope !== 'llm') {
       throw new TypeError('only the LLM credential scope may be cleared');
     }
-    credentialVault.clear('llm');
-    try {
-      return await syncCredentialVault({ clearScopes: ['llm'] });
-    } catch (error) {
-      console.error('[Electron] Cleared credential runtime synchronization failed', error);
-      if (!bridge?.child) startBridge();
-      return broadcastCredentialStatus({
-        stored: false,
-        runtimeApplied: false,
-        runtimePending: true,
-        runtimeAppliedScopes: { llm: false },
-      });
-    }
+    return enqueueProviderMutation(async () => {
+      try {
+        await recoverProviderTransaction();
+      } catch (error) {
+        if (error?.code !== 'REVERIE_PROVIDER_TRANSACTION_CORRUPT') throw error;
+        // Explicit credential deletion is the recovery escape hatch. All
+        // non-destructive provider mutations remain blocked by a corrupt journal.
+        providerTransactionJournal.clear();
+      }
+      credentialVault.clear('llm');
+      try {
+        return await syncCredentialVault({ clearScopes: ['llm'] });
+      } catch (error) {
+        console.error('[Electron] Cleared credential runtime synchronization failed', error);
+        if (!bridge?.child) startBridge();
+        return broadcastCredentialStatus({
+          stored: false,
+          runtimeApplied: false,
+          runtimePending: true,
+          runtimeAppliedScopes: { llm: false },
+        });
+      }
+    });
   });
   handle('providerConfig:get', () => authoritativeProviderConfig());
   handle('providerConfig:test', (_event, input) => testProviderConfiguration(input));
