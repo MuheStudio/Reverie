@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
 
@@ -28,20 +28,8 @@
       "@/components/DreamRoom": ["src/types/dream-room.d.ts"],
       "@/components/DreamRoom/index": ["src/types/dream-room.d.ts"]
     },
-    "types": []
+    "types": ["node"]
   },
-  "include": [
-    "src/index.tsx",
-    "src/vite-env.d.ts",
-    "src/types/global.d.ts",
-    "src/types/optional-airi.d.ts",
-    "src/types/dream-room.d.ts",
-    "src/components/MvpRoom/**/*.tsx",
-    "src/components/AvatarView/Live2DAdapter.tsx",
-    "src/hooks/useMvpBridge.ts",
-    "src/contracts/protocolV4.generated.ts",
-    "src/lib/electronBridgeSocket.ts",
-    "src/lib/llmModels.ts"
-  ],
+  "include": ["src/**/*"],
   "exclude": ["node_modules"]
 }

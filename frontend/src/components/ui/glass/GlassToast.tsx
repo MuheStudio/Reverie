@@ -4,7 +4,7 @@
  * 自包含的 toast 栈：容器 + 队列 + 自动消失 + 手动关闭。
  * 供 DreamRoom / PetStage / MvpRoom 复用。
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import styles from './GlassToast.module.scss';
 
 export type GlassToastKind = 'info' | 'success' | 'warn' | 'error';

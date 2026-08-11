@@ -4,7 +4,7 @@
  * Ctrl/Cmd+K 唤起；方向键导航 + Enter 执行；Esc 关闭。
  * 命令项由调用方提供（与现有 MVP 命令一一对应）。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import styles from './GlassCommandPalette.module.scss';
 
 export interface CommandPaletteItem {

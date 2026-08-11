@@ -157,6 +157,13 @@ export interface AuthoritativeSettingsSnapshot {
     base_url?: string;
     has_api_key?: boolean;
   };
+  tts?: {
+    provider?: string;
+    model?: string;
+    voice?: string;
+    enabled?: boolean;
+    configured?: boolean;
+  };
 }
 export interface PersonaScope {
   persona_id: string;
@@ -1224,6 +1231,7 @@ export function useReverieWS(wsUrl?: string) {
       setLocalModePending(false);
     }
   }, [applyAuthoritativeLocalMode]);
+  const [chatRequestStates, setChatRequestStates] = useState<Record<string, ChatRequestState>>({});
   const stopChat = useCallback((): boolean => {
     const generating = Object.entries(chatRequestStates).find(
       ([, request]) => request.state === 'generating',
@@ -1274,7 +1282,6 @@ export function useReverieWS(wsUrl?: string) {
   const [persona, setPersona] = useState<any>(null);
   const [relationship, setRelationship] = useState<RelationshipData>({ intimacy: 0, stage: '初识期' });
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatRequestStates, setChatRequestStates] = useState<Record<string, ChatRequestState>>({});
   const v2RequestsSeenRef = useRef(new Set<string>());
   const revealSentRef = useRef(new Set<string>());
   const [isTyping, setIsTyping] = useState(false);

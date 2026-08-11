@@ -97,33 +97,12 @@ export async function saveImageGenConfig(config: ImageGenConfig): Promise<void> 
   if (!publicConfig) {
     throw new TypeError('Image-generation configuration metadata is invalid');
   }
-  const apiKey = config.apiKey.trim();
-  const customHeaders = config.customHeaders?.trim();
-  const persisted = await loadPersistedConfig();
-  if (!persisted?.llm) {
-    throw new Error('请先保存主聊天模型配置，再保存图片生成配置');
-  }
-  await savePersistedConfig({ llm: persisted.llm, imageGen: publicConfig });
-  if (apiKey || customHeaders) {
-    const api = globalThis.window?.electronAPI?.credentials;
-    if (!api?.set) {
-      throw new Error('Secure operating-system credential storage is unavailable');
-    }
-    const status = await api.set('imageGen', {
-      ...(apiKey ? { apiKey } : {}),
-      ...(customHeaders ? { customHeaders } : {}),
-    });
-    if (!status.available || status.corrupted) {
-      throw new Error('Secure credential storage did not confirm the write');
-    }
-  }
+  throw new Error('图片生成配置权威通道尚未启用');
   removeLegacyPublicConfig();
 }
 
 export async function clearImageGenCredentials(): Promise<void> {
-  const api = globalThis.window?.electronAPI?.credentials;
-  if (!api?.clear) throw new Error('Secure operating-system credential storage is unavailable');
-  await api.clear('imageGen');
+  throw new Error('图片生成凭据安全通道尚未启用');
 }
 
 export async function generateImage(

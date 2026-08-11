@@ -24,6 +24,8 @@ const electronTests = [
   'package-win-test-security.test.cjs',
   'preload-sandbox.test.cjs',
   'provider-config-store.test.cjs',
+  'provider-mutation-queue.test.cjs',
+  'provider-transaction-journal.test.cjs',
   'runtime-security.test.cjs',
   'single-instance.test.cjs',
   'storage-key-vault.test.cjs',
@@ -44,4 +46,4 @@ function run(args) {
 }
 
 run(['--test', ...electronTests]);
-run([path.join(__dirname, 'run-clean-tool.cjs'), 'vitest', 'run']);
+run([path.join(__dirname, 'run-clean-tool.cjs'), 'vitest', 'run', '--coverage']);

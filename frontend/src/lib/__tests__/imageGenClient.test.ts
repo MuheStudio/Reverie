@@ -45,15 +45,6 @@ beforeEach(() => {
         get: providerGet,
         set: providerSet,
       },
-      credentials: {
-        set: vi.fn().mockResolvedValue({
-          available: true,
-          corrupted: false,
-          llm: { hasApiKey: false, hasCustomHeaders: false },
-          imageGen: { hasApiKey: true, hasCustomHeaders: false },
-          runtimeAppliedScopes: { llm: true, imageGen: false },
-        }),
-      },
     },
   });
 });
@@ -139,25 +130,16 @@ describe('loadImageGenConfig()', () => {
 });
 
 describe('saveImageGenConfig()', () => {
-  it('writes only public metadata and sends the key to the secure vault', async () => {
+  it.each([
+    MOCK_IG_CONFIG,
+    PUBLIC_IG_CONFIG,
+  ])('fails before persistence while the image authority is unavailable', async (config) => {
     providerGet.mockResolvedValueOnce({ llm: MOCK_LLM_CONFIG });
-    await saveImageGenConfig(MOCK_IG_CONFIG);
-    expect(providerSet).toHaveBeenCalledWith({
-      llm: {
-        provider: 'custom',
-        baseUrl: 'https://gateway.example.test/v1',
-        model: 'gateway-model',
-      },
-      imageGen: {
-        provider: 'openai',
-        baseUrl: 'https://api.openai.com',
-        model: 'gpt-image-1.5',
-      },
-    });
+    await expect(saveImageGenConfig(config)).rejects.toThrow(
+      '图片生成配置权威通道尚未启用',
+    );
+    expect(providerSet).not.toHaveBeenCalled();
     expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
-    expect(window.electronAPI?.credentials?.set).toHaveBeenCalledWith('imageGen', {
-      apiKey: 'sk-img-test',
-    });
   });
 });
 
