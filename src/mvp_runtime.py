@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,35 @@ async def _memory_maintenance_loop(memory: MemoryManager, logger: logging.Logger
             return
         except Exception:
             logger.exception("Memory maintenance loop error")
+
+
+# The companion writes one diary entry per day. The trigger fires when the day
+# already gathered enough exchanges but no entry exists yet; every concrete
+# gate (feature flag, AI consent, provider availability) is re-checked inside
+# DiaryManager.generate_daily_entry, which fails closed.
+DIARY_MIN_EXCHANGES = 6
+DIARY_CHECK_INTERVAL_S = 30 * 60
+
+
+async def _diary_maintenance_loop(diary: Any, settings: Any, kernel_store: Any, logger: logging.Logger) -> None:
+    while True:
+        try:
+            await asyncio.sleep(DIARY_CHECK_INTERVAL_S)
+            if diary is None or not getattr(settings.features, "diary_enabled", False):
+                continue
+            today = datetime.now().strftime("%Y-%m-%d")
+            if diary.load_entry(today) is not None:
+                continue
+            if kernel_store is None or kernel_store.count_user_messages_on_date(today) < DIARY_MIN_EXCHANGES:
+                continue
+            logger.info("Diary: generating the daily entry for %s", today)
+            entry = await diary.generate_daily_entry(today, trigger="daily_auto")
+            if entry is not None:
+                logger.info("Diary: daily entry saved for %s", today)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Diary maintenance loop error")
 
 
 async def _memory_reembedding_loop(memory: MemoryManager, logger: logging.Logger) -> None:
@@ -234,11 +264,32 @@ class MvpDesktopRuntime:
             self._logger.exception("Keepsake manager failed during startup; isolating it")
             keepsakes = None
 
+        # The diary is one of the product's core artifacts: the LLM-written,
+        # encrypted daily entry behind the DreamRoom diary panel. Isolated so a
+        # diary failure can never take chat down with it.
+        diary = None
+        try:
+            from src.diary import DiaryManager
+
+            diary_state = persona_state.module("diary", legacy_path=None)
+            diary = DiaryManager(
+                persona,
+                adapter=adapter,
+                emotion=emotion,
+                memory=memory,
+                state_scope=diary_state,
+            )
+        except Exception:
+            self._logger.exception("Diary manager failed during startup; isolating it")
+            diary = None
+
         self._adapter = adapter
         self._memory = memory
         self._session = session
         self._user_manager = user_manager
         self._game_state_store = game_state_store
+        self._kernel_store = kernel_store
+        self._diary = diary
         attach_bridge_state(
             session=session,
             adapter=adapter,
@@ -257,6 +308,7 @@ class MvpDesktopRuntime:
             game_state_store=game_state_store,
             keepsakes=keepsakes,
             stickers=stickers,
+            diary=diary,
         )
 
     async def run(self, *, stdio: bool, host: str, port: int) -> None:
@@ -264,6 +316,13 @@ class MvpDesktopRuntime:
             asyncio.create_task(_memory_maintenance_loop(self._memory, self._logger)),
             asyncio.create_task(_memory_reembedding_loop(self._memory, self._logger)),
         ]
+        if self._diary is not None:
+            self._tasks.append(asyncio.create_task(_diary_maintenance_loop(
+                self._diary,
+                self._settings,
+                self._kernel_store,
+                self._logger,
+            )))
         try:
             if stdio:
                 from src.bridge.stdio_bridge import start_stdio_bridge

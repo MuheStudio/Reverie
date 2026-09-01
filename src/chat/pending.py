@@ -70,6 +70,7 @@ class PendingChatStore:
         source: str = "user",
         client_id: str = "",
         sent_at_utc: str | None = None,
+        image_path: str = "",
     ) -> str:
         item_id = str(request_id or f"chat_{uuid.uuid4().hex}")
         if item_id in self._items:
@@ -89,6 +90,9 @@ class PendingChatStore:
             "source": str(source or "user"),
             "client_id": str(client_id or ""),
             "text": str(text),
+            # Durable stored-media path so a crash replay regenerates with the
+            # same attachment (the bytes live under chat-media/, not here).
+            "image_path": str(image_path or ""),
             "state": "queued",
             "provider_state": "not_started",
             "commit_state": "not_started",

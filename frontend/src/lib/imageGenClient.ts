@@ -21,20 +21,9 @@ export interface ImageGenResult {
 import {
   loadPersistedConfig,
   sanitizeImageGenConfig,
-  savePersistedConfig,
-  type PublicImageGenConfig,
 } from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-imagegen-config';
-
-function readLegacyPublicConfig(): PublicImageGenConfig | null {
-  try {
-    const raw = globalThis.localStorage?.getItem(CONFIG_KEY);
-    return raw ? sanitizeImageGenConfig(JSON.parse(raw)) : null;
-  } catch {
-    return null;
-  }
-}
 
 function removeLegacyPublicConfig(): void {
   try {
@@ -65,7 +54,9 @@ export function getDefaultImageGenConfig(
 
 /**
  * Load image-generation metadata from the sender-validated Electron store.
- * A legacy browser value is accepted only for a one-way confirmed migration.
+ * The renderer cache is never a runtime fallback: without the authoritative
+ * write channel there is no way to confirm a legacy cached value, so it is
+ * dropped instead of trusted.
  */
 export async function loadImageGenConfig(): Promise<ImageGenConfig | null> {
   const persisted = await loadPersistedConfig();
@@ -74,16 +65,7 @@ export async function loadImageGenConfig(): Promise<ImageGenConfig | null> {
     return { ...persisted.imageGen, apiKey: '' };
   }
 
-  const legacy = readLegacyPublicConfig();
-  if (legacy && persisted?.llm) {
-    try {
-      await savePersistedConfig({ llm: persisted.llm, imageGen: legacy });
-      removeLegacyPublicConfig();
-      return { ...legacy, apiKey: '' };
-    } catch {
-      return null;
-    }
-  }
+  removeLegacyPublicConfig();
   return null;
 }
 

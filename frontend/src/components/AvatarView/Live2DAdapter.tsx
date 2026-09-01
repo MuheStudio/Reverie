@@ -10,6 +10,11 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import * as PIXI from 'pixi.js';
 import { install as installPixiCspAdapter } from '@pixi/unsafe-eval';
+import {
+  applyMotionPoseSnapshot,
+  collectMotionPoseSnapshot,
+  type MotionPoseSnapshot,
+} from './motionPose';
 
 const { Application, Ticker } = PIXI;
 installPixiCspAdapter(PIXI);
@@ -95,6 +100,16 @@ export interface Live2DModelOptions {
 
 export type Live2DState = 'pending' | 'loading' | 'mounted' | 'suspended' | 'error';
 
+// One-shot motions (wave, tear) must always hand the pose back. The real
+// culprit behind "the arm never comes down" is that a motion's own final
+// keyframes do NOT return the pose: yumi's wave ends with Paramanime at 1 and
+// its physics-driven arm parameters carry no return keyframes, so after the
+// runtime fires motionFinish the model stays frozen in the wave's last
+// evaluated state. Every motion therefore gets an idle-pose restore when it
+// finishes, plus this long-stop watchdog as a backstop for finishes that never
+// fire (well past any motion's authored duration — wave is 4.5s).
+const MOTION_MAX_MS = 10_000;
+
 export function calculateHeadCentredGaze(input: {
   pointerX: number;
   pointerY: number;
@@ -112,7 +127,7 @@ export function calculateHeadCentredGaze(input: {
 
 // ── 核心渲染器（框架无关）─────────────────────────────
 
-class Live2DRenderer {
+export class Live2DRenderer {
   private app: any = null;
   private model: any = null;
   private canvas: HTMLCanvasElement | null = null;
@@ -125,7 +140,16 @@ class Live2DRenderer {
   private desiredModel: Live2DModelOptions | null = null;
   private detachModelRuntime: (() => void) | null = null;
   private detachCanvasRuntime: (() => void) | null = null;
+  private keepAlive: number | null = null;
+  private rebuilding = false;
+  private lostTicks = 0;
+  private lastRebuildAt = 0;
+  private watchdogTicks = 0;
+  private rebuildCount = 0;
   private mouthOpen = 0;
+  private motionWatchdog: number | null = null;
+  private motionSnapshot: MotionPoseSnapshot | null = null;
+  private detachMotionFinish: (() => void) | null = null;
 
   constructor(
     config: Live2DConfig,
@@ -180,36 +204,22 @@ class Live2DRenderer {
       const handleContextLost = (event: Event) => {
         event.preventDefault();
         this.suspended = true;
+        // Do not stop the ticker here: rendering into a lost context is a
+        // safe no-op, and keeping the loop alive means the character is back
+        // the moment the context returns — even when the visibility signal
+        // is stuck on "hidden" and rAF never resumes on its own.
         this.reportRuntimeState?.('suspended', 'Live2D WebGL context was lost');
-        try { this.app?.ticker?.stop?.(); } catch (error) {
-          console.warn('[Live2D] Failed to stop the renderer after context loss', error);
-        }
       };
       const handleContextRestored = () => {
         if (this.destroyed) return;
         this.suspended = false;
-        this.reportRuntimeState?.('loading', null);
-        try { this.app?.ticker?.start?.(); } catch (error) {
-          console.warn('[Live2D] Failed to restart the renderer after context restore', error);
-        }
-        const desired = this.desiredModel;
-        if (desired) {
-          void this.loadModel(desired).then((loaded) => {
-            if (!this.destroyed && loaded) this.reportRuntimeState?.('mounted', null);
-            else if (!this.destroyed) {
-              this.reportRuntimeState?.(
-                'error',
-                'Live2D model did not recover after WebGL context restoration',
-              );
-            }
-          }).catch((error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            this.reportRuntimeState?.('error', message);
-            console.error('[Live2D] Model reload after WebGL restore failed', error);
-          });
-        } else {
-          this.reportRuntimeState?.('mounted', null);
-        }
+        // GL objects born under the old context cannot be trusted to survive
+        // its restoration; rebuild the whole renderer instead of hoping the
+        // model reload lands on healthy GL state.
+        void this.rebuildRenderer().catch((error) => {
+          console.error('[Live2D] Renderer rebuild after context restore failed', error);
+          this.reportRuntimeState?.('error', 'Live2D renderer rebuild failed after WebGL restore');
+        });
       };
       this.canvas.addEventListener('webglcontextlost', handleContextLost);
       this.canvas.addEventListener('webglcontextrestored', handleContextRestored);
@@ -217,6 +227,63 @@ class Live2DRenderer {
         this.canvas?.removeEventListener('webglcontextlost', handleContextLost);
         this.canvas?.removeEventListener('webglcontextrestored', handleContextRestored);
       };
+
+      // rAF freezes at 0Hz whenever Chromium believes the page is hidden, and
+      // that belief can stick after a minimize/restore. One manual tick per
+      // second keeps the model painted (worst case choppy) no matter what the
+      // visibility signal does; when rAF runs normally this is a harmless
+      // extra frame. The tick also watches for a context that was lost
+      // without its restoration event ever arriving.
+      this.keepAlive = window.setInterval(() => {
+        this.watchdogTicks += 1;
+        if (this.destroyed || !this.app) return;
+        // Self-heal first: whatever path dropped the model (a race, a stuck
+        // visibility signal, a half-handled context loss), a resident
+        // desiredModel with no live model is always wrong. Rebuild at most
+        // once every 5s so a hard failure degrades to slow retries instead
+        // of a hot loop.
+        if (!this.model && this.desiredModel && !this.rebuilding) {
+          if (performance.now() - this.lastRebuildAt >= 5_000) {
+            this.lastRebuildAt = performance.now();
+            this.rebuildCount += 1;
+            console.debug('[Live2D] watchdog: model missing, rebuilding renderer');
+            void this.rebuildRenderer().catch((error) => {
+              console.error('[Live2D] Renderer rebuild by watchdog failed', error);
+            });
+          }
+          return;
+        }
+        const gl = (this.app.renderer as { gl?: { isContextLost?: () => boolean } }).gl;
+        if (gl?.isContextLost?.()) {
+          this.lostTicks += 1;
+          if (this.lostTicks >= 2) {
+            this.lostTicks = 0;
+            this.lastRebuildAt = performance.now();
+            this.rebuildCount += 1;
+            void this.rebuildRenderer().catch((error) => {
+              console.error('[Live2D] Renderer rebuild after stuck context loss failed', error);
+            });
+          }
+          return;
+        }
+        this.lostTicks = 0;
+        try { this.app.ticker?.update?.(performance.now()); } catch {}
+      }, 1000);
+
+      // Read-only diagnostic surface for packaged-build triage (CDP).
+      (globalThis as { __reverieLive2D?: unknown }).__reverieLive2D = () => ({
+        hasApp: !!this.app,
+        tickerStarted: this.app?.ticker?.started === true,
+        hasModel: !!this.model,
+        suspended: this.suspended,
+        destroyed: this.destroyed,
+        rebuilding: this.rebuilding,
+        canvasConnected: !!this.canvas?.isConnected,
+        watchdogTicks: this.watchdogTicks,
+        rebuildCount: this.rebuildCount,
+        hasDesired: !!this.desiredModel,
+        motionWatchdogArmed: this.motionWatchdog !== null,
+      });
 
       if (container.isConnected && !this.destroyed) container.appendChild(this.canvas);
     } catch (error) {
@@ -241,14 +308,29 @@ class Live2DRenderer {
   async loadModel(options: Live2DModelOptions): Promise<boolean> {
     this.desiredModel = { ...options };
     const token = ++this.modelToken;
-    if (!this.app || this.destroyed || this.suspended) return false;
+    console.debug('[Live2D] load:start', token);
+    if (!this.app || this.destroyed) {
+      console.debug('[Live2D] load:early-false', token);
+      return false;
+    }
     this.destroyModel();
     const { Live2DModel } = await loadLive2DRuntime();
-    const model = await Live2DModel.from(options.url, {
-      autoInteract: options.autoInteract ?? false,
-    });
+    let model: any;
     try {
-      if (this.destroyed || this.suspended || token !== this.modelToken || !this.app) {
+      console.debug('[Live2D] load:fetch-begin', token);
+      model = await Live2DModel.from(options.url, {
+        autoInteract: options.autoInteract ?? false,
+      });
+      console.debug('[Live2D] load:fetch-resolved', token);
+    } catch (error) {
+      console.debug('[Live2D] load:fetch-failed', token, error);
+      throw error;
+    }
+    try {
+      if (this.destroyed || token !== this.modelToken || !this.app) {
+        console.debug('[Live2D] load:abort-post-fetch', token, {
+          destroyed: this.destroyed, stale: token !== this.modelToken,
+        });
         this.destroyDetachedModel(model);
         return false;
       }
@@ -262,15 +344,27 @@ class Live2DRenderer {
       model.position.set(this.config.width / 2, this.config.height / 2);
       this.app.stage.addChild(model);
       this.attachContinuousRuntime(model);
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      if (this.destroyed || this.suspended || token !== this.modelToken || this.model !== model) {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+        // rAF is suspended at 0Hz for pages Chromium believes are hidden, so
+        // never hang the load on it; the explicit render below draws the
+        // first frame either way.
+        setTimeout(resolve, 500);
+      });
+      if (this.destroyed || token !== this.modelToken || this.model !== model) {
+        console.debug('[Live2D] load:abort-post-frame', token, {
+          destroyed: this.destroyed, stale: token !== this.modelToken,
+          swapped: this.model !== model,
+        });
         return false;
       }
       this.app.renderer.render(this.app.stage);
+      console.debug('[Live2D] load:done', token);
       return true;
     } catch (error) {
+      console.debug('[Live2D] load:failed', token, error);
       this.destroyDetachedModel(model);
-      if (this.destroyed || this.suspended || token !== this.modelToken) return false;
+      if (this.destroyed || token !== this.modelToken) return false;
       throw error;
     }
   }
@@ -285,6 +379,12 @@ class Live2DRenderer {
   private destroyModel(): void {
     const model = this.model;
     this.model = null;
+    this.detachMotionFinish?.();
+    this.detachMotionFinish = null;
+    this.clearMotionWatchdog();
+    // The idle-pose snapshot belongs to the destroyed model — drop it so the
+    // next attach captures a fresh one instead of restoring into a corpse.
+    this.motionSnapshot = null;
     this.detachModelRuntime?.();
     this.detachModelRuntime = null;
     if (!model) return;
@@ -297,6 +397,26 @@ class Live2DRenderer {
     const internal = model?.internalModel;
     const focusController = internal?.focusController;
     const coreModel = internal?.coreModel;
+    // Capture the pose BEFORE any motion can run — this is the model's neutral
+    // state and the restore target for every motion finish and watchdog stop.
+    if (!this.motionSnapshot) {
+      this.motionSnapshot = collectMotionPoseSnapshot(model);
+    }
+    const motionManager = internal?.motionManager;
+    if (motionManager && typeof motionManager.on === 'function') {
+      const onMotionFinish = () => {
+        if (this.model !== model) return;
+        this.clearMotionWatchdog();
+        // A natural finish does NOT guarantee the pose came back: yumi's wave
+        // leaves Paramanime at 1 and its physics arms unsettled. Restore the
+        // idle snapshot on every finish, not only on the watchdog ceiling.
+        this.stopActiveMotion(this.motionSnapshot);
+      };
+      try { motionManager.on('motionFinish', onMotionFinish); } catch {}
+      this.detachMotionFinish = () => {
+        try { motionManager.off?.('motionFinish', onMotionFinish); } catch {}
+      };
+    }
     if (!focusController || !this.canvas) return;
     try {
       if (model.automator) model.automator.autoFocus = false;
@@ -308,7 +428,7 @@ class Live2DRenderer {
     let currentX = 0;
     let currentY = 0;
     const followPointer = (event: PointerEvent) => {
-      if (this.destroyed || this.suspended || this.model !== model || !this.canvas) return;
+      if (this.destroyed || this.model !== model || !this.canvas) return;
       const rect = this.canvas.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       const scaleX = rect.width / Math.max(1, this.config.width);
@@ -378,17 +498,22 @@ class Live2DRenderer {
   async setActive(active: boolean): Promise<void> {
     if (this.destroyed) return;
     if (!active) {
+      // Flag-only. Chromium already throttles requestAnimationFrame to zero
+      // for hidden pages, so the render loop pauses itself. Stopping the
+      // ticker or destroying the model here made the character vanish
+      // permanently whenever Windows' occlusion tracker left visibilityState
+      // stuck on "hidden" after a minimize/restore — the resume event never
+      // arrived and nothing restarted the loop.
       this.suspended = true;
-      this.modelToken += 1;
-      this.destroyModel();
-      try { this.app?.ticker?.stop?.(); } catch {}
-      try { this.app?.renderer?.textureGC?.run?.(); } catch {}
       return;
     }
     if (!this.suspended) return;
     this.suspended = false;
     try { this.app?.ticker?.start?.(); } catch {}
-    if (this.desiredModel) {
+    if (!this.desiredModel) return;
+    if (!this.model) {
+      // A genuine WebGL context loss can leave the stage without the model.
+      // Rebuild exactly once here instead of trusting the mounted flag.
       try {
         const loaded = await this.loadModel(this.desiredModel);
         if (!loaded) throw new Error('Live2D model did not resume to a rendered frame');
@@ -397,6 +522,56 @@ class Live2DRenderer {
         try { this.app?.ticker?.stop?.(); } catch {}
         throw error;
       }
+      return;
+    }
+    // The model survived the hidden period; repaint immediately so the first
+    // visible frame is not stale or blank.
+    try { this.app?.renderer?.render(this.app.stage); } catch {}
+  }
+
+  /**
+   * Tear down and recreate the whole PIXI application. A WebGL context lost
+   * during a minimize can come back (or never come back) in arbitrary state
+   * while the visibility signal is stuck lying, so model-level reloads are
+   * not enough — a fresh canvas means a fresh context with no history.
+   */
+  private async rebuildRenderer(): Promise<void> {
+    if (this.destroyed || this.rebuilding || !this.container) return;
+    this.rebuilding = true;
+    try {
+      this.destroyModel();
+      this.detachCanvasRuntime?.();
+      this.detachCanvasRuntime = null;
+      if (this.keepAlive) {
+        window.clearInterval(this.keepAlive);
+        this.keepAlive = null;
+      }
+      if (this.app) {
+        try { this.app.ticker?.stop?.(); } catch {}
+        try {
+          this.app.destroy(true, { children: true, texture: true, baseTexture: true });
+        } catch {
+          try { this.app.destroy?.(true); } catch {}
+        }
+        this.app = null;
+      }
+      this.canvas = null;
+      if (this.container) this.container.innerHTML = '';
+      await this.init(this.container);
+      if (this.destroyed) return;
+      this.reportRuntimeState?.('loading', null);
+      if (this.desiredModel) {
+        const loaded = await this.loadModel(this.desiredModel);
+        if (this.destroyed) return;
+        this.reportRuntimeState?.(
+          loaded ? 'mounted' : 'error',
+          loaded ? null : 'Live2D model did not recover after the renderer rebuild',
+        );
+      } else {
+        this.reportRuntimeState?.('mounted', null);
+      }
+    } finally {
+      this.rebuilding = false;
     }
   }
 
@@ -417,9 +592,56 @@ class Live2DRenderer {
     }
   }
 
+  /**
+   * The idle-pose snapshot is captured once at attach time (before any motion
+   * can run). This only falls back to an arm-time capture when attach-time
+   * collection failed — re-clicking an ongoing motion must never re-snapshot,
+   * or a raised arm would be frozen into the "idle" reference.
+   */
+  private armMotionWatchdog(): void {
+    if (!this.motionSnapshot && this.model) {
+      this.motionSnapshot = collectMotionPoseSnapshot(this.model);
+    }
+    const snapshot = this.motionSnapshot;
+    if (this.motionWatchdog) window.clearTimeout(this.motionWatchdog);
+    this.motionWatchdog = window.setTimeout(() => {
+      this.motionWatchdog = null;
+      this.stopActiveMotion(snapshot);
+    }, MOTION_MAX_MS);
+  }
+
+  private clearMotionWatchdog(): void {
+    if (this.motionWatchdog) {
+      window.clearTimeout(this.motionWatchdog);
+      this.motionWatchdog = null;
+    }
+    // this.motionSnapshot is the model's standing idle-pose reference; it
+    // survives until destroyModel drops it with the model itself.
+  }
+
+  private stopActiveMotion(snapshot: MotionPoseSnapshot | null): void {
+    if (!snapshot || this.destroyed || this.model !== snapshot.model) return;
+    const model = snapshot.model as {
+      internalModel?: {
+        motionManager?: {
+          stopAllMotions?: () => void;
+          expressionManager?: { resetExpression?: () => void };
+        };
+      };
+    } | null;
+    try { model?.internalModel?.motionManager?.stopAllMotions?.(); } catch {}
+    applyMotionPoseSnapshot(snapshot);
+    try {
+      model?.internalModel?.motionManager?.expressionManager?.resetExpression?.();
+    } catch {}
+    try { this.app?.renderer?.render?.(this.app.stage); } catch {}
+    console.debug('[Live2D] motion ended: restored idle pose');
+  }
+
   playMotion(group: string): void {
     if (!group) return;
     try {
+      this.armMotionWatchdog();
       const result = this.model?.motion?.(group);
       void Promise.resolve(result).then((applied) => {
         if (applied === false) console.warn(`[Live2D] Motion is unavailable: ${group}`);
@@ -465,6 +687,10 @@ class Live2DRenderer {
     this.suspended = true;
     this.lifecycleToken += 1;
     this.modelToken += 1;
+    if (this.keepAlive) {
+      window.clearInterval(this.keepAlive);
+      this.keepAlive = null;
+    }
     this.destroyModel();
     this.detachCanvasRuntime?.();
     this.detachCanvasRuntime = null;
@@ -493,6 +719,10 @@ export function useLive2D(config: Live2DConfig) {
   const rendererRef = useRef<Live2DRenderer | null>(null);
   const [state, setState] = useState<Live2DState>('pending');
   const [error, setError] = useState<string | null>(null);
+  // Bumped every time the renderer is (re)created. Callers gate per-renderer
+  // bookkeeping (e.g. the "already loaded this URL" refs) on it, or a
+  // recreated renderer would inherit a stale "loaded" mark and never load.
+  const [epoch, setEpoch] = useState(0);
 
   // 初始化渲染器
   useEffect(() => {
@@ -501,6 +731,7 @@ export function useLive2D(config: Live2DConfig) {
 
     let active = true;
     let renderer: Live2DRenderer;
+    setEpoch((value) => value + 1);
     renderer = new Live2DRenderer(config, (nextState, nextError) => {
       if (!active || rendererRef.current !== renderer) return;
       setError(nextError);
@@ -538,7 +769,9 @@ export function useLive2D(config: Live2DConfig) {
       const loaded = await renderer.loadModel(options);
       if (rendererRef.current === renderer) {
         if (loaded) {
-          setState(document.hidden ? 'suspended' : 'mounted');
+          // Rendering no longer tracks visibility, so a successful load is a
+          // mounted runtime even if the visibility signal is stuck lying.
+          setState('mounted');
         } else {
           setError('Live2D model did not reach its first rendered frame');
           setState('error');
@@ -604,6 +837,7 @@ export function useLive2D(config: Live2DConfig) {
     containerRef,
     state,
     error,
+    epoch,
     loadModel,
     setExpression,
     setSpeaking,
@@ -638,6 +872,7 @@ export function Live2DCanvas({
     containerRef,
     state,
     error,
+    epoch,
     loadModel,
     setExpression,
     setSpeaking,
@@ -648,6 +883,16 @@ export function Live2DCanvas({
   const loadingModelUrlRef = useRef('');
   const failedModelUrlRef = useRef('');
   const [modelReadyUrl, setModelReadyUrl] = useState('');
+
+  // A recreated renderer knows nothing about previously loaded models. If the
+  // per-renderer bookkeeping survived (refs do), the "already loaded" gate
+  // would silently block the model from ever loading again.
+  useEffect(() => {
+    loadedModelUrlRef.current = '';
+    loadingModelUrlRef.current = '';
+    failedModelUrlRef.current = '';
+    setModelReadyUrl('');
+  }, [epoch]);
 
   useEffect(() => {
     const publicState = state === 'mounted' && modelUrl && modelReadyUrl !== modelUrl

@@ -23,6 +23,14 @@ import styles from './CharacterStage.module.scss';
 
 const AvatarStage = lazy(() => import('./AvatarStage'));
 
+// Backend record.status leaks English enum values into the zh UI otherwise.
+const AVATAR_STATUS_LABELS: Record<string, string> = {
+  ready: '就绪',
+  invalid: '无效',
+  missing: '缺失',
+  error: '异常',
+};
+
 interface CharacterStageProps {
   personaName: string;
   identityLine: string;
@@ -46,6 +54,25 @@ export default function CharacterStage({
 }: CharacterStageProps) {
   const { t } = useTranslation();
   const avatars = useAvatarLibrary();
+  // The avatar library write surface is not wired in this build; the bundled
+  // yumi record installed by the main process keeps the her-room stage live
+  // through the same audited character channel MvpRoom uses.
+  const [bundled, setBundled] = useState<{ record: AvatarRecord | null; runtime?: AvatarRuntime }>({ record: null });
+  useEffect(() => {
+    let disposed = false;
+    void window.electronAPI?.character?.get()
+      .then((value) => {
+        if (!disposed) setBundled(value ?? { record: null });
+      })
+      .catch(() => {
+        if (!disposed) setBundled({ record: null });
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+  const activeAvatar = avatars.activeAvatar ?? bundled.record ?? null;
+  const live2dRuntime = avatars.runtime ?? bundled.runtime;
   const [managerOpen, setManagerOpen] = useState(false);
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
   const [warningsAccepted, setWarningsAccepted] = useState(false);
@@ -153,7 +180,7 @@ export default function CharacterStage({
     setPreviewAction(null);
     setPreviewExpression(null);
     window.clearTimeout(previewResetTimer.current);
-  }, [avatars.activeAvatar?.id]);
+  }, [activeAvatar?.id]);
 
   const warningRequired = Boolean(avatars.candidate?.warnings.length);
   const previewForMoment = (action: CharacterActivity | null, expression: AvatarExpressionKey | null) => {
@@ -182,7 +209,7 @@ export default function CharacterStage({
   return (
     <section className={styles.characterStage} data-module="character-stage">
       {!avatars.candidate && (
-        avatars.activeAvatar ? (
+        activeAvatar ? (
           <Suspense fallback={(
             <div
               className={styles.defaultAvatar}
@@ -195,8 +222,8 @@ export default function CharacterStage({
             </div>
           )}>
             <AvatarStage
-              avatar={avatars.activeAvatar}
-              live2dRuntime={avatars.runtime}
+              avatar={activeAvatar}
+              live2dRuntime={live2dRuntime}
               activity={previewAction || activity}
               speaking={speaking}
               mouthLevel={mouthLevel}
@@ -257,7 +284,7 @@ export default function CharacterStage({
               </button>
             </header>
 
-            {!avatars.available && (
+            {!avatars.available && !activeAvatar && (
               <p className={styles.error} role="status">{t('dream.avatarServiceUnavailable')}</p>
             )}
             {avatars.error && <p className={styles.error} role="alert">{avatars.error}</p>}
@@ -272,7 +299,9 @@ export default function CharacterStage({
                   >
                     <span>{record.kind.toUpperCase()}</span>
                     <strong>{record.name}</strong>
-                    <small>{record.id === avatars.activeId ? t('dream.avatarActive') : record.status}</small>
+                    <small>{record.id === avatars.activeId
+                      ? t('dream.avatarActive')
+                      : AVATAR_STATUS_LABELS[record.status] ?? record.status}</small>
                   </button>
                   <button
                     type="button"
@@ -402,7 +431,7 @@ export default function CharacterStage({
                     )}>
                       <AvatarStage
                         avatar={previewAvatar}
-                        live2dRuntime={avatars.runtime}
+                        live2dRuntime={live2dRuntime}
                         activity="idle.default"
                         lowPower
                         onStatusChange={handlePreviewStatus}

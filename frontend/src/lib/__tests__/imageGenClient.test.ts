@@ -102,14 +102,14 @@ describe('loadImageGenConfig()', () => {
     expect(result).toBeNull();
   });
 
-  it('does not use image metadata when no authoritative LLM record is available', async () => {
+  it('drops legacy image metadata when no authoritative LLM record is available', async () => {
     providerGet.mockRejectedValueOnce(new Error('Provider store unavailable'));
     localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_IG_CONFIG));
 
     const result = await loadImageGenConfig();
 
     expect(result).toBeNull();
-    expect(localStorage.getItem(CONFIG_KEY)).not.toBeNull();
+    expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
   });
 
   it('returns null when both Electron metadata and localStorage have nothing', async () => {

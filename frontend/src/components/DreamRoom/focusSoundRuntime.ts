@@ -1,5 +1,6 @@
-import rainUrl from '@/assets/dreamroom/focus-rain.wav?url';
-import fireUrl from '@/assets/dreamroom/focus-fire.wav?url';
+import rainUrl from '@/assets/dreamroom/focus-rain.ogg?url';
+import fireUrl from '@/assets/dreamroom/focus-fire.ogg?url';
+import windUrl from '@/assets/dreamroom/focus-wind.ogg?url';
 import libraryUrl from '@/assets/dreamroom/focus-library.wav?url';
 
 export type BuiltInSoundscape = 'rain' | 'wind' | 'fire' | 'library' | 'pink';
@@ -13,9 +14,11 @@ export interface FocusSoundGraph {
 
 type FetchAudio = (input: RequestInfo | URL) => Promise<Pick<Response, 'ok' | 'arrayBuffer'>>;
 
+// Real recorded ambiences (CC0 / CC-BY, see LICENSES_CREDITS/FOCUS-SOUNDS-NOTICE.txt).
+// library keeps the gentle synthesized room hum until a suitable recording lands.
 const BUILT_IN_URLS: Record<Exclude<BuiltInSoundscape, 'pink'>, string> = {
   rain: rainUrl,
-  wind: '',
+  wind: windUrl,
   fire: fireUrl,
   library: libraryUrl,
 };
@@ -48,27 +51,6 @@ export function createPinkNoiseBuffer(context: AudioContext): AudioBuffer {
   return buffer;
 }
 
-export function createWindNoiseBuffer(context: AudioContext): AudioBuffer {
-  const seconds = 8;
-  const sampleRate = context.sampleRate;
-  const buffer = context.createBuffer(2, seconds * sampleRate, sampleRate);
-  const random = seeded(821);
-  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
-    const data = buffer.getChannelData(channel);
-    let low = 0;
-    let slower = 0;
-    for (let index = 0; index < data.length; index += 1) {
-      const white = random() * 2 - 1;
-      low += 0.018 * (white - low);
-      slower += 0.00012 * (Math.abs(white) - slower);
-      const gust = 0.34 + Math.sin((index / sampleRate) * Math.PI * 0.42 + channel) * 0.12
-        + Math.min(0.3, slower * 0.6);
-      data[index] = low * gust * 0.72;
-    }
-  }
-  return buffer;
-}
-
 export async function loadFocusSoundBuffer(
   context: AudioContext,
   sound: Soundscape,
@@ -78,14 +60,11 @@ export async function loadFocusSoundBuffer(
   if (sound === 'pink') {
     return { buffer: createPinkNoiseBuffer(context), usedFallback: true };
   }
-  if (sound === 'wind') {
-    return { buffer: createWindNoiseBuffer(context), usedFallback: false };
-  }
+  const assetUrl = sound.startsWith('custom:')
+    ? customUrl
+    : BUILT_IN_URLS[sound as Exclude<BuiltInSoundscape, 'pink'>];
+  if (!assetUrl) throw new Error('所选专注声音文件不可用');
   try {
-    const assetUrl = sound.startsWith('custom:')
-      ? customUrl
-      : BUILT_IN_URLS[sound as Exclude<BuiltInSoundscape, 'pink'>];
-    if (!assetUrl) throw new Error('custom audio asset unavailable');
     const response = await fetchAudio(assetUrl);
     if (!response.ok) throw new Error('audio asset unavailable');
     const buffer = await context.decodeAudioData(await response.arrayBuffer());
@@ -93,8 +72,9 @@ export async function loadFocusSoundBuffer(
       throw new Error('decoded audio is empty');
     }
     return { buffer, usedFallback: false };
-  } catch {
-    return { buffer: createPinkNoiseBuffer(context), usedFallback: true };
+  } catch (reason) {
+    const detail = reason instanceof Error ? `: ${reason.message}` : '';
+    throw new Error(`无法加载所选专注声音${detail}`);
   }
 }
 
@@ -128,20 +108,8 @@ export async function attemptFocusPlayback(
   customUrl = '',
 ): Promise<{ graph: FocusSoundGraph; usedFallback: boolean } | null> {
   const loaded = await loadFocusSoundBuffer(context, sound, fetchAudio, customUrl);
-  try {
-    return {
-      graph: startGraph(context, loaded.buffer, volume),
-      usedFallback: loaded.usedFallback,
-    };
-  } catch {
-    if (loaded.usedFallback) return null;
-    try {
-      return {
-        graph: startGraph(context, createPinkNoiseBuffer(context), volume),
-        usedFallback: true,
-      };
-    } catch {
-      return null;
-    }
-  }
+  return {
+    graph: startGraph(context, loaded.buffer, volume),
+    usedFallback: loaded.usedFallback,
+  };
 }

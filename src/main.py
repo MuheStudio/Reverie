@@ -186,6 +186,15 @@ async def main():
 
     identity_envelope = GLOBAL_PERSONA_EPOCH.envelope()
     kernel_store = KernelStore(DATA_DIR / "runtime" / "kernel.sqlite3")
+    # Crash-recovery closure: rows left generating/dispatched by a dead
+    # process must be settled to a terminal ambiguous state before any
+    # dispatch can replay them, otherwise the idempotency ledger never
+    # reaches the state its guarantees assume.
+    recovered_commands = kernel_store.recover_ambiguous_commands()
+    if recovered_commands:
+        logging.getLogger("reverie.kernel").warning(
+            "Settled %d interrupted command(s) to PROVIDER_OUTCOME_UNKNOWN", recovered_commands
+        )
     kernel_store.activate_persona(
         PersonaScopeV4(
             persona_id=persona_token.persona_id,
@@ -642,6 +651,13 @@ async def main():
     backup_manager.checkpoint()
 
     # ── ProactiveChat: background task for character-initiated messages
+    def ordinary_chat_busy() -> bool:
+        if not desktop_bridge:
+            return False
+        from src.bridge.ws_bridge import _get_pending_chat_store
+
+        return bool(_get_pending_chat_store().list_active())
+
     ProactiveChat = optional_symbol("src.chat.proactive", "ProactiveChat")
     proactive = None
     if ProactiveChat is not None:
@@ -668,6 +684,10 @@ async def main():
                 reflex_system=reflex,
                 local_reflex_probability=settings.features.local_care_reflex_probability,
                 persona_epoch_registry=GLOBAL_PERSONA_EPOCH,
+                kernel_store=kernel_store,
+                chat_busy=ordinary_chat_busy,
+                wake_min_minutes=settings.features.proactive_wake_min_minutes,
+                wake_max_minutes=settings.features.proactive_wake_max_minutes,
             )
         except Exception:
             logger.exception("Proactive capability failed during startup; isolating it")

@@ -28,10 +28,11 @@ def test_atomic_write_uses_unique_temp_names(tmp_path: Path) -> None:
     target = tmp_path / "state.json"
     atomic_write_json(target, {"a": 1})
     atomic_write_json(target, {"b": 2})
-    # No deterministic ".tmp" residue; os.replace consumed each unique temp.
-    leftovers = [p.name for p in tmp_path.iterdir() if p.name != "state.json"]
+    # The stable backup remains, but unique temporary files are always consumed.
+    leftovers = [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"]
     assert leftovers == [], f"leftover temp files: {leftovers}"
     assert read_json_object(target) == {"b": 2}
+    assert json.loads((tmp_path / "state.json.bak").read_text(encoding="utf-8")) == {"a": 1}
 
 
 # ── S2-7: bounded backup streaming ───────────────────────────

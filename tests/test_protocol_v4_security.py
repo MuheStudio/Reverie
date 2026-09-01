@@ -11,6 +11,7 @@ from src.bridge.stdio_bridge import (
     CONTROL_SCHEMA,
     _control_failure,
     _handle_control,
+    _validation_diagnostic,
 )
 from src.kernel.command_bus import CommandBus
 from src.kernel.contracts import (
@@ -83,6 +84,34 @@ def test_every_mvp_command_has_one_strict_payload_contract() -> None:
         )
 
 
+def test_stdio_validation_diagnostic_is_bounded_and_omits_input() -> None:
+    secret = "data:image/png;base64," + "A" * 2_000
+    with pytest.raises(ValidationError) as raised:
+        CommandEnvelopeV4.model_validate(
+            {
+                "protocol_version": 4,
+                "request_id": "request_protocol_01",
+                "idempotency_key": "request_protocol_01",
+                "command": "chat:send",
+                "persona": persona().model_dump(),
+                "payload": {"text": "hello", "unexpected": secret},
+            }
+        )
+    diagnostic = _validation_diagnostic(raised.value)
+    assert len(diagnostic) <= 600
+    assert "\n" not in diagnostic and "\r" not in diagnostic
+    assert secret not in diagnostic
+    assert "base64" not in diagnostic
+    assert "unexpected" in diagnostic
+
+
+def test_stdio_non_validation_diagnostic_is_single_line_and_bounded() -> None:
+    diagnostic = _validation_diagnostic(ValueError("bad\nvalue" + "x" * 1_000))
+    assert diagnostic.startswith("ValueError:bad value")
+    assert "\n" not in diagnostic
+    assert len(diagnostic) <= 131
+
+
 def test_settings_and_profile_payloads_reject_cross_section_and_minor_data() -> None:
     with pytest.raises(ValidationError):
         envelope(
@@ -110,6 +139,41 @@ def test_settings_and_profile_payloads_reject_cross_section_and_minor_data() -> 
                     "age": 17,
                 }
             },
+        )
+
+
+def test_immersion_settings_and_nearby_payload_are_strict_protocol_v4() -> None:
+    settings = envelope(
+        "settings:update",
+        {
+            "section": "immersion",
+            "immersion_location_enabled": True,
+            "immersion_closeups_enabled": False,
+            "immersion_smart_home_enabled": False,
+            "immersion_location_radius_m": 1200,
+        },
+    )
+    assert settings.payload["immersion_location_enabled"] is True
+
+    nearby = envelope(
+        "immersion:nearby",
+        {
+            "latitude": 31.2304,
+            "longitude": 121.4737,
+            "radius_m": 1200,
+            "place_types": ["cafe"],
+        },
+    )
+    assert set(nearby.payload) == {"latitude", "longitude", "radius_m", "place_types"}
+    with pytest.raises(ValidationError):
+        envelope(
+            "immersion:nearby",
+            {"latitude": 31.2304, "longitude": 121.4737, "accuracy_m": 35},
+        )
+    with pytest.raises(ValidationError):
+        envelope(
+            "settings:update",
+            {"section": "immersion", "proactive_chat_enabled": True},
         )
 
 

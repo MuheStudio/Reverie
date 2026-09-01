@@ -35,3 +35,12 @@ Before public redistribution, the project owner should record the original
 model creator and source URL in this notice and confirm the Live2D publication
 license terms. This notice is not a substitute for a Live2D Cubism application
 publication license.
+
+In-app display name (alias):
+  The application displays the bundled character under the persona name
+  "Hoshino Yumetsuki" (星野幻月). This is a roleplay alias chosen for
+  immersion; the underlying Live2D model remains the free public skin
+  "yumi" described above, and no authorship, origin, or rights-holdership
+  is claimed by the alias. Attribution and licensing for the model itself
+  are governed by this notice and YUMI_CHARACTER_RIGHTS.json. The model
+  package metadata (yumi.model3.json and related files) is unchanged.

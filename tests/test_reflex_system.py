@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from src.chat.proactive import ProactiveChat
 from src.chat.reflex import ReflexSystem
@@ -58,6 +59,7 @@ def test_proactive_generation_falls_back_to_local_reflex(tmp_path) -> None:
         MessageScheduler(),
         state_path=tmp_path / "proactive.json",
         reflex_system=reflex,
+        memory=SimpleNamespace(retrieve_relevant=lambda *_args, **_kwargs: ["昨晚你说有些难受"]),
     )
 
     result = asyncio.run(proactive._generate_message(

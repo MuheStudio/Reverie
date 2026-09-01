@@ -19,6 +19,7 @@ import type { Move as XiangqiMove, Role, Square as XiangqiSquare } from 'elephan
 import { Engine, type TetrisState } from 'tetris-engine';
 import type { PhoneAppPanelId } from './roomState';
 import { WSMsgType, type WSRequestOptions } from '@/hooks/useReverieWS';
+import { useCompanionOpponent, type OpponentMode } from './useCompanionOpponent';
 import {
   GOMOKU_SIZE,
   chooseGomokuMove,
@@ -248,6 +249,7 @@ function GameHeader({
   onInvite,
   onUndo,
   onReset,
+  companionBar,
 }: {
   game: PhoneAppPanelId;
   status: string;
@@ -255,6 +257,7 @@ function GameHeader({
   onInvite?: () => void;
   onUndo?: () => void;
   onReset: () => void;
+  companionBar?: React.ReactNode;
 }) {
   return (
     <div className={styles.header}>
@@ -277,6 +280,35 @@ function GameHeader({
           <RefreshCw size={16} />
         </button>
       </div>
+      {companionBar}
+    </div>
+  );
+}
+
+// Header line under a game: AI-companion / practice toggle plus the
+// persona's one-line comment (aria-live so screen readers hear the quip).
+function CompanionBar({
+  mode,
+  onToggle,
+  comment,
+  notice,
+}: {
+  mode: OpponentMode;
+  onToggle: () => void;
+  comment: string;
+  notice: string;
+}) {
+  return (
+    <div className={styles.companionBar} aria-live="polite">
+      <button
+        type="button"
+        data-mode={mode}
+        onClick={onToggle}
+        title={mode === 'companion' ? '切到练习模式（内置陪练）' : '切到 AI 陪玩（她来走子）'}
+      >
+        {mode === 'companion' ? 'AI 陪玩' : '练习模式'}
+      </button>
+      {(comment || notice) && <span>{comment || notice}</span>}
     </div>
   );
 }
@@ -291,18 +323,52 @@ function GomokuGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePan
     isGomokuState,
   );
   const [thinking, setThinking] = useState(false);
+  const opponent = useCompanionOpponent('gomoku', gameStateClient, connected);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   useEffect(() => {
     if (state.turn !== 2 || state.winner || state.draw) return;
+    let cancelled = false;
     setThinking(true);
     const timer = window.setTimeout(() => {
-      setState((current) => {
-        const move = chooseGomokuMove(current);
-        return move === null ? current : playGomoku(current, move);
+      const requestedState = stateRef.current;
+      const boardText = Array.from({ length: GOMOKU_SIZE }, (_, row) => (
+        Array.from({ length: GOMOKU_SIZE }, (_, col) => {
+          const cell = stateRef.current.board[row * GOMOKU_SIZE + col];
+          return cell === 1 ? '△' : cell === 2 ? '▲' : '·';
+        }).join(' ')
+      )).join('\n');
+      void opponent.chooseMove({
+        boardText,
+        side: '白棋',
+        historyText: `共 ${stateRef.current.moves.length} 手`,
+        isCurrent: () => stateRef.current === requestedState,
+        apply: (rawMove) => {
+          const index = Number(rawMove.trim());
+          const current = stateRef.current;
+          if (!Number.isInteger(index) || index < 0 || index >= current.board.length) {
+            return '格子编号超出棋盘';
+          }
+          if (current.board[index]) return '那个位置已经有棋子';
+          setState(playGomoku(current, index));
+          return null;
+        },
+        fallback: () => {
+          setState((current) => {
+            const move = chooseGomokuMove(current);
+            return move === null ? current : playGomoku(current, move);
+          });
+        },
+      }).finally(() => {
+        if (!cancelled) setThinking(false);
       });
-      setThinking(false);
     }, 320);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.turn, state.winner, state.draw]);
 
   const status = state.winner === 1
@@ -321,8 +387,16 @@ function GomokuGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePan
         status={status}
         connected={connected}
         onInvite={() => onInviteAI('gomoku', `五子棋已下 ${state.moves.length} 手，${status}。`)}
-        onUndo={state.moves.length ? () => { setThinking(false); setState(undoGomokuRound(state)); } : undefined}
-        onReset={() => { setThinking(false); setState(newGomokuState()); }}
+        onUndo={state.moves.length ? () => { opponent.cancelPending(); setThinking(false); setState(undoGomokuRound(state)); } : undefined}
+        onReset={() => { opponent.cancelPending(); setThinking(false); setState(newGomokuState()); }}
+        companionBar={(
+          <CompanionBar
+            mode={opponent.mode}
+            onToggle={() => opponent.setMode(opponent.mode === 'companion' ? 'practice' : 'companion')}
+            comment={opponent.comment}
+            notice={opponent.notice}
+          />
+        )}
       />
       <div className={styles.gomokuBoard} role="grid" aria-label="五子棋棋盘">
         {state.board.map((cell, index) => (
@@ -387,20 +461,48 @@ function ChessGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePane
   const targets = useMemo(() => selected
     ? chess.moves({ square: selected, verbose: true }).map((move) => move.to)
     : [], [chess, selected]);
+  const opponent = useCompanionOpponent('chess', gameStateClient, connected);
+  const chessRef = useRef(chess);
+  chessRef.current = chess;
 
   useEffect(() => {
     if (chess.turn() !== 'b' || chess.isGameOver()) return;
+    let cancelled = false;
     setThinking(true);
     const timer = window.setTimeout(() => {
-      setPgn((current) => {
-        const next = chessFromPgn(current);
-        const move = chooseChessMove(next);
-        if (move) next.move({ from: move.from, to: move.to, promotion: move.promotion || 'q' });
-        return next.pgn();
+      const requestedPgn = pgn;
+      void opponent.chooseMove({
+        boardText: chessRef.current.ascii(),
+        side: '黑棋',
+        historyText: chessRef.current.history().join(' ') || '（开局第一步）',
+        isCurrent: () => chessRef.current.pgn() === requestedPgn,
+        apply: (rawMove) => {
+          const next = chessFromPgn(pgn);
+          try {
+            next.move(rawMove.trim());
+          } catch {
+            return '这不是一步合法的走法';
+          }
+          setPgn(next.pgn());
+          return null;
+        },
+        fallback: () => {
+          setPgn((current) => {
+            const board = chessFromPgn(current);
+            const move = chooseChessMove(board);
+            if (move) board.move({ from: move.from, to: move.to, promotion: move.promotion || 'q' });
+            return board.pgn();
+          });
+        },
+      }).finally(() => {
+        if (!cancelled) setThinking(false);
       });
-      setThinking(false);
     }, 360);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chess]);
 
   const status = chess.isCheckmate()
@@ -422,6 +524,7 @@ function ChessGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePane
     setSelected(piece?.color === 'w' ? square : null);
   };
   const undo = () => {
+    opponent.cancelPending();
     setThinking(false);
     const next = chessFromPgn(pgn);
     next.undo();
@@ -438,7 +541,15 @@ function ChessGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePane
         connected={connected}
         onInvite={() => onInviteAI('chess', `国际象棋共 ${chess.history().length} 手，${status}。PGN：${pgn.slice(-600)}`)}
         onUndo={chess.history().length ? undo : undefined}
-        onReset={() => { setThinking(false); setPgn(''); setSelected(null); }}
+        onReset={() => { opponent.cancelPending(); setThinking(false); setPgn(''); setSelected(null); }}
+        companionBar={(
+          <CompanionBar
+            mode={opponent.mode}
+            onToggle={() => opponent.setMode(opponent.mode === 'companion' ? 'practice' : 'companion')}
+            comment={opponent.comment}
+            notice={opponent.notice}
+          />
+        )}
       />
       <div className={styles.chessBoard} role="grid" aria-label="国际象棋棋盘">
         {Array.from({ length: 64 }, (_, index) => {
@@ -518,19 +629,63 @@ function XiangqiGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePa
   const [thinking, setThinking] = useState(false);
   const position = useMemo(() => xiangqiFromMoves(moves), [moves]);
   const targets = useMemo(() => selected === null ? [] : [...position.dests(selected)], [position, selected]);
+  const opponent = useCompanionOpponent('xiangqi', gameStateClient, connected);
+  const positionRef = useRef(position);
+  positionRef.current = position;
 
   useEffect(() => {
     if (position.turn !== 'black' || position.isEnd()) return;
+    let cancelled = false;
     setThinking(true);
     const timer = window.setTimeout(() => {
-      setMoves((current) => {
-        const currentPosition = xiangqiFromMoves(current);
-        const move = chooseXiangqiMove(currentPosition);
-        return move ? [...current, move] : current;
+      const requestedPosition = positionRef.current;
+      const boardText = Array.from({ length: 10 }, (_, row) => (
+        Array.from({ length: 9 }, (_, col) => {
+          const square = squareFromCoords(col, 9 - row)!;
+          const piece = positionRef.current.board.get(square);
+          if (!piece) return '·';
+          return piece.color === 'red' ? '△' : '▲';
+        }).join(' ')
+      )).join('\n');
+      void opponent.chooseMove({
+        boardText,
+        side: '黑棋',
+        historyText: `${moves.length} 手`,
+        isCurrent: () => positionRef.current === requestedPosition,
+        apply: (rawMove) => {
+          const parts = rawMove.trim().split(/[，,\s]+/).map((value) => Number(value));
+          if (parts.length !== 4 || parts.some((value) => !Number.isInteger(value))) {
+            return '走法需要四个整数坐标';
+          }
+          const [fx, fy, tx, ty] = parts;
+          if ([fx, fy, tx, ty].some((value) => value < 0 || value > 9)) {
+            return '坐标超出棋盘';
+          }
+          const from = squareFromCoords(fx, fy);
+          const to = squareFromCoords(tx, ty);
+          const current = positionRef.current;
+          if (!from || !to || !current.isLegal({ from, to })) {
+            return '这不是一步合法的走法';
+          }
+          setMoves((currentMoves) => [...currentMoves, { from, to }]);
+          return null;
+        },
+        fallback: () => {
+          setMoves((current) => {
+            const currentPosition = xiangqiFromMoves(current);
+            const move = chooseXiangqiMove(currentPosition);
+            return move ? [...current, move] : current;
+          });
+        },
+      }).finally(() => {
+        if (!cancelled) setThinking(false);
       });
-      setThinking(false);
     }, 380);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [position]);
 
   const outcome = position.outcome();
@@ -555,8 +710,16 @@ function XiangqiGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePa
         status={status}
         connected={connected}
         onInvite={() => onInviteAI('xiangqi', `中国象棋共 ${moves.length} 手，${status}。`)}
-        onUndo={moves.length ? () => { setThinking(false); setMoves(moves.slice(0, -Math.min(2, moves.length))); setSelected(null); } : undefined}
-        onReset={() => { setThinking(false); setMoves([]); setSelected(null); }}
+        onUndo={moves.length ? () => { opponent.cancelPending(); setThinking(false); setMoves(moves.slice(0, -Math.min(2, moves.length))); setSelected(null); } : undefined}
+        onReset={() => { opponent.cancelPending(); setThinking(false); setMoves([]); setSelected(null); }}
+        companionBar={(
+          <CompanionBar
+            mode={opponent.mode}
+            onToggle={() => opponent.setMode(opponent.mode === 'companion' ? 'practice' : 'companion')}
+            comment={opponent.comment}
+            notice={opponent.notice}
+          />
+        )}
       />
       <div className={styles.xiangqiBoard} role="grid" aria-label="中国象棋棋盘">
         {Array.from({ length: 90 }, (_, index) => {
@@ -657,19 +820,61 @@ function GoGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelPr
   const consecutivePasses = stored.moves.slice(-2).filter((move) => move.vertex === null).length;
   const ended = stored.ended || consecutivePasses === 2;
   const score = useMemo(() => ended ? scoreChineseArea(board.signMap) : null, [board, ended]);
+  const opponent = useCompanionOpponent('go', gameStateClient, connected);
+  const boardRef = useRef(board);
+  boardRef.current = board;
 
   useEffect(() => {
     if (turn !== -1 || ended) return;
+    let cancelled = false;
     setThinking(true);
     const timer = window.setTimeout(() => {
-      setStored((current) => {
-        const currentBoard = goFromMoves(current.moves);
-        const vertex = chooseGoMove(currentBoard, -1);
-        return { ...current, moves: [...current.moves, { sign: -1, vertex }] };
+      const requestedBoard = boardRef.current;
+      const boardText = boardRef.current.signMap
+        .map((row) => row.map((sign) => (sign === 1 ? '△' : sign === -1 ? '▲' : '·')).join(' '))
+        .join('\n');
+      void opponent.chooseMove({
+        boardText,
+        side: '白棋',
+        historyText: `共 ${stored.moves.length} 手；黑提子 ${boardRef.current.getCaptures(1)}，白提子 ${boardRef.current.getCaptures(-1)}`,
+        isCurrent: () => boardRef.current === requestedBoard,
+        apply: (rawMove) => {
+          const current = boardRef.current;
+          const text = rawMove.trim().toLowerCase();
+          if (text === 'pass' || text === '停一手') {
+            setStored((storedCurrent) => ({ ...storedCurrent, moves: [...storedCurrent.moves, { sign: -1, vertex: null }] }));
+            return null;
+          }
+          const parts = text.split(/[，,\s]+/).map((value) => Number(value));
+          if (parts.length !== 2 || !parts.every((value) => Number.isInteger(value) && value >= 0 && value <= 8)) {
+            return '走法需要 x,y 两个 0-8 的整数，或 pass';
+          }
+          try {
+            current.makeMove(-1, [parts[0], parts[1]], {
+              preventKo: true, preventOverwrite: true, preventSuicide: true,
+            });
+          } catch {
+            return '这步棋因打劫、自杀或已有棋子而不合法';
+          }
+          setStored((storedCurrent) => ({ ...storedCurrent, moves: [...storedCurrent.moves, { sign: -1, vertex: [parts[0], parts[1]] }] }));
+          return null;
+        },
+        fallback: () => {
+          setStored((current) => {
+            const currentBoard = goFromMoves(current.moves);
+            const vertex = chooseGoMove(currentBoard, -1);
+            return { ...current, moves: [...current.moves, { sign: -1, vertex }] };
+          });
+        },
+      }).finally(() => {
+        if (!cancelled) setThinking(false);
       });
-      setThinking(false);
     }, 420);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turn, ended]);
 
   const status = score
@@ -696,8 +901,16 @@ function GoGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelPr
         status={status}
         connected={connected}
         onInvite={() => onInviteAI('go', `九路围棋已走 ${stored.moves.length} 手，${status}。`)}
-        onUndo={stored.moves.length ? () => { setThinking(false); setStored({ moves: stored.moves.slice(0, -Math.min(2, stored.moves.length)), ended: false }); } : undefined}
-        onReset={() => { setThinking(false); setStored({ moves: [], ended: false }); }}
+        onUndo={stored.moves.length ? () => { opponent.cancelPending(); setThinking(false); setStored({ moves: stored.moves.slice(0, -Math.min(2, stored.moves.length)), ended: false }); } : undefined}
+        onReset={() => { opponent.cancelPending(); setThinking(false); setStored({ moves: [], ended: false }); }}
+        companionBar={(
+          <CompanionBar
+            mode={opponent.mode}
+            onToggle={() => opponent.setMode(opponent.mode === 'companion' ? 'practice' : 'companion')}
+            comment={opponent.comment}
+            notice={opponent.notice}
+          />
+        )}
       />
       <div className={styles.goBoard} role="grid" aria-label="九路围棋棋盘">
         {board.signMap.flatMap((row, y) => row.map((sign, x) => (

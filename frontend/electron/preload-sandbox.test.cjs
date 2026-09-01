@@ -22,6 +22,13 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   const contextBridge = {
     exposeInMainWorld: (name, value) => exposed.set(name, value),
   };
+  const diskFile = Object.freeze({ name: 'image.png' });
+  const webUtils = {
+    getPathForFile: (file) => {
+      assert.equal(file, diskFile);
+      return 'C:\\test\\image.png';
+    },
+  };
 
   const context = vm.createContext({
     AbortController,
@@ -37,7 +44,7 @@ test('sandboxed preload exposes only the MVP authority without local require', a
         'electron',
         `sandboxed preload attempted to load unsupported module: ${moduleName}`,
       );
-      return { contextBridge, ipcRenderer };
+      return { contextBridge, ipcRenderer, webUtils };
     },
   });
 
@@ -48,18 +55,28 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   assert.deepEqual(
     Object.keys(api).sort(),
     [
+      'backup',
       'bridge',
       'character',
       'credentials',
       'download',
+      'focus',
       'getAppVersion',
+      'getPathForFile',
       'localMode',
       'onAppLifecycle',
       'pet',
+      'places',
       'platform',
       'providerConfig',
+      'showNotification',
+      'stickers',
     ],
   );
+  assert.deepEqual(Object.keys(api.stickers).sort(), ['pickImage']);
+  assert.deepEqual(Object.keys(api.places).sort(), ['deleteKey', 'nearby', 'resolve', 'setKey', 'status']);
+  assert.equal(api.getPathForFile(diskFile), 'C:\\test\\image.png');
+  assert.throws(() => api.getPathForFile(null), /file is invalid/);
   assert.deepEqual(Object.keys(api.bridge).sort(), [
     'getConnectionConfig',
     'onChanged',
@@ -73,6 +90,26 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   ]);
   assert.deepEqual(Object.keys(api.providerConfig).sort(), ['commit', 'get', 'test']);
   assert.deepEqual(Object.keys(api.character), ['get']);
+  assert.deepEqual(Object.keys(api.focus).sort(), [
+    'acknowledgeAudioRearm',
+    'getState',
+    'onChanged',
+    'pause',
+    'resume',
+    'start',
+    'stop',
+  ]);
+  // The timer input is bounded by the preload boundary: only a positive
+  // finite durationSeconds crosses.
+  await api.focus.start(25 * 60);
+  assert.equal(invokes.at(-1)?.channel, 'focus:start');
+  // Field-wise compare: values created inside the preload vm realm carry a
+  // foreign Object prototype, so deepStrictEqual would reject them.
+  assert.equal(invokes.at(-1)?.value?.durationSeconds, 1500);
+  assert.throws(() => api.focus.start(-1), /durationSeconds/);
+  assert.throws(() => api.focus.start(Number.NaN), /durationSeconds/);
+  await api.focus.pause('session-id');
+  assert.equal(invokes.at(-1)?.channel, 'focus:pause');
   assert.deepEqual(Object.keys(api.pet).sort(), ['hide', 'isVisible', 'show', 'toggle']);
   assert.deepEqual(Object.keys(api.download).sort(), [
     'downloadDirect',
@@ -117,6 +154,41 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   await api.credentials.clear();
   assert.equal(invokes.at(-1)?.channel, 'credentials:clear');
   assert.equal(invokes.at(-1)?.value?.scope, 'llm');
+  await api.places.setKey('amap', 'owner-amap-key');
+  assert.equal(invokes.at(-1)?.channel, 'places:setKey');
+  assert.equal(invokes.at(-1)?.value?.apiKey, 'owner-amap-key');
+  await api.places.setKey('google', 'owner-google-key');
+  assert.equal(invokes.at(-1)?.value?.provider, 'google');
+  await api.places.resolve('auto');
+  assert.equal(invokes.at(-1)?.channel, 'places:resolve');
+  await api.places.nearby({
+    provider: 'amap',
+    latitude: 39.9,
+    longitude: 116.4,
+    radiusM: 1200,
+    placeTypes: ['restaurant', 'cafe'],
+    consent: true,
+  });
+  assert.equal(invokes.at(-1)?.channel, 'places:nearby');
+  assert.equal(invokes.at(-1)?.value?.latitude, 39.9);
+  assert.throws(() => api.places.nearby({
+    provider: 'google',
+    latitude: 39.9,
+    longitude: 116.4,
+    radiusM: 1200,
+    placeTypes: ['park'],
+    consent: true,
+  }), /place types/);
+  const invokeCount = invokes.length;
+  assert.equal((await api.places.nearby({
+    provider: 'google',
+    latitude: 39.9,
+    longitude: 116.4,
+    radiusM: 1200,
+    placeTypes: ['cafe'],
+    consent: false,
+  })).code, 'consent');
+  assert.equal(invokes.length, invokeCount, 'denied consent must stop before IPC');
   await api.providerConfig.test({
     llm: {
       provider: 'custom',
@@ -133,17 +205,16 @@ test('sandboxed preload exposes only the MVP authority without local require', a
     },
   }, { apiKey: 'x'.repeat((16 * 1024) + 1) }), /apiKey is invalid/);
 
+  // notification:show and backup:import/export are deliberately re-exposed
+  // through the secure IPC registrar (validated payloads, native dialogs).
+  assert.deepEqual(Object.keys(api.backup).sort(), ['export', 'import']);
   for (const forbidden of [
     'avatar',
-    'backup',
     'companionPreferences',
     'files',
-    'focus',
     'focusSound',
     'getCurrentWindowsLocation',
     'openLocationSettings',
-    'showNotification',
-    'stickers',
   ]) {
     assert.equal(api[forbidden], undefined, `${forbidden} must not cross the preload boundary`);
   }

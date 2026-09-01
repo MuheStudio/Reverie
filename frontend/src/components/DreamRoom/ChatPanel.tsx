@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Eye, ImagePlus, Send, Sparkles, Square, WifiOff } from 'lucide-react';
+import { Eye, ImagePlus, Paperclip, Send, Sparkles, Square, WifiOff, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   type ChatMessageV2,
   type ChatRequestState,
 } from './chatDeliveryMachine';
 import { type StickerItem, useReverieWS } from '@/hooks/useReverieWS';
+import {
+  imageAttachmentFromClipboard,
+  imageAttachmentFromFile,
+  type ChatImageAttachment,
+} from '@/lib/chatImage';
+import { ChatImage } from '@/components/chat/ChatImage';
 import { loadReverieChatDraft, saveReverieChatDraft } from '@/lib/reverieChatStorage';
 import styles from './ChatPanel.module.scss';
 
@@ -53,7 +59,9 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
   const [showStickers, setShowStickers] = useState(false);
   const [sendError, setSendError] = useState('');
   const [announcement, setAnnouncement] = useState('');
+  const [pendingImage, setPendingImage] = useState<ChatImageAttachment | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const previousTerminals = useRef(new Set<string>());
   const connected = ws.connState === 'connected';
   const draftSessionId = ws.personaScope?.persona_id
@@ -85,23 +93,35 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
   }, [deliveryLabel, personaName, ws.chatRequestStates]);
 
   const submit = useCallback((text: string, sticker?: StickerItem) => {
-    const value = text.trim();
+    const value = text.trim() || (pendingImage ? t('dream.imageMessage') : '');
     if (!value || !connected || ws.localMode) {
       if (!connected) setSendError(t('dream.chatConnectingDraft'));
       else if (ws.localMode) setSendError(t('dream.chatLocalBlocked'));
       return false;
     }
-    const requestId = ws.sendChat(value, sticker);
+    const requestId = ws.sendChat(value, sticker, undefined, pendingImage || undefined);
     if (!requestId) {
       setSendError(t('dream.chatSendFailed'));
       return false;
     }
-    ws.addUserMessage(value, sticker, requestId);
+    ws.addUserMessage(value, sticker, requestId, pendingImage?.previewUrl);
     setInput('');
+    setPendingImage(null);
     saveReverieChatDraft('', draftSessionId);
     setSendError('');
     return true;
-  }, [connected, draftSessionId, t, ws]);
+  }, [connected, draftSessionId, pendingImage, t, ws]);
+
+  const attachImageFile = useCallback(async (file: File | null | undefined) => {
+    if (!file) return;
+    try {
+      setPendingImage(await imageAttachmentFromFile(file));
+      setSendError('');
+    } catch (reason) {
+      setPendingImage(null);
+      setSendError(reason instanceof Error ? reason.message : t('dream.imageSendFailed'));
+    }
+  }, [t]);
 
   const submitSticker = (sticker: StickerItem) => {
     const text = sticker.text.trim() || t('dream.sentSticker');
@@ -109,17 +129,13 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
   };
 
   const uploadSticker = async () => {
-    const importer = window.electronAPI?.stickers?.importFile;
-    if (!importer) {
-      setSendError(t('dream.stickerReadFailed'));
-      return;
-    }
     try {
-      const result = await importer({ styleTags: ['用户导入'] });
-      if (result.canceled || !result.item) return;
+      const picked = await window.electronAPI?.stickers?.pickImage();
+      if (!picked || picked.canceled || !picked.filePath) return;
+      const item = await ws.importSticker(picked.filePath, ['用户导入']);
       ws.refreshStickers();
       submitSticker({
-        ...result.item,
+        ...item,
         source: 'collected',
       });
     } catch {
@@ -180,6 +196,16 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
               data-source={message.source}
               data-delivery-state={message.delivery_state}
             >
+              {message.role === 'user' && (message.attachmentPreview || message.media?.length) && (
+                <span className={styles.messageImage}>
+                  <ChatImage
+                    mediaId={message.media?.[0]?.media_id || ''}
+                    previewUrl={message.attachmentPreview}
+                    fetcher={ws.fetchChatMedia}
+                    alt={t('dream.imageMessage')}
+                  />
+                </span>
+              )}
               {message.sticker?.image_data_url && (
                 <img src={message.sticker.image_data_url} alt={message.sticker.text || t('dream.stickerAlt')} />
               )}
@@ -267,6 +293,24 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
         >
           <Sparkles size={17} />
         </button>
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          hidden
+          onChange={(event) => {
+            void attachImageFile(event.target.files?.[0]);
+            event.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          aria-label={t('dream.attachImage')}
+          disabled={!connected || ws.localMode}
+          onClick={() => imageInputRef.current?.click()}
+        >
+          <Paperclip size={17} />
+        </button>
         <textarea
           rows={1}
           value={input}
@@ -275,6 +319,11 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
           onChange={(event) => {
             setInput(event.target.value);
             saveReverieChatDraft(event.target.value, draftSessionId);
+          }}
+          onPaste={(event) => {
+            void imageAttachmentFromClipboard(event.clipboardData).then((attachment) => {
+              if (attachment) setPendingImage(attachment);
+            });
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -285,13 +334,25 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
         />
         <button
           type="button"
-          disabled={!connected || ws.localMode || !input.trim()}
+          disabled={!connected || ws.localMode || (!input.trim() && !pendingImage)}
           aria-label={t('dream.send')}
           onClick={() => submit(input)}
         >
           <Send size={17} />
         </button>
       </footer>
+      {pendingImage?.previewUrl && (
+        <div className={styles.pendingImage}>
+          <img src={pendingImage.previewUrl} alt={t('dream.imageMessage')} />
+          <button
+            type="button"
+            aria-label={t('dream.removeImage')}
+            onClick={() => setPendingImage(null)}
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }

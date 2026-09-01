@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.chat.proactive import ProactiveChat
-from src.chat.delivery import ChatDeliveryCoordinator
+from src.chat.delivery import ChatDeliveryCoordinator, _retyped_variation
 from src.chat.pending import PendingChatStore
 from src.chat.scheduler import MessageScheduler
 from src.chat.typo import apply_typos
@@ -138,7 +138,9 @@ def test_chinese_typo_is_light_and_protects_links_and_dates(monkeypatch) -> None
 
 def test_retraction_probability_uses_typo_and_emotion_context(monkeypatch) -> None:
     scheduler = MessageScheduler()
-    monkeypatch.setattr("src.chat.scheduler.random.random", lambda: 0.10)
+    # 0.06 sits between the anxiety total (0.0405) and typo total (0.0905):
+    # baseline and anxiety stay below it, the typo path fires above it.
+    monkeypatch.setattr("src.chat.scheduler.random.random", lambda: 0.06)
 
     assert scheduler.should_retract_message() is False
     assert scheduler.should_retract_message(had_typo=True) is True
@@ -185,11 +187,65 @@ def test_retraction_targets_only_the_changed_bubble(monkeypatch, tmp_path: Path)
     asyncio.run(coordinator._maybe_emit_retraction(store.get_item(request_id) or {}, result))
 
     retract = next(payload for _, message_type, payload in sent if message_type == "chat:retract")
-    assert retract["replacement"] == "正确气泡"
+    assert retract["replacement"] == _retyped_variation("正确气泡")
+    assert retract["replacement"] != "正确气泡"
     assert retract["bubble_index"] == 0
     assert retract["request_id"] == request_id
     assert len([item for item in sent if item[1] == "chat:retract"]) == 1
     assert store.get_item(request_id)["retraction_state"] == "completed"
+
+
+def test_retyped_variation_never_resends_the_original_line() -> None:
+    samples = [
+        "正确气泡",
+        "今天天气真好。",
+        "我在这里等你回来，一起吃饭看电影。",
+        "哈哈哈哈",
+        "ok",
+    ]
+    for text in samples:
+        first = _retyped_variation(text)
+        second = _retyped_variation(text)
+        assert first == second, text
+        assert first != text, text
+        assert first, text
+
+
+def test_retyped_variation_is_a_visible_lexical_change() -> None:
+    original = "今天天气真好。"
+    changed = _retyped_variation(original)
+
+    assert changed == "今天的天气真好。"
+    assert changed.rstrip("。！？…~ ") != original.rstrip("。！？…~ ")
+
+
+@pytest.mark.parametrize(
+    ("original", "protected"),
+    [
+        ("我不会在 2026-07-13 改计划", ("不", "2026-07-13")),
+        ("别在 08:30 打开 https://example.com/a?id=42", ("别", "08:30", "https://example.com/a?id=42")),
+        ("I will not send 3 files before 5:20", ("not", "3", "5:20")),
+        ("我没说会议是 9 月 1 日 14:00", ("没", "9", "1", "14:00")),
+    ],
+)
+def test_retyped_variation_preserves_semantic_literals_and_negation(
+    original: str,
+    protected: tuple[str, ...],
+) -> None:
+    changed = _retyped_variation(original)
+
+    assert changed != original
+    assert changed == _retyped_variation(original)
+    assert all(token in changed for token in protected)
+    assert "大概" not in changed
+    assert "也许" not in changed
+
+
+def test_retraction_targets_only_the_changed_bubble_resend_is_varied() -> None:
+    # Regression guard for the semantics change: even typo corrections are
+    # resent as a slightly rephrased line, not the clean text verbatim.
+    original = "正确气泡"
+    assert _retyped_variation(original) != original
 
 
 def test_sticker_preferences_learn_only_from_user_actions(tmp_path: Path) -> None:

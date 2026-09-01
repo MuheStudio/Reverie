@@ -18,20 +18,22 @@ if TYPE_CHECKING:
 
 ALLOWED_PLACE_TYPES = {
     "restaurant": "饭店",
-    "shop": "商店",
     "cafe": "咖啡店",
+    "bakery": "烘焙店",
+    "dessert": "甜品店",
+    "convenience": "便利店",
+    "snacks": "小吃店",
     "supermarket": "超市",
-    "park": "公园",
-    "mall": "商场",
 }
 
 POI_QUERIES = {
     "restaurant": "餐厅",
-    "shop": "商店",
     "cafe": "咖啡",
+    "bakery": "烘焙",
+    "dessert": "甜品",
+    "convenience": "便利店",
+    "snacks": "小吃",
     "supermarket": "超市",
-    "park": "公园",
-    "mall": "商场",
 }
 
 SCENE_TEMPLATES = {
@@ -99,10 +101,8 @@ class ImmersionManager:
         radius = max(300, min(5000, radius))
         selected = _sanitize_place_types(place_types)
         if not selected:
-            selected = ["restaurant", "shop", "cafe", "supermarket"]
+            selected = ["restaurant", "cafe", "bakery", "supermarket"]
 
-        coarse_lat = round(float(latitude), 3)
-        coarse_lon = round(float(longitude), 3)
         places = [
             NearbyPlace(kind=kind, label=ALLOWED_PLACE_TYPES[kind], confidence=0.55 + index * 0.05)
             for index, kind in enumerate(selected[:6])
@@ -118,11 +118,10 @@ class ImmersionManager:
         return {
             "ok": True,
             "provider": "local-privacy-preserving",
-            "coarse_location": {"latitude": coarse_lat, "longitude": coarse_lon},
             "radius_m": radius,
             "places": [place.to_dict() for place in places],
             "suggestions": suggestions,
-            "privacy": "Location is used only for this request and rounded before returning.",
+            "privacy": "Location is used only for this request and is not returned or stored.",
         }
 
     async def nearby_life_context_async(
@@ -158,10 +157,10 @@ class ImmersionManager:
                 radius_m=int(base.get("radius_m", 1200)),
                 place_types=selected,
             )
-        except Exception as exc:
+        except Exception as error:
             base["provider"] = "local-privacy-preserving"
-            base["poi_status"] = "failed"
-            base["poi_error"] = f"{type(exc).__name__}: {exc}"
+            code = str(getattr(error, "code", "") or "")
+            base["poi_status"] = code if code in {"timeout", "quota", "unavailable", "local-mode"} else "failed"
             return base
 
         if not real_places:
@@ -175,8 +174,7 @@ class ImmersionManager:
         base["places"] = _merge_place_confidence(base.get("places", []), real_places)
         base["suggestions"] = _suggestions_from_real_places(real_places, base.get("suggestions", []))
         base["privacy"] = (
-            "Location is used only for this request; exact coordinates are not stored "
-            "and returned place entries omit raw latitude/longitude."
+            "Location is used only for this request and is not returned or stored."
         )
         return base
 
@@ -298,6 +296,12 @@ async def _search_real_poi(
         return []
 
     async def run_one(query: str) -> list[dict[str, Any]]:
+        kind = next((key for key, value in POI_QUERIES.items() if value == query), "")
+        if hasattr(service, "search_category"):
+            result = await service.search_category(
+                kind, latitude, longitude, radius=radius_m, limit=3
+            )
+            return [item.to_dict() for item in list(getattr(result, "items", []) or [])[:3]]
         result = await service.search(query, latitude, longitude, radius=radius_m, limit=3)
         provider = str(getattr(result, "provider", "") or "")
         entries: list[dict[str, Any]] = []
@@ -323,9 +327,18 @@ async def _search_real_poi(
         task.cancel()
     places: list[dict[str, Any]] = []
     for task in done:
-        if task.cancelled() or task.exception():
+        if task.cancelled():
+            continue
+        if task.exception():
             continue
         places.extend(task.result())
+    if not places:
+        first_error = next(
+            (task.exception() for task in done if not task.cancelled() and task.exception()),
+            None,
+        )
+        if first_error:
+            raise first_error
     places.sort(key=lambda item: item.get("distance_m", 0))
     return places[:8]
 

@@ -6,6 +6,7 @@ import {
   ImagePlus,
   KeyRound,
   MessageCircle,
+  Paperclip,
   Pencil,
   RefreshCw,
   Search,
@@ -20,6 +21,17 @@ import {
 import { useMvpBridge } from '@/hooks/useMvpBridge';
 import { LLM_PROVIDER_CONFIGS, type LLMProvider } from '@/lib/llmModels';
 import {
+  mergeSavedDraft,
+  useAuthoritativeProviderConfig,
+  useCredentialStorageMode,
+} from '@/lib/providerConfigSync';
+import {
+  imageAttachmentFromClipboard,
+  imageAttachmentFromFile,
+  type ChatImageAttachment,
+} from '@/lib/chatImage';
+import { ChatImage } from '@/components/chat/ChatImage';
+import {
   consumeFallbackDraft,
   loadReverieChatDraft,
   migrateReverieChatDraft,
@@ -28,7 +40,34 @@ import {
 import BundledCharacter from './BundledCharacter';
 import styles from './MvpRoom.module.scss';
 
+// Raw backend delivery-state enums (ready_waiting, accepted, …) must not leak
+// into the zh UI as-is.
+const DELIVERY_STATE_LABELS: Record<string, string> = {
+  queued: '已排队',
+  generating: '正在组织回复',
+  ready_waiting: '回复已准备好',
+  delivering: '正在送达',
+  done: '已送达',
+  accepted: '已送达',
+  cancelled: '已取消',
+  failed: '生成失败',
+  failed_uncertain: '连接中断，未自动重试',
+  error: '发送失败',
+};
+
 type Tab = 'chat' | 'memory' | 'settings';
+
+// Sticker assets come back either as inline data URLs or as
+// reverie-sticker://asset references served by the Electron protocol.
+function stickerImageUrl(value: string): string {
+  return value.startsWith('data:') || value.startsWith('reverie-sticker://') ? value : '';
+}
+
+function StickerBubbleImage({ sticker }: { sticker: Record<string, unknown> }) {
+  const url = stickerImageUrl(text(sticker.image_data_url));
+  if (!url) return null;
+  return <img src={url} alt="表情" />;
+}
 
 type ProviderDraft = {
   provider: LLMProvider;
@@ -62,35 +101,31 @@ function text(value: unknown): string {
 
 function ProviderSettings() {
   const [draft, setDraft] = useState<ProviderDraft>(DEFAULT_PROVIDER);
-  const [credentialMode, setCredentialMode] = useState<'persistent' | 'session'>('persistent');
+  const { credentialMode, setCredentialMode, credentialStatus } = useCredentialStorageMode();
   const [testedDraft, setTestedDraft] = useState<{ key: string; receipt: string } | null>(null);
   const [status, setStatus] = useState('正在读取当前 Provider…');
   const [busy, setBusy] = useState(false);
   const operationRef = useRef(false);
+  const touchedFieldsRef = useRef(new Set<string>());
 
-  useEffect(() => {
-    let disposed = false;
-    void window.electronAPI?.providerConfig?.get()
-      .then((value) => {
-        if (disposed || !value?.llm) return;
-        const provider = value.llm.provider as LLMProvider;
-        if (!(provider in LLM_PROVIDER_CONFIGS)) return;
-        setDraft((current) => ({
-          ...current,
-          provider,
-          baseUrl: value.llm.baseUrl,
-          model: value.llm.model,
-          customProviderName: value.llm.customProviderName || '',
-        }));
-        setStatus('当前配置来自本地服务；密钥不会进入页面。');
-      })
-      .catch(() => {
-        if (!disposed) setStatus('本地服务尚未就绪，暂时无法读取 Provider。');
-      });
-    return () => {
-      disposed = true;
-    };
-  }, []);
+  useAuthoritativeProviderConfig({
+    load: () => window.electronAPI?.providerConfig?.get?.()
+      ?? Promise.reject(new Error('provider config channel unavailable')),
+    onLoaded: (value) => {
+      const snapshot = value as PublicProviderConfig | null;
+      if (!snapshot?.llm) return;
+      const provider = snapshot.llm.provider;
+      if (!(provider in LLM_PROVIDER_CONFIGS)) return;
+      setDraft((current) => mergeSavedDraft(current, {
+        provider,
+        baseUrl: snapshot.llm.baseUrl,
+        model: snapshot.llm.model,
+        customProviderName: snapshot.llm.customProviderName || '',
+      }, touchedFieldsRef.current));
+      setStatus('当前配置来自本地服务；密钥不会进入页面。');
+    },
+    onUnavailable: () => setStatus('本地服务尚未就绪，暂时无法读取 Provider。'),
+  });
 
   const publicConfig = useMemo(() => ({
     llm: {
@@ -115,6 +150,7 @@ function ProviderSettings() {
   draftKeyRef.current = draftKey;
 
   const update = <K extends keyof ProviderDraft>(key: K, value: ProviderDraft[K]) => {
+    touchedFieldsRef.current.add(key);
     setDraft((current) => ({ ...current, [key]: value }));
   };
 
@@ -220,7 +256,7 @@ function ProviderSettings() {
         />
       </label>
       <label>
-        <span>Base URL</span>
+        <span>服务地址</span>
         <input
           value={draft.baseUrl}
           maxLength={512}
@@ -240,7 +276,7 @@ function ProviderSettings() {
         />
       </label>
       <label>
-        <span>API Key {draft.provider === 'ollama' && '（通常留空）'}</span>
+        <span>API 密钥 {draft.provider === 'ollama' && '（通常留空）'}</span>
         <input
           type="password"
           value={draft.apiKey}
@@ -265,9 +301,16 @@ function ProviderSettings() {
           value={credentialMode}
           onChange={(event) => setCredentialMode(event.target.value as typeof credentialMode)}
         >
-          <option value="persistent">Windows 加密存储</option>
+          <option value="persistent" disabled={credentialStatus?.persistentAvailable === false}>
+            Windows 加密存储（重启后保留）
+          </option>
           <option value="session">只保留到本次退出</option>
         </select>
+        <span>
+          {credentialMode === 'persistent'
+            ? '密钥由 Windows DPAPI 加密保存，不会进入页面或浏览器存储。'
+            : '密钥只保存在当前进程内存中，退出 Reverie 后消失。'}
+        </span>
       </label>
       <label>
         <span>凭据删除意图</span>
@@ -302,6 +345,9 @@ function ProviderSettings() {
           测试通过后保存
         </button>
       </div>
+      {!draft.model.trim() && (
+        <p className={styles.modelHint}>填写模型名称后即可测试连接。</p>
+      )}
       <p className={styles.statusLine} role="status">{status}</p>
     </section>
   );
@@ -324,6 +370,9 @@ export default function MvpRoom() {
   const [groupOpen, setGroupOpen] = useState(false);
   const [groupDraft, setGroupDraft] = useState('');
   const [stickerOpen, setStickerOpen] = useState(false);
+  const [pendingImage, setPendingImage] = useState<ChatImageAttachment | null>(null);
+  const [imageNotice, setImageNotice] = useState('');
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [replyDelayMin, setReplyDelayMin] = useState(3);
   const [replyDelayMax, setReplyDelayMax] = useState(30);
   const [splitMessages, setSplitMessages] = useState(true);
@@ -420,8 +469,22 @@ export default function MvpRoom() {
   }, [bridge.settings]);
 
   const send = () => {
-    if (!bridge.sendChat(draft)) return;
+    const text = draft.trim() || (pendingImage ? '[图片]' : '');
+    if (!bridge.sendChat(text, pendingImage || undefined)) return;
     setDraft('');
+    setPendingImage(null);
+    setImageNotice('');
+  };
+
+  const attachImageFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    try {
+      setPendingImage(await imageAttachmentFromFile(file));
+      setImageNotice('');
+    } catch (reason) {
+      setPendingImage(null);
+      setImageNotice(reason instanceof Error ? reason.message : '图片无法发送');
+    }
   };
 
   const completeOnboarding = async () => {
@@ -522,15 +585,28 @@ export default function MvpRoom() {
               )}
               {bridge.messages.map((message) => (
                 <article key={message.id} data-role={message.role}>
-                  <p>{message.content}</p>
-                  {message.role === 'assistant' && isRecord(message.sticker) && (
-                    <span className={styles.replySticker}>
-                      {text(message.sticker.text) || (text(message.sticker.image_data_url).startsWith('data:')
-                        ? <img src={text(message.sticker.image_data_url)} alt="表情" />
-                        : '')}
+                  {message.role === 'user' && (message.attachmentPreview || (message.media?.length)) && (
+                    <span className={styles.messageImage}>
+                      <ChatImage
+                        mediaId={message.media?.[0]?.media_id || ''}
+                        previewUrl={message.attachmentPreview}
+                        fetcher={bridge.fetchChatMedia}
+                        alt="发送的图片"
+                      />
                     </span>
                   )}
-                  <small>{message.deliveryState || (message.role === 'user' ? '已提交' : personaName)}</small>
+                  {message.content && message.content !== '[图片]' && <p>{message.content}</p>}
+                  {message.role === 'assistant' && isRecord(message.sticker) && (
+                    <span className={styles.replySticker}>
+                      {text(message.sticker.text) || (
+                        <StickerBubbleImage sticker={message.sticker} />
+                      )}
+                    </span>
+                  )}
+                  <small>
+                    {DELIVERY_STATE_LABELS[message.deliveryState || '']
+                      || (message.role === 'user' ? '已提交' : personaName)}
+                  </small>
                   {message.role === 'user' && message.content.trim().length <= 80 && (
                     <button
                       type="button"
@@ -579,10 +655,9 @@ export default function MvpRoom() {
                         const sticker = isRecord(item) ? item : null;
                         if (!sticker) return null;
                         const id = text(sticker.id);
-                        const imageUrl = text(sticker.image_data_url);
+                        const imageUrl = stickerImageUrl(text(sticker.image_data_url));
                         const label = text(sticker.text) || '表情';
-                        const isDataImage = imageUrl.startsWith('data:');
-                        if (isDataImage) {
+                        if (imageUrl) {
                           return (
                             <button
                               key={id || label}
@@ -590,7 +665,7 @@ export default function MvpRoom() {
                               title={label}
                               onClick={() => {
                                 if (id) bridge.reactToSticker(id, true);
-                                setDraft((current) => `${current}${current.trim() ? ' ' : ''}[表情:${label}]`);
+                                bridge.sendSticker(sticker, label);
                                 setStickerOpen(false);
                               }}
                             >
@@ -617,9 +692,44 @@ export default function MvpRoom() {
                         <small>还没有表情。先收藏一个：发送短消息后点“收藏为表情”即可。</small>
                       )}
                     </div>
+                    <button
+                      type="button"
+                      className={styles.stickerImportButton}
+                      onClick={async () => {
+                        try {
+                          const picked = await window.electronAPI?.stickers?.pickImage();
+                          if (!picked?.filePath) return;
+                          await bridge.importSticker(picked.filePath, ['用户导入']);
+                          bridge.refreshStickers();
+                        } catch {
+                          setImageNotice('表情导入失败');
+                        }
+                      }}
+                    >
+                      <Paperclip size={13} />导入表情图片…
+                    </button>
                   </div>
                 )}
               </div>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                hidden
+                onChange={(event) => {
+                  void attachImageFile(event.target.files?.[0]);
+                  event.target.value = '';
+                }}
+              />
+              <button
+                type="button"
+                className={styles.stickerButton}
+                aria-label="发送图片"
+                disabled={bridge.connection !== 'connected'}
+                onClick={() => imageInputRef.current?.click()}
+              >
+                <Paperclip size={17} />
+              </button>
               <textarea
                 value={draft}
                 rows={3}
@@ -627,6 +737,14 @@ export default function MvpRoom() {
                 placeholder={bridge.connection === 'connected' ? `给 ${personaName} 发消息…` : '等待本地服务连接…'}
                 disabled={bridge.connection !== 'connected'}
                 onChange={(event) => setDraft(event.target.value)}
+                onPaste={(event) => {
+                  void imageAttachmentFromClipboard(event.clipboardData).then((attachment) => {
+                    if (attachment) {
+                      setPendingImage(attachment);
+                      setImageNotice('');
+                    }
+                  });
+                }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
@@ -634,6 +752,22 @@ export default function MvpRoom() {
                   }
                 }}
               />
+              {pendingImage?.previewUrl && (
+                <div className={styles.pendingImage} data-role="preview">
+                  <img src={pendingImage.previewUrl} alt="待发送图片" />
+                  <button
+                    type="button"
+                    aria-label="移除图片"
+                    onClick={() => {
+                      setPendingImage(null);
+                      setImageNotice('');
+                    }}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              )}
+              {imageNotice && <small className={styles.imageNotice} role="alert">{imageNotice}</small>}
               {bridge.activeRequestId ? (
                 <button type="button" className={styles.stopButton} onClick={bridge.cancelChat}>
                   <Square size={16} />停止
@@ -641,7 +775,7 @@ export default function MvpRoom() {
               ) : (
                 <button
                   type="button"
-                  disabled={!draft.trim() || bridge.connection !== 'connected'}
+                  disabled={(!draft.trim() && !pendingImage) || bridge.connection !== 'connected'}
                   onClick={send}
                 >
                   <Send size={16} />发送
@@ -986,7 +1120,7 @@ export default function MvpRoom() {
                   onChange={(event) => setFlawsText(event.target.value)}
                 />
               </label>
-              <label className={styles.checkbox}>
+              <label className={styles.checkboxStack}>
                 <input
                   type="checkbox"
                   checked={flawsDisclaimerAccepted}
@@ -1053,7 +1187,7 @@ export default function MvpRoom() {
                   onChange={(event) => setReplyDelayMax(Number(event.target.value))}
                 />
               </label>
-              <label className={styles.checkbox}>
+              <label className={styles.checkboxStack}>
                 <input
                   type="checkbox"
                   checked={splitMessages}
@@ -1061,7 +1195,7 @@ export default function MvpRoom() {
                 />
                 <span>几句话拆成多个气泡发送</span>
               </label>
-              <label className={styles.checkbox}>
+              <label className={styles.checkboxStack}>
                 <input
                   type="checkbox"
                   checked={typingIndicator}
@@ -1104,7 +1238,7 @@ export default function MvpRoom() {
                 </button>
               </div>
               <div className={styles.divider} />
-              <label className={styles.checkbox}>
+              <label className={styles.checkboxStack}>
                 <input
                   type="checkbox"
                   checked={proactiveEnabled}
@@ -1112,7 +1246,7 @@ export default function MvpRoom() {
                 />
                 <span>允许她主动找你聊天（会消耗 API）</span>
               </label>
-              <label className={styles.checkbox}>
+              <label className={styles.checkboxStack}>
                 <input
                   type="checkbox"
                   checked={proactiveNotifications}

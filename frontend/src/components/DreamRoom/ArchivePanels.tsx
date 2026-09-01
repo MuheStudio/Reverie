@@ -21,7 +21,6 @@ import {
   Plus,
   Save,
   ServerCog,
-  Settings,
   ShieldCheck,
   Smile,
   Sparkles,
@@ -38,6 +37,11 @@ import {
   saveConfig,
   testConfig,
 } from '@/lib/llmClient';
+import {
+  mergeSavedDraft,
+  useAuthoritativeProviderConfig,
+  useCredentialStorageMode,
+} from '@/lib/providerConfigSync';
 import {
   LLM_PROVIDER_CONFIGS,
   getDefaultProviderConfig,
@@ -62,7 +66,10 @@ import {
   type ReverieWorldBook,
   type WorldBookEntry,
 } from '@/lib/reverieArchive';
-import { requestWindowsBrowserLocation } from '@/lib/windowsGeolocation';
+import {
+  coarseSystemLocationMemoryPayload,
+  requestWindowsBrowserLocation,
+} from '@/lib/windowsGeolocation';
 import styles from './index.module.scss';
 
 const REQUESTED_PROVIDER_ORDER: LLMProvider[] = [
@@ -1042,8 +1049,7 @@ export function AiSettingsPanel() {
   const [clearCustomHeaders, setClearCustomHeaders] = useState(false);
   const [customProviderName, setCustomProviderName] = useState('');
   const [status, setStatus] = useState('');
-  const [credentialStatus, setCredentialStatus] = useState<CredentialStatus | null>(null);
-  const [sessionFallbackConfig, setSessionFallbackConfig] = useState<LLMConfig | null>(null);
+  const { credentialMode, setCredentialMode, credentialStatus } = useCredentialStorageMode();
   const [testedDraft, setTestedDraft] = useState<{
     key: string;
     receipt: string;
@@ -1071,37 +1077,52 @@ export function AiSettingsPanel() {
     label: getProviderDisplayName(id),
   }));
 
-  useEffect(() => {
-    let cancelled = false;
-    void loadConfig().then((config) => {
-      if (cancelled || !config) return;
-      setProvider(config.provider);
-      setBaseUrl(config.baseUrl);
-      setModel(config.model);
-      setCustomProviderName(config.customProviderName ?? '');
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Saved provider fields are merged field-by-field so a late bridge answer
+  // can fill untouched defaults without clobbering what the user typed.
+  const touchedFieldsRef = useRef(new Set<string>());
+  const updateModel = (value: string) => {
+    touchedFieldsRef.current.add('model');
+    setModel(value);
+  };
+  const updateBaseUrl = (value: string) => {
+    touchedFieldsRef.current.add('baseUrl');
+    setBaseUrl(value);
+  };
+  const updateCustomProviderName = (value: string) => {
+    touchedFieldsRef.current.add('customProviderName');
+    setCustomProviderName(value);
+  };
 
-  useEffect(() => {
-    const api = window.electronAPI?.credentials;
-    const unavailable: CredentialStatus = {
-      available: false,
-      corrupted: false,
-      llm: { hasApiKey: false, hasCustomHeaders: false },
-    };
-    if (!api) {
-      setCredentialStatus(unavailable);
-      return undefined;
-    }
-    void api.status().then(setCredentialStatus).catch(() => setCredentialStatus(unavailable));
-    return api.onChanged(setCredentialStatus);
-  }, []);
+  useAuthoritativeProviderConfig({
+    load: () => loadConfig(),
+    onLoaded: (value) => {
+      const config = value as LLMConfig | null;
+      if (!config) return;
+      const merged = mergeSavedDraft(
+        { provider, baseUrl, model, customProviderName },
+        {
+          provider: config.provider,
+          baseUrl: config.baseUrl,
+          model: config.model,
+          customProviderName: config.customProviderName ?? '',
+        },
+        touchedFieldsRef.current,
+      );
+      if (merged.provider !== provider) setProvider(merged.provider as LLMProvider);
+      if (merged.baseUrl !== baseUrl) setBaseUrl(merged.baseUrl);
+      if (merged.model !== model) setModel(merged.model);
+      if (merged.customProviderName !== customProviderName) {
+        setCustomProviderName(merged.customProviderName);
+      }
+    },
+    onUnavailable: () => undefined,
+  });
 
   const applyProvider = (nextProvider: LLMProvider) => {
     const defaults = getDefaultProviderConfig(nextProvider);
+    touchedFieldsRef.current.add('provider');
+    touchedFieldsRef.current.add('baseUrl');
+    touchedFieldsRef.current.add('model');
     setProvider(nextProvider);
     setBaseUrl(defaults.baseUrl);
     setModel(defaults.model);
@@ -1127,7 +1148,6 @@ export function AiSettingsPanel() {
     try {
       const result = await testConfig(config);
       setTestedDraft({ key: draftKey, receipt: result.receipt });
-      setSessionFallbackConfig(null);
       setStatus(`测试成功 · ${result.model} · ${result.latencyMs} ms。现在可以保存。`);
     } catch (error) {
       setTestedDraft(null);
@@ -1145,43 +1165,24 @@ export function AiSettingsPanel() {
     }
     setBusy('save');
     try {
-      await saveConfig(config, undefined, { testReceipt: testedDraft.receipt });
-      setSessionFallbackConfig(null);
+      await saveConfig(config, undefined, {
+        credentialStorage: credentialMode,
+        testReceipt: testedDraft.receipt,
+      });
       setTestedDraft(null);
       setApiKey('');
       setCustomHeaders('');
       setClearApiKey(false);
       setClearCustomHeaders(false);
-      setStatus('API 测试结果、供应商设置和加密凭据已通过同一权威通道提交。');
+      setStatus(credentialMode === 'persistent'
+        ? '供应商设置已保存；凭据已由 Windows 加密并将在重启后继续使用。'
+        : '供应商设置已保存；凭据仅保存在本次运行的内存中。');
     } catch (error) {
       if (error instanceof CredentialWriteError && error.canUseSessionStorage) {
-        setSessionFallbackConfig(config);
-        setStatus(`${error.message} 你可以明确选择“仅本次运行使用”，密钥不会写入磁盘。`);
+        setStatus(`${error.message} 可选择“仅本次运行”后重新保存，密钥不会写入磁盘。`);
         return;
       }
       setStatus(error instanceof Error ? error.message : '安全保存失败');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const saveForSession = async () => {
-    if (!sessionFallbackConfig || !testedDraft || testedDraft.key !== draftKey) return;
-    setBusy('save');
-    try {
-      await saveConfig(sessionFallbackConfig, undefined, {
-        credentialStorage: 'session',
-        testReceipt: testedDraft.receipt,
-      });
-      setApiKey('');
-      setCustomHeaders('');
-      setClearApiKey(false);
-      setClearCustomHeaders(false);
-      setSessionFallbackConfig(null);
-      setTestedDraft(null);
-      setStatus('密钥仅保存在本次 Reverie 运行的内存中，退出后会消失；没有明文落盘。');
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : '会话内凭据保存失败');
     } finally {
       setBusy(null);
     }
@@ -1223,14 +1224,14 @@ export function AiSettingsPanel() {
           <TextField
             label="自定义提供商名称"
             value={customProviderName}
-            onChange={setCustomProviderName}
+            onChange={updateCustomProviderName}
             placeholder="仅作为备注，不影响 API 调用"
           />
         )}
-        <TextField label="模型" value={model} onChange={setModel} placeholder={providerMeta.defaultModel} />
-        <TextField label="Base URL" value={baseUrl} onChange={setBaseUrl} />
+        <TextField label="模型" value={model} onChange={updateModel} placeholder={providerMeta.defaultModel} />
+        <TextField label="服务地址" value={baseUrl} onChange={updateBaseUrl} />
         <TextField
-          label="API Key"
+          label="API 密钥"
           value={apiKey}
           onChange={setApiKey}
           type="password"
@@ -1242,6 +1243,23 @@ export function AiSettingsPanel() {
             : 'Ollama 不需要密钥'}
         />
         <TextAreaField label="自定义请求头" value={customHeaders} onChange={setCustomHeaders} rows={3} />
+        <label className={styles.fieldGroup}>
+          <span>凭据保存</span>
+          <select
+            value={credentialMode}
+            onChange={(event) => setCredentialMode(event.target.value as typeof credentialMode)}
+          >
+            <option value="persistent" disabled={credentialStatus?.persistentAvailable === false}>
+              Windows 加密存储（重启后保留）
+            </option>
+            <option value="session">仅本次运行</option>
+          </select>
+          <small>
+            {credentialMode === 'persistent'
+              ? '密钥由 Windows DPAPI 加密保存，不会进入页面或浏览器存储。'
+              : '密钥只保存在当前进程内存中，退出 Reverie 后消失。'}
+          </small>
+        </label>
         {credentialStatus?.llm.hasApiKey && (
           <label>
             <input
@@ -1281,16 +1299,6 @@ export function AiSettingsPanel() {
           <Save size={15} />
           {busy === 'save' ? '保存中…' : '保存接口'}
         </button>
-        {sessionFallbackConfig && (
-          <button
-            type="button"
-            onClick={saveForSession}
-            disabled={busy !== null || !isCurrentDraftTested}
-          >
-            <KeyRound size={15} />
-            仅本次运行使用
-          </button>
-        )}
         <button
           type="button"
           onClick={clearCredentials}
@@ -1299,6 +1307,9 @@ export function AiSettingsPanel() {
           <Trash2 size={15} />
           清除安全凭据
         </button>
+        {!model.trim() && (
+          <span className={styles.modelHint}>填写模型名称后即可测试 API。</span>
+        )}
         {status && (
           <span className={styles.statusNote}>
             <Check size={14} />
@@ -2773,6 +2784,33 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
   const [smartDevice, setSmartDevice] = useState('灯');
   const [smartAction, setSmartAction] = useState('打开');
   const [locating, setLocating] = useState(false);
+  const [amapKey, setAmapKey] = useState('');
+  const [amapConfigured, setAmapConfigured] = useState(false);
+  const [amapConsent, setAmapConsent] = useState(false);
+  const [googleKey, setGoogleKey] = useState('');
+  const [googleConfigured, setGoogleConfigured] = useState(false);
+  const [googleConsent, setGoogleConsent] = useState(false);
+  const [placesProvider, setPlacesProvider] = useState<'auto' | 'amap' | 'google'>('auto');
+  const [amapItems, setAmapItems] = useState<Array<Record<string, string>>>([]);
+  const [googleItems, setGoogleItems] = useState<Array<{
+    name: string;
+    primaryType: string;
+    attributions: string[];
+  }>>([]);
+  const [amapPreferencePending, setAmapPreferencePending] = useState('');
+  const [amapPreferenceFeedback, setAmapPreferenceFeedback] = useState<Record<string, string>>({});
+  const [systemLocationMemoryConsent, setSystemLocationMemoryConsent] = useState(false);
+  const [systemLocationMemoryPending, setSystemLocationMemoryPending] = useState(false);
+
+  useEffect(() => {
+    void window.electronAPI?.places?.status().then((value) => {
+      setAmapConfigured(value.configured.amap);
+      setGoogleConfigured(value.configured.google);
+    }).catch(() => {
+      setAmapConfigured(false);
+      setGoogleConfigured(false);
+    });
+  }, []);
 
   useEffect(() => {
     const unsubscribe = ws.subscribe(WSMsgType.IMMERSION_RESULT, (payload: unknown) => {
@@ -2789,6 +2827,14 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
       setSettings(normalizeImmersionSettings(ws.settingsSnapshot.features));
     }
   }, [ws.settingsSnapshot.features]);
+
+  useEffect(() => {
+    if (!ws.localMode) return;
+    setAmapItems([]);
+    setGoogleItems([]);
+    setAmapConsent(false);
+    setGoogleConsent(false);
+  }, [ws.localMode]);
 
   const setField = <K extends keyof ImmersionFeatureSettings>(key: K, value: ImmersionFeatureSettings[K]) => {
     setSettings((current) => normalizeImmersionSettings({ ...current, [key]: value }));
@@ -2810,71 +2856,217 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
       setStatus('请先启用定位沉浸感');
       return;
     }
-    setLocating(true);
-    setStatus('正在向 Windows 11 请求定位权限与当前位置…');
     try {
-      // Electron's trusted main-frame permission policy lets Chromium call the
-      // Windows location broker while this user-initiated page is foreground.
-      // The hidden PowerShell adapter remains only a last-resort diagnostic for
-      // systems whose Chromium geolocation provider is unavailable.
-      let position: {
-        ok: boolean;
-        code: string;
-        status?: string;
-        latitude?: number;
-        longitude?: number;
-        accuracy?: number;
-      } = await requestWindowsBrowserLocation();
-      if (
-        !position.ok
-        && position.code === 'REVERIE_LOCATION_DEVICE_UNAVAILABLE'
-        && window.electronAPI?.getCurrentWindowsLocation
-      ) {
-        position = await window.electronAPI.getCurrentWindowsLocation();
+      const api = window.electronAPI?.places;
+      if (!api) {
+        setStatus('unavailable：附近服务仅在 Windows 桌面版可用');
+        return;
       }
+      const resolved = await api.resolve(placesProvider);
+      if (!resolved.provider || !resolved.configured) {
+        setStatus('key-required：请为所选附近地点提供商配置自己的 Key');
+        return;
+      }
+      const providerLabel = resolved.provider === 'google' ? 'Google Places' : '高德地图（Amap）';
+      const providerConsent = resolved.provider === 'google' ? googleConsent : amapConsent;
+      if (!providerConsent) {
+        setStatus(`consent：请先确认本次会将坐标发送给${providerLabel}`);
+        return;
+      }
+      setAmapItems([]);
+      setGoogleItems([]);
+      setLocating(true);
+      setStatus('正在向 Windows 11 请求定位权限与当前位置…');
+      const position = await requestWindowsBrowserLocation();
       if (!position.ok) {
         const messages: Record<string, string> = {
           REVERIE_LOCATION_PERMISSION_DENIED:
             'Windows 已拒绝定位。请开启“定位服务”和“允许桌面应用访问你的位置”。',
-          REVERIE_LOCATION_ACCESS_UNSPECIFIED:
-            'Windows 没有返回明确的定位授权状态，请检查系统定位设置。',
-          REVERIE_LOCATION_SERVICE_DISABLED:
-            'Windows 定位服务已关闭，请先在系统设置中启用。',
           REVERIE_LOCATION_DEVICE_UNAVAILABLE:
             '此设备当前没有可用的 Windows 定位能力。',
           REVERIE_LOCATION_TIMEOUT:
             'Windows 定位响应超时，请确认定位服务已开启后重试。',
-          REVERIE_LOCATION_NO_DATA:
-            'Windows 定位服务已开启，但当前没有可用的位置数据。',
         };
-        setStatus(messages[position.code] || 'Windows 原生定位调用失败，请检查系统定位设置。');
+        setStatus(messages[position.code] || '暂时无法获取位置，请检查 Windows 定位权限后重试。');
         return;
       }
-      const sent = ws.send(WSMsgType.IMMERSION_NEARBY, {
+      const response = await api.nearby({
+        provider: resolved.provider,
         latitude: position.latitude,
         longitude: position.longitude,
-        accuracy_m: position.accuracy,
-        radius_m: settings.immersion_location_radius_m,
-        place_types: ['restaurant', 'shop', 'cafe', 'supermarket', 'park'],
+        radiusM: settings.immersion_location_radius_m,
+        placeTypes: ['restaurant', 'cafe', 'bakery', 'dessert', 'convenience', 'snacks', 'supermarket'],
+        consent: true,
       });
-      setStatus(sent ? 'Windows 定位成功，已请求附近生活场景' : '定位成功，但后端未连接');
+      if (response.provider === 'Google') {
+        setAmapItems([]);
+        setGoogleItems(response.items.map((item) => ({
+          name: typeof item.name === 'string' ? item.name : '',
+          primaryType: typeof item.primaryType === 'string' ? item.primaryType : '',
+          attributions: Array.isArray(item.attributions)
+            ? item.attributions.filter((value): value is string => typeof value === 'string')
+            : [],
+        })).filter((item) => item.name));
+      } else {
+        setGoogleItems([]);
+        setAmapItems(response.items as Array<Record<string, string>>);
+      }
+      const messages: Record<string, string> = {
+        'key-required': `key-required：请配置自己的${providerLabel} Key`,
+        consent: `consent：本次请求尚未同意向${providerLabel}发送坐标`,
+        'local-mode': `local-mode：本地模式已阻止${providerLabel}网络请求`,
+        timeout: `timeout：${providerLabel}服务响应超时，请稍后重试`,
+        quota: `quota：${providerLabel} Key 配额或权限不可用`,
+        unavailable: `unavailable：${providerLabel}附近服务暂时不可用`,
+      };
+      setStatus(response.ok ? `已获取 ${response.items.length} 个附近地点 · 数据提供：${providerLabel}` : messages[response.code]);
     } catch {
-      setStatus('Windows 原生定位模块未能完成请求。');
+      setStatus('暂时无法获取位置，请稍后重试。');
     } finally {
       setLocating(false);
+      setAmapConsent(false);
+      setGoogleConsent(false);
     }
   };
 
-  const openLocationSettings = async () => {
-    if (!window.electronAPI?.openLocationSettings) {
-      setStatus('请手动打开 Windows 设置 → 隐私和安全性 → 位置。');
+  const selectPlacesProvider = (provider: 'auto' | 'amap' | 'google') => {
+    setPlacesProvider(provider);
+    setAmapItems([]);
+    setGoogleItems([]);
+    setAmapConsent(false);
+    setGoogleConsent(false);
+  };
+
+  const saveAmapKey = async () => {
+    try {
+      const next = await window.electronAPI?.places?.setKey('amap', amapKey.trim());
+      setAmapConfigured(next?.configured === true);
+      setAmapKey('');
+      setStatus(next?.configured ? '高德 Key 已由 Windows DPAPI 加密保存' : 'unavailable：安全存储不可用');
+    } catch {
+      setStatus('unavailable：无法安全保存高德 Key');
+    }
+  };
+
+  const deleteAmapKey = async () => {
+    try {
+      await window.electronAPI?.places?.deleteKey('amap');
+      setAmapConfigured(false);
+      setAmapKey('');
+      setAmapItems([]);
+      setStatus('已删除高德 Key');
+    } catch {
+      setStatus('unavailable：无法删除高德 Key');
+    }
+  };
+
+  const saveGoogleKey = async () => {
+    try {
+      const next = await window.electronAPI?.places?.setKey('google', googleKey.trim());
+      setGoogleConfigured(next?.configured === true);
+      setGoogleKey('');
+      setStatus(next?.configured ? 'Google Places Key 已由 Windows DPAPI 加密保存' : 'unavailable：安全存储不可用');
+    } catch {
+      setStatus('unavailable：无法安全保存 Google Places Key');
+    }
+  };
+
+  const deleteGoogleKey = async () => {
+    try {
+      await window.electronAPI?.places?.deleteKey('google');
+      setGoogleConfigured(false);
+      setGoogleKey('');
+      setGoogleItems([]);
+      setStatus('已删除 Google Places Key');
+    } catch {
+      setStatus('unavailable：无法删除 Google Places Key');
+    }
+  };
+
+  const rememberSystemLocationScale = async () => {
+    if (!systemLocationMemoryConsent) {
+      setStatus('请先单独同意保存系统定位尺度摘要；附近地点授权不会代替此同意。');
       return;
     }
+    setSystemLocationMemoryPending(true);
     try {
-      await window.electronAPI.openLocationSettings();
-      setStatus('已打开 Windows 定位设置。');
+      const position = await requestWindowsBrowserLocation();
+      if (!position.ok) {
+        setStatus('无法从 Windows 获取有效定位，本次没有保存摘要。');
+        return;
+      }
+      const payload = coarseSystemLocationMemoryPayload(position);
+      if (!payload) {
+        setStatus('Windows 定位结果已过期或无效，本次没有保存摘要。');
+        return;
+      }
+      const response = await ws.request<{ ok?: boolean; error?: string }>(
+        WSMsgType.MEMORY_STORE,
+        payload,
+        { expectedType: WSMsgType.MEMORY_RESULT },
+      );
+      setStatus(response.ok ? '已保存仅含尺度等级的系统定位摘要。' : (response.error || '摘要未保存。'));
     } catch {
-      setStatus('无法打开系统设置，请手动前往“隐私和安全性 → 位置”。');
+      setStatus('系统定位摘要未保存，请稍后重试。');
+    } finally {
+      setSystemLocationMemoryPending(false);
+    }
+  };
+
+  const revokeSystemLocationMemory = async () => {
+    setSystemLocationMemoryConsent(false);
+    setSystemLocationMemoryPending(true);
+    try {
+      const listed = await ws.request<{
+        ok?: boolean;
+        memories?: Array<{ id?: string; source_type?: string }>;
+      }>(WSMsgType.MEMORY_LIST, { limit: 200 }, { expectedType: WSMsgType.MEMORY_RESULT });
+      const ids = (listed.memories || [])
+        .filter((memory) => memory.source_type === 'user_confirmed_system_location_summary')
+        .map((memory) => memory.id)
+        .filter((id): id is string => Boolean(id));
+      await Promise.all(ids.map((memoryId) => ws.request(
+        WSMsgType.MEMORY_DELETE,
+        { memory_id: memoryId },
+        { expectedType: WSMsgType.MEMORY_RESULT },
+      )));
+      setStatus(ids.length ? '已撤销同意并删除所有系统定位尺度摘要。' : '已撤销同意；没有已保存的系统定位摘要。');
+    } catch {
+      setStatus('同意已在本页撤销，但摘要删除失败；请在记忆管理中删除。');
+    } finally {
+      setSystemLocationMemoryPending(false);
+    }
+  };
+
+  const confirmAmapPreference = async (
+    item: Record<string, string>,
+    index: number,
+    preference: 'place' | 'category',
+  ) => {
+    const value = preference === 'place' ? item.name : item.broad_category;
+    const action = preference === 'place' ? '喜欢这家' : '记住这类';
+    if (!value || !window.confirm(`确认${action}“${value}”？只会保存这条偏好，不会保存位置或高德搜索结果。`)) return;
+    const feedbackKey = `${index}:${preference}`;
+    setAmapPreferencePending(feedbackKey);
+    try {
+      const response = await ws.request<{ ok?: boolean; error?: string }>(
+        WSMsgType.MEMORY_STORE,
+        {
+          preference,
+          ...(preference === 'place' ? { display_label: value } : { broad_category: value }),
+          user_confirmed: true,
+          layer: 'long_term',
+        },
+        { expectedType: WSMsgType.MEMORY_RESULT },
+      );
+      setAmapPreferenceFeedback((current) => ({
+        ...current,
+        [feedbackKey]: response.ok ? `已确认并记住：${value}` : (response.error || '偏好未保存'),
+      }));
+    } catch {
+      setAmapPreferenceFeedback((current) => ({ ...current, [feedbackKey]: '偏好未保存，请稍后重试' }));
+    } finally {
+      setAmapPreferencePending('');
     }
   };
 
@@ -2905,6 +3097,55 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
       </div>
 
       <div className={styles.formGrid}>
+        <label className={styles.fieldGroup}>
+          <span>附近地点提供商</span>
+          <select value={placesProvider} onChange={(event) => selectPlacesProvider(event.target.value as 'auto' | 'amap' | 'google')}>
+            <option value="auto">自动（高德优先）</option>
+            <option value="amap">高德地图（Amap）</option>
+            <option value="google">Google Places</option>
+          </select>
+        </label>
+        <TextField
+          label={`高德 Web 服务 Key（${amapConfigured ? '已配置' : '未配置'}）`}
+          value={amapKey}
+          onChange={setAmapKey}
+          type="password"
+          placeholder="仅在此输入新 Key，已保存明文不可读取"
+        />
+        <TextField
+          label={`Google Places API Key（${googleConfigured ? '已配置' : '未配置'}）`}
+          value={googleKey}
+          onChange={setGoogleKey}
+          type="password"
+          placeholder="仅在此输入新 Key，已保存明文不可读取"
+        />
+        <label className={styles.checkRow}>
+          <input
+            type="checkbox"
+            checked={amapConsent}
+            onChange={(event) => setAmapConsent(event.target.checked)}
+          />
+          <ShieldCheck size={15} />
+          <span>我同意每次点击“请求附近地点”时，将本次 WGS84 坐标发送给高德地图（Amap）</span>
+        </label>
+        <label className={styles.checkRow}>
+          <input
+            type="checkbox"
+            checked={googleConsent}
+            onChange={(event) => setGoogleConsent(event.target.checked)}
+          />
+          <ShieldCheck size={15} />
+          <span>我同意每次选择 Google 并点击“请求附近地点”时，将本次 WGS84 坐标发送给 Google Places</span>
+        </label>
+        <label className={styles.checkRow}>
+          <input
+            type="checkbox"
+            checked={systemLocationMemoryConsent}
+            onChange={(event) => setSystemLocationMemoryConsent(event.target.checked)}
+          />
+          <ShieldCheck size={15} />
+          <span>我单独同意保存 Windows 定位的粗略尺度（街区/城市/区域）；不保存坐标、地点、精度或时间</span>
+        </label>
         <label className={styles.checkRow}>
           <input
             type="checkbox"
@@ -2947,6 +3188,22 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
       </div>
 
       <div className={styles.actionRow}>
+        <button type="button" onClick={saveAmapKey} disabled={!amapKey.trim()}>
+          <KeyRound size={15} />
+          保存高德 Key
+        </button>
+        <button type="button" onClick={deleteAmapKey} disabled={!amapConfigured}>
+          <Trash2 size={15} />
+          删除高德 Key
+        </button>
+        <button type="button" onClick={saveGoogleKey} disabled={!googleKey.trim()}>
+          <KeyRound size={15} />
+          保存 Google Key
+        </button>
+        <button type="button" onClick={deleteGoogleKey} disabled={!googleConfigured}>
+          <Trash2 size={15} />
+          删除 Google Key
+        </button>
         <button type="button" onClick={save}>
           <Save size={15} />
           保存沉浸感设置
@@ -2957,17 +3214,71 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
           disabled={!settings.immersion_location_enabled || locating}
         >
           <MapPin size={15} />
-          {locating ? '定位中…' : '请求定位'}
+          {locating ? '定位中…' : '请求附近地点'}
         </button>
-        <button type="button" onClick={openLocationSettings}>
-          <Settings size={15} />
-          Windows 定位设置
+        <button
+          type="button"
+          onClick={rememberSystemLocationScale}
+          disabled={!systemLocationMemoryConsent || systemLocationMemoryPending}
+        >
+          <ShieldCheck size={15} />
+          {systemLocationMemoryPending ? '处理中…' : '保存系统定位尺度摘要'}
+        </button>
+        <button type="button" onClick={revokeSystemLocationMemory} disabled={systemLocationMemoryPending}>
+          <Trash2 size={15} />
+          撤销同意并删除定位摘要
         </button>
         <button type="button" onClick={() => requestCloseup('meal')} disabled={!settings.immersion_closeups_enabled}>
           <Camera size={15} />
           吃饭特写
         </button>
       </div>
+
+      {!!amapItems.length && (
+        <div className={styles.itemList} aria-label="高德附近地点（文本列表）">
+          {amapItems.map((item, index) => (
+            <div key={`${item.name}-${index}`}>
+              <strong>{item.name}</strong>
+              <small>{[item.broad_category, item.distance_band, item.district, item.short_address].filter(Boolean).join(' · ')}</small>
+              <small>数据提供：{item.provider} · 观测时间：{item.observed_at}</small>
+              <div className={styles.actionRow}>
+                <button
+                  type="button"
+                  disabled={Boolean(amapPreferencePending)}
+                  onClick={() => void confirmAmapPreference(item, index, 'place')}
+                >
+                  喜欢这家（确认后仅记住店名）
+                </button>
+                <button
+                  type="button"
+                  disabled={Boolean(amapPreferencePending) || !item.broad_category}
+                  onClick={() => void confirmAmapPreference(item, index, 'category')}
+                >
+                  记住这类（确认后仅记住类别）
+                </button>
+              </div>
+              {(['place', 'category'] as const).map((preference) => {
+                const feedback = amapPreferenceFeedback[`${index}:${preference}`];
+                return feedback ? <small key={preference} role="status">{feedback}</small> : null;
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!!googleItems.length && (
+        <div className={styles.googlePlacesResults} aria-label="Google 附近地点（临时文本列表）">
+          <div className={styles.googleMapsAttribution} translate="no">Google Maps</div>
+          {googleItems.map((item, index) => (
+            <div key={`${item.name}-${index}`}>
+              <strong>{item.name}</strong>
+              {item.primaryType && <small>{item.primaryType}</small>}
+              {item.attributions.map((attribution) => <small key={attribution}>{attribution}</small>)}
+            </div>
+          ))}
+          <small>结果仅在当前界面临时显示，不会进入聊天、记忆、通知、备份或 AI/语音流程。</small>
+        </div>
+      )}
 
       <div className={styles.formGrid}>
         <TextField label="设备" value={smartDevice} onChange={setSmartDevice} />
@@ -3491,7 +3802,7 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           <UserRound size={22} />
           <div>
             <strong>形象模型</strong>
-            <small>主界面已预置 Yumi 静态预览；可导入 VRM、GLB、Live2D ZIP 或完整 Live2D 文件夹。</small>
+            <small>主界面已预置 Hoshino Yumetsuki 实时模型；可导入 VRM、GLB、Live2D ZIP 或完整 Live2D 文件夹。</small>
           </div>
         </div>
         <div className={styles.actionRow}>

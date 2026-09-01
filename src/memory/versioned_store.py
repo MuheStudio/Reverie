@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+import uuid
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
@@ -239,9 +241,14 @@ class VersionedVectorStore:
             sanitizer_status=sanitizer_status,
             sanitizer_flags=sanitizer_flags,
         )
+        self._sync_vector_cache(id, text, vector)
+
+    def _sync_vector_cache(self, memory_id: str, text: str, vector=None) -> None:
+        """Best-effort mirror of a canonical record into the rebuildable
+        vector cache. The canonical catalog row is already committed."""
         if self.runtime.backend == "unavailable":
             self.catalog.mark_embedding(
-                id,
+                memory_id,
                 self.runtime.model_version,
                 self._vector_table_marker(),
                 self.runtime.dimensions,
@@ -250,16 +257,50 @@ class VersionedVectorStore:
             return
         try:
             actual_vector = vector if vector is not None else self.embed_documents([text])[0]
-            self._index_add(id, text, np.asarray(actual_vector, dtype=np.float32))
+            self._index_add(memory_id, text, np.asarray(actual_vector, dtype=np.float32))
             self.catalog.mark_embedding(
-                id, self.runtime.model_version, self._vector_table_marker(), self.runtime.dimensions,
+                memory_id, self.runtime.model_version, self._vector_table_marker(), self.runtime.dimensions,
             )
         except Exception as exc:
             self.catalog.mark_embedding(
-                id, self.runtime.model_version, self._vector_table_marker(), self.runtime.dimensions,
+                memory_id, self.runtime.model_version, self._vector_table_marker(), self.runtime.dimensions,
                 error=str(exc),
             )
-            logger.exception("Memory %s is canonical but its vector index is pending", id)
+            logger.exception("Memory %s is canonical but its vector index is pending", memory_id)
+
+    def replace_permanent_profile_facts(
+        self,
+        prefixes: tuple[str, ...],
+        facts: list[str],
+        skip_texts: Iterable[str] = (),
+    ) -> int:
+        """Atomically refresh anchored permanent profile facts.
+
+        The delete + reinsert runs in one canonical-store transaction so a
+        crash mid-sync can never leave the permanent layer without its
+        profile anchors. Vector cache updates happen best-effort afterwards.
+        """
+        skip = set(skip_texts)
+        timestamp = time.time()
+        records = [
+            dict(
+                id=f"perm_{uuid.uuid4().hex}",
+                text=fact,
+                retention_layer="permanent",
+                cognitive_layer="semantic",
+                timestamp=timestamp,
+                importance=1.0,
+                emotions=None,
+                embedding_model_version=self.runtime.model_version,
+                source_type="user_profile",
+            )
+            for fact in facts
+            if fact not in skip
+        ]
+        inserted = self.catalog.replace_prefixed_facts(prefixes, records)
+        for record in records:
+            self._sync_vector_cache(record["id"], record["text"])
+        return inserted
 
     def search(
         self,

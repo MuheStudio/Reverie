@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from datetime import datetime, time as datetime_time, timedelta
@@ -397,6 +398,7 @@ class MemoryManager:
             "source_uri": str(row.get("source_uri", "")),
             "source_hash": str(row.get("source_hash", "")),
             "confirmation_state": str(row.get("confirmation_state", "")),
+            "confirmed_at": row.get("confirmed_at"),
             "lifecycle_state": str(row.get("lifecycle_state", "")),
             "updated_at": float(row.get("updated_at", 0.0) or 0.0),
         }
@@ -434,13 +436,18 @@ class MemoryManager:
         ):
             raise KeyError("Confirmed active memory not found")
         source_hash = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+        correction_source_type = (
+            "user_confirmed_system_location_summary"
+            if current.get("source_type") == "user_confirmed_system_location_summary"
+            else "user_correction"
+        )
 
         def commit_correction() -> dict:
             candidate = self.store.catalog.create_candidate(
                 fact_key=str(current.get("fact_key") or explicit_fact_key(cleaned)),
                 proposed_text=cleaned,
                 source_text=cleaned,
-                source_type="user_correction",
+                source_type=correction_source_type,
                 source_uri=source_uri or f"reverie-memory://correction/{memory_id}",
                 source_hash=source_hash,
                 confidence=1.0,
@@ -523,6 +530,107 @@ class MemoryManager:
         result = self._commit(commit_confirmed)
         self._last_memory_activity_at = time.monotonic()
         return result
+
+    def confirm_place_preference(
+        self,
+        *,
+        display_label: str = "",
+        broad_category: str = "",
+    ) -> dict:
+        """Store only the preference the user explicitly selected, never POI evidence."""
+
+        self._require_current()
+        from ..web.sanitizer import LocalWebIntentClassifier
+
+        classifier = LocalWebIntentClassifier()
+        label_result = classifier.inspect(str(display_label), source_url="amap-preference://place")
+        category_result = classifier.inspect(
+            str(broad_category), source_url="amap-preference://category"
+        )
+        if label_result.status != "approved" or category_result.status != "approved":
+            raise ValueError("Place preference value is unsafe")
+        label = " ".join(label_result.normalized_text.split())
+        category = " ".join(category_result.normalized_text.split())
+        if bool(label) == bool(category):
+            raise ValueError("Exactly one place preference value is required")
+        value = label or category
+        if len(value) > (120 if label else 80) or any(char in value for char in "\r\n\0"):
+            raise ValueError("Place preference value is invalid")
+        lowered = value.lower()
+        coordinate_pair = re.search(
+            r"(?<!\d)[+-]?\d{1,3}(?:\.\d+)?\s*[,，]\s*[+-]?\d{1,3}(?:\.\d+)?(?!\d)",
+            value,
+        )
+        if (
+            "://" in lowered
+            or coordinate_pair
+            or any(token in lowered for token in ("latitude", "longitude", "location="))
+        ):
+            raise ValueError("Place preference cannot contain location or request data")
+        proposed_text = f"用户喜欢店铺：{label}" if label else f"用户喜欢的餐饮类别：{category}"
+        source_hash = hashlib.sha256(proposed_text.encode("utf-8")).hexdigest()
+
+        def commit_confirmed() -> dict:
+            candidate = self.store.catalog.create_candidate(
+                fact_key=explicit_fact_key(proposed_text),
+                proposed_text=proposed_text,
+                source_text=proposed_text,
+                source_type="user_confirmed",
+                source_uri="",
+                source_hash=source_hash,
+                confidence=1.0,
+            )
+            return self.store.catalog.confirm_candidate(
+                str(candidate["id"]),
+                embedding_model_version=self.store.runtime.model_version,
+                decision_reason="user_confirmed_place_preference",
+            )
+
+        result = self._commit(commit_confirmed)
+        self._last_memory_activity_at = time.monotonic()
+        memory = result.get("memory")
+        return {
+            **result,
+            "memory": self._confirmed_memory_view(memory) if memory else None,
+        }
+
+    def confirm_coarse_system_location(self, neighborhood_scale: str) -> dict:
+        """Store an OS-derived scale selected by the user, without location evidence."""
+
+        self._require_current()
+        labels = {
+            "neighborhood-scale": "系统定位当前为街区尺度",
+            "city-scale": "系统定位当前为城市尺度",
+            "regional-scale": "系统定位当前为区域尺度",
+        }
+        proposed_text = labels.get(str(neighborhood_scale))
+        if proposed_text is None:
+            raise ValueError("Unsupported system location scale")
+        source_hash = hashlib.sha256(proposed_text.encode("utf-8")).hexdigest()
+
+        def commit_confirmed() -> dict:
+            candidate = self.store.catalog.create_candidate(
+                fact_key=explicit_fact_key(proposed_text),
+                proposed_text=proposed_text,
+                source_text=proposed_text,
+                source_type="user_confirmed_system_location_summary",
+                source_uri="",
+                source_hash=source_hash,
+                confidence=1.0,
+            )
+            return self.store.catalog.confirm_candidate(
+                str(candidate["id"]),
+                embedding_model_version=self.store.runtime.model_version,
+                decision_reason="user_confirmed_system_location_summary",
+            )
+
+        result = self._commit(commit_confirmed)
+        self._last_memory_activity_at = time.monotonic()
+        memory = result.get("memory")
+        return {
+            **result,
+            "memory": self._confirmed_memory_view(memory) if memory else None,
+        }
 
     def apply_settings(
         self,
@@ -628,20 +736,21 @@ class MemoryManager:
         facts = user_manager.profile_facts()
         if not facts:
             return 0
-        for row in self.store.list_by_layer("permanent"):
-            text = str(row.get("text", ""))
-            if text.startswith("用户档案：") or text.startswith("User profile:"):
-                row_id = str(row.get("id", ""))
-                if row_id:
-                    self.store.delete(row_id)
-
-        existing = set(self.layers.get_permanent_memories())
-        inserted = 0
-        for fact in facts:
-            if fact in existing:
-                continue
-            self.store_fact(fact, layer="permanent", source_type="user_profile")
-            inserted += 1
+        # Anchored rows carry the prefix, so only non-anchored copies (e.g.
+        # user-confirmed facts) suppress re-seeding; the anchored set itself is
+        # always rebuilt. Delete + reinsert runs in one canonical-store
+        # transaction: a crash mid-sync must never leave the permanent layer
+        # without any profile anchors.
+        skip = {
+            text
+            for text in self.layers.get_permanent_memories()
+            if not text.startswith("用户档案：") and not text.startswith("User profile:")
+        }
+        inserted = self.store.replace_permanent_profile_facts(
+            ("用户档案：", "User profile:"),
+            facts,
+            skip_texts=skip,
+        )
         if inserted:
             logger.info("Seeded %d permanent memory facts from user profile", inserted)
         return inserted
@@ -1313,6 +1422,7 @@ class MemoryManager:
             "fact_revision": int(row.get("fact_revision", 0) or 0),
             "supersedes_id": str(row.get("supersedes_id", "")),
             "confirmation_state": str(row.get("confirmation_state", "observed")),
+            "confirmed_at": row.get("confirmed_at"),
         }
 
     def _adjust_memory_importance(self, memory_id: str, delta: float, *, touch: bool) -> bool:

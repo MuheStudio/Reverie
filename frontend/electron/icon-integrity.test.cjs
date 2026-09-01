@@ -5,6 +5,10 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const {
+  APPROVED_ICON_SHA256,
+  verifyPackagedWindowsIcons,
+} = require('../script/windows-icon-verification.cjs');
 
 const EXPECTED_SHA256 = '13cd9611c1558c0a253897627111940c4728f3d8ca2e81b2cc28090185c0b531';
 const EXPECTED_SIZES = [16, 24, 32, 48, 64, 128, 256];
@@ -13,6 +17,7 @@ test('Windows icon is the approved multi-resolution ICO', () => {
   const iconPath = path.join(__dirname, '..', 'public', 'icon.ico');
   const bytes = fs.readFileSync(iconPath);
   assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), EXPECTED_SHA256);
+  assert.equal(APPROVED_ICON_SHA256, EXPECTED_SHA256);
   assert.equal(bytes.readUInt16LE(0), 0);
   assert.equal(bytes.readUInt16LE(2), 1);
   const count = bytes.readUInt16LE(4);
@@ -30,6 +35,20 @@ test('Windows icon is the approved multi-resolution ICO', () => {
   assert.deepEqual(sizes.sort((left, right) => left - right), EXPECTED_SIZES);
 });
 
+test('post-build verifier rejects any resource icon other than the approved ICO', () => {
+  const invalidIcon = path.join(__dirname, 'invalid-packaged-icon.tmp');
+  fs.writeFileSync(invalidIcon, 'not the approved icon');
+  try {
+    assert.throws(() => verifyPackagedWindowsIcons({
+      executable: 'unused.exe',
+      resourceIcon: invalidIcon,
+      platform: 'linux',
+    }), /approved icon/);
+  } finally {
+    fs.rmSync(invalidIcon, { force: true });
+  }
+});
+
 test('window, tray, and installer all use icon.ico', () => {
   const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
   const builder = fs.readFileSync(path.join(__dirname, '..', 'electron-builder.config.cjs'), 'utf8');
@@ -38,4 +57,5 @@ test('window, tray, and installer all use icon.ico', () => {
   assert.match(main, /process\.resourcesPath, 'icon\.ico'/);
   assert.match(builder, /public', 'icon\.ico'/);
   assert.match(portable, /resourcesDir, 'icon\.ico'/);
+  assert.match(portable, /InternalName: 'Reverie'/);
 });

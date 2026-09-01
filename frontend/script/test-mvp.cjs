@@ -21,6 +21,7 @@ const electronTests = [
   'live2d-runtime-assets.test.cjs',
   'local-network-gate.test.cjs',
   'mvp-authority.test.cjs',
+  'notification-outbox.test.cjs',
   'package-win-test-security.test.cjs',
   'preload-sandbox.test.cjs',
   'provider-config-store.test.cjs',
@@ -29,6 +30,8 @@ const electronTests = [
   'runtime-security.test.cjs',
   'single-instance.test.cjs',
   'storage-key-vault.test.cjs',
+  'test-user-data.test.cjs',
+  'windows-app-identity.test.cjs',
 ].map((name) => path.join(electronRoot, name));
 
 for (const testFile of electronTests) {

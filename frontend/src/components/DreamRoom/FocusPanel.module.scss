@@ -53,6 +53,12 @@
   grid-template-columns: repeat(3, 1fr);
 }
 
+.presets button[data-preset-active='true'] {
+  border-color: var(--rv-accent, #8f7bff);
+  color: var(--rv-accent, #8f7bff);
+  font-weight: 600;
+}
+
 .focus button,
 .focus input,
 .focus select {

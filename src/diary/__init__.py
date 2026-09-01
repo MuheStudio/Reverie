@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Callable, TypeVar
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 from ..config.settings import DIARY_DIR, DIARY_KEY_DIR
-from ..local_store import atomic_write_json
+from ..local_store import atomic_write_json, backup_path, read_json_object
 from ..persona.identity import StalePersonaEpoch
 
 if TYPE_CHECKING:
@@ -738,7 +738,14 @@ class DiaryManager:
 
         def persist() -> None:
             data = self.crypto.encrypt_entry(entry)
-            atomic_write_json(filepath, data)
+
+            def validate(candidate: object) -> None:
+                if not isinstance(candidate, dict):
+                    raise ValueError("Diary persistence requires a JSON object")
+                if candidate.get("encrypted") is True:
+                    self.crypto.decrypt_entry(candidate)
+
+            atomic_write_json(filepath, data, validator=validate)
 
         self._commit_bound(persist)
         logger.debug("Diary saved: %s", filepath)
@@ -747,17 +754,22 @@ class DiaryManager:
         """Load a diary entry by date string."""
         self._require_scope()
         filepath = self._path_for(date_str)
-        if not filepath.exists():
-            return None
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if data.get("encrypted") is True:
-                return self.crypto.decrypt_entry(data)
-            return DiaryEntry.from_dict(data)
-        except Exception:
-            logger.exception("Diary: failed to load %s", date_str)
-            return None
+        for candidate in (filepath, backup_path(filepath)):
+            try:
+                data = read_json_object(candidate)
+                if data is None:
+                    continue
+                if data.get("encrypted") is True:
+                    return self.crypto.decrypt_entry(data)
+                return DiaryEntry.from_dict(data)
+            except Exception:
+                logger.warning(
+                    "Diary: failed to load %s from %s",
+                    date_str,
+                    candidate.name,
+                    exc_info=True,
+                )
+        return None
 
     def list_entries(self) -> list[str]:
         """Return sorted list of dates that have diary entries."""
@@ -766,7 +778,11 @@ class DiaryManager:
         for p in self.diary_dir.glob("*.json"):
             if DATE_RE.match(p.stem):
                 entries.append(p.stem)  # "YYYY-MM-DD"
-        return sorted(entries)
+        for p in self.diary_dir.glob("*.json.bak"):
+            date_str = p.name.removesuffix(".json.bak")
+            if DATE_RE.match(date_str):
+                entries.append(date_str)
+        return sorted(set(entries))
 
     def record_missed(self, date_str: str) -> None:
         """Record a date whose diary was skipped by a late-night event."""
@@ -926,11 +942,10 @@ class DiaryManager:
         """
         self._require_scope()
         filepath = self._path_for(date_str)
-        if not filepath.exists():
-            return None
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = read_json_object(filepath)
+            if data is None:
+                return None
             return {
                 "date": data.get("date", date_str),
                 "mood": data.get("mood", "neutral"),
@@ -1031,7 +1046,8 @@ class DiaryManager:
         return bool(self.usage_policy.allowed("diary_generation"))
 
     def _entry_exists(self, date_str: str) -> bool:
-        return self._path_for(date_str).exists()
+        path = self._path_for(date_str)
+        return path.exists() or backup_path(path).exists()
 
     def _build_system_prompt(self) -> str:
         return (

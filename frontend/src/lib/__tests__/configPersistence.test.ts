@@ -1,19 +1,17 @@
 /**
  * Unit tests for configPersistence.ts
  *
- * Covers: loadPersistedConfig, savePersistedConfig, legacy format migration
+ * Covers: loadPersistedConfig, legacy format migration
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   loadPersistedConfig,
-  savePersistedConfig,
   type PersistedConfig,
   type PublicImageGenConfig,
   type PublicLLMConfig,
 } from '../configPersistence';
 import type { LLMConfig } from '../llmModels';
-import type { ImageGenConfig } from '../imageGenClient';
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
@@ -23,14 +21,6 @@ const MOCK_LLM_CONFIG: LLMConfig = {
   baseUrl: 'https://gateway.example.test/v1',
   model: 'gateway-model',
   customHeaders: 'Authorization: backup-canary',
-};
-
-const MOCK_IMAGEGEN_CONFIG: ImageGenConfig = {
-  provider: 'openai',
-  apiKey: 'sk-img-test',
-  baseUrl: 'https://api.openai.com',
-  model: 'gpt-image-1.5',
-  customHeaders: 'X-Api-Key: image-canary',
 };
 
 const PUBLIC_LLM_CONFIG: PublicLLMConfig = {
@@ -50,20 +40,17 @@ const MOCK_PERSISTED: PersistedConfig = {
   imageGen: PUBLIC_IMAGEGEN_CONFIG,
 };
 const providerGet = vi.fn();
-const providerSet = vi.fn();
 
 // ─── Setup / Teardown ───────────────────────────────────────────────────────────
 
 beforeEach(() => {
   vi.restoreAllMocks();
   providerGet.mockReset();
-  providerSet.mockReset();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {
       providerConfig: {
         get: providerGet,
-        set: providerSet,
       },
     },
   });
@@ -124,64 +111,5 @@ describe('loadPersistedConfig()', () => {
     providerGet.mockResolvedValueOnce({ unrelated: 'data' });
 
     expect(await loadPersistedConfig()).toBeNull();
-  });
-});
-
-// ─── savePersistedConfig() ──────────────────────────────────────────────────────
-
-describe('savePersistedConfig()', () => {
-  it('writes closed-world metadata through the Electron store', async () => {
-    providerSet.mockResolvedValueOnce(undefined);
-    await savePersistedConfig({
-      llm: MOCK_LLM_CONFIG,
-      imageGen: MOCK_IMAGEGEN_CONFIG,
-    });
-
-    expect(providerSet).toHaveBeenCalledWith({
-      llm: {
-        provider: PUBLIC_LLM_CONFIG.provider,
-        baseUrl: PUBLIC_LLM_CONFIG.baseUrl,
-        model: PUBLIC_LLM_CONFIG.model,
-      },
-      imageGen: {
-        provider: PUBLIC_IMAGEGEN_CONFIG.provider,
-        baseUrl: PUBLIC_IMAGEGEN_CONFIG.baseUrl,
-        model: PUBLIC_IMAGEGEN_CONFIG.model,
-      },
-    });
-  });
-
-  it('never sends credential material to Electron provider metadata', async () => {
-    providerSet.mockResolvedValueOnce(undefined);
-    await savePersistedConfig({
-      llm: MOCK_LLM_CONFIG,
-      imageGen: MOCK_IMAGEGEN_CONFIG,
-    });
-
-    const body = providerSet.mock.calls[0][0];
-    expect(JSON.stringify(body)).not.toContain('sk-test');
-    expect(JSON.stringify(body)).not.toContain('backup-canary');
-    expect(JSON.stringify(body)).not.toContain('image-canary');
-    expect(JSON.stringify(body)).not.toContain('apiKey');
-    expect(JSON.stringify(body)).not.toContain('customHeaders');
-  });
-
-  it('omits imageGen when not provided', async () => {
-    providerSet.mockResolvedValueOnce(undefined);
-    await savePersistedConfig({ llm: MOCK_LLM_CONFIG });
-
-    const body = providerSet.mock.calls[0][0];
-    expect(body.llm).toEqual({
-      provider: PUBLIC_LLM_CONFIG.provider,
-      baseUrl: PUBLIC_LLM_CONFIG.baseUrl,
-      model: PUBLIC_LLM_CONFIG.model,
-    });
-    expect(body.imageGen).toBeUndefined();
-  });
-
-  it('propagates authoritative store failure instead of claiming success', async () => {
-    providerSet.mockRejectedValueOnce(new Error('disk full'));
-
-    await expect(savePersistedConfig(MOCK_PERSISTED)).rejects.toThrow('disk full');
   });
 });

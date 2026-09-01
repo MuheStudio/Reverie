@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import DATA_DIR
+from ..storage.encrypted_sqlite import connect_database
 
 _TIMEOUT_OPENERS = (
     "唔，这边忽然有点断断续续的",
@@ -128,10 +129,13 @@ class ReflexSystem:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.persona = persona
         self._lock = threading.RLock()
-        self._connection = sqlite3.connect(str(self.path), timeout=20, check_same_thread=False)
+        self._connection = connect_database(
+            str(self.path), timeout=20, check_same_thread=False
+        )
         self._connection.row_factory = sqlite3.Row
         with self._lock:
-            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA journal_mode=DELETE")
+            self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.executescript(
                 """

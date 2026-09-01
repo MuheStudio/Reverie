@@ -47,7 +47,8 @@ class MemoryCatalog:
             isolation_level=None,
         )
         with self._lock:
-            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA journal_mode=DELETE")
+            self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.execute("PRAGMA busy_timeout=30000")
@@ -82,6 +83,7 @@ class MemoryCatalog:
                 fact_revision INTEGER NOT NULL DEFAULT 0,
                 supersedes_id TEXT NOT NULL DEFAULT '',
                 confirmation_state TEXT NOT NULL DEFAULT 'observed',
+                confirmed_at REAL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 CHECK (retention_layer IN ('permanent','long_term','short_term')),
@@ -171,6 +173,7 @@ class MemoryCatalog:
             ("fact_revision", "INTEGER NOT NULL DEFAULT 0"),
             ("supersedes_id", "TEXT NOT NULL DEFAULT ''"),
             ("confirmation_state", "TEXT NOT NULL DEFAULT 'observed'"),
+            ("confirmed_at", "REAL"),
         ):
             if name not in columns:
                 self._connection.execute(
@@ -353,9 +356,9 @@ class MemoryCatalog:
                         importance,emotions_json,source_type,source_uri,source_hash,
                         trust_level,sanitizer_status,sanitizer_flags_json,keywords,
                         embedding_model_version,embedding_status,lifecycle_state,
-                        fact_key,fact_revision,supersedes_id,confirmation_state,
+                        fact_key,fact_revision,supersedes_id,confirmation_state,confirmed_at,
                         created_at,updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         memory_id,
@@ -380,6 +383,7 @@ class MemoryCatalog:
                         revision,
                         conflict_id,
                         "confirmed",
+                        now,
                         now,
                         now,
                     ),
@@ -467,6 +471,45 @@ class MemoryCatalog:
         sanitizer_flags: list[str] | None = None,
         event_time: float | None = None,
     ) -> None:
+        payload, now = self._prepare_record(
+            id=id,
+            text=text,
+            retention_layer=retention_layer,
+            cognitive_layer=cognitive_layer,
+            timestamp=timestamp,
+            importance=importance,
+            emotions=emotions,
+            embedding_model_version=embedding_model_version,
+            source_type=source_type,
+            source_uri=source_uri,
+            source_hash=source_hash,
+            trust_level=trust_level,
+            sanitizer_status=sanitizer_status,
+            sanitizer_flags=sanitizer_flags,
+            event_time=event_time,
+        )
+        with self.transaction() as connection:
+            self._insert_record(connection, payload, now)
+
+    def _prepare_record(
+        self,
+        *,
+        id: str,
+        text: str,
+        retention_layer: str,
+        cognitive_layer: str,
+        timestamp: float,
+        importance: float,
+        emotions: dict[str, float] | None,
+        embedding_model_version: str,
+        source_type: str = "local_interaction",
+        source_uri: str = "",
+        source_hash: str = "",
+        trust_level: str = "trusted_local",
+        sanitizer_status: str = "not_required",
+        sanitizer_flags: list[str] | None = None,
+        event_time: float | None = None,
+    ) -> tuple[tuple, float]:
         if retention_layer not in RETENTION_LAYERS:
             raise ValueError(f"Unsupported retention layer: {retention_layer}")
         if cognitive_layer not in COGNITIVE_LAYERS:
@@ -512,34 +555,70 @@ class MemoryCatalog:
             json.dumps(flags, ensure_ascii=False),
             " ".join(memory_terms(cleaned)), model_version, "pending", now, now,
         )
+        return payload, now
+
+    @staticmethod
+    def _insert_record(connection: sqlite3.Connection, payload: tuple, now: float) -> None:
+        connection.execute(
+            """
+            INSERT INTO memory_records (
+                id,text,retention_layer,cognitive_layer,timestamp,event_time,importance,
+                emotions_json,source_type,source_uri,source_hash,trust_level,
+                sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
+                embedding_status,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                text=excluded.text, retention_layer=excluded.retention_layer,
+                cognitive_layer=excluded.cognitive_layer, timestamp=excluded.timestamp,
+                event_time=excluded.event_time, importance=excluded.importance,
+                emotions_json=excluded.emotions_json, source_type=excluded.source_type,
+                source_uri=excluded.source_uri, source_hash=excluded.source_hash,
+                trust_level=excluded.trust_level, sanitizer_status=excluded.sanitizer_status,
+                sanitizer_flags_json=excluded.sanitizer_flags_json, keywords=excluded.keywords,
+                embedding_model_version=excluded.embedding_model_version,
+                embedding_status='pending', lifecycle_state='active',
+                mention_count=memory_records.mention_count + 1,
+                updated_at=excluded.updated_at
+            """,
+            payload,
+        )
+        connection.execute(
+            "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
+            (payload[0], now, "stored"),
+        )
+
+    def replace_prefixed_facts(
+        self,
+        prefixes: tuple[str, ...],
+        records: Iterable[dict],
+    ) -> int:
+        """Atomically swap anchored rows: delete rows whose text starts with
+        any prefix, then insert the replacement records inside one transaction
+        so a crash can never leave the anchor set empty or half-written."""
+        prepared = [self._prepare_record(**record) for record in records]
+        inserted = 0
         with self.transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO memory_records (
-                    id,text,retention_layer,cognitive_layer,timestamp,event_time,importance,
-                    emotions_json,source_type,source_uri,source_hash,trust_level,
-                    sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
-                    embedding_status,created_at,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                    text=excluded.text, retention_layer=excluded.retention_layer,
-                    cognitive_layer=excluded.cognitive_layer, timestamp=excluded.timestamp,
-                    event_time=excluded.event_time, importance=excluded.importance,
-                    emotions_json=excluded.emotions_json, source_type=excluded.source_type,
-                    source_uri=excluded.source_uri, source_hash=excluded.source_hash,
-                    trust_level=excluded.trust_level, sanitizer_status=excluded.sanitizer_status,
-                    sanitizer_flags_json=excluded.sanitizer_flags_json, keywords=excluded.keywords,
-                    embedding_model_version=excluded.embedding_model_version,
-                    embedding_status='pending', lifecycle_state='active',
-                    mention_count=memory_records.mention_count + 1,
-                    updated_at=excluded.updated_at
-                """,
-                payload,
-            )
-            connection.execute(
-                "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
-                (memory_id, now, "stored"),
-            )
+            removed_ids: list[str] = []
+            for prefix in prefixes:
+                rows = connection.execute(
+                    "SELECT id FROM memory_records WHERE substr(text, 1, ?) = ?",
+                    (len(prefix), prefix),
+                ).fetchall()
+                removed_ids.extend(str(row["id"]) for row in rows)
+            for memory_id in removed_ids:
+                connection.execute(
+                    "DELETE FROM memory_candidates WHERE committed_memory_id=?",
+                    (memory_id,),
+                )
+                connection.execute(
+                    "UPDATE memory_candidates SET conflict_memory_id='' WHERE conflict_memory_id=?",
+                    (memory_id,),
+                )
+                connection.execute("DELETE FROM memory_records WHERE id=?", (memory_id,))
+            for payload, now in prepared:
+                self._insert_record(connection, payload, now)
+                inserted += 1
+        return inserted
 
     def get(self, memory_id: str) -> dict | None:
         with self._lock:
@@ -1033,6 +1112,10 @@ class MemoryCatalog:
             confirmation_state = str(record.get("confirmation_state", "observed"))
             if confirmation_state not in {"observed", "confirmed"}:
                 raise ValueError("Backup contains an invalid confirmation state")
+            raw_confirmed_at = record.get("confirmed_at")
+            confirmed_at = None if raw_confirmed_at is None else float(raw_confirmed_at)
+            if confirmed_at is not None and not math.isfinite(confirmed_at):
+                raise ValueError("Backup contains a non-finite confirmation timestamp")
             prepared.append((
                 memory_id, text, retention, cognitive, timestamp, event_time,
                 max(0.0, min(1.0, importance)),
@@ -1044,7 +1127,7 @@ class MemoryCatalog:
                 " ".join(memory_terms(text)),
                 model_version,
                 "pending", lifecycle_state, fact_key, fact_revision,
-                supersedes_id, confirmation_state, now, now,
+                supersedes_id, confirmation_state, confirmed_at, now, now,
             ))
         with self.transaction() as connection:
             connection.execute("DELETE FROM memory_records")
@@ -1054,8 +1137,8 @@ class MemoryCatalog:
                        emotions_json,source_type,source_uri,source_hash,trust_level,
                        sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
                        embedding_status,lifecycle_state,fact_key,fact_revision,
-                       supersedes_id,confirmation_state,created_at,updated_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       supersedes_id,confirmation_state,confirmed_at,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 prepared,
             )
         return len(prepared)
@@ -1082,8 +1165,8 @@ class MemoryCatalog:
                    emotions_json,source_type,source_uri,source_hash,trust_level,
                    sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
                    embedding_status,lifecycle_state,fact_key,fact_revision,
-                   supersedes_id,confirmation_state,created_at,updated_at
-               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   supersedes_id,confirmation_state,confirmed_at,created_at,updated_at
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                    text=excluded.text,retention_layer=excluded.retention_layer,
                    cognitive_layer=excluded.cognitive_layer,timestamp=excluded.timestamp,
@@ -1097,9 +1180,10 @@ class MemoryCatalog:
                    embedding_model_version=excluded.embedding_model_version,
                    embedding_status='pending',lifecycle_state=excluded.lifecycle_state,
                    fact_key=excluded.fact_key,fact_revision=excluded.fact_revision,
-                   supersedes_id=excluded.supersedes_id,
-                   confirmation_state=excluded.confirmation_state,
-                   created_at=excluded.created_at,updated_at=excluded.updated_at"""
+                    supersedes_id=excluded.supersedes_id,
+                    confirmation_state=excluded.confirmation_state,
+                    confirmed_at=excluded.confirmed_at,
+                    created_at=excluded.created_at,updated_at=excluded.updated_at"""
         with self.transaction() as connection:
             connection.execute(
                 "CREATE TEMP TABLE IF NOT EXISTS reverie_import_seen_ids(id TEXT PRIMARY KEY)"
@@ -1197,6 +1281,10 @@ class MemoryCatalog:
         confirmation_state = str(record.get("confirmation_state", "observed"))
         if confirmation_state not in {"observed", "confirmed"}:
             raise ValueError("Backup contains an invalid confirmation state")
+        raw_confirmed_at = record.get("confirmed_at")
+        confirmed_at = None if raw_confirmed_at is None else float(raw_confirmed_at)
+        if confirmed_at is not None and not math.isfinite(confirmed_at):
+            raise ValueError("Backup contains a non-finite confirmation timestamp")
         return (
             memory_id, text, retention, cognitive, timestamp, event_time,
             max(0.0, min(1.0, importance)),
@@ -1207,7 +1295,7 @@ class MemoryCatalog:
             json.dumps(flags, ensure_ascii=False),
             " ".join(memory_terms(text)), model_version,
             "pending", lifecycle_state, fact_key, fact_revision,
-            supersedes_id, confirmation_state, now, now,
+            supersedes_id, confirmation_state, confirmed_at, now, now,
         )
 
     def reset_embedding_derivatives(self) -> None:

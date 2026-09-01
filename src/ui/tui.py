@@ -906,10 +906,10 @@ class ReverieTUI(App):
     async def _maybe_retract_message(self, chat_area: ScrollableContainer) -> None:
         """Occasionally retract and correct a message (requirements #57-58).
 
-        With ~0.1% probability, the character retracts their last message
+        With ~0.05% probability, the character retracts their last message
         and sends a quick correction, mimicking natural typo fixing.
         """
-        if random.random() > 0.001:
+        if random.random() > 0.0005:
             return
 
         # Small delay before retracting

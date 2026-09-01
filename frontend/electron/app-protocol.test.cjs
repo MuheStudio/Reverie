@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { parseBundleUrl, PRODUCTION_CSP } = require('./app-protocol.cjs');
+const { MIME, parseBundleUrl, PRODUCTION_CSP } = require('./app-protocol.cjs');
 
 test('application protocol maps only bundle paths and rejects traversal encodings', () => {
   assert.deepEqual(parseBundleUrl('reverie-app://app/index.html#/dream'), ['index.html']);
@@ -22,4 +22,10 @@ test('production renderer CSP blocks network transports and allows registered as
   assert.doesNotMatch(PRODUCTION_CSP, /file:/);
   assert.doesNotMatch(PRODUCTION_CSP, /https:/);
   assert.doesNotMatch(PRODUCTION_CSP, /script-src[^;]*unsafe-inline/);
+});
+
+test('bundled audio assets are served (focus soundscape must not 404 into pink-noise fallback)', () => {
+  assert.equal(MIME['.ogg'], 'audio/ogg');
+  assert.equal(MIME['.wav'], 'audio/wav');
+  assert.equal(MIME['.mp3'], 'audio/mpeg');
 });

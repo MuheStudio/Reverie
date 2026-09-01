@@ -256,3 +256,38 @@
   .header { align-items: flex-start; }
   .heading span { max-width: 220px; }
 }
+
+// AI 陪玩 / 练习模式 toggle + 她的走子短评
+.companionBar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  inline-size: 100%;
+  margin-block-start: 0.45rem;
+  padding-block-start: 0.45rem;
+  border-block-start: 1px dashed rgba(180, 140, 160, 0.35);
+
+  button {
+    padding: 0.22rem 0.75rem;
+    border: 1px solid rgba(180, 140, 160, 0.6);
+    border-radius: 999px;
+    background: rgba(255, 244, 248, 0.9);
+    color: #8a4a63;
+    font: inherit;
+    font-size: 0.8rem;
+    cursor: pointer;
+
+    &[data-mode='companion'] {
+      background: rgba(240, 170, 195, 0.28);
+      border-color: rgba(200, 110, 145, 0.7);
+    }
+  }
+
+  span {
+    font-size: 0.8rem;
+    color: #93606f;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

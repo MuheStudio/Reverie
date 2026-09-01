@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 import threading
 from typing import Any, Iterable, Iterator
@@ -17,7 +18,7 @@ from src.storage.encrypted_sqlite import connect_database
 from .contracts import CommandEnvelopeV4, DomainEventV4, PersonaScopeV4
 
 
-KERNEL_SCHEMA_VERSION = 2
+KERNEL_SCHEMA_VERSION = 3
 COMMAND_TERMINAL_STATES = frozenset({"committed", "failed", "outcome_unknown"})
 PRIVATE_DOCUMENT_NAMES = frozenset(
     {
@@ -28,6 +29,7 @@ PRIVATE_DOCUMENT_NAMES = frozenset(
     }
 )
 MAX_PRIVATE_DOCUMENT_BYTES = 1024 * 1024
+PROACTIVE_ID_PATTERN = re.compile(r"^proactive_[0-9a-f]{32}$")
 
 
 class KernelStorageError(RuntimeError):
@@ -69,9 +71,12 @@ def connect_sqlite(path: Path, *, read_only: bool = False) -> sqlite3.Connection
     connection.execute("PRAGMA busy_timeout = 5000")
     connection.execute("PRAGMA trusted_schema = OFF")
     if not read_only:
-        connection.execute("PRAGMA journal_mode = WAL")
+        # SQLCipher 0.6.2 currently embeds SQLite 3.51.1, which predates the
+        # upstream WAL-reset race fix. This store is a serialized single
+        # writer, so rollback journaling is the safer durability tradeoff
+        # until the packaged SQLCipher runtime includes the fix.
+        connection.execute("PRAGMA journal_mode = DELETE")
         connection.execute("PRAGMA synchronous = FULL")
-        connection.execute("PRAGMA wal_autocheckpoint = 1000")
     return connection
 
 
@@ -160,10 +165,25 @@ class KernelStore:
                     content TEXT NOT NULL,
                     delivery_state TEXT NOT NULL,
                     created_at_utc TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'chat',
+                    proactive_id TEXT,
                     UNIQUE(request_id, role, bubble_index)
                 );
                 CREATE INDEX IF NOT EXISTS messages_conversation_order
                     ON messages(conversation_id, created_at_utc, message_id);
+
+                CREATE TABLE IF NOT EXISTS proactive_publications (
+                    proactive_id TEXT PRIMARY KEY,
+                    persona_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    effects_claimed INTEGER NOT NULL DEFAULT 0 CHECK (effects_claimed IN (0, 1)),
+                    notification_published INTEGER NOT NULL DEFAULT 0 CHECK (notification_published IN (0, 1)),
+                    broadcast_published INTEGER NOT NULL DEFAULT 0 CHECK (broadcast_published IN (0, 1)),
+                    created_at_utc TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS proactive_publications_pending
+                    ON proactive_publications(persona_id, broadcast_published, created_at_utc);
 
                 CREATE TABLE IF NOT EXISTS command_ledger (
                     request_id TEXT PRIMARY KEY,
@@ -196,6 +216,21 @@ class KernelStore:
                 CREATE INDEX IF NOT EXISTS domain_events_persona_sequence
                     ON domain_events(persona_id, sequence);
 
+                -- Attachments for chat messages. Rows are written at accept
+                -- time alongside the write-through user message; the actual
+                -- bytes live under DATA_DIR/chat-media/<media_id>.jpg.
+                CREATE TABLE IF NOT EXISTS chat_media (
+                    media_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    media_path TEXT NOT NULL,
+                    mime TEXT NOT NULL,
+                    bytes INTEGER NOT NULL,
+                    created_at_utc TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chat_media_request
+                    ON chat_media(request_id);
+
                 CREATE TABLE IF NOT EXISTS module_checkpoints (
                     module_id TEXT NOT NULL,
                     persona_id TEXT NOT NULL,
@@ -210,6 +245,23 @@ class KernelStore:
                     updated_at_utc TEXT NOT NULL
                 );
                 COMMIT;
+                """
+            )
+            columns = {
+                str(row["name"])
+                for row in self._connection.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "source" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'chat'"
+                )
+            if "proactive_id" not in columns:
+                self._connection.execute("ALTER TABLE messages ADD COLUMN proactive_id TEXT")
+            self._connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS messages_proactive_bubble
+                ON messages(proactive_id, bubble_index)
+                WHERE proactive_id IS NOT NULL
                 """
             )
             self._connection.execute(
@@ -503,6 +555,305 @@ class KernelStore:
                 (_utc_now(), request_id),
             )
 
+    def append_user_message(
+        self,
+        *,
+        request_id: str,
+        conversation_id: str,
+        persona_id: str,
+        text: str,
+        created_at_utc: str | None = None,
+        media: dict[str, Any] | None = None,
+    ) -> bool:
+        """Durably record the user's message the moment it is accepted.
+
+        Generation failures and cancellations must never erase what the user
+        said, so the user row lands before any provider call is made.
+        ``commit_chat_exchange`` later repeats this insert with the same
+        ``ON CONFLICT DO NOTHING`` guard, which keeps the write-through
+        idempotent even if the process dies between the two.
+        """
+        now = created_at_utc or _utc_now()
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    conversation_id, persona_id, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    updated_at_utc = excluded.updated_at_utc
+                """,
+                (conversation_id, persona_id, now, now),
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO messages(
+                    message_id, conversation_id, persona_id, request_id, role,
+                    bubble_index, content, delivery_state, created_at_utc
+                ) VALUES (?, ?, ?, ?, 'user', 0, ?, 'accepted', ?)
+                ON CONFLICT(request_id, role, bubble_index) DO NOTHING
+                """,
+                (
+                    uuid4().hex,
+                    conversation_id,
+                    persona_id,
+                    request_id,
+                    text,
+                    now,
+                ),
+            )
+            if media:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO chat_media(
+                        media_id, request_id, conversation_id,
+                        media_path, mime, bytes, created_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(media.get("media_id") or ""),
+                        request_id,
+                        conversation_id,
+                        str(media.get("media_path") or ""),
+                        str(media.get("mime") or "image/jpeg"),
+                        int(media.get("bytes") or 0),
+                        now,
+                    ),
+                )
+            return bool(cursor.rowcount)
+
+    def count_user_messages_on_date(self, date_str: str) -> int:
+        """Number of accepted user messages whose UTC timestamp starts with
+        ``date_str`` — the daily diary trigger's "enough happened today" gate."""
+        if not date_str or not all(part.isdigit() for part in date_str.split("-")):
+            raise ValueError("date must look like YYYY-MM-DD")
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM messages
+                WHERE role = 'user' AND created_at_utc LIKE ?
+                """,
+                (f"{date_str}%",),
+            ).fetchone()
+        return int(row["total"]) if row is not None else 0
+
+    def append_proactive_messages(
+        self,
+        *,
+        proactive_id: str,
+        conversation_id: str,
+        persona: PersonaScopeV4,
+        messages: Iterable[str],
+        created_at_utc: str,
+        publication_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Persist one proactive assistant turn without inventing a user turn."""
+
+        bubbles = [str(value) for value in messages if str(value)]
+        if not PROACTIVE_ID_PATTERN.fullmatch(proactive_id) or not bubbles:
+            raise ValueError("proactive message identity and bubbles are required")
+        with self.transaction() as connection:
+            active = connection.execute(
+                "SELECT persona_id, epoch, fingerprint FROM personas WHERE active = 1"
+            ).fetchone()
+            if active is None or (
+                str(active["persona_id"]) != persona.persona_id
+                or int(active["epoch"]) != persona.epoch
+                or str(active["fingerprint"]) != persona.fingerprint
+            ):
+                raise IdempotencyConflict("proactive message belongs to a stale persona scope")
+            existing = connection.execute(
+                """
+                SELECT conversation_id, persona_id, bubble_index, content, created_at_utc
+                FROM messages
+                WHERE proactive_id = ?
+                ORDER BY bubble_index
+                """,
+                (proactive_id,),
+            ).fetchall()
+            if existing:
+                existing_bubbles = [str(row["content"]) for row in existing]
+                exact_replay = (
+                    existing_bubbles == bubbles
+                    and all(str(row["conversation_id"]) == conversation_id for row in existing)
+                    and all(str(row["persona_id"]) == persona.persona_id for row in existing)
+                    and all(str(row["created_at_utc"]) == created_at_utc for row in existing)
+                    and [int(row["bubble_index"]) for row in existing] == list(range(len(bubbles)))
+                )
+                if exact_replay:
+                    if publication_payload is not None:
+                        publication = connection.execute(
+                            "SELECT payload_json FROM proactive_publications WHERE proactive_id = ?",
+                            (proactive_id,),
+                        ).fetchone()
+                        encoded = _json(publication_payload)
+                        if publication is not None and str(publication["payload_json"]) != encoded:
+                            raise IdempotencyConflict(
+                                "proactive publication identity was reused with new content"
+                            )
+                        if publication is None:
+                            connection.execute(
+                                """
+                                INSERT INTO proactive_publications(
+                                    proactive_id, persona_id, payload_json,
+                                    created_at_utc, updated_at_utc
+                                ) VALUES (?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    proactive_id,
+                                    persona.persona_id,
+                                    encoded,
+                                    created_at_utc,
+                                    _utc_now(),
+                                ),
+                            )
+                    return False
+                raise IdempotencyConflict("proactive message identity was reused with new content")
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    conversation_id, persona_id, created_at_utc, updated_at_utc
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    updated_at_utc = excluded.updated_at_utc
+                """,
+                (conversation_id, persona.persona_id, created_at_utc, created_at_utc),
+            )
+            inserted = 0
+            for index, bubble in enumerate(bubbles):
+                cursor = connection.execute(
+                    """
+                    INSERT INTO messages(
+                        message_id, conversation_id, persona_id, request_id, role,
+                        bubble_index, content, delivery_state, created_at_utc,
+                        source, proactive_id
+                    ) VALUES (?, ?, ?, ?, 'assistant', ?, ?, 'done', ?, 'proactive', ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    (
+                        uuid4().hex,
+                        conversation_id,
+                        persona.persona_id,
+                        proactive_id,
+                        index,
+                        bubble,
+                        created_at_utc,
+                        proactive_id,
+                    ),
+                )
+                inserted += int(cursor.rowcount)
+            if inserted != len(bubbles):
+                raise IdempotencyConflict("proactive message identity conflicts with chat history")
+            if publication_payload is not None:
+                connection.execute(
+                    """
+                    INSERT INTO proactive_publications(
+                        proactive_id, persona_id, payload_json,
+                        created_at_utc, updated_at_utc
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        proactive_id,
+                        persona.persona_id,
+                        _json(publication_payload),
+                        created_at_utc,
+                        _utc_now(),
+                    ),
+                )
+            return True
+
+    def pending_proactive_publications(
+        self,
+        persona_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return durable proactive work that still needs an external publication."""
+
+        if limit < 1 or limit > 1000:
+            raise ValueError("proactive publication limit is outside the safe range")
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT proactive_id, payload_json, effects_claimed,
+                       notification_published, broadcast_published
+                FROM proactive_publications
+                WHERE persona_id = ? AND (
+                    effects_claimed = 0
+                    OR notification_published = 0
+                    OR broadcast_published = 0
+                )
+                ORDER BY created_at_utc, proactive_id
+                LIMIT ?
+                """,
+                (persona_id, limit),
+            ).fetchall()
+        return [
+            {
+                "proactive_id": str(row["proactive_id"]),
+                "payload": json.loads(str(row["payload_json"])),
+                "effects_claimed": bool(row["effects_claimed"]),
+                "notification_published": bool(row["notification_published"]),
+                "broadcast_published": bool(row["broadcast_published"]),
+            }
+            for row in rows
+        ]
+
+    def claim_proactive_effects(self, proactive_id: str) -> bool:
+        """Claim non-transactional persona effects before applying them.
+
+        Claim-before-apply makes these effects at-most-once across a crash. A
+        crash after this claim can omit an effect, but can never apply it twice.
+        """
+
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE proactive_publications
+                SET effects_claimed = 1, updated_at_utc = ?
+                WHERE proactive_id = ? AND effects_claimed = 0
+                """,
+                (_utc_now(), proactive_id),
+            )
+            return bool(cursor.rowcount)
+
+    def mark_proactive_published(self, proactive_id: str, channel: str) -> None:
+        if channel not in {"notification", "broadcast"}:
+            raise ValueError("unknown proactive publication channel")
+        column = f"{channel}_published"
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE proactive_publications
+                SET {column} = 1, updated_at_utc = ?
+                WHERE proactive_id = ?
+                """,
+                (_utc_now(), proactive_id),
+            )
+            if not cursor.rowcount:
+                raise KeyError(proactive_id)
+
+    def media_for_requests(self, request_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """Attachment records keyed by request_id for history rendering."""
+        unique = [str(value) for value in dict.fromkeys(request_ids) if str(value)]
+        if not unique:
+            return {}
+        placeholders = ",".join("?" for _ in unique)
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT media_id, request_id, mime, bytes
+                FROM chat_media
+                WHERE request_id IN ({placeholders})
+                """,
+                unique,
+            ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["request_id"]), []).append(dict(row))
+        return grouped
+
     def commit_chat_exchange(
         self,
         command: CommandEnvelopeV4,
@@ -691,7 +1042,7 @@ class KernelStore:
             rows = self._connection.execute(
                 """
                 SELECT message_id, request_id, role, bubble_index, content,
-                       delivery_state, created_at_utc
+                       delivery_state, created_at_utc, source, proactive_id
                 FROM messages WHERE conversation_id = ?
                 ORDER BY created_at_utc, role DESC, bubble_index, message_id
                 """,
@@ -739,7 +1090,7 @@ class KernelStore:
                 f"""
                 SELECT rowid AS message_sequence,
                        message_id, request_id, role, bubble_index, content,
-                       delivery_state, created_at_utc
+                       delivery_state, created_at_utc, source, proactive_id
                 FROM messages
                 WHERE conversation_id = ? {persona_sql} {cursor_sql}
                 ORDER BY rowid DESC

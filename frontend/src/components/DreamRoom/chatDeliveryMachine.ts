@@ -26,6 +26,7 @@ export interface ChatMessageV2 {
   error?: string;
   delivery_id?: string;
   bubble_index?: number;
+  proactive_id?: string;
 }
 
 export interface ChatRequestState {
@@ -121,6 +122,9 @@ export function migrateChatMessages(value: unknown): ChatMessageV2[] {
         : typeof raw.bubbleIndex === 'number'
           ? raw.bubbleIndex
           : undefined,
+      proactive_id: typeof raw.proactive_id === 'string' && raw.proactive_id
+        ? raw.proactive_id
+        : undefined,
     }];
   });
 }
@@ -187,4 +191,32 @@ export function latestPendingRequest(
   return Object.values(states)
     .filter((item) => !TERMINAL_STATES.has(item.state))
     .sort((left, right) => Date.parse(right.updated_at_utc) - Date.parse(left.updated_at_utc))[0] ?? null;
+}
+
+/**
+ * Mirror of useMvpBridge's disconnect sweep: when the bridge socket closes,
+ * queued/generating bubbles must flip to a visible terminal state instead of
+ * staying "已排队" forever. The reconnect re-fetches authoritative history, so
+ * this only has to keep the UI honest while the connection is down.
+ */
+export function sweepDisconnectedChatMessages(
+  messages: ChatMessageV2[],
+): ChatMessageV2[] {
+  return messages.map((item) => (
+    item.delivery_state && !TERMINAL_STATES.has(item.delivery_state)
+      ? { ...item, delivery_state: 'failed_uncertain' as const }
+      : item
+  ));
+}
+
+export function sweepDisconnectedRequestStates(
+  states: Record<string, ChatRequestState>,
+): Record<string, ChatRequestState> {
+  const next: Record<string, ChatRequestState> = {};
+  for (const [key, value] of Object.entries(states)) {
+    next[key] = TERMINAL_STATES.has(value.state)
+      ? value
+      : { ...value, state: 'failed_uncertain', label: '连接中断，未自动重试' };
+  }
+  return next;
 }

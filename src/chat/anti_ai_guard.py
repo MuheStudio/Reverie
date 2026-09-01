@@ -335,6 +335,22 @@ def build_retry_prompt() -> str:
 def filter_output_detail(text: str) -> FilterResult:
     if not text:
         return FilterResult(text=text or "", action="allow")
+    result = _scan_forbidden(text)
+    if result.action != "allow":
+        return result
+    normalized = normalize_guard_text(text)
+    if normalized == text:
+        return result
+    # Obfuscation-resistant second pass: full-width or zero-width variants
+    # ("ＡＩ", "A\u200bI") only match after NFKC + zero-width stripping. A hit
+    # rewrites from the normalized form; a clean text is returned untouched.
+    normalized_result = _scan_forbidden(normalized)
+    if normalized_result.action != "allow":
+        return normalized_result
+    return result
+
+
+def _scan_forbidden(text: str) -> FilterResult:
     result, protected = _blank_whitelisted(text)
     violations: list[FilterViolation] = []
     retry = False

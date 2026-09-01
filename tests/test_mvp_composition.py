@@ -22,7 +22,6 @@ def test_desktop_composition_root_does_not_import_non_mvp_capabilities() -> None
         "src.ambient",
         "src.archive",
         "src.backup",
-        "src.diary",
         "src.interest",
         "src.notifications",
         "src.timeline",
@@ -41,14 +40,26 @@ def test_packager_omits_every_non_mvp_python_capability() -> None:
         "ambient",
         "archive",
         "backup",
-        "diary",
         "interest",
-        "notifications",
         "timeline",
         "web",
         "work_manager",
     ):
         assert f"'{module}'" in source
+
+
+def test_packager_ships_the_core_companion_artifacts() -> None:
+    """Diary, stickers, and game persistence are MVP capabilities, not
+    optional legacy modules — the composition root constructs them and the
+    packaged runtime must therefore contain their source."""
+    source = (
+        PROJECT_ROOT / "frontend" / "script" / "production-runtime.cjs"
+    ).read_text(encoding="utf-8")
+    for module in ("diary", "games", "immersion", "notifications", "stickers"):
+        assert f"'{module}'" not in source
+    runtime = (PROJECT_ROOT / "src" / "mvp_runtime.py").read_text(encoding="utf-8")
+    assert "from src.diary import DiaryManager" in runtime
+    assert "from src.stickers import StickerManager" in runtime
 
 
 def test_new_user_never_inherits_the_historical_developer_profile() -> None:

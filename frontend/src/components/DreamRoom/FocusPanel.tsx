@@ -129,8 +129,12 @@ export default function FocusPanel({
               <button
                 key={minutes}
                 type="button"
+                // Presets fill the picker instead of starting on their own:
+                // an accidental click must not launch a 60-minute session,
+                // and the user keeps full control through the picker + Start.
+                data-preset-active={customMinutes === minutes ? 'true' : 'false'}
                 disabled={!focus.available || focus.busy}
-                onClick={() => start(minutes)}
+                onClick={() => setCustomMinutes(minutes)}
               >
                 {t('dream.minutes', { count: minutes })}
               </button>

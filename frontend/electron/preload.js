@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /* BEGIN GENERATED PROTOCOL V4 COMMANDS */
 const COMMAND_NAMES = Object.freeze(new Set([
@@ -17,11 +17,14 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "backup:import",
   "chat:cancel",
   "chat:history",
+  "chat:media",
   "chat:reveal",
   "chat:send",
   "chat:stop",
   "diary:request",
+  "diary:write",
   "emotion:get",
+  "game:move",
   "game_state:get",
   "game_state:put",
   "group:request",
@@ -50,6 +53,7 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "settings:get",
   "settings:update",
   "sticker:collect",
+  "sticker:import",
   "sticker:list",
   "sticker:react",
   "timeline:request",
@@ -184,7 +188,20 @@ function publicProviderConfig(value = {}) {
 const api = Object.freeze({
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  getPathForFile: (file) => {
+    if (!file || typeof file !== 'object') throw new TypeError('file is invalid');
+    return webUtils.getPathForFile(file);
+  },
   onAppLifecycle: (callback) => subscribe('app:lifecycle', callback),
+  showNotification: (title, body) => ipcRenderer.invoke('notification:show', {
+    title: typeof title === 'string' ? title : '',
+    body: typeof body === 'string' ? body : '',
+  }),
+
+  backup: Object.freeze({
+    export: () => ipcRenderer.invoke('backup:nativeExport'),
+    import: () => ipcRenderer.invoke('backup:nativeImport'),
+  }),
 
   bridge: Object.freeze({
     getConnectionConfig: () => ipcRenderer.invoke('bridge:getConnectionConfig'),
@@ -208,6 +225,68 @@ const api = Object.freeze({
     onChanged: (callback) => subscribe('credentials:changed', callback),
   }),
 
+  places: Object.freeze({
+    status: () => ipcRenderer.invoke('places:status'),
+    setKey: (provider, apiKey) => {
+      if (!['amap', 'google'].includes(provider)) throw new TypeError('Places provider is invalid');
+      return ipcRenderer.invoke('places:setKey', {
+        provider,
+        apiKey: boundedText(apiKey, 'Places API key', 256),
+      });
+    },
+    deleteKey: (provider) => {
+      if (!['amap', 'google'].includes(provider)) throw new TypeError('Places provider is invalid');
+      return ipcRenderer.invoke('places:deleteKey', { provider });
+    },
+    resolve: (selection) => {
+      if (!['auto', 'amap', 'google'].includes(selection)) {
+        throw new TypeError('Places provider selection is invalid');
+      }
+      return ipcRenderer.invoke('places:resolve', { selection });
+    },
+    nearby: (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some((key) => ![
+          'provider', 'latitude', 'longitude', 'radiusM', 'placeTypes', 'consent',
+        ].includes(key))
+        || !['amap', 'google'].includes(value.provider)
+        || !Number.isFinite(value.latitude) || value.latitude < -90 || value.latitude > 90
+        || !Number.isFinite(value.longitude) || value.longitude < -180 || value.longitude > 180
+        || !Number.isInteger(value.radiusM) || value.radiusM < 300 || value.radiusM > 5000
+        || typeof value.consent !== 'boolean' || !Array.isArray(value.placeTypes)) {
+        throw new TypeError('Places nearby request is invalid');
+      }
+      const allowed = new Set([
+        'restaurant', 'cafe', 'bakery', 'dessert', 'convenience', 'snacks', 'supermarket',
+      ]);
+      const placeTypes = [...new Set(value.placeTypes)];
+      if (!placeTypes.length || placeTypes.length > 7
+        || placeTypes.some((item) => typeof item !== 'string' || !allowed.has(item))) {
+        throw new TypeError('Places place types are invalid');
+      }
+      if (!value.consent) {
+        return Promise.resolve({
+          ok: false,
+          code: 'consent',
+          items: [],
+          provider: value.provider === 'google' ? 'Google' : 'Amap',
+        });
+      }
+      return ipcRenderer.invoke('places:nearby', {
+        provider: value.provider,
+        latitude: value.latitude,
+        longitude: value.longitude,
+        radiusM: value.radiusM,
+        placeTypes,
+        consent: true,
+      });
+    },
+  }),
+
+  /*
+   * Place keys are write/delete-only from the renderer. Runtime plaintext and
+   * provider networking remain in Electron main.
+   */
   providerConfig: Object.freeze({
     get: () => ipcRenderer.invoke('providerConfig:get'),
     test: (value, credential) => ipcRenderer.invoke('providerConfig:test', {
@@ -231,11 +310,34 @@ const api = Object.freeze({
     get: () => ipcRenderer.invoke('character:getBundled'),
   }),
 
+  focus: Object.freeze({
+    getState: () => ipcRenderer.invoke('focus:getState'),
+    start: (durationSeconds) => {
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        throw new TypeError('durationSeconds must be a positive number');
+      }
+      return ipcRenderer.invoke('focus:start', { durationSeconds });
+    },
+    // Single-session manager: the session id is display state on the
+    // renderer side and is deliberately not forwarded.
+    pause: (_id) => ipcRenderer.invoke('focus:pause'),
+    resume: (_id) => ipcRenderer.invoke('focus:resume'),
+    stop: (_id) => ipcRenderer.invoke('focus:stop'),
+    acknowledgeAudioRearm: (_id) => ipcRenderer.invoke('focus:acknowledgeAudioRearm'),
+    onChanged: (callback) => subscribe('focus:changed', callback),
+  }),
+
   pet: Object.freeze({
     toggle: () => ipcRenderer.invoke('pet:toggle'),
     show: () => ipcRenderer.invoke('pet:show'),
     hide: () => ipcRenderer.invoke('pet:hide'),
     isVisible: () => ipcRenderer.invoke('pet:isVisible'),
+  }),
+
+  stickers: Object.freeze({
+    // Opens the native image picker; validation and storage happen on the
+    // Python side once the renderer forwards the path via sticker:import.
+    pickImage: () => ipcRenderer.invoke('stickers:pickImage'),
   }),
 
   download: Object.freeze({

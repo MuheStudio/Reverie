@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .anti_ai import (
     build_retry_prompt,
@@ -58,6 +59,67 @@ class ProviderCallFailed(RuntimeError):
         super().__init__("供应商请求未完成；为避免重复计费，Reverie 不会自动重试。")
 
 
+_IMAGE_PLACEHOLDER = "\n[用户发来了一张图片，但当前模型不支持识图，请自然地回应]"
+
+
+def _read_image_data_url(image_path: str) -> str:
+    """Load one stored chat-media JPEG as a base64 data URL."""
+    from pathlib import Path as _Path
+    import base64 as _base64
+
+    target = _Path(image_path)
+    if not target.is_file() or target.stat().st_size > 5 * 1024 * 1024:
+        raise ValueError("chat image is missing or oversized")
+    encoded = _base64.b64encode(target.read_bytes()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _build_vision_user_turn(text: str, image_path: str) -> dict[str, Any]:
+    """Compose the user turn, attaching the image as an OpenAI-style part.
+
+    OpenAI-compatible providers accept this shape verbatim; the Anthropic
+    path converts image parts into Messages-API blocks in the adapter.
+    """
+    if not image_path:
+        return {"role": "user", "content": text}
+    try:
+        data_url = _read_image_data_url(image_path)
+    except Exception:
+        logger.exception("Chat image could not be loaded; sending text only")
+        return {"role": "user", "content": f"{text}{_IMAGE_PLACEHOLDER}"}
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ],
+    }
+
+
+def _provider_rejected_content(exc: BaseException) -> bool:
+    """True only when the provider definitively refused the request (4xx).
+
+    A 4xx response is processed-and-billed nowhere, which makes the single
+    vision-fallback retry safe. Timeouts, 5xx, and auth errors are unknown or
+    hopeless outcomes and must surface as ProviderCallFailed instead.
+    """
+    current: BaseException | None = exc
+    for _ in range(6):
+        if current is None:
+            return False
+        response = getattr(current, "response", None)
+        status = getattr(current, "status_code", None)
+        if status is None and response is not None:
+            status = getattr(response, "status_code", None)
+        if isinstance(status, int) and 400 <= status < 500 and status not in {401, 403, 408, 429}:
+            return True
+        code = str(getattr(current, "code", "") or "")
+        if code in {"PROVIDER_INVALID_REQUEST", "PROVIDER_INVALID_RESPONSE_SCHEMA"}:
+            return True
+        current = current.__cause__
+    return False
+
+
 class ChatSession:
     """Manages a single conversation with the AI companion.
 
@@ -65,6 +127,18 @@ class ChatSession:
         session = ChatSession(persona, adapter, memory, emotion, relationship)
         reply = await session.send_message("Hello!")
     """
+
+    # Post-reply side effects are best-effort: a hung second provider call
+    # must never doom a reply that was already generated and billed.
+    EMOTION_ANALYSIS_TIMEOUT_S = 20.0
+
+    # Memory hygiene for a long-lived desktop process: conversation scopes,
+    # per-scope history, and committed-request ids must stay bounded. Prompt
+    # assembly only reads the most recent turns, so eviction never changes
+    # what the model sees.
+    MAX_TRACKED_CONVERSATIONS = 32
+    MAX_HISTORY_ENTRIES = 200
+    MAX_COMMITTED_REQUEST_IDS = 4096
 
     def __init__(
         self,
@@ -144,6 +218,7 @@ class ChatSession:
         self._history: list[dict] = []
         self._histories: dict[str, list[dict]] = {}
         self._committed_request_ids: set[str] = set()
+        self._committed_request_order: deque[str] = deque()
 
         # Session start time
         self.started_at = time.time()
@@ -153,12 +228,33 @@ class ChatSession:
     def _history_for(self, conversation_id: str) -> list[dict]:
         """Return the in-memory history list scoped to one conversation."""
         if not conversation_id:
+            self._trim_history(self._history)
             return self._history
         history = self._histories.get(conversation_id)
-        if history is None:
-            history = []
-            self._histories[conversation_id] = history
+        if history is not None:
+            # Reinsert to refresh recency: dict keys keep insertion order, so
+            # this moves the scope to the newest end for LRU eviction.
+            self._histories[conversation_id] = self._histories.pop(conversation_id)
+            self._trim_history(history)
+            return history
+        while len(self._histories) >= self.MAX_TRACKED_CONVERSATIONS:
+            oldest = next(iter(self._histories))
+            self._histories.pop(oldest, None)
+        history = []
+        self._histories[conversation_id] = history
         return history
+
+    def _trim_history(self, history: list[dict]) -> None:
+        if len(history) > self.MAX_HISTORY_ENTRIES:
+            del history[:-self.MAX_HISTORY_ENTRIES]
+
+    def _remember_committed_request_id(self, request_id: str) -> None:
+        if request_id not in self._committed_request_ids:
+            self._committed_request_ids.add(request_id)
+            self._committed_request_order.append(request_id)
+        while len(self._committed_request_order) > self.MAX_COMMITTED_REQUEST_IDS:
+            oldest = self._committed_request_order.popleft()
+            self._committed_request_ids.discard(oldest)
 
     async def send_message(
         self,
@@ -168,6 +264,7 @@ class ChatSession:
         defer_side_effects: bool = False,
         request_id: str = "",
         conversation_id: str = "",
+        image_path: str = "",
     ) -> dict:
         """Process a user message and return the assistant's reply.
 
@@ -492,6 +589,8 @@ class ChatSession:
             except Exception:
                 logger.exception("Avoidance hint failed; continuing without it")
 
+        vision_fallback_used = False
+        image_note = ""
         while attempt <= max_retries:
             messages = [
                 {"role": "system", "content": f"{system_prompt}\n\n{retry_prompt}".strip()},
@@ -499,7 +598,10 @@ class ChatSession:
             if hypa_summary_block:
                 messages.append({"role": "system", "content": hypa_summary_block})
             messages.extend(conversation_tail)
-            messages.append({"role": "user", "content": f"{guard.llm_text}{avoidance_hint}"})
+            messages.append(_build_vision_user_turn(
+                f"{guard.llm_text}{avoidance_hint}{image_note}",
+                image_path,
+            ))
             try:
                 response = await asyncio.wait_for(
                     self.adapter.chat(messages, purpose="chat_reply", background=False),
@@ -511,6 +613,18 @@ class ChatSession:
                 # or a personality reflex that looks like a successful AI turn.
                 raise
             except Exception as exc:
+                if image_path and not vision_fallback_used and _provider_rejected_content(exc):
+                    # The provider definitively refused the request (a 4xx
+                    # rejection is processed-and-billed nowhere), so one
+                    # text-only retry is safe. Unknown outcomes (timeouts,
+                    # 5xx) must NOT retry — that could double-charge.
+                    logger.warning(
+                        "Provider rejected image content; retrying with a text placeholder"
+                    )
+                    vision_fallback_used = True
+                    image_path = ""
+                    image_note = _IMAGE_PLACEHOLDER
+                    continue
                 logger.exception("LLM provider request failed after dispatch")
                 raise ProviderCallFailed(exc) from exc
 
@@ -628,10 +742,16 @@ class ChatSession:
         )
         if emotion_enabled and not defer_side_effects:
             try:
-                emotion_changes = await self.emotion.analyze_exchange(
-                    user_message, raw_reply,
-                    adapter=self.adapter,
-                    memories=memories,
+                # The inner timeout converts a provider stall into TimeoutError,
+                # which the handler below catches. Only a genuine outer turn
+                # cancellation (CancelledError) still propagates.
+                emotion_changes = await asyncio.wait_for(
+                    self.emotion.analyze_exchange(
+                        user_message, raw_reply,
+                        adapter=self.adapter,
+                        memories=memories,
+                    ),
+                    timeout=self.EMOTION_ANALYSIS_TIMEOUT_S,
                 )
                 self.emotion.apply_event(emotion_changes)
                 self.emotion.tick()
@@ -1024,7 +1144,7 @@ class ChatSession:
             raise RuntimeError(
                 "deferred commit incomplete: " + ",".join(commit_errors)
             )
-        self._committed_request_ids.add(request_id)
+        self._remember_committed_request_id(request_id)
 
     async def close(self) -> None:
         """Clean up session resources."""

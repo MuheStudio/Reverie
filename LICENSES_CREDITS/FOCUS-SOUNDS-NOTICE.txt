@@ -1,0 +1,37 @@
+Focus soundscape asset notice (bundled ambient recordings)
+
+The DreamRoom companion soundscape ships three real environmental
+recordings, trimmed into seamless loops (2s triangular wrap crossfade) and
+loudness-normalised (EBU R128, I=-23 LUFS / TP=-2 dB) with FFmpeg. The
+processed files are the ones bundled; SHA-256 below refers to the processed
+assets in frontend/src/assets/dreamroom/.
+
+1. focus-rain.ogg (30.0 s, Vorbis q4)
+   Source: "AMB Rain Loop 2" by Kresiek The Furry
+   Page:   https://opengameart.org/content/amb-rain-loop-2
+   License: CC0 1.0 (no attribution required; credited as good practice)
+   SHA-256: 62627ac3f8a8058f905e92ea9c93ade606a4d2ac411ff967d477d56eb16c2be2
+
+2. focus-fire.ogg (27.3 s, Vorbis q4)
+   Source: "Fireplace Sound Loop" (file fire.wav) by AntumDeluge
+   Page:   https://opengameart.org/content/fireplace-sound-loop
+   License: CC0 1.0 (author: "It's cc0 so you can do whatever you want")
+   SHA-256: 7acada69498c9d98017fa577b2c47c82b8bd2dca424eb28764a76de99a55da8e
+
+3. focus-wind.ogg (48.9 s, Vorbis q4)
+   Source: "Wind Loop" — conversion into a loop by AntumDeluge; original
+           recording by Jonathan Shaw (InspectorJ)
+   Page:   https://opengameart.org/content/wind-loop
+   License: CC-BY 3.0 — ATTRIBUTION REQUIRED. Attribution is hereby given to
+           Jonathan Shaw (InspectorJ) as the original creator and
+           AntumDeluge as the loop editor. This notice must be kept with any
+           redistribution of the application.
+   SHA-256: 9c39ca289d8a38a092d973da930515305fa5669a0b04248d699f0407d0b1c960
+
+4. focus-library.wav — still the original deterministic synthesis created for
+   Reverie (see frontend/src/assets/dreamroom/LICENSES.md); no third-party
+   material.
+
+Both CC0 and CC-BY 3.0 permit commercial use and redistribution as part of a
+larger work; no standalone redistribution of these audio files is licensed or
+intended.

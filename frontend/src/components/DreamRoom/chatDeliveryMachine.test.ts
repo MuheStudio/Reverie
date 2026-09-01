@@ -3,7 +3,10 @@ import {
   canApplyRequestTransition,
   markRevealSent,
   migrateChatMessages,
+  sweepDisconnectedChatMessages,
+  sweepDisconnectedRequestStates,
   upsertRequestState,
+  type ChatMessageV2,
   type ChatRequestState,
 } from './chatDeliveryMachine';
 
@@ -15,6 +18,21 @@ function request(state: ChatRequestState['state']): ChatRequestState {
     state,
     updated_at_utc: '2026-07-16T00:00:00.000Z',
     reveal_sent: false,
+  };
+}
+
+function message(deliveryState?: ChatMessageV2['delivery_state']): ChatMessageV2 {
+  return {
+    id: `msg-${deliveryState ?? 'none'}`,
+    role: 'user',
+    content: '你好',
+    created_at_utc: null,
+    timestamp_status: 'unknown',
+    request_id: 'req-1',
+    conversation_id: 'dream-room',
+    persona_id: 'persona-1',
+    source: 'user',
+    ...(deliveryState ? { delivery_state: deliveryState } : {}),
   };
 }
 
@@ -60,5 +78,45 @@ describe('chat delivery machine adversarial invariants', () => {
       updated_at_utc: '2026-07-16T00:00:01.000Z',
     });
     expect(regressed).toBe(revealed);
+  });
+
+  it('disconnect sweep flips in-flight states but never touches terminal ones', () => {
+    const messages = [
+      message('queued'),
+      message('generating'),
+      message('ready_waiting'),
+      message('delivering'),
+      message('done'),
+      message('failed'),
+      message('failed_uncertain'),
+      message('cancelled'),
+      message('error'),
+      message(undefined),
+    ];
+    const swept = sweepDisconnectedChatMessages(messages);
+    expect(swept.filter((item) => item.delivery_state === 'failed_uncertain').map((item) => item.id))
+      .toEqual([
+        'msg-queued',
+        'msg-generating',
+        'msg-ready_waiting',
+        'msg-delivering',
+        // already terminal — swept list matches it, but the object is untouched
+        'msg-failed_uncertain',
+      ]);
+    // Terminal and state-less bubbles are returned untouched.
+    expect(swept[4]).toBe(messages[4]);
+    expect(swept[9]).toBe(messages[9]);
+  });
+
+  it('disconnect sweep marks every non-terminal request as failed_uncertain', () => {
+    const states = {
+      a: request('queued'),
+      b: { ...request('generating'), request_id: 'req-2' },
+      c: { ...request('done'), request_id: 'req-3' },
+    };
+    const swept = sweepDisconnectedRequestStates(states);
+    expect(swept.a.state).toBe('failed_uncertain');
+    expect(swept.b.state).toBe('failed_uncertain');
+    expect(swept.c).toBe(states.c);
   });
 });

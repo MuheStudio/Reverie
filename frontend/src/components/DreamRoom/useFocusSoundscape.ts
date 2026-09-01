@@ -87,16 +87,27 @@ export function useFocusSoundscape(
       // Construct and resume inside the original click handler. Chromium may
       // revoke user activation after the first awaited IPC round trip.
       const context = new AudioContext({ latencyHint: 'playback' });
-      const ready = context.resume().then(() => {
-        if (context.state !== 'running') {
-          throw new Error(translate('dream.soundStartFailed'));
-        }
-        return true;
-      }).catch((reason) => {
+      const fail = (reason?: unknown) => {
         if (armedRef.current?.context === context) armedRef.current = null;
         void context.close().catch(() => undefined);
         setError(reason instanceof Error ? reason.message : translate('dream.soundStartFailed'));
         return false;
+      };
+      const ready = new Promise<boolean>((resolve) => {
+        // A resume() that never settles (activation lost, device stuck) must
+        // not hang the toggle forever — surface the failure after 3s.
+        const timeout = window.setTimeout(() => resolve(fail()), 3000);
+        context.resume().then(() => {
+          window.clearTimeout(timeout);
+          if (context.state !== 'running') {
+            resolve(fail());
+            return;
+          }
+          resolve(true);
+        }).catch((reason) => {
+          window.clearTimeout(timeout);
+          resolve(fail(reason));
+        });
       });
       armedRef.current = { context, ready };
       return ready;
@@ -141,6 +152,12 @@ export function useFocusSoundscape(
         return;
       }
       if (!playback) throw new Error('local audio playback failed');
+      if (playback.usedFallback && sound !== 'pink') {
+        // The bundled asset failed to load/decode and the graph silently
+        // switched to pink noise. Never hide that from diagnostics — the
+        // packaged protocol once 404'd every .wav and nobody knew.
+        console.warn('[FocusSound] bundled asset unavailable, playing pink-noise fallback', sound);
+      }
       graphRef.current = playback.graph;
       context.addEventListener('statechange', () => {
         const state = context?.state as AudioContextState | 'interrupted' | undefined;

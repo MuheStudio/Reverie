@@ -56,6 +56,39 @@ def test_missing_embedding_model_is_explicit_lexical_mode(monkeypatch) -> None:
         embed_query("这不是一个伪向量")
 
 
+def test_default_embedding_model_matches_chinese_product_default() -> None:
+    assert DEFAULT_MODEL == "BAAI/bge-small-zh-v1.5"
+    assert MemorySettings().embedding_model == "BAAI/bge-small-zh-v1.5"
+
+
+def test_bge_query_instruction_follows_model_language(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    class FakeModel:
+        def encode(self, texts, **_kwargs):
+            captured["text"] = texts[0]
+            return np.ones((1, 4), dtype=np.float32)
+
+    monkeypatch.setattr(
+        "src.memory.embedding.get_embedding_model", lambda _name: FakeModel()
+    )
+
+    zh_instruction = "为这个句子生成表示以用于检索相关文章："
+    en_instruction = "Represent this sentence for searching relevant passages: "
+
+    embed_query("海边流星雨", model_name="BAAI/bge-small-zh-v1.5")
+    assert captured["text"] == f"{zh_instruction}海边流星雨"
+
+    embed_query("meteor shower", model_name="BAAI/bge-small-en-v1.5")
+    assert captured["text"] == f"{en_instruction}meteor shower"
+
+    embed_query(f"{zh_instruction}海边流星雨", model_name="BAAI/bge-small-zh-v1.5")
+    assert captured["text"] == f"{zh_instruction}海边流星雨"
+
+    embed_query("plain query", model_name="some-other-model")
+    assert captured["text"] == "plain query"
+
+
 def test_assistant_reply_never_becomes_user_memory_evidence(tmp_path) -> None:
     memory = MemoryManager(
         default_persona(),

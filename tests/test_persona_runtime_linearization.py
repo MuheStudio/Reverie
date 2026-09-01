@@ -91,6 +91,7 @@ async def test_provider_result_finishing_after_persona_switch_never_persists_or_
         world_clock=StableClock(),
         state_path=state_path,
         persona_epoch_registry=registry,
+        memory=SimpleNamespace(retrieve_relevant=lambda *_args, **_kwargs: ["check in tonight"]),
     )
 
     generation = asyncio.create_task(
@@ -118,6 +119,7 @@ def test_stale_result_cannot_cross_the_atomic_persistence_queue_boundary(tmp_pat
         world_clock=StableClock(),
         state_path=state_path,
         persona_epoch_registry=registry,
+        memory=SimpleNamespace(retrieve_relevant=lambda *_args, **_kwargs: ["check in tonight"]),
     )
     stale = ProactiveResult(
         messages=["old persona output"],

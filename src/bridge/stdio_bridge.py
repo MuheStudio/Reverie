@@ -5,19 +5,49 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
 from typing import Any
+
+from pydantic import ValidationError
 
 from .stdio_transport import read_frame, write_frame
 from . import ws_bridge
 from ..kernel.contracts import CommandEnvelopeV4, MUTATING_COMMAND_NAMES
 from ..kernel.storage import IdempotencyConflict
 
+logger = logging.getLogger("reverie.bridge.stdio")
+
 
 READY_SCHEMA = "reverie.bridge.stdio.ready.v4"
 CONTROL_SCHEMA = "reverie.bridge.stdio.control.v4"
+MAX_VALIDATION_ERRORS = 4
+MAX_VALIDATION_PART = 120
+
+
+def _single_line(value: object, limit: int = MAX_VALIDATION_PART) -> str:
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value))
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def _validation_diagnostic(error: Exception) -> str:
+    """Return bounded metadata only; never include rejected input values."""
+    if not isinstance(error, ValidationError):
+        return f"{type(error).__name__}:{_single_line(error)}"
+    projected: list[str] = []
+    for item in error.errors(include_url=False, include_context=False, include_input=False)[
+        :MAX_VALIDATION_ERRORS
+    ]:
+        location = ".".join(_single_line(part, 40) for part in item.get("loc", ()))
+        error_type = _single_line(item.get("type", "validation_error"), 60)
+        message = _single_line(item.get("msg", "invalid value"))
+        projected.append(f"{location or '<root>'}:{error_type}:{message}")
+    remainder = max(0, error.error_count() - len(projected))
+    if remainder:
+        projected.append(f"+{remainder} more")
+    return " | ".join(projected)[:600]
 
 
 class StdioController:
@@ -85,6 +115,7 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
         "provider:get": set(),
         "provider:configure": {"llm"},
         "provider:test": {"llm", "credential"},
+        "amap:nearby": {"request"},
     }.get(control_type)
     if allowed_fields is None:
         raise ValueError("unsupported control type")
@@ -141,6 +172,8 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
             message.get("credential"),
         )
         result.update(tested)
+    elif control_type == "amap:nearby":
+        result.update(await ws_bridge._run_amap_nearby(message.get("request")))  # noqa: SLF001
     return result
 
 
@@ -173,6 +206,8 @@ async def start_stdio_bridge() -> None:
         "personaFingerprint": persona_scope["persona_fingerprint"],
         "runtimeDegraded": bool(ws_bridge.bridge_state.runtime_unavailable),
         "runtimeUnavailable": list(ws_bridge.bridge_state.runtime_unavailable),
+        "modelEpoch": int(getattr(ws_bridge.bridge_state, "model_epoch", 0) or 0),
+        "personaRestartRequired": bool(ws_bridge.bridge_state.persona_restart_required),
     }
     await controller.write(ready)
 
@@ -220,7 +255,11 @@ async def start_stdio_bridge() -> None:
                     if message.get("schema") != "reverie.command.v4":
                         raise ValueError("invalid command envelope schema")
                     envelope = CommandEnvelopeV4.model_validate(message.get("envelope"))
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "Renderer command rejected: %s",
+                        _validation_diagnostic(exc),
+                    )
                     await controller.write(
                         {
                             "kind": "fatal_error",

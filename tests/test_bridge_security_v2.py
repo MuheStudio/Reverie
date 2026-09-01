@@ -245,6 +245,34 @@ async def test_bridge_origin_allowlist_rejects_web_page(monkeypatch) -> None:
             await websockets.connect(f"ws://127.0.0.1:{port}", origin="https://attacker.example")
 
 
+def test_bridge_origin_allowlist_drops_legacy_file_and_null_origins() -> None:
+    origins = ws_bridge._allowed_bridge_origins()
+    assert "file://" not in origins
+    assert "null" not in origins
+    assert "reverie-app://app" in origins
+    assert "reverie-desktop" in origins
+    assert "http://localhost:5173" in origins
+    assert "http://127.0.0.1:5173" in origins
+    # Originless connections stay gated behind the explicit opt-in flag.
+    assert None not in origins
+
+
+@pytest.mark.asyncio
+async def test_bridge_origin_allowlist_rejects_null_and_file_origins(monkeypatch) -> None:
+    monkeypatch.setattr(ws_bridge, "_bridge_secret_value", "C" * 43)
+    async with websockets.serve(
+        ws_bridge.websocket_handler,
+        "127.0.0.1",
+        0,
+        origins=ws_bridge._allowed_bridge_origins(),
+        compression=None,
+    ) as server:
+        port = server.sockets[0].getsockname()[1]
+        for forged in ("null", "file://"):
+            with pytest.raises(websockets.InvalidStatus):
+                await websockets.connect(f"ws://127.0.0.1:{port}", origin=forged)
+
+
 def test_local_mode_epoch_replay_is_idempotent_and_stale_update_is_rejected() -> None:
     gate = LocalModeGate(desktop=True)
     first = gate.set(True, session_id="focus-a", epoch=7)

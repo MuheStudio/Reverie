@@ -231,6 +231,95 @@
   box-shadow: 0 0 0 4px rgba(229, 162, 176, 0.35), 0 0 24px rgba(229, 162, 176, 0.62);
 }
 
+/* ——— Room decorations (self-drawn SVG set) ———
+   Layering: z-index 0 atmosphere / 1 weather + wall decor / 2 desk + floor
+   decor / 5 character stage. Everything below stays at z-index 1-2 so the
+   character (z-index 5) is never occluded. */
+
+.starLights {
+  position: absolute;
+  z-index: 1;
+  inset: 2.5% 25% auto 43%;
+  aspect-ratio: 400 / 74;
+  pointer-events: none;
+}
+
+.starWire {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.star {
+  position: absolute;
+  inline-size: clamp(0.95rem, 1.7vw, 1.45rem);
+  transform: translate(-50%, 0);
+  transform-origin: 50% 0;
+  filter: drop-shadow(0 3px 6px rgba(120, 67, 84, 0.3));
+  animation: starTwinkle 3s ease-in-out infinite;
+}
+
+.balloon {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  filter: drop-shadow(6px 10px 12px rgba(120, 67, 84, 0.22));
+  animation: balloonFloat 7s ease-in-out infinite;
+}
+
+.balloonA {
+  inset: 38% auto auto 3%;
+  inline-size: clamp(2.6rem, 5vw, 4.2rem);
+}
+
+.balloonB {
+  inset: 45% auto auto 9%;
+  inline-size: clamp(2.1rem, 4.2vw, 3.4rem);
+  animation-delay: 1.6s;
+  animation-duration: 8.6s;
+  filter: hue-rotate(-24deg) drop-shadow(6px 10px 12px rgba(120, 67, 84, 0.22));
+}
+
+/* Wall/floor junction: a soft gradient strip that grounds the room. */
+.baseboard {
+  position: absolute;
+  z-index: 1;
+  inset: auto 0 0;
+  block-size: clamp(2.2rem, 7%, 3.4rem);
+  border-block-start: 1px solid rgba(120, 67, 84, 0.12);
+  background: linear-gradient(to bottom, transparent, rgba(120, 67, 84, 0.1) 58%, rgba(120, 67, 84, 0.2));
+  pointer-events: none;
+}
+
+.rug {
+  position: absolute;
+  z-index: 1;
+  inset: auto auto 3.5% 3%;
+  inline-size: clamp(9rem, 20vw, 15.5rem);
+  filter: drop-shadow(0 10px 14px rgba(120, 67, 84, 0.22));
+  pointer-events: none;
+}
+
+.plushToys {
+  position: absolute;
+  z-index: 2;
+  inset: auto auto 6.5% 5.5%;
+  inline-size: clamp(5rem, 10vw, 8.25rem);
+  filter: drop-shadow(0 8px 10px rgba(120, 67, 84, 0.28));
+  pointer-events: none;
+}
+
+@keyframes balloonFloat {
+  0%, 100% { transform: translateY(0) rotate(-1.2deg); }
+  50% { transform: translateY(-9px) rotate(1.4deg); }
+}
+
+@keyframes starTwinkle {
+  0%, 100% { opacity: 0.45; transform: translate(-50%, 0) scale(0.86); }
+  50% { opacity: 1; transform: translate(-50%, 0) scale(1.06); }
+}
+
 .scene > section:last-child {
   position: absolute;
   z-index: 5;
@@ -248,6 +337,12 @@
     min-block-size: 32rem;
     border-radius: 1rem;
   }
+
+  /* Narrow scenes are character-first: drop the floating balloons so the
+     stage never feels crowded. */
+  .balloon {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -256,7 +351,9 @@
   }
 
   .rainEffect,
-  .windEffect i {
+  .windEffect i,
+  .balloon,
+  .star {
     animation: none !important;
   }
 
@@ -279,7 +376,12 @@
   .atmosphere,
   .window,
   .shelf,
-  .desk {
+  .desk,
+  .starLights,
+  .balloon,
+  .baseboard,
+  .rug,
+  .plushToys {
     display: none;
   }
 }

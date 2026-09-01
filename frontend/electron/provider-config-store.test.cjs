@@ -10,6 +10,15 @@ const {
   providerBinding,
   sameLlmConnection,
 } = require('./provider-config-store.cjs');
+const { CredentialVault } = require('./credential-vault.cjs');
+
+function fakeSafeStorage() {
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(value, 'utf8').map((byte) => byte ^ 0xaa),
+    decryptString: (value) => Buffer.from(value).map((byte) => byte ^ 0xaa).toString('utf8'),
+  };
+}
 
 test('provider metadata store persists a closed-world projection without credentials', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-config-'));
@@ -26,6 +35,43 @@ test('provider metadata store persists a closed-world projection without credent
   const serialized = fs.readFileSync(path.join(root, 'providers.json'), 'utf8');
   assert.equal(serialized.includes('apiKey'), false);
   assert.equal(serialized.includes('customHeaders'), false);
+});
+
+test('persistent provider metadata and encrypted credential survive a simulated restart', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-restart-'));
+  const configDir = path.join(root, 'config');
+  const credentialDir = path.join(root, 'credentials');
+  const safeStorage = fakeSafeStorage();
+  const value = {
+    llm: {
+      provider: 'custom',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'companion-model',
+      customProviderName: 'Private gateway',
+    },
+  };
+  const binding = providerBinding('llm', value);
+  new ProviderConfigStore({ storageDir: configDir }).set(value);
+  new CredentialVault({ storageDir: credentialDir, safeStorage }).set(
+    'llm',
+    { apiKey: 'fake-key-for-restart-test' },
+    { binding },
+  );
+
+  const restartedConfig = new ProviderConfigStore({ storageDir: configDir });
+  const restartedVault = new CredentialVault({ storageDir: credentialDir, safeStorage });
+
+  assert.deepEqual(restartedConfig.get(), value);
+  assert.equal(restartedVault.status().llm.sessionOnly, false);
+  assert.equal(restartedVault.status().llm.hasApiKey, true);
+  assert.deepEqual(restartedVault.readForRuntime({ bindings: { llm: binding } }), {
+    llm: { apiKey: 'fake-key-for-restart-test' },
+  });
+  assert.equal(
+    fs.readFileSync(path.join(credentialDir, 'credentials.vault'))
+      .includes(Buffer.from('fake-key-for-restart-test')),
+    false,
+  );
 });
 
 test('provider metadata store rejects credential fields even if a compromised renderer sends them', () => {

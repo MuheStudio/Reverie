@@ -82,6 +82,8 @@ class BridgeHostProxy extends EventEmitter {
       persona_fingerprint: config.personaFingerprint,
       runtime_degraded: config.runtimeDegraded === true,
       runtime_unavailable: config.runtimeUnavailable || [],
+      model_epoch: Number.isInteger(config.modelEpoch) ? config.modelEpoch : 0,
+      persona_restart_required: config.personaRestartRequired === true,
     });
     return this.getRendererConfig();
   }

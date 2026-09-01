@@ -288,6 +288,23 @@
         "title": "ChatHistoryPayload",
         "type": "object"
       },
+      "chat:media": {
+        "additionalProperties": false,
+        "description": "Fetch one persisted chat media attachment as a data URL.",
+        "properties": {
+          "media_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Media Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "media_id"
+        ],
+        "title": "ChatMediaPayload",
+        "type": "object"
+      },
       "chat:reveal": {
         "additionalProperties": false,
         "properties": {
@@ -305,6 +322,77 @@
         "type": "object"
       },
       "chat:send": {
+        "$defs": {
+          "StickerAttachmentPayload": {
+            "additionalProperties": false,
+            "description": "Sticker object the renderer may attach to a chat:send turn.",
+            "properties": {
+              "emotions": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 24,
+                "title": "Emotions",
+                "type": "array"
+              },
+              "id": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Id"
+              },
+              "image_data_url": {
+                "anyOf": [
+                  {
+                    "maxLength": 350000,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Image Data Url"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "maxLength": 40,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Source"
+              },
+              "style_tags": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 24,
+                "title": "Style Tags",
+                "type": "array"
+              },
+              "text": {
+                "default": "",
+                "maxLength": 400,
+                "title": "Text",
+                "type": "string"
+              }
+            },
+            "title": "StickerAttachmentPayload",
+            "type": "object"
+          }
+        },
         "additionalProperties": false,
         "properties": {
           "conversation_id": {
@@ -313,6 +401,32 @@
             "minLength": 1,
             "title": "Conversation Id",
             "type": "string"
+          },
+          "image_data_url": {
+            "anyOf": [
+              {
+                "maxLength": 350000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image Data Url"
+          },
+          "image_path": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Image Path"
           },
           "request_id": {
             "anyOf": [
@@ -339,6 +453,17 @@
             ],
             "default": null,
             "title": "Sent At Utc"
+          },
+          "sticker": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/StickerAttachmentPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "text": {
             "maxLength": 20000,
@@ -404,10 +529,39 @@
         "title": "DiaryRequestPayload",
         "type": "object"
       },
+      "diary:write": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
       "emotion:get": {
         "additionalProperties": false,
         "properties": {},
         "title": "EmptyPayload",
+        "type": "object"
+      },
+      "game:move": {
+        "additionalProperties": false,
+        "description": "Ask the companion to choose the next move in a local board game.\n\n``state`` is the renderer's authoritative board serialization; Python\nnever mutates it — it only feeds the persona prompt and returns a raw\nmove candidate plus an in-character comment. Legality is enforced by the\nrenderer's rules engine.",
+        "properties": {
+          "game": {
+            "maxLength": 20,
+            "minLength": 1,
+            "title": "Game",
+            "type": "string"
+          },
+          "state": {
+            "additionalProperties": true,
+            "title": "State",
+            "type": "object"
+          }
+        },
+        "required": [
+          "game",
+          "state"
+        ],
+        "title": "GameMovePayload",
         "type": "object"
       },
       "game_state:get": {
@@ -811,31 +965,106 @@
         "type": "object"
       },
       "memory:store": {
-        "additionalProperties": false,
-        "description": "Store a user-selected chat record in a memory layer.\n\n``permanent`` marks a precious memory (never decays, never confused);\n``long_term``/``short_term`` remain forgettable.",
-        "properties": {
-          "layer": {
-            "default": "long_term",
-            "enum": [
-              "long_term",
-              "short_term",
-              "permanent"
+        "$defs": {
+          "CoarseSystemLocationMemoryPayload": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "coarse_system_location",
+                "title": "Kind",
+                "type": "string"
+              },
+              "neighborhood_scale": {
+                "enum": [
+                  "neighborhood-scale",
+                  "city-scale",
+                  "regional-scale"
+                ],
+                "title": "Neighborhood Scale",
+                "type": "string"
+              },
+              "user_confirmed": {
+                "const": true,
+                "title": "User Confirmed",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "neighborhood_scale",
+              "user_confirmed"
             ],
-            "title": "Layer",
-            "type": "string"
+            "title": "CoarseSystemLocationMemoryPayload",
+            "type": "object"
           },
-          "text": {
-            "maxLength": 2000,
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
+          "StandardMemoryStorePayload": {
+            "additionalProperties": false,
+            "description": "Store a user-selected chat record in a memory layer.\n\n``permanent`` marks a precious memory (never decays, never confused);\n``long_term``/``short_term`` remain forgettable.",
+            "properties": {
+              "broad_category": {
+                "default": "",
+                "maxLength": 80,
+                "title": "Broad Category",
+                "type": "string"
+              },
+              "display_label": {
+                "default": "",
+                "maxLength": 120,
+                "title": "Display Label",
+                "type": "string"
+              },
+              "layer": {
+                "default": "long_term",
+                "enum": [
+                  "long_term",
+                  "short_term",
+                  "permanent"
+                ],
+                "title": "Layer",
+                "type": "string"
+              },
+              "preference": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "place",
+                      "category"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Preference"
+              },
+              "text": {
+                "default": "",
+                "maxLength": 2000,
+                "title": "Text",
+                "type": "string"
+              },
+              "user_confirmed": {
+                "default": false,
+                "title": "User Confirmed",
+                "type": "boolean"
+              }
+            },
+            "title": "StandardMemoryStorePayload",
+            "type": "object"
           }
         },
-        "required": [
-          "text"
+        "anyOf": [
+          {
+            "$ref": "#/$defs/StandardMemoryStorePayload"
+          },
+          {
+            "$ref": "#/$defs/CoarseSystemLocationMemoryPayload"
+          }
         ],
-        "title": "MemoryStorePayload",
-        "type": "object"
+        "description": "Strict union for normal memories and separately confirmed OS scale summaries.",
+        "title": "MemoryStorePayload"
       },
       "module:control": {
         "additionalProperties": false,
@@ -1008,6 +1237,56 @@
             "default": null,
             "title": "Forgetting Enabled"
           },
+          "immersion_closeups_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Immersion Closeups Enabled"
+          },
+          "immersion_location_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Immersion Location Enabled"
+          },
+          "immersion_location_radius_m": {
+            "anyOf": [
+              {
+                "maximum": 5000,
+                "minimum": 300,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Immersion Location Radius M"
+          },
+          "immersion_smart_home_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Immersion Smart Home Enabled"
+          },
           "long_term_forget_days": {
             "anyOf": [
               {
@@ -1154,6 +1433,34 @@
             "default": null,
             "title": "Proactive Notifications Enabled"
           },
+          "proactive_wake_max_minutes": {
+            "anyOf": [
+              {
+                "maximum": 60,
+                "minimum": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Wake Max Minutes"
+          },
+          "proactive_wake_min_minutes": {
+            "anyOf": [
+              {
+                "maximum": 60,
+                "minimum": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Wake Min Minutes"
+          },
           "recall_reinforcement_alpha": {
             "anyOf": [
               {
@@ -1220,6 +1527,7 @@
               "chat",
               "personality",
               "features",
+              "immersion",
               "tts",
               "ui"
             ],
@@ -1416,6 +1724,31 @@
           }
         },
         "title": "StickerCollectPayload",
+        "type": "object"
+      },
+      "sticker:import": {
+        "additionalProperties": false,
+        "description": "Import a local image file as a user sticker via an Electron dialog.",
+        "properties": {
+          "file_path": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "File Path",
+            "type": "string"
+          },
+          "style_tags": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 24,
+            "title": "Style Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "StickerImportPayload",
         "type": "object"
       },
       "sticker:list": {

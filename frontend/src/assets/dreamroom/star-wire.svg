@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 74" preserveAspectRatio="none">
+  <!-- Original self-drawn asset for Reverie (GPL-3.0): the sagging wire the
+       star lanterns hang from. Stretched with preserveAspectRatio="none";
+       vector-effect keeps the stroke visually uniform. -->
+  <path d="M0 10 Q 200 64 400 10" fill="none" stroke="#a07f88" stroke-width="2.5"
+        stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+</svg>

@@ -131,6 +131,49 @@ def _bounded_messages(value: Any) -> list[str]:
     return messages
 
 
+def _retyped_variation(text: str) -> str:
+    """Deterministically retype a line without asking a model to rewrite it.
+
+    The candidates make a visible lexical change rather than merely changing
+    punctuation. Protected literals and negation markers must survive exactly;
+    uncertain qualifiers are deliberately never introduced.
+    """
+    base = text.strip()
+    if not base:
+        return text
+
+    replacements = (
+        ("我在这里", "我就在这里"),
+        ("今天天气", "今天的天气"),
+        ("我想和你", "我是想和你"),
+        ("我想说", "我是想说"),
+    )
+    candidates = [base.replace(old, new, 1) for old, new in replacements if old in base]
+    candidates.append(f"我是说，{base}")
+
+    protected = _retype_protected_literals(base)
+    negations = _retype_negations(base)
+    for candidate in candidates:
+        if (
+            candidate != base
+            and _retype_protected_literals(candidate) == protected
+            and _retype_negations(candidate) == negations
+        ):
+            return candidate
+    return text
+
+
+def _retype_protected_literals(text: str) -> tuple[str, ...]:
+    """Extract URLs and numeric date/time/quantity tokens in source order."""
+    return tuple(re.findall(r"https?://[^\s，。！？；]+|\d+(?:[.:/\-年月日时分秒]\d+)*", text))
+
+
+def _retype_negations(text: str) -> tuple[str, ...]:
+    """Extract semantic negation markers so a rewrite cannot lose or add one."""
+    pattern = r"不|没|无|别|勿|未|莫|\b(?:not|no|never)\b|n't"
+    return tuple(match.group(0).lower() for match in re.finditer(pattern, text, re.IGNORECASE))
+
+
 class ChatDeliveryCoordinator:
     """Generate once, cache before delivery, and isolate every request."""
 
@@ -247,6 +290,17 @@ class ChatDeliveryCoordinator:
         )
         if kernel_command is not None:
             self.kernel_store.begin_command(kernel_command)
+        image_path = str(payload.get("image_path") or "")
+        media = None
+        if payload.get("media_id"):
+            media = {
+                "media_id": str(payload.get("media_id") or ""),
+                "request_id": request_id,
+                "conversation_id": conversation_id,
+                "media_path": image_path,
+                "mime": str(payload.get("media_mime") or "image/jpeg"),
+                "bytes": int(payload.get("media_bytes") or 0),
+            }
         self.store.enqueue(
             text,
             due_at=now,
@@ -260,7 +314,36 @@ class ChatDeliveryCoordinator:
             source="user",
             client_id=client_id,
             sent_at_utc=sent_at,
+            image_path=image_path,
         )
+        # Write-through: the user's words must become durable before any
+        # provider work starts. A storage failure is fail-closed: spending API
+        # budget for a message that cannot be recovered after a crash would be
+        # worse than rejecting the send. commit_chat_exchange repeats the
+        # insert with ON CONFLICT DO NOTHING, so this remains at-most-once.
+        if self.kernel_store is not None:
+            try:
+                self.kernel_store.append_user_message(
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    persona_id=persona_id,
+                    text=text,
+                    media=media,
+                )
+            except Exception as error:
+                logger.exception("Could not persist accepted user message %s", request_id)
+                self.store.mark_failed(request_id, "storage_unavailable")
+                if kernel_command is not None:
+                    try:
+                        self.kernel_store.fail_command(
+                            request_id,
+                            error_code="STORAGE_UNAVAILABLE",
+                        )
+                    except Exception:
+                        logger.exception("Could not fail storage-blocked command %s", request_id)
+                item = self.store.get_item(request_id) or {}
+                await self._emit_state(item, label="消息未保存，未请求 API")
+                raise ChatDeliveryError("消息无法安全保存，未请求 API") from error
         self.anchors[request_id] = (self.monotonic(), utc_to_epoch(sent_at, fallback=now))
         item = self.store.get_item(request_id) or {}
         await self._cancel_superseded_turns(
@@ -383,6 +466,28 @@ class ChatDeliveryCoordinator:
                 logger.exception("Could not cancel chat request %s", item.get("request_id"))
         return results
 
+    def _settle_kernel_command(
+        self,
+        request_id: str,
+        *,
+        error_code: str,
+        provider_outcome_unknown: bool,
+    ) -> None:
+        """Terminal-settle the kernel ledger row for a request that will never
+        reach commit/fail through its normal path (e.g. scope changed). Rows
+        whose provider call already went out upgrade to outcome_unknown inside
+        fail_command, keeping the idempotency ledger honest."""
+        if self.kernel_store is None or self.kernel_store.command(request_id) is None:
+            return
+        try:
+            self.kernel_store.fail_command(
+                request_id,
+                error_code=error_code,
+                provider_outcome_unknown=provider_outcome_unknown,
+            )
+        except Exception:
+            logger.exception("Could not settle kernel command %s", request_id)
+
     async def _run(self, request_id: str, *, recovery: bool) -> None:
         try:
             item = self.store.get_item(request_id)
@@ -428,6 +533,13 @@ class ChatDeliveryCoordinator:
         self.local_mode_gate.require_remote("chat generation")
         if not self.scope_is_current(item):
             self.store.mark_cancelled(request_id, reason="scope_changed")
+            self._settle_kernel_command(
+                request_id, error_code="SCOPE_CHANGED", provider_outcome_unknown=False,
+            )
+            # A cancelled request must never orphan a queued bubble: the
+            # renderer only clears its optimistic message on a terminal
+            # chat:state, so scope-change exits emit one just like cancel().
+            await self._emit_state(self.store.get_item(request_id) or item)
             return
         if item.get("state") != "queued":
             return
@@ -448,6 +560,7 @@ class ChatDeliveryCoordinator:
             persona_id=str(item.get("persona_id") or ""),
             persona_epoch=int(item.get("persona_epoch") or 0),
             persona_fingerprint=str(item.get("persona_fingerprint") or ""),
+            image_path=str(item.get("image_path") or ""),
         )
         try:
             outcome = await self.turn_engine.generate(
@@ -465,6 +578,12 @@ class ChatDeliveryCoordinator:
             return
         if not self.scope_is_current(current):
             self.store.mark_cancelled(request_id, reason="scope_changed")
+            # Provider dispatch already happened for this request, so its
+            # outcome is unknowable from here.
+            self._settle_kernel_command(
+                request_id, error_code="SCOPE_CHANGED", provider_outcome_unknown=True,
+            )
+            await self._emit_state(self.store.get_item(request_id) or current)
             return
         messages = _bounded_messages(result.get("messages") or [result.get("reply", "")])
         if not messages:
@@ -567,6 +686,10 @@ class ChatDeliveryCoordinator:
         index = typo_indices[-1] if typo_indices else len(messages) - 1
         clean_messages = _bounded_messages(result.get("clean_messages") or messages)
         replacement = clean_messages[index] if index < len(clean_messages) else messages[index]
+        # Every follow-up must read like a human retyped it — a slight
+        # rephrasing of the original meaning (length, tone), never the exact
+        # same line, including after a typo correction.
+        replacement = _retyped_variation(replacement)
         request_id = str(item["request_id"])
         self.store.mark_retraction_started(request_id)
         # Stable 2.0–5.0 second rhythm avoids global randomness and is testable.
@@ -701,9 +824,11 @@ class ChatDeliveryCoordinator:
         result = item.get("result")
         if not isinstance(result, dict):
             self.store.mark_failed(request_id, "cached result is missing")
+            await self._emit_state(self.store.get_item(request_id) or item)
             return
         if not self.scope_is_current(item):
             self.store.mark_cancelled(request_id, reason="scope_changed")
+            await self._emit_state(self.store.get_item(request_id) or item)
             return
         if immediate:
             self.reveal_events.setdefault(request_id, asyncio.Event()).set()
@@ -711,6 +836,7 @@ class ChatDeliveryCoordinator:
         messages = _bounded_messages(result.get("messages"))
         if not messages:
             self.store.mark_failed(request_id, "cached result is empty")
+            await self._emit_state(self.store.get_item(request_id) or item)
             return
         delivered = {int(value) for value in item.get("delivered_bubble_indices", [])}
         first_missing = next((index for index in range(len(messages)) if index not in delivered), None)
@@ -728,6 +854,11 @@ class ChatDeliveryCoordinator:
             return
         if not self.scope_is_current(current):
             self.store.mark_cancelled(request_id, reason="scope_changed")
+            # Generation (and its provider call) already completed here.
+            self._settle_kernel_command(
+                request_id, error_code="SCOPE_CHANGED", provider_outcome_unknown=True,
+            )
+            await self._emit_state(self.store.get_item(request_id) or current)
             return
         await self._commit_if_needed(current, result)
         self.store.mark_delivering(request_id)
@@ -743,6 +874,7 @@ class ChatDeliveryCoordinator:
                 continue
             if not self.scope_is_current(refreshed):
                 self.store.mark_cancelled(request_id, reason="scope_changed")
+                await self._emit_state(self.store.get_item(request_id) or refreshed)
                 return
             if index > first_missing and not immediate:
                 await self._wait_for_target(refreshed, targets[min(index, len(targets) - 1)])

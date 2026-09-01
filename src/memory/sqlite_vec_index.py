@@ -59,7 +59,8 @@ class SQLiteVecIndex:
             except Exception:
                 pass
         with self._lock:
-            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA journal_mode=DELETE")
+            self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.execute("PRAGMA busy_timeout=30000")

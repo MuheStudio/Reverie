@@ -63,3 +63,7 @@ frontend/.installer-source/
 frontend/.runtime-cache/
 frontend/.package-smoke/
 frontend/.desktop-smoke/
+frontend/.visual-check/
+
+# Ephemeral local resolver state; requirements-runtime.lock is authoritative.
+uv.lock

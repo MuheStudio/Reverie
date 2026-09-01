@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 110">
+  <!-- Original self-drawn asset for Reverie (GPL-3.0). Palette mirrors the
+       "night paper" tokens in src/styles/reverie-theme.css
+       (--rv-accent-soft #f3dce3, --rv-accent #9f6172, --rv-scene-bottom #c8aea8). -->
+  <ellipse cx="150" cy="55" rx="146" ry="51" fill="#e6cdc7"/>
+  <ellipse cx="150" cy="55" rx="146" ry="51" fill="none" stroke="#b98a94" stroke-width="4"/>
+  <ellipse cx="150" cy="55" rx="114" ry="38" fill="#f3dce3"/>
+  <ellipse cx="150" cy="55" rx="114" ry="38" fill="none" stroke="#cfa3ad" stroke-width="3"/>
+  <ellipse cx="150" cy="55" rx="76" ry="24" fill="#edd6d2"/>
+  <g fill="#c99aa5">
+    <circle cx="92" cy="42" r="3.2"/>
+    <circle cx="118" cy="34" r="3.2"/>
+    <circle cx="150" cy="31" r="3.2"/>
+    <circle cx="182" cy="34" r="3.2"/>
+    <circle cx="208" cy="42" r="3.2"/>
+    <circle cx="92" cy="68" r="3.2"/>
+    <circle cx="118" cy="76" r="3.2"/>
+    <circle cx="150" cy="79" r="3.2"/>
+    <circle cx="182" cy="76" r="3.2"/>
+    <circle cx="208" cy="68" r="3.2"/>
+  </g>
+</svg>

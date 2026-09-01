@@ -442,17 +442,13 @@ export function PhoneChatPanel({
 
   const uploadSticker = useCallback(async () => {
     if (!connected) return;
-    const importer = window.electronAPI?.stickers?.importFile;
-    if (!importer) {
-      setStickerError('本地表情导入模块不可用');
-      return;
-    }
     try {
-      const result = await importer({ styleTags: ['用户导入'] });
-      if (result.canceled || !result.item) return;
+      const picked = await window.electronAPI?.stickers?.pickImage();
+      if (!picked || picked.canceled || !picked.filePath) return;
+      const item = await ws.importSticker(picked.filePath, ['用户导入']);
       ws.refreshStickers();
       sendSticker({
-        ...result.item,
+        ...item,
         source: 'collected',
       });
     } catch {
@@ -616,6 +612,10 @@ function RoomDrawer({
   const sheetRef = useRef<HTMLElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const titleId = `room-drawer-title-${panel}`;
+  // Game boards and the phone shell dock to the right so the Live2D character
+  // on the central stage stays fully visible; the scrim turns transparent for
+  // those panels (it keeps its click-to-close hit area).
+  const dockRight = panel === 'phone' || isGamePanel(panel);
 
   useEffect(() => {
     returnFocusRef.current = document.activeElement instanceof HTMLElement
@@ -670,6 +670,7 @@ function RoomDrawer({
       aria-modal="true"
       aria-labelledby={titleId}
       data-testid="dream-room-panel"
+      data-align={dockRight ? 'right' : undefined}
     >
       <button
         type="button"
@@ -764,22 +765,15 @@ function StickerLibraryPanel({
       setStatus('本地服务尚未连接，连接恢复后再保存。');
       return;
     }
-    const importer = window.electronAPI?.stickers?.importFile;
-    if (!importer) {
-      setStatus('本地表情导入模块不可用。');
-      return;
-    }
     try {
-      const result = await importer({
-        text: caption.trim().slice(0, 120),
-        styleTags: ['用户导入'],
-      });
-      if (result.canceled) {
+      const picked = await window.electronAPI?.stickers?.pickImage();
+      if (!picked || picked.canceled || !picked.filePath) {
         setStatus('已取消导入。');
         return;
       }
+      await ws.importSticker(picked.filePath, ['用户导入']);
       setCaption('');
-      setStatus(`${result.fileName || '表情'} 已安全保存到本地表情库。`);
+      setStatus('表情已安全保存到本地表情库。');
       ws.refreshStickers();
     } catch {
       setStatus('导入失败：请检查格式、像素尺寸、GIF 时长与文件完整性。');
@@ -919,24 +913,53 @@ function DiaryPanel({
   entries,
   onUnlockKey,
   onRead,
+  onWrite,
 }: {
   entries: DiaryEntry[];
   onUnlockKey: (hostDate: string) => void;
   onRead: (date: string) => void;
+  onWrite?: () => Promise<{ ok: boolean; error?: string }>;
 }) {
+  const [writing, setWriting] = useState(false);
+  const [writeNotice, setWriteNotice] = useState('');
   const diaryItems = sortDiary(entries).slice(0, 6);
+
+  const handleWrite = async () => {
+    if (!onWrite || writing) return;
+    setWriting(true);
+    setWriteNotice('');
+    const result = await onWrite();
+    setWriting(false);
+    setWriteNotice(result.ok ? '新的一页已经写好了。' : (result.error || '她暂时不能写日记。'));
+  };
+
+  const writeButton = onWrite && (
+    <button
+      type="button"
+      className={styles.diaryWriteButton}
+      disabled={writing}
+      onClick={() => void handleWrite()}
+    >
+      {writing ? '她正在写…' : '请她写日记'}
+    </button>
+  );
+
   if (!diaryItems.length) {
     return (
       <div className={styles.emptyPanel}>
         <BookOpen size={28} />
         <strong>抽屉还很轻</strong>
         <span>等她写下第一页，房间只会展示安全、可见的痕迹。</span>
+        {writeButton}
+        {writeNotice && <small role="status">{writeNotice}</small>}
       </div>
     );
   }
 
   return (
     <div className={styles.paperStack}>
+      {writeButton}
+      {writeNotice && <small role="status">{writeNotice}</small>}
       {diaryItems.map((entry, index) => {
         const locked = isDiaryLocked(entry);
         const safeEntry = { ...entry, is_locked: locked };
@@ -1486,7 +1509,7 @@ function MusicPanel({
         <div className={styles.recordNeedle} />
       </div>
       <div className={styles.playlist}>
-        <span>Tonight Track</span>
+        <span>今夜歌单</span>
         <strong>{mood.label}</strong>
         <p>{connected ? '窗外、键盘声和她的呼吸感一起混进房间。' : '离线时唱片会变轻，只留下安全快照的沙沙声。'}</p>
         <small>{evidenceLine}</small>
@@ -1969,21 +1992,21 @@ export default function DreamRoom() {
     {
       id: 'diary',
       label: '写日记',
-      hint: 'Diary',
+      hint: '日记本',
       icon: '📔',
       onRun: () => openPanel('diary'),
     },
     {
       id: 'timeline',
       label: '查看时间线',
-      hint: 'Timeline',
+      hint: '时间线',
       icon: '🗓',
       onRun: () => openPanel('timeline'),
     },
     {
       id: 'memory',
       label: '回忆收藏',
-      hint: 'Keepsakes',
+      hint: '纪念品',
       icon: '🧩',
       onRun: () => openPanel('memory'),
     },
@@ -2074,6 +2097,7 @@ export default function DreamRoom() {
               entries={ws.diaryEntries}
               onUnlockKey={ws.unlockDiaryKey}
               onRead={ws.readDiaryEntry}
+              onWrite={ws.requestDiaryEntry}
             />
           )}
           {activePanel === 'phone' && <PhoneHomePanel apps={PHONE_APPS} onOpenApp={openPhoneApp} />}

@@ -16,9 +16,10 @@ def test_default_pytest_boundary_only_collects_first_party_tests() -> None:
     pyproject = _text(ROOT / "pyproject.toml")
 
     assert "testpaths =\n    tests" in pytest_config
-    for reference_tree in ("frontend", "N.E.K.O"):
-        assert f"    {reference_tree}" in pytest_config
-    for removed_tree in ("risuai_ref", "src/neko_core"):
+    assert "    frontend" in pytest_config
+    # Reference trees must never leak into default collection; N.E.K.O and
+    # neko_core were removed outright, so the gate enforces their absence.
+    for removed_tree in ("risuai_ref", "src/neko_core", "N.E.K.O"):
         assert f"    {removed_tree}" not in pytest_config
         tree = ROOT / removed_tree
         assert not tree.exists() or not any(path.is_file() for path in tree.rglob("*"))

@@ -119,6 +119,27 @@ test('framed supervisor correlates private controls and business events without 
   }));
   assert.deepEqual(await control, { applied: { llm: true, imageGen: false } });
 
+  const amapControl = supervisor.requestAmapNearby({
+    api_key: 'amap-canary', latitude: 39.9, longitude: 116.4,
+    radius_m: 1200, place_types: ['cafe'],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const amapFrame = sent.at(-1);
+  assert.equal(amapFrame.type, 'amap:nearby');
+  child.stdout.write(encodeFrame({
+    kind: 'control_result',
+    schema: 'reverie.bridge.stdio.control.v4',
+    type: 'amap:nearby',
+    requestId: amapFrame.requestId,
+    ok: true,
+    success: false,
+    code: 'quota',
+    items: [],
+  }));
+  assert.deepEqual(await amapControl, {
+    ok: false, code: 'quota', items: [], provider: 'Amap',
+  });
+
   const providerRead = supervisor.getProviderConfig();
   await new Promise((resolve) => setImmediate(resolve));
   const getFrame = sent.at(-1);
@@ -251,6 +272,28 @@ test('framed supervisor correlates private controls and business events without 
     fingerprint: 'a'.repeat(64),
   });
   assert.equal(command.envelope.payload.expected_persona_id, undefined);
+
+  supervisor.sendBusinessFrame({
+    type: 'immersion:nearby',
+    payload: {
+      latitude: 31.2304,
+      longitude: 121.4737,
+      radius_m: 1200,
+      place_types: ['restaurant', 'shop', 'cafe', 'supermarket', 'park'],
+    },
+    request_id: 'rpc_immersion_nearby_01',
+  });
+  const immersionCommand = sent.at(-1);
+  assert.equal(immersionCommand.kind, 'renderer_command');
+  assert.equal(immersionCommand.schema, 'reverie.command.v4');
+  assert.equal(immersionCommand.envelope.command, 'immersion:nearby');
+  assert.deepEqual(immersionCommand.envelope.payload, {
+    latitude: 31.2304,
+    longitude: 121.4737,
+    radius_m: 1200,
+    place_types: ['restaurant', 'shop', 'cafe', 'supermarket', 'park'],
+  });
+  assert.equal(immersionCommand.envelope.payload.accuracy_m, undefined);
   assert.throws(
     () => supervisor.sendBusinessFrame({ type: 'local_mode:set', payload: {} }),
     /not declared/i,
@@ -262,4 +305,106 @@ test('framed supervisor correlates private controls and business events without 
     frame: { type: 'emotion:update', payload: { joy: 2 } },
   }));
   assert.deepEqual(await event, { type: 'emotion:update', payload: { joy: 2 } });
+});
+
+function handshakeSupervisor(child) {
+  let context;
+  const supervisor = new FramedBridgeSupervisor({
+    spawnChild(value) { context = value; return child; },
+    readyTimeoutMs: 1000,
+    controlTimeoutMs: 1000,
+  });
+  const ready = supervisor.start({
+    localMode: { active: false, epoch: 0, sessionId: null },
+  });
+  child.stdout.write(encodeFrame({
+    kind: 'ready',
+    schema: 'reverie.bridge.stdio.ready.v4',
+    transport: 'stdio-framed',
+    pid: child.pid,
+    secretSha256: secretHash(context.secret),
+    protocolVersion: 4,
+    localModeEpoch: 0,
+    localModeSessionId: null,
+    personaId: 'persona',
+    personaEpoch: 1,
+    personaFingerprint: 'a'.repeat(64),
+  }));
+  return { supervisor, ready };
+}
+
+test('bridge death mid-write surfaces as an exit event, not an uncaught stdin error', async () => {
+  const child = fakeChild();
+  const { supervisor, ready } = handshakeSupervisor(child);
+  const config = await ready;
+  assert.equal(config.transport, 'stdio-framed');
+
+  const exitPromise = new Promise((resolve) => supervisor.once('exit', resolve));
+  const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+  child.stdin.emit('error', epipe);
+  const error = await exitPromise;
+  assert.equal(error.code, 'EPIPE');
+});
+
+test('synchronous stdin write failure tears the bridge down and rethrows to the caller', async () => {
+  const child = fakeChild();
+  const { supervisor, ready } = handshakeSupervisor(child);
+  await ready;
+
+  const exitPromise = new Promise((resolve) => supervisor.once('exit', resolve));
+  child.stdin.write = () => {
+    throw Object.assign(new Error('write after end'), { code: 'ERR_STREAM_DESTROYED' });
+  };
+  assert.throws(
+    () => supervisor.sendBusinessFrame({ type: 'memory:query', payload: { query: 'x' } }),
+    /write after end/,
+  );
+  const error = await exitPromise;
+  assert.equal(error.code, 'ERR_STREAM_DESTROYED');
+});
+
+test('a fatal_error reply kills the bridge but still surfaces an exit event for host restart', async () => {
+  const child = fakeChild();
+  const { supervisor, ready } = handshakeSupervisor(child);
+  await ready;
+
+  const exitPromise = new Promise((resolve) => supervisor.once('exit', resolve));
+  child.stdout.write(encodeFrame({
+    kind: 'fatal_error',
+    schema: 'reverie.bridge.stdio.control.v4',
+    code: 'REVERIE_COMMAND_REJECTED',
+    error: 'The private bridge rejected an invalid command',
+  }));
+  const error = await exitPromise;
+  assert.match(String(error.message), /rejected an invalid command/);
+  assert.equal(supervisor.ready, null);
+  assert.equal(supervisor.child, null);
+});
+
+test('validateReady forwards model epoch and persona restart signals with safe defaults', () => {
+  const base = {
+    kind: 'ready',
+    schema: 'reverie.bridge.stdio.ready.v4',
+    transport: 'stdio-framed',
+    pid: 9003,
+    secretSha256: secretHash('owner-secret'),
+    protocolVersion: 4,
+    localModeEpoch: 0,
+    localModeSessionId: null,
+    personaId: 'persona',
+    personaEpoch: 1,
+    personaFingerprint: 'a'.repeat(64),
+  };
+  const expected = {
+    pid: 9003,
+    secretSha256: secretHash('owner-secret'),
+    localModeEpoch: 0,
+    localModeSessionId: null,
+  };
+  const configured = validateReady({ ...base, modelEpoch: 7, personaRestartRequired: true }, expected);
+  assert.equal(configured.modelEpoch, 7);
+  assert.equal(configured.personaRestartRequired, true);
+  const legacy = validateReady(base, expected);
+  assert.equal(legacy.modelEpoch, 0);
+  assert.equal(legacy.personaRestartRequired, false);
 });

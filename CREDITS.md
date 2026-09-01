@@ -96,6 +96,12 @@
 
 ## 非代码参考
 
+### Google Places API (New)
+- **用途**: 用户自带 Key 的 Nearby Search (New)，Google 返回结果仅作当前界面临时展示
+- **条款**: https://cloud.google.com/maps-platform/terms
+- **隐私政策**: https://policies.google.com/privacy
+- **说明**: Google Places 数据与服务受 Google Maps Platform 条款、适用政策和署名要求约束
+
 ### Yumi Live2D 角色素材
 - **来源**: 项目所有者于 2026-07-25 提供的本地 `皮套-yumi` 文件夹
 - **授权性质**: 免费公开皮套（free public avatar skin），可随本应用使用、修改与再分发

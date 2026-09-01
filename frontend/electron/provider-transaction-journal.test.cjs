@@ -64,13 +64,16 @@ test('crash recovery preserves either the complete old or complete new tuple', (
     newConfig,
   };
   assert.equal(recoveryAction(transaction, oldConfig, {}), 'discard');
+  // The destination already committed but the credential write never landed
+  // (killed between configure and vault set). The config must survive — only
+  // the key needs re-entry, so this is never a destination rollback.
   assert.equal(recoveryAction(transaction, newConfig, {
     persistent: {
       binding: binding,
       transactionId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
       credential: { apiKey: 'old' },
     },
-  }), 'rollback');
+  }), 'complete');
   assert.equal(recoveryAction(transaction, newConfig, {
     persistent: {
       binding,
@@ -83,4 +86,49 @@ test('crash recovery preserves either the complete old or complete new tuple', (
     newConfig,
     {},
   ), 'complete');
+});
+
+test('a stale journal never overwrites newer user state', () => {
+  const oldConfig = config('ollama', 'http://localhost:11434/v1');
+  const newConfig = config('deepseek', 'https://api.deepseek.com');
+  const transaction = {
+    schema: SCHEMA,
+    id: '12345678-1234-1234-1234-123456789abc',
+    phase: 'prepared',
+    credentialAction: 'replace',
+    credentialTransactionId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    newBinding: 'a'.repeat(64),
+    oldConfig,
+    newConfig,
+  };
+  // The user changed the provider again after this journal entry was written;
+  // rolling back would clobber the newer choice with the old one.
+  const newerUserConfig = config('glm', 'https://open.bigmodel.cn/api/paas/v4');
+  assert.equal(recoveryAction(transaction, newerUserConfig, {}), 'discard');
+  // Even a stale journal may still rescue the last-known destination when the
+  // live config was reset to the factory default underneath us — but only
+  // when the journal recorded a real user config.
+  const glmOld = config('glm', 'https://open.bigmodel.cn/api/paas/v4');
+  const resetTransaction = { ...transaction, oldConfig: glmOld };
+  assert.equal(recoveryAction(resetTransaction, {
+    llm: { provider: 'ollama', baseUrl: 'http://localhost:11434/v1', model: '' },
+  }, {}), 'rollback');
+  // …but only when there IS a real user config to restore.
+  const factoryOld = {
+    llm: { provider: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', model: '' },
+  };
+  const factoryCurrent = {
+    llm: { provider: 'ollama', baseUrl: 'http://localhost:11434/v1', model: '' },
+  };
+  const factoryTransaction = {
+    schema: SCHEMA,
+    id: '12345678-1234-1234-1234-123456789abc',
+    phase: 'prepared',
+    credentialAction: 'replace',
+    credentialTransactionId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    newBinding: 'a'.repeat(64),
+    oldConfig: factoryOld,
+    newConfig,
+  };
+  assert.equal(recoveryAction(factoryTransaction, factoryCurrent, {}), 'discard');
 });

@@ -516,6 +516,23 @@ class UserManager:
                 filepath.unlink()
         except Exception:
             logger.exception("Failed to load emotional memories")
+            self._quarantine_corrupt_emotional_memories(filepath)
+
+    def _quarantine_corrupt_emotional_memories(self, filepath: Path) -> None:
+        """Move an unreadable memories file aside so a later save cannot
+        silently overwrite the last recoverable copy with an empty list."""
+        try:
+            quarantine = filepath.with_name(
+                f"{filepath.stem}.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S')}{filepath.suffix}"
+            )
+            filepath.replace(quarantine)
+            logger.error(
+                "Emotional memories file was unreadable and has been moved to %s; "
+                "recover it manually if needed. New memories will rebuild from empty.",
+                quarantine,
+            )
+        except OSError:
+            logger.exception("Could not quarantine corrupt emotional memories file %s", filepath)
 
     def _save_emotional_memories(self) -> None:
         if self.document_store is not None:
@@ -525,13 +542,16 @@ class UserManager:
             )
             return
         filepath = self.data_dir / "emotional_memories.json"
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(
+        temp_path = filepath.with_suffix(".tmp")
+        temp_path.write_text(
+            json.dumps(
                 {"memories": [memory.to_dict() for memory in self.emotional_memories]},
-                f,
                 indent=2,
                 ensure_ascii=False,
-            )
+            ),
+            encoding="utf-8",
+        )
+        temp_path.replace(filepath)
 
     def _should_record_emotional_memory(
         self,

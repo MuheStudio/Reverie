@@ -30,7 +30,14 @@ STATUS_LABELS: dict[Status, str] = {
     "sleeping": "睡觉",
 }
 
-RETRACT_PROBABILITY = 0.001
+# Every delivered reply has this independent 0.05% chance. Contextual signals
+# add to, rather than replace, the global baseline before the bounded cap.
+RETRACT_PROBABILITY = 0.0005
+RETRACT_TYPO_BOOST = 0.09
+RETRACT_ANXIETY_BOOST = 0.04
+RETRACT_ANGER_BOOST = 0.02
+RETRACT_MULTI_BUBBLE_BOOST = 0.002
+RETRACT_PROBABILITY_CAP = 0.30
 
 
 @dataclass(frozen=True)
@@ -264,22 +271,22 @@ class MessageScheduler:
         emotions: dict[str, float] | None = None,
         bubble_count: int = 1,
     ) -> bool:
-        """Allow rare accidental retractions and contextual typo corrections."""
+        """Roll the global retraction chance plus additive context boosts."""
         probability = RETRACT_PROBABILITY
         emotions = emotions or {}
         if had_typo:
-            probability = max(probability, 0.18)
+            probability += RETRACT_TYPO_BOOST
         anxiety = max(
             float(emotions.get("anxiety", 0.0)),
             float(emotions.get("grievance", 0.0)),
         )
         if anxiety >= 70:
-            probability += 0.04
+            probability += RETRACT_ANXIETY_BOOST
         if float(emotions.get("anger", 0.0)) >= 80:
-            probability += 0.02
+            probability += RETRACT_ANGER_BOOST
         if bubble_count > 1:
-            probability += 0.002
-        return random.random() < min(probability, 0.30)
+            probability += RETRACT_MULTI_BUBBLE_BOOST
+        return random.random() < min(probability, RETRACT_PROBABILITY_CAP)
 
     def _sleeping_delay_seconds(self, now: datetime | None = None) -> float:
         """During sleep, either reply sleepily after 10-20m or wait until wake."""

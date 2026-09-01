@@ -35,7 +35,10 @@
 
 .characterColumn {
   display: flex;
-  min-height: 100vh;
+  /* A hard viewport height, not min-height: the settings and memory panels
+     are tall, and a stretchable column would center the Live2D canvas far
+     below the clipped viewport, which reads as "the character vanished". */
+  height: 100vh;
   flex-direction: column;
   padding: 28px clamp(20px, 4vw, 58px);
 }
@@ -156,7 +159,11 @@
 
 .panel {
   display: flex;
-  min-height: calc(100vh - 32px);
+  /* A hard cap, not min-height: with only a floor the tall settings and
+     memory panels stretch this grid item (and the whole shell row) to their
+     content height, pushing the centered Live2D canvas out of the clipped
+     viewport. The inner panels own overflow-y and scroll instead. */
+  height: calc(100vh - 32px);
   flex-direction: column;
   margin: 16px 16px 16px 0;
   overflow: hidden;
@@ -840,11 +847,40 @@ button:disabled {
 }
 
 .settingsSection .checkbox input {
-  margin-top: 3px;
+  width: 16px;
+  min-height: 16px;
   flex: 0 0 auto;
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
 }
 
 .settingsSection .checkbox span {
+  color: #665b68;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+// Stacked checkbox: the square sits on its own line and the label text gets
+// the full row width below it. The side-by-side .checkbox above squeezes long
+// text (the flaws disclaimer, the proactive-chat labels) into the narrow
+// remainder of the settings column, wrapping it into unreadable slivers.
+.settingsSection .checkboxStack {
+  display: block;
+}
+
+.settingsSection .checkboxStack input {
+  width: 16px;
+  min-height: 16px;
+  margin: 0 0 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.settingsSection .checkboxStack span {
+  display: block;
   color: #665b68;
   font-size: 12px;
   line-height: 1.5;
@@ -858,6 +894,13 @@ button:disabled {
 
 .statusLine {
   margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.modelHint {
+  margin: 4px 0 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
@@ -953,4 +996,73 @@ button:disabled {
     min-height: calc(100vh - 20px);
     margin: 10px;
   }
+}
+
+// ── Chat image attachments ─────────────────────────────
+
+.messageImage {
+  display: block;
+  margin-block-end: 0.35rem;
+
+  img {
+    display: block;
+    max-inline-size: min(240px, 100%);
+    max-block-size: 200px;
+    border-radius: 12px;
+    border: 1px solid var(--rv-line-soft, rgba(214, 170, 190, 0.5));
+    box-shadow: var(--rv-shadow-soft, 0 6px 16px rgba(90, 60, 75, 0.18));
+    object-fit: cover;
+  }
+}
+
+.pendingImage {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-block-start: 0.3rem;
+
+  img {
+    inline-size: 56px;
+    block-size: 56px;
+    border-radius: 10px;
+    object-fit: cover;
+    border: 1px solid var(--rv-line-soft, rgba(214, 170, 190, 0.5));
+  }
+
+  button {
+    inline-size: 24px;
+    block-size: 24px;
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(120, 90, 105, 0.16);
+    color: inherit;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+  }
+}
+
+.imageNotice {
+  display: block;
+  margin-block-start: 0.25rem;
+  color: #a04a63;
+}
+
+.stickerImportButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-block-start: 0.45rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px dashed rgba(180, 130, 155, 0.7);
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+
+  &:hover { background: rgba(214, 170, 190, 0.16); }
 }

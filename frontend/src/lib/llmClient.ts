@@ -9,8 +9,6 @@ import {
   loadPersistedConfig,
   sanitizeImageGenConfig,
   sanitizeLLMConfig,
-  savePersistedConfig,
-  type PublicLLMConfig,
 } from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-llm-config';
@@ -51,15 +49,6 @@ export interface ProviderTestReceipt {
   model: string;
 }
 
-function readLegacyPublicConfig(): PublicLLMConfig | null {
-  try {
-    const raw = globalThis.localStorage?.getItem(CONFIG_KEY);
-    return raw ? sanitizeLLMConfig(JSON.parse(raw)) : null;
-  } catch {
-    return null;
-  }
-}
-
 function removeLegacyPublicConfig(): void {
   try {
     globalThis.localStorage?.removeItem(CONFIG_KEY);
@@ -75,18 +64,10 @@ export async function loadConfig(): Promise<LLMConfig | null> {
     return { ...persisted.llm, apiKey: '' };
   }
 
-  // One-way migration only. The renderer cache is never a runtime fallback:
-  // return the value only after the authoritative Electron store confirms it.
-  const legacy = readLegacyPublicConfig();
-  if (legacy) {
-    try {
-      await savePersistedConfig({ llm: legacy });
-      removeLegacyPublicConfig();
-      return { ...legacy, apiKey: '' };
-    } catch {
-      return null;
-    }
-  }
+  // The renderer cache is never a runtime fallback: without the authoritative
+  // write channel there is no way to confirm a legacy cached value, so it is
+  // dropped instead of trusted.
+  removeLegacyPublicConfig();
   return null;
 }
 

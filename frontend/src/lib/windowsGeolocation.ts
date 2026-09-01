@@ -21,6 +21,24 @@ export type WindowsBrowserLocation =
 
 type GeolocationLike = Pick<Geolocation, 'getCurrentPosition'>;
 
+export type ImmersionNearbyPayload = {
+  latitude: number;
+  longitude: number;
+  radius_m: number;
+  place_types: string[];
+};
+
+export type SystemLocationScale = 'neighborhood-scale' | 'city-scale' | 'regional-scale';
+
+export type CoarseSystemLocationMemoryPayload = {
+  kind: 'coarse_system_location';
+  neighborhood_scale: SystemLocationScale;
+  user_confirmed: true;
+};
+
+const MAX_SYSTEM_LOCATION_AGE_MS = 10 * 60 * 1000;
+const MAX_CLOCK_SKEW_MS = 60 * 1000;
+
 function failure(
   code: Extract<WindowsBrowserLocation, { ok: false }>['code'],
   status: string,
@@ -46,9 +64,11 @@ export function requestWindowsBrowserLocation(
     try {
       geolocation.getCurrentPosition(
         (position) => {
-          const latitude = Number(position.coords.latitude);
-          const longitude = Number(position.coords.longitude);
-          const accuracy = Number(position.coords.accuracy);
+          const latitude = position.coords.latitude;
+          const longitude = position.coords.longitude;
+          const accuracy = position.coords.accuracy;
+          const timestamp = position.timestamp || Date.now();
+          const capturedAt = new Date(timestamp);
           if (
             !Number.isFinite(latitude)
             || latitude < -90
@@ -59,6 +79,8 @@ export function requestWindowsBrowserLocation(
             || !Number.isFinite(accuracy)
             || accuracy < 0
             || accuracy > 1_000_000
+            || !Number.isFinite(timestamp)
+            || !Number.isFinite(capturedAt.getTime())
           ) {
             resolve(failure('REVERIE_LOCATION_NATIVE_FAILURE', 'InvalidCoordinate'));
             return;
@@ -69,7 +91,7 @@ export function requestWindowsBrowserLocation(
             latitude,
             longitude,
             accuracy,
-            timestamp: new Date(position.timestamp || Date.now()).toISOString(),
+            timestamp: capturedAt.toISOString(),
             source: 'windows-browser-geolocation',
           });
         },
@@ -93,4 +115,44 @@ export function requestWindowsBrowserLocation(
       resolve(failure('REVERIE_LOCATION_NATIVE_FAILURE', 'RequestFailed'));
     }
   });
+}
+
+export function immersionNearbyPayload(
+  position: Extract<WindowsBrowserLocation, { ok: true }>,
+  radiusM: number,
+): ImmersionNearbyPayload {
+  return {
+    latitude: position.latitude,
+    longitude: position.longitude,
+    radius_m: radiusM,
+    place_types: ['restaurant', 'shop', 'cafe', 'supermarket', 'park'],
+  };
+}
+
+export function coarseSystemLocationMemoryPayload(
+  position: Extract<WindowsBrowserLocation, { ok: true }>,
+  nowMs: number = Date.now(),
+): CoarseSystemLocationMemoryPayload | null {
+  if (position.source !== 'windows-browser-geolocation') return null;
+  const capturedAt = Date.parse(position.timestamp);
+  if (
+    !Number.isFinite(nowMs)
+    || !Number.isFinite(capturedAt)
+    || capturedAt > nowMs + MAX_CLOCK_SKEW_MS
+    || nowMs - capturedAt > MAX_SYSTEM_LOCATION_AGE_MS
+    || !Number.isFinite(position.accuracy)
+    || position.accuracy < 0
+    || position.accuracy > 1_000_000
+  ) return null;
+
+  const neighborhoodScale: SystemLocationScale = position.accuracy <= 1_000
+    ? 'neighborhood-scale'
+    : position.accuracy <= 10_000
+      ? 'city-scale'
+      : 'regional-scale';
+  return {
+    kind: 'coarse_system_location',
+    neighborhood_scale: neighborhoodScale,
+    user_confirmed: true,
+  };
 }

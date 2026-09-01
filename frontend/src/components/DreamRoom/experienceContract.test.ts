@@ -50,6 +50,13 @@ describe('DreamRoom experience contracts', () => {
     expect(dock).not.toContain("{tab === 'focus' && (");
   });
 
+  it('keeps all four composer controls on one flexible row', () => {
+    const chatStyles = source('ChatPanel.module.scss');
+    const roomStyles = source('index.module.scss');
+    expect(chatStyles).toContain('grid-template-columns: 44px 44px minmax(0, 1fr) 44px');
+    expect(roomStyles).toContain('grid-template-columns: minmax(0, 1fr) clamp(440px, 32vw, 520px)');
+  });
+
   it('keeps all extra AI switches default-off', () => {
     const panels = source('ArchivePanels.tsx');
     expect(panels).toMatch(/diary_enabled:\s*false/);

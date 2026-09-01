@@ -183,6 +183,52 @@ class StorageKeyVault {
       created.fill(0);
     }
   }
+
+  /**
+   * Explicit destructive escape hatch — the counterpart of CredentialVault
+   * clear(). This is the only operation allowed to move a vault that can no
+   * longer be decrypted, and it must only run after the user has been warned
+   * that the existing encrypted database will become permanently unreadable.
+   * The old vault file is renamed aside (never silently deleted) so the
+   * original ciphertext stays on disk; the next getOrCreateKey() creates a
+   * fresh key.
+   */
+  reset({ reason = 'user_requested' } = {}) {
+    this._ensureSafeStorageDirectory();
+    let recoveredCorruptVault = false;
+    try {
+      const existing = this._readExisting();
+      if (existing) existing.fill(0);
+    } catch (error) {
+      const code = String(error?.code || '');
+      if (code !== 'REVERIE_STORAGE_KEY_CORRUPT' && code !== 'REVERIE_STORAGE_KEY_IO') {
+        throw error;
+      }
+      recoveredCorruptVault = true;
+    }
+    const nonce = crypto.randomBytes(6).toString('hex');
+    const supersededPath = path.join(
+      this.storageDir,
+      `.database-key.superseded.${Date.now()}.${nonce}`,
+    );
+    try {
+      const stat = this.fs.lstatSync(this.vaultPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw storageKeyError('The database key vault is unsafe', 'REVERIE_STORAGE_KEY_IO');
+      }
+      if (normalizedPath(this.fs.realpathSync(this.vaultPath)) !== normalizedPath(this.vaultPath)) {
+        throw storageKeyError('The database key vault is unsafe', 'REVERIE_STORAGE_KEY_IO');
+      }
+      this.fs.renameSync(this.vaultPath, supersededPath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return { reset: true, recoveredCorruptVault, supersededPath: null, reason };
+      }
+      if (String(error?.code || '').startsWith('REVERIE_')) throw error;
+      throw storageKeyError('The database key vault could not be reset', 'REVERIE_STORAGE_KEY_IO');
+    }
+    return { reset: true, recoveredCorruptVault, supersededPath, reason };
+  }
 }
 
 module.exports = {

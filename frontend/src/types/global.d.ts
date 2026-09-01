@@ -141,6 +141,18 @@ declare global {
       sessionOnly?: boolean;
       bindingKnown?: boolean;
     };
+    amap?: {
+      hasApiKey: boolean;
+      hasCustomHeaders: boolean;
+      sessionOnly?: boolean;
+      bindingKnown?: boolean;
+    };
+    googlePlaces?: {
+      hasApiKey: boolean;
+      hasCustomHeaders: boolean;
+      sessionOnly?: boolean;
+      bindingKnown?: boolean;
+    };
     stored?: boolean;
     runtimeApplied?: boolean;
     runtimePending?: boolean;
@@ -169,6 +181,7 @@ declare global {
     electronAPI?: {
       platform?: string;
       getAppVersion?: () => Promise<string>;
+      getPathForFile?: (file: File) => string;
       onAppLifecycle?: (
         callback: (event: { state: string; at: string }) => void,
       ) => () => void;
@@ -193,6 +206,36 @@ declare global {
         status: () => Promise<CredentialStatus>;
         clear: () => Promise<CredentialStatus>;
         onChanged: (callback: (status: CredentialStatus) => void) => () => void;
+      };
+      places?: {
+        status: () => Promise<{
+          configured: { amap: boolean; google: boolean };
+          secureStorageAvailable: boolean;
+        }>;
+        setKey: (
+          provider: 'amap' | 'google',
+          apiKey: string,
+        ) => Promise<{ configured: boolean; secureStorageAvailable: boolean }>;
+        deleteKey: (
+          provider: 'amap' | 'google',
+        ) => Promise<{ configured: boolean; secureStorageAvailable: boolean }>;
+        resolve: (selection: 'auto' | 'amap' | 'google') => Promise<{
+          provider: 'amap' | 'google' | null;
+          configured: boolean;
+        }>;
+        nearby: (value: {
+          provider: 'amap' | 'google';
+          latitude: number;
+          longitude: number;
+          radiusM: number;
+          placeTypes: Array<'restaurant' | 'cafe' | 'bakery' | 'dessert' | 'convenience' | 'snacks' | 'supermarket'>;
+          consent: boolean;
+        }) => Promise<{
+          ok: boolean;
+          code: 'ok' | 'key-required' | 'consent' | 'local-mode' | 'timeout' | 'quota' | 'unavailable';
+          provider: 'Amap' | 'Google';
+          items: Array<Record<string, unknown>>;
+        }>;
       };
       providerConfig?: {
         get: () => Promise<PublicProviderConfig | null>;
@@ -223,8 +266,6 @@ declare global {
           config: PublicProviderConfig;
           status: CredentialStatus;
         }>;
-        // Legacy DreamRoom surface kept for type compatibility.
-        set?: (value: Record<string, unknown>) => Promise<unknown>;
       };
       character?: {
         get: () => Promise<{
@@ -250,27 +291,9 @@ declare global {
       stickers?: {
         list: () => Promise<{ items: unknown[] }>;
         collect: (value: Record<string, unknown>) => Promise<{ ok: boolean }>;
-        importFile: (value?: {
-          text?: string;
-          emotions?: string[];
-          styleTags?: string[];
-        }) => Promise<{
-          canceled: boolean;
-          fileName?: string;
-          item?: {
-            id: string;
-            text: string;
-            emotions: string[];
-            source?: string;
-            usage_count?: number;
-            last_used?: string;
-            image_path?: string;
-            image_data_url?: string;
-            style_tags?: string[];
-            favorite_score?: number;
-          } | null;
-          items?: unknown[];
-        }>;
+        // Opens the native image picker; the returned path is forwarded to
+        // Python via the sticker:import bridge command for validation+storage.
+        pickImage: () => Promise<{ canceled: boolean; filePath?: string }>;
       };
       files?: {
         saveJson?: (name: string, payload: unknown) => Promise<{ ok: boolean }>;
@@ -338,15 +361,6 @@ declare global {
           autoStart: boolean;
         }) => Promise<{ sound: string; volume: number; autoStart: boolean }>;
       };
-      getCurrentWindowsLocation?: () => Promise<{
-        ok: boolean;
-        code: string;
-        status?: string;
-        latitude?: number;
-        longitude?: number;
-        accuracy?: number;
-      }>;
-      openLocationSettings?: () => Promise<void>;
     };
   }
 }

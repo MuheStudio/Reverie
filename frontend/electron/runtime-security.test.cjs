@@ -116,7 +116,8 @@ test('permission policy allows geolocation only for the trusted main frame', () 
   const policy = createRendererTrustPolicy({ isDev: true, devUrl: 'http://localhost:5173' });
   const mainFrame = { url: 'http://localhost:5173/#/dream', parent: null };
   const webContents = { mainFrame, isDestroyed: () => false };
-  installPermissionPolicy(electronSession, policy, () => ({ webContents }));
+  const mainWindow = { webContents, isDestroyed: () => false };
+  installPermissionPolicy(electronSession, policy, () => mainWindow);
 
   // Trusted main frame geolocation is granted for user-triggered immersion.
   assert.equal(checkHandler(webContents, 'geolocation', '', {
@@ -133,6 +134,17 @@ test('permission policy allows geolocation only for the trusted main frame', () 
     requestingUrl: mainFrame.url,
     isMainFrame: true,
   }), false);
+  const auxiliaryWebContents = { mainFrame, isDestroyed: () => false };
+  assert.equal(checkHandler(auxiliaryWebContents, 'geolocation', '', {
+    requestingUrl: mainFrame.url,
+    isMainFrame: true,
+  }), false);
+  mainWindow.webContents = auxiliaryWebContents;
+  assert.equal(checkHandler(webContents, 'geolocation', '', {
+    requestingUrl: mainFrame.url,
+    isMainFrame: true,
+  }), false);
+  mainWindow.webContents = webContents;
   assert.equal(checkHandler(webContents, 'geolocation', '', {
     requestingUrl: 'http://localhost.evil:5173/',
     isMainFrame: true,

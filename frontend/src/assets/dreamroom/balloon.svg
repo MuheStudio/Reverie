@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 140">
+  <!-- Original self-drawn asset for Reverie (GPL-3.0): one balloon with a
+       knotted string. Body colour mirrors --rv-accent-soft/#e59fb0 tones. -->
+  <path d="M30 62 C 22 84, 39 100, 28 136" fill="none" stroke="#8a6a72" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M30 54 L24 64 L36 64 Z" fill="#c97f92"/>
+  <ellipse cx="30" cy="32" rx="24" ry="28" fill="#e59fb0"/>
+  <ellipse cx="21" cy="21" rx="6.5" ry="9.5" fill="#ffffff" opacity="0.45" transform="rotate(-18 21 21)"/>
+</svg>

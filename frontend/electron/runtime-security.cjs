@@ -106,8 +106,12 @@ function installPermissionPolicy(electronSession, trustPolicy, getWindow) {
   // notifications, clipboard, MIDI, USB, serial, Bluetooth, HID) stays denied
   // unconditionally so a renderer button cannot silently acquire it.
   function isTrustedGeolocation(webContents, details) {
+    const mainWindow = getWindow();
+    if (!mainWindow || mainWindow.isDestroyed?.()) return false;
+    if (mainWindow.webContents !== webContents) return false;
     if (!webContents || webContents.isDestroyed?.()) return false;
     if (!details || details.isMainFrame !== true) return false;
+    if (!webContents.mainFrame || webContents.mainFrame.parent !== null) return false;
     if (!trustPolicy.isTrustedUrl(webContents.mainFrame?.url)) return false;
     if (!trustPolicy.isTrustedUrl(details.requestingUrl)) return false;
     return true;

@@ -35,6 +35,14 @@ const MIME = Object.freeze({
   '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
+  // Bundled focus-soundscape ambiences ship as vite-emitted audio assets; a
+  // missing entry here made every packaged fetch 404 and silently degrade to
+  // the pink-noise fallback.
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.flac': 'audio/flac',
 });
 
 function isInside(parent, child) {

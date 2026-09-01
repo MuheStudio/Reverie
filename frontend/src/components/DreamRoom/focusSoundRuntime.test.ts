@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   attemptFocusPlayback,
-  createWindNoiseBuffer,
   loadFocusSoundBuffer,
 } from './focusSoundRuntime';
 
@@ -31,9 +30,9 @@ function audioContext(options: { startFails?: boolean } = {}): AudioContext {
     sampleRate: 16_000,
     currentTime: 0,
     destination: {},
-    createBuffer: (channels: number, length: number, sampleRate: number) => (
+    createBuffer: vi.fn((channels: number, length: number, sampleRate: number) => (
       audioBuffer(channels, length, sampleRate)
-    ),
+    )),
     decodeAudioData: vi.fn(async () => audioBuffer()),
     createGain: vi.fn(() => gain),
     createBufferSource: vi.fn(() => ({
@@ -50,41 +49,59 @@ function audioContext(options: { startFails?: boolean } = {}): AudioContext {
 }
 
 describe('focus sound runtime', () => {
-  it('falls back to generated pink noise when a bundled asset returns 404', async () => {
+  it('rejects instead of substituting pink noise when a recorded asset returns 404', async () => {
     const context = audioContext();
     const fetchAudio = vi.fn(async () => ({
       ok: false,
       arrayBuffer: async () => new ArrayBuffer(0),
     }));
 
-    const result = await loadFocusSoundBuffer(context, 'rain', fetchAudio);
+    await expect(loadFocusSoundBuffer(context, 'rain', fetchAudio))
+      .rejects.toThrow('无法加载所选专注声音: audio asset unavailable');
 
     expect(fetchAudio).toHaveBeenCalledOnce();
-    expect(result.usedFallback).toBe(true);
-    expect(result.buffer.duration).toBe(5);
+    expect(context.createBuffer).not.toHaveBeenCalled();
     expect(context.decodeAudioData).not.toHaveBeenCalled();
   });
 
-  it('returns no graph when both asset and pink-noise playback fail', async () => {
+  it('surfaces recorded playback failure without trying pink noise', async () => {
     const context = audioContext({ startFails: true });
     const fetchAudio = vi.fn(async () => ({
       ok: true,
       arrayBuffer: async () => new ArrayBuffer(8),
     }));
 
-    const result = await attemptFocusPlayback(context, 'fire', 0.2, fetchAudio);
+    await expect(attemptFocusPlayback(context, 'fire', 0.2, fetchAudio))
+      .rejects.toThrow('output device unavailable');
 
-    expect(result).toBeNull();
-    expect(context.createBufferSource).toHaveBeenCalledTimes(2);
+    expect(context.createBufferSource).toHaveBeenCalledOnce();
+    expect(context.createBuffer).not.toHaveBeenCalled();
   });
 
-  it('generates the bundled wind sound locally without fetching a remote asset', async () => {
+  it.each(['rain', 'fire', 'wind'] as const)(
+    'decodes the recorded %s asset from its bundled url',
+    async (sound) => {
     const context = audioContext();
-    const fetchAudio = vi.fn();
-    const result = await loadFocusSoundBuffer(context, 'wind', fetchAudio);
-    expect(fetchAudio).not.toHaveBeenCalled();
+    const fetchAudio = vi.fn(async (_input: RequestInfo | URL) => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    }));
+    const result = await loadFocusSoundBuffer(context, sound, fetchAudio);
+    expect(fetchAudio).toHaveBeenCalledOnce();
+    expect(String(fetchAudio.mock.calls[0]?.[0])).toContain(`focus-${sound}`);
     expect(result.usedFallback).toBe(false);
-    expect(result.buffer.duration).toBe(8);
-    expect(createWindNoiseBuffer(context).numberOfChannels).toBe(2);
+    expect(context.decodeAudioData).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('reports the fallback instead of failing when the pink-noise path is used directly', async () => {
+    const context = audioContext();
+    const fetchAudio = vi.fn(async () => ({
+      ok: false,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }));
+    const result = await loadFocusSoundBuffer(context, 'pink', fetchAudio);
+    expect(fetchAudio).not.toHaveBeenCalled();
+    expect(result.usedFallback).toBe(true);
   });
 });

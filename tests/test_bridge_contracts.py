@@ -1079,6 +1079,54 @@ def test_onboarding_completion_is_authoritative_and_durable(monkeypatch, tmp_pat
     assert persisted["ui"]["onboarding_completed_at_utc"]
 
 
+def test_immersion_settings_default_off_and_persist_atomically(monkeypatch, tmp_path) -> None:
+    from src.config.settings import _Settings
+
+    settings = _Settings()
+    config_path = tmp_path / "config.json"
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+    monkeypatch.setattr(ws_bridge.bridge_state, "immersion", None)
+    monkeypatch.setattr("src.config.settings.CONFIG_FILE", config_path)
+
+    assert settings.features.immersion_location_enabled is False
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {
+            "section": "immersion",
+            "immersion_location_enabled": True,
+            "immersion_location_radius_m": 1800,
+        },
+        DummyWebSocket(),
+    ))
+
+    assert result["ok"] is True
+    assert ws_bridge.bridge_state.settings is not settings
+    assert settings.features.immersion_location_enabled is False
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["features"]["immersion_location_enabled"] is True
+    assert persisted["features"]["immersion_location_radius_m"] == 1800
+
+
+def test_failed_immersion_settings_save_leaves_live_settings_unchanged(monkeypatch) -> None:
+    from src.config.settings import _Settings
+
+    settings = _Settings()
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+    monkeypatch.setattr(ws_bridge.bridge_state, "immersion", None)
+
+    def fail_save(_settings) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr("src.config.settings.save_settings", fail_save)
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {"section": "immersion", "immersion_location_enabled": True},
+        DummyWebSocket(),
+    ))
+
+    assert result["ok"] is False
+    assert ws_bridge.bridge_state.settings is settings
+    assert settings.features.immersion_location_enabled is False
+
+
 def test_legacy_lorebook_write_is_rejected_without_creating_a_second_fact_source(
     monkeypatch,
     tmp_path,

@@ -7,8 +7,7 @@
  *   - localStorage: happy-dom provides real implementation, cleared in beforeEach
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';import {
   loadConfig,
   loadConfigSync,
   saveConfig,
@@ -38,7 +37,6 @@ const MOCK_ANTHROPIC_CONFIG: LLMConfig = {
 };
 
 const PUBLIC_OPENAI_CONFIG: LLMConfig = { ...MOCK_OPENAI_CONFIG, apiKey: '' };
-const PUBLIC_ANTHROPIC_CONFIG: LLMConfig = { ...MOCK_ANTHROPIC_CONFIG, apiKey: '' };
 
 const MOCK_MESSAGES: ChatMessage[] = [{ role: 'user', content: 'Hello' }];
 
@@ -225,12 +223,12 @@ describe('loadConfig()', () => {
   });
 
   describe('Scenario B: Electron store has no file', () => {
-    it('migrates legacy browser metadata only after the Electron store confirms it', async () => {
+    it('drops legacy browser metadata instead of trusting it', async () => {
       providerGet.mockResolvedValueOnce(null);
       localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_OPENAI_CONFIG));
 
-      expect(await loadConfig()).toEqual(PUBLIC_OPENAI_CONFIG);
-      expect(providerSet).toHaveBeenCalled();
+      expect(await loadConfig()).toBeNull();
+      expect(providerSet).not.toHaveBeenCalled();
       expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
     });
 
@@ -242,12 +240,12 @@ describe('loadConfig()', () => {
   });
 
   describe('Scenario C: Electron store is unavailable or corrupt', () => {
-    it('can migrate legacy metadata after an unavailable read when writing succeeds', async () => {
+    it('drops legacy metadata when the authoritative read fails, without a write', async () => {
       providerGet.mockRejectedValueOnce(new Error('Provider store unavailable'));
       localStorage.setItem(CONFIG_KEY, JSON.stringify(MOCK_ANTHROPIC_CONFIG));
 
-      expect(await loadConfig()).toEqual(PUBLIC_ANTHROPIC_CONFIG);
-      expect(providerSet).toHaveBeenCalled();
+      expect(await loadConfig()).toBeNull();
+      expect(providerSet).not.toHaveBeenCalled();
       expect(localStorage.getItem(CONFIG_KEY)).toBeNull();
     });
 

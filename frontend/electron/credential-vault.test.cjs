@@ -40,6 +40,42 @@ test('credential vault stores only OS-encrypted bytes and exposes status without
   });
 });
 
+test('Amap BYOK is encrypted and status never exposes plaintext', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-amap-vault-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  const status = vault.set('amap', { apiKey: 'amap-owner-canary' });
+
+  assert.equal(status.amap.hasApiKey, true);
+  assert.equal(JSON.stringify(status).includes('amap-owner-canary'), false);
+  assert.equal(
+    fs.readFileSync(path.join(root, 'credentials.vault')).includes(Buffer.from('amap-owner-canary')),
+    false,
+  );
+  assert.deepEqual(vault.readForRuntime().amap, { apiKey: 'amap-owner-canary' });
+  assert.equal(vault.clear('amap').amap.hasApiKey, false);
+});
+
+test('Google Places BYOK is isolated and bound to its fixed endpoint', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-google-places-vault-'));
+  const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  const binding = 'a'.repeat(64);
+  vault.set('amap', { apiKey: 'amap-only' });
+  const status = vault.set('googlePlaces', { apiKey: 'google-only' }, { binding });
+
+  assert.equal(status.googlePlaces.hasApiKey, true);
+  assert.equal(JSON.stringify(status).includes('google-only'), false);
+  assert.deepEqual(vault.readForRuntime({ bindings: { googlePlaces: binding } }).googlePlaces, {
+    apiKey: 'google-only',
+  });
+  assert.equal(
+    vault.readForRuntime({ bindings: { googlePlaces: 'b'.repeat(64) } }).googlePlaces,
+    undefined,
+  );
+  assert.deepEqual(vault.readForRuntime().amap, { apiKey: 'amap-only' });
+  vault.clear('googlePlaces');
+  assert.deepEqual(vault.readForRuntime().amap, { apiKey: 'amap-only' });
+});
+
 test('credential vault has no plaintext fallback when OS encryption is unavailable', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage(false) });

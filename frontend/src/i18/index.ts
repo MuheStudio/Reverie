@@ -1,7 +1,7 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import translation from './locale';
-import { ENABLE_LOCALES, FALLBACK_LNG } from './config';
+import { DEFAULT_LNG, ENABLE_LOCALES, FALLBACK_LNG } from './config';
 export * from './config';
 
 interface I18nOptions {
@@ -57,7 +57,7 @@ export const initI18n = (options?: I18nOptions) => {
   const { fallbackLng, resources } = getResources();
 
   const mergedOptions = {
-    lng: fallbackLng,
+    lng: DEFAULT_LNG,
     fallbackLng,
     interpolation: {
       escapeValue: false, // Do not escape interpolation placeholders

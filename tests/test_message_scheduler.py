@@ -1,7 +1,7 @@
 import random
 from datetime import datetime
 
-from src.chat.scheduler import MessageScheduler
+from src.chat.scheduler import MessageScheduler, RETRACT_PROBABILITY_CAP
 
 
 def test_scheduler_clamps_non_sleep_delay_thresholds() -> None:
@@ -22,14 +22,48 @@ def test_scheduler_status_payload_uses_chinese_labels() -> None:
     }
 
 
-def test_scheduler_retract_probability_is_fixed(monkeypatch) -> None:
+def test_scheduler_retract_probability_keeps_global_baseline(monkeypatch) -> None:
     scheduler = MessageScheduler()
 
-    monkeypatch.setattr(random, "random", lambda: 0.0009)
+    monkeypatch.setattr(random, "random", lambda: 0.0004)
     assert scheduler.should_retract_message() is True
 
-    monkeypatch.setattr(random, "random", lambda: 0.0011)
+    monkeypatch.setattr(random, "random", lambda: 0.0006)
     assert scheduler.should_retract_message() is False
+
+
+def test_scheduler_retract_context_boosts_are_additive(monkeypatch) -> None:
+    scheduler = MessageScheduler()
+
+    # Each roll is just below baseline + the named context boost, proving the
+    # 0.0005 baseline was added rather than replaced by that boost.
+    cases = [
+        (0.0904, {"had_typo": True}),
+        (0.0404, {"emotions": {"anxiety": 70.0}}),
+        (0.0204, {"emotions": {"anger": 80.0}}),
+        (0.0024, {"bubble_count": 2}),
+        (
+            0.1524,
+            {
+                "had_typo": True,
+                "emotions": {"grievance": 70.0, "anger": 80.0},
+                "bubble_count": 3,
+            },
+        ),
+    ]
+    for roll, context in cases:
+        monkeypatch.setattr(random, "random", lambda roll=roll: roll)
+        assert scheduler.should_retract_message(**context) is True
+
+
+def test_scheduler_retract_probability_remains_capped(monkeypatch) -> None:
+    scheduler = MessageScheduler()
+    monkeypatch.setattr("src.chat.scheduler.RETRACT_TYPO_BOOST", 1.0)
+
+    monkeypatch.setattr(random, "random", lambda: RETRACT_PROBABILITY_CAP - 0.0001)
+    assert scheduler.should_retract_message(had_typo=True) is True
+    monkeypatch.setattr(random, "random", lambda: RETRACT_PROBABILITY_CAP)
+    assert scheduler.should_retract_message(had_typo=True) is False
 
 
 def test_message_complexity_and_length_increase_typing_delay(monkeypatch) -> None:

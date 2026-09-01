@@ -110,6 +110,8 @@ function validateReady(value, expected) {
     runtimeUnavailable: Array.isArray(value.runtimeUnavailable)
       ? value.runtimeUnavailable.filter((item) => typeof item === 'string').slice(0, 128)
       : [],
+    modelEpoch: Number.isInteger(value.modelEpoch) ? value.modelEpoch : 0,
+    personaRestartRequired: value.personaRestartRequired === true,
   });
 }
 
@@ -185,6 +187,13 @@ class FramedBridgeSupervisor extends EventEmitter {
       try { stderr.push(chunk); } catch (error) { this._fail(error, child); }
     });
     child.once('error', (error) => this._handleExit(child, error));
+    child.stdin.on('error', (error) => {
+      // EPIPE / ERR_STREAM_DESTROYED fires asynchronously when the bridge
+      // dies mid-write — exactly the moment restart logic must survive.
+      // Without this listener the error escapes uncaught and the whole app
+      // crashes instead of scheduling a restart.
+      this._handleExit(child, error);
+    });
     child.once('close', (code, signal) => {
       this._handleExit(
         child,
@@ -251,7 +260,16 @@ class FramedBridgeSupervisor extends EventEmitter {
     this._readyReject?.(error);
     this._readyResolve = null;
     this._readyReject = null;
-    void this.stopAndWait('SIGKILL').catch(() => undefined);
+    // A protocol failure (malformed/oversized frame, fatal_error reply) is
+    // not a deliberate stop: it must surface as an exit event so the host
+    // schedules a restart. stopAndWait sets `stopping`, which would otherwise
+    // make _handleExit swallow the exit and leave the backend permanently
+    // dead while the shell keeps running.
+    void this.stopAndWait('SIGKILL')
+      .then(() => {
+        if (this.child === null) this.emit('exit', error);
+      })
+      .catch(() => undefined);
   }
 
   _handleExit(child, error) {
@@ -363,6 +381,28 @@ class FramedBridgeSupervisor extends EventEmitter {
     }));
   }
 
+  requestAmapNearby(request) {
+    return this._sendControl('amap:nearby', { request }, (frame) => {
+      if (typeof frame.success !== 'boolean' || typeof frame.code !== 'string'
+        || !Array.isArray(frame.items) || frame.items.length > 8) {
+        throw new Error('Bridge returned an invalid Amap result');
+      }
+      const fields = [
+        'name', 'broad_category', 'distance_band', 'district', 'short_address',
+        'provider', 'observed_at',
+      ];
+      const items = frame.items.map((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)
+          || Object.keys(item).some((key) => !fields.includes(key))
+          || fields.some((key) => typeof item[key] !== 'string')) {
+          throw new Error('Bridge returned a forbidden Amap item');
+        }
+        return Object.fromEntries(fields.map((key) => [key, item[key]]));
+      });
+      return { ok: frame.success, code: frame.code, items, provider: 'Amap' };
+    }, 8_000);
+  }
+
   getProviderConfig() {
     return this._sendControl('provider:get', {}, (frame) => {
       const llm = frame.llm;
@@ -462,7 +502,14 @@ class FramedBridgeSupervisor extends EventEmitter {
     if (!this.child?.stdin || this.child.stdin.destroyed) {
       throw new Error('Bridge stdin is unavailable');
     }
-    this.child.stdin.write(encodeFrame(value));
+    try {
+      this.child.stdin.write(encodeFrame(value));
+    } catch (error) {
+      // A dead pipe can also throw synchronously; route it through the same
+      // teardown as an async stream error, then surface the send failure.
+      this._handleExit(this.child, error);
+      throw error;
+    }
   }
 
   async stopAndWait(signal = 'SIGKILL', timeoutMs = 5000) {

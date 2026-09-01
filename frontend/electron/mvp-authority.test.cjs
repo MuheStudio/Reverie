@@ -21,6 +21,8 @@ test('production IPC registration is an exact MVP allowlist', () => {
 
   assert.deepEqual(channels, [
     'app:getVersion',
+    'backup:nativeExport',
+    'backup:nativeImport',
     'bridge:getConnectionConfig',
     'bridge:send',
     'character:getBundled',
@@ -28,17 +30,30 @@ test('production IPC registration is an exact MVP allowlist', () => {
     'credentials:status',
     'download:direct',
     'download:m3u8',
+    'focus:acknowledgeAudioRearm',
+    'focus:getState',
+    'focus:pause',
+    'focus:resume',
+    'focus:start',
+    'focus:stop',
     'localMode:get',
     'localMode:set',
+    'notification:show',
     'pet:hide',
     'pet:isVisible',
     'pet:show',
     'pet:toggle',
+    'places:deleteKey',
+    'places:nearby',
+    'places:resolve',
+    'places:setKey',
+    'places:status',
     'providerConfig:commit',
     'providerConfig:get',
     'providerConfig:test',
     'sniff:m3u8',
     'sniff:resources',
+    'stickers:pickImage',
   ]);
   assert.equal(source.includes('registerLegacyIpcHandlers();'), false);
   // The cat-catch download handlers are the only non-MVP surface and they
@@ -88,7 +103,9 @@ test('GLM remains the canonical provider identifier across the desktop boundary'
 test('provider test receipts retain a completed result for lost acknowledgements', () => {
   const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
   const start = source.indexOf('async function commitProviderConfigurationUnlocked(');
-  const end = source.indexOf('\nfunction registerLegacyIpcHandlers()', start);
+  // The legacy IPC block was deleted; the commit function is now
+  // followed directly by the bundled-character snapshot helper.
+  const end = source.indexOf('\nfunction bundledCharacterSnapshot()', start);
   const commit = source.slice(start, end);
 
   const completed = commit.indexOf('tested.completedResult = completedResult;');

@@ -9,6 +9,7 @@ const {
 const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
 const { createTextureTransformer } = require('./live2d-build-assets.cjs');
 const { createSeedConfig } = require('./seed-config.cjs');
+const { verifyPackagedWindowsIcons } = require('./windows-icon-verification.cjs');
 const {
   assertProductionPayload,
   copyProductionPythonSource,
@@ -383,6 +384,13 @@ function buildInstaller() {
   );
 }
 
+function verifyWindowsIcons() {
+  verifyPackagedWindowsIcons({
+    executable: path.join(outputRoot, 'win-unpacked', 'Reverie.exe'),
+    resourceIcon: path.join(outputRoot, 'win-unpacked', 'resources', 'icon.ico'),
+  });
+}
+
 function writeArtifactHash() {
   const installer = path.join(outputRoot, 'Reverie-Setup-0.1.0-x64.exe');
   if (!fs.existsSync(installer)) throw new Error(`Installer not found: ${installer}`);
@@ -447,6 +455,7 @@ function main() {
       });
     }
     buildInstaller();
+    verifyWindowsIcons();
     compressSourceBundle();
     writeArtifactHash();
   } finally {

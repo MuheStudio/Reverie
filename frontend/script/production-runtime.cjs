@@ -21,10 +21,10 @@ const OMITTED_SOURCE_MODULES = Object.freeze([
   'anime_service',
   'archive',
   'backup',
-  'diary',
   'interest',
+  'keepsakes',
   'lorebook',
-  'notifications',
+  'social',
   'tests',
   'timeline',
   'ui',
@@ -426,6 +426,11 @@ function assertProductionPayload(resourceRoot, appRoot = null) {
   }
   if (!fs.existsSync(path.join(resourceRoot, 'python', 'python.exe'))) {
     throw new Error('Production payload is missing python/python.exe');
+  }
+  for (const requiredSource of ['immersion/__init__.py', 'immersion/amap.py', 'notifications.py']) {
+    if (!fs.existsSync(path.join(resourceRoot, 'src', ...requiredSource.split('/')))) {
+      throw new Error(`Production payload is missing required source: src/${requiredSource}`);
+    }
   }
   if (fs.existsSync(path.join(resourceRoot, 'venv'))) {
     throw new Error('Production payload must not contain a virtual environment');

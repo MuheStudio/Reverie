@@ -5,6 +5,7 @@ const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs
 const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
 const { createTextureTransformer } = require('./live2d-build-assets.cjs');
 const { createSeedConfig } = require('./seed-config.cjs');
+const { verifyPackagedWindowsIcons } = require('./windows-icon-verification.cjs');
 const {
   assertProductionPayload,
   copyProductionPythonSource,
@@ -19,7 +20,11 @@ const outRoot = process.env.REVERIE_WINDOWS_OUT
   ? path.resolve(process.env.REVERIE_WINDOWS_OUT)
   : path.resolve(repoRoot, '将Reverie打包至各个平台', '半成品', 'Windows');
 const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
-const packageName = `Reverie-Windows-Test-${timestamp}`;
+const requestedPackageName = String(process.env.REVERIE_WINDOWS_PACKAGE_NAME || '').trim();
+if (requestedPackageName && !/^Reverie-Windows-Test-[0-9]{8}(?:-[0-9]{6})?$/.test(requestedPackageName)) {
+  throw new Error('REVERIE_WINDOWS_PACKAGE_NAME must be a validated Reverie Windows test package name');
+}
+const packageName = requestedPackageName || `Reverie-Windows-Test-${timestamp}`;
 const packageDir = path.join(outRoot, packageName);
 const resourcesDir = path.join(packageDir, 'resources');
 const appDir = path.join(resourcesDir, 'app');
@@ -210,6 +215,7 @@ async function applyPortableExecutableMetadata(executable) {
     'version-string': {
       ProductName: 'Reverie',
       FileDescription: 'Reverie local-first digital companion',
+      InternalName: 'Reverie',
       OriginalFilename: 'Reverie.exe',
     },
   });
@@ -280,6 +286,10 @@ async function main() {
   }
   copyIfExists(path.join(projectRoot, 'LICENSES_CREDITS'), path.join(resourcesDir, 'LICENSES_CREDITS'));
   copyRecursive(path.join(frontendRoot, 'public', 'icon.ico'), path.join(resourcesDir, 'icon.ico'));
+  verifyPackagedWindowsIcons({
+    executable: newExe,
+    resourceIcon: path.join(resourcesDir, 'icon.ico'),
+  });
   copyDataSkeleton();
   stageLive2DTestAssets();
   const licenseResult = spawnSync(

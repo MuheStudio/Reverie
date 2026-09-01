@@ -8,6 +8,11 @@ import {
   isElectronIpcBridge,
   type BridgeSocketLike,
 } from '@/lib/electronBridgeSocket';
+import { normalizeStickerTags, toStickerAttachmentPayload } from '@/lib/stickerPayload';
+import {
+  appendUniqueProactive,
+  mergeHistoryWithLiveProactive,
+} from '@/lib/proactiveMessages';
 
 const CONVERSATION_ID = 'dream-room';
 const MAX_CHAT_TEXT = 20_000;
@@ -22,6 +27,7 @@ const EVENT_NAMES = new Set([
   'chat:error',
   'chat:retract',
   'chat:history:result',
+  'proactive:message',
   'emotion:update',
   'memory:result',
   'memory:settings:result',
@@ -67,6 +73,12 @@ export interface MvpChatMessage {
   deliveryId?: string;
   bubbleIndex?: number;
   sticker?: Record<string, unknown> | null;
+  /** Persisted attachment refs (history replay). */
+  media?: Array<{ media_id: string; mime?: string }> | null;
+  /** Optimistic preview URL for a just-sent image. */
+  attachmentPreview?: string;
+  source?: 'proactive';
+  proactiveId?: string;
 }
 
 export interface MemoryCandidate {
@@ -130,6 +142,13 @@ function coerceChatMessage(value: unknown): MvpChatMessage | null {
   const content = stringValue(value.content);
   const id = stringValue(value.id);
   if (!['user', 'assistant', 'system'].includes(String(role)) || !content || !id) return null;
+  const media = Array.isArray(value.media)
+    ? value.media.flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const mediaId = stringValue(entry.media_id);
+      return mediaId ? [{ media_id: mediaId, mime: stringValue(entry.mime) || undefined }] : [];
+    })
+    : [];
   return {
     id,
     role: role as MvpChatMessage['role'],
@@ -138,6 +157,9 @@ function coerceChatMessage(value: unknown): MvpChatMessage | null {
     requestId: stringValue(value.request_id) || null,
     deliveryState: stringValue(value.delivery_state) || undefined,
     bubbleIndex: typeof value.bubble_index === 'number' ? value.bubble_index : undefined,
+    source: value.source === 'proactive' ? 'proactive' : undefined,
+    proactiveId: stringValue(value.proactive_id) || undefined,
+    ...(media.length ? { media } : {}),
   };
 }
 
@@ -260,9 +282,10 @@ export function useMvpBridge() {
     switch (frame.type) {
       case 'chat:history:result': {
         const items = Array.isArray(payload.items) ? payload.items : [];
-        setMessages(items.map(coerceChatMessage).filter(
+        const history = items.map(coerceChatMessage).filter(
           (item): item is MvpChatMessage => item !== null,
-        ));
+        );
+        setMessages((current) => mergeHistoryWithLiveProactive(history, current));
         break;
       }
       case 'chat:chunk':
@@ -363,6 +386,26 @@ export function useMvpBridge() {
             requestId: null,
           }] : []),
         ]);
+        break;
+      }
+      case 'proactive:message': {
+        const contents = Array.isArray(payload.messages)
+          ? payload.messages.map(stringValue).map((item) => item.trim()).filter(Boolean)
+          : [stringValue(payload.text).trim()].filter(Boolean);
+        if (!contents.length) break;
+        const proactiveId = stringValue(payload.proactive_id);
+        if (!proactiveId) break;
+        const incoming = contents.map((content, bubbleIndex) => ({
+            id: `${proactiveId}:${bubbleIndex}`,
+            role: 'assistant' as const,
+            content,
+            createdAtUtc: stringValue(payload.created_at_utc) || timestamp(),
+            requestId: null,
+            source: 'proactive' as const,
+            proactiveId,
+            bubbleIndex,
+          }));
+        setMessages((current) => appendUniqueProactive(current, incoming));
         break;
       }
       case 'emotion:update':
@@ -577,16 +620,24 @@ export function useMvpBridge() {
     }
   }, [sendOn]);
 
-  const sendChat = useCallback((raw: string) => {
+  const sendChat = useCallback((raw: string, attachment?: { path?: string; previewUrl?: string }) => {
     const text = raw.trim();
     if (!text || text.length > MAX_CHAT_TEXT || activeRequestId) return null;
     const id = requestId('chat');
     const sentAtUtc = timestamp();
+    // Clipboard pastes carry no filesystem path: their compressed preview IS
+    // the bounded data URL the bridge contract accepts (image_data_url).
+    const imagePayload = attachment?.path
+      ? { image_path: attachment.path }
+      : attachment?.previewUrl?.startsWith('data:')
+        ? { image_data_url: attachment.previewUrl }
+        : {};
     if (!command('chat:send', {
       text,
       request_id: id,
       conversation_id: CONVERSATION_ID,
       sent_at_utc: sentAtUtc,
+      ...imagePayload,
     }, id)) return null;
     setMessages((current) => [...current, {
       id: requestId('user'),
@@ -595,6 +646,7 @@ export function useMvpBridge() {
       createdAtUtc: sentAtUtc,
       requestId: id,
       deliveryState: 'queued',
+      ...(attachment?.previewUrl ? { attachmentPreview: attachment.previewUrl } : {}),
     }]);
     setActiveRequestId(id);
     setError('');
@@ -624,6 +676,56 @@ export function useMvpBridge() {
       reject(new Error('command was not sent'));
     }
   }), [command]);
+
+  const fetchChatMedia = useCallback(async (mediaId: string): Promise<string> => {
+    const result = await requestResult('chat:media', { media_id: mediaId }, 'chat:media:result', 15_000);
+    const dataUrl = stringValue(result.data_url);
+    if (!dataUrl.startsWith('data:image/')) throw new Error('media unavailable');
+    return dataUrl;
+  }, [requestResult]);
+
+  const sendSticker = useCallback((sticker: Record<string, unknown>, label?: string) => {
+    const body = (label || '').trim() || '[表情]';
+    if (body.length > MAX_CHAT_TEXT || activeRequestId) return null;
+    // Project to the strict StickerAttachmentPayload wire shape: raw sticker
+    // list items carry display fields (favorite_score, last_used, ...) that
+    // the backend contract forbids.
+    const wireSticker = toStickerAttachmentPayload(sticker);
+    if (!wireSticker) return null;
+    const id = requestId('chat');
+    const sentAtUtc = timestamp();
+    if (!command('chat:send', {
+      text: body,
+      request_id: id,
+      conversation_id: CONVERSATION_ID,
+      sent_at_utc: sentAtUtc,
+      sticker: wireSticker,
+    }, id)) return null;
+    setMessages((current) => [...current, {
+      id: requestId('user'),
+      role: 'user',
+      content: body,
+      createdAtUtc: sentAtUtc,
+      requestId: id,
+      deliveryState: 'queued',
+      sticker,
+    }]);
+    setActiveRequestId(id);
+    setError('');
+    return id;
+  }, [activeRequestId, command]);
+
+  const importSticker = useCallback(async (filePath: string, styleTags: string[] = []) => {
+    const result = await requestResult(
+      'sticker:import',
+      { file_path: filePath, style_tags: normalizeStickerTags(styleTags, 8) },
+      'sticker:data',
+      30_000,
+    );
+    const item = isRecord(result.item) ? result.item : null;
+    if (!item) throw new Error('表情导入失败');
+    return item;
+  }, [requestResult]);
 
   const completeOnboarding = useCallback(async (profile: Record<string, unknown>) => {
     try {
@@ -671,6 +773,9 @@ export function useMvpBridge() {
     clearError: () => setError(''),
     sendChat,
     cancelChat,
+    fetchChatMedia,
+    sendSticker,
+    importSticker,
     queryMemory: (query: string) => {
       const cleaned = query.trim();
       if (!cleaned) return null;

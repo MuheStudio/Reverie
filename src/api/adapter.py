@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -252,6 +253,57 @@ def parse_anthropic_message(response: dict[str, Any]) -> ChatResponse:
     raise ProviderRequestError(code, retryable=False, outcome_unknown=False)
 
 
+_ANTHROPIC_MEDIA_TYPES = {"jpeg": "image/jpeg", "jpg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}
+
+
+def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
+    """Translate one message body into Messages-API compatible content.
+
+    Text stays a plain string. Multimodal turns (OpenAI-style content parts)
+    are converted to Claude image blocks; anything else is rejected exactly
+    as before — silently forwarding an unknown shape would corrupt the
+    provider request.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list) or not content:
+        raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
+    blocks: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
+        kind = str(part.get("type") or "")
+        if kind == "text":
+            text = str(part.get("text") or "")
+            if text:
+                blocks.append({"type": "text", "text": text})
+            continue
+        if kind == "image_url":
+            url = str((part.get("image_url") or {}).get("url") or "")
+            match = re.fullmatch(
+                r"data:image/(jpeg|jpg|png|webp|gif);base64,([A-Za-z0-9+/=\r\n]+)",
+                url,
+            )
+            if not match:
+                raise ProviderRequestError(
+                    "PROVIDER_INVALID_REQUEST", retryable=False, outcome_unknown=False,
+                )
+            media_type = _ANTHROPIC_MEDIA_TYPES[match.group(1)]
+            blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": re.sub(r"[\r\n]", "", match.group(2)),
+                },
+            })
+            continue
+        raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
+    if not blocks:
+        raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
+    return blocks
+
+
 def _anthropic_request_messages(messages: list[ChatCompletionMessageParam]) -> tuple[str | None, list[dict[str, Any]]]:
     """Split OpenAI-style system prompts from Messages API conversation turns."""
 
@@ -259,13 +311,14 @@ def _anthropic_request_messages(messages: list[ChatCompletionMessageParam]) -> t
     turns: list[dict[str, Any]] = []
     for message in messages:
         role = str(message.get("role") or "")
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
+        raw_content = message.get("content")
         if role == "system":
-            system_parts.append(content)
+            # System prompts stay text-only; image parts never appear there.
+            if not isinstance(raw_content, str):
+                raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
+            system_parts.append(raw_content)
         elif role in {"user", "assistant"}:
-            turns.append({"role": role, "content": content})
+            turns.append({"role": role, "content": _anthropic_content(raw_content)})
         else:
             raise ProviderRequestError("PROVIDER_INVALID_RESPONSE_SCHEMA", retryable=False, outcome_unknown=False)
     if not turns:

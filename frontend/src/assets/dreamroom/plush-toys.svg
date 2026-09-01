@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 170 130">
+  <!-- Original self-drawn asset for Reverie (GPL-3.0): a bunny and a bear
+       sitting side by side. Palette mirrors --rv-accent-soft/#f3dce3 and
+       warm cream tones from the night-paper theme. -->
+  <!-- soft shared ground shadow -->
+  <ellipse cx="88" cy="121" rx="76" ry="7.5" fill="#784354" opacity="0.16"/>
+  <!-- bunny (left) -->
+  <g>
+    <ellipse cx="41" cy="26" rx="7" ry="21" fill="#fff1e2" transform="rotate(-8 41 26)"/>
+    <ellipse cx="63" cy="26" rx="7" ry="21" fill="#fff1e2" transform="rotate(8 63 26)"/>
+    <ellipse cx="41" cy="28" rx="3.4" ry="13" fill="#f3b8c4" transform="rotate(-8 41 28)"/>
+    <ellipse cx="63" cy="28" rx="3.4" ry="13" fill="#f3b8c4" transform="rotate(8 63 28)"/>
+    <ellipse cx="52" cy="97" rx="26" ry="23" fill="#fff1e2"/>
+    <circle cx="52" cy="60" r="24" fill="#fff1e2"/>
+    <circle cx="44" cy="57" r="2.7" fill="#5b4750"/>
+    <circle cx="60" cy="57" r="2.7" fill="#5b4750"/>
+    <ellipse cx="38" cy="65" rx="4.6" ry="2.8" fill="#f3b8c4" opacity="0.75"/>
+    <ellipse cx="66" cy="65" rx="4.6" ry="2.8" fill="#f3b8c4" opacity="0.75"/>
+    <path d="M49 65 Q52 68 55 65" fill="none" stroke="#5b4750" stroke-width="1.8" stroke-linecap="round"/>
+    <ellipse cx="34" cy="112" rx="10" ry="5.5" fill="#f7e3cf"/>
+    <ellipse cx="70" cy="112" rx="10" ry="5.5" fill="#f7e3cf"/>
+  </g>
+  <!-- bear (right) -->
+  <g>
+    <circle cx="104" cy="44" r="8.5" fill="#d9b493"/>
+    <circle cx="140" cy="44" r="8.5" fill="#d9b493"/>
+    <circle cx="104" cy="44" r="4" fill="#c49a78"/>
+    <circle cx="140" cy="44" r="4" fill="#c49a78"/>
+    <ellipse cx="122" cy="99" rx="25" ry="22" fill="#d9b493"/>
+    <circle cx="122" cy="63" r="23" fill="#d9b493"/>
+    <ellipse cx="122" cy="70" rx="9.5" ry="7" fill="#f0dcc4"/>
+    <ellipse cx="122" cy="67" rx="3.4" ry="2.6" fill="#5b4750"/>
+    <path d="M122 70 Q122 73.5 118.5 74.5 M122 70 Q122 73.5 125.5 74.5" fill="none" stroke="#5b4750" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="113" cy="59" r="2.7" fill="#5b4750"/>
+    <circle cx="131" cy="59" r="2.7" fill="#5b4750"/>
+    <ellipse cx="106" cy="66" rx="4.4" ry="2.7" fill="#e3a7a2" opacity="0.6"/>
+    <ellipse cx="138" cy="66" rx="4.4" ry="2.7" fill="#e3a7a2" opacity="0.6"/>
+    <ellipse cx="106" cy="113" rx="9.5" ry="5.5" fill="#c9a180"/>
+    <ellipse cx="138" cy="113" rx="9.5" ry="5.5" fill="#c9a180"/>
+  </g>
+</svg>

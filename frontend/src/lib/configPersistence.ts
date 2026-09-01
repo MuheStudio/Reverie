@@ -86,34 +86,3 @@ export async function loadPersistedConfig(): Promise<PersistedConfig | null> {
     return null;
   }
 }
-
-/** Persist a closed-world metadata projection through Electron, never HTTP. */
-export async function savePersistedConfig(config: PersistedConfig): Promise<void> {
-  const sanitized = sanitizePersistedConfig(config);
-  if (!sanitized) throw new TypeError('LLM configuration metadata is invalid');
-  const api = globalThis.window?.electronAPI?.providerConfig;
-  if (!api?.set) {
-    const error = new Error('Authoritative desktop provider settings are unavailable');
-    (error as Error & { code?: string }).code = 'REVERIE_DESKTOP_CONFIG_UNAVAILABLE';
-    throw error;
-  }
-  await api.set({
-    llm: {
-      provider: sanitized.llm.provider,
-      baseUrl: sanitized.llm.baseUrl,
-      model: sanitized.llm.model,
-      ...(sanitized.llm.customProviderName
-        ? { customProviderName: sanitized.llm.customProviderName }
-        : {}),
-    },
-    ...(sanitized.imageGen
-      ? {
-          imageGen: {
-            provider: sanitized.imageGen.provider,
-            baseUrl: sanitized.imageGen.baseUrl,
-            model: sanitized.imageGen.model,
-          },
-        }
-      : {}),
-  });
-}

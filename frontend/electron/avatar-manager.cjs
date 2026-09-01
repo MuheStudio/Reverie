@@ -1849,6 +1849,20 @@ class AvatarManager {
     return { id: avatarId, mapping: cloneJson(manifest.mapping) };
   }
 
+  rename(id, displayName) {
+    const avatarId = String(id || '');
+    if (!AVATAR_ID_RE.test(avatarId)) throw avatarError('AVATAR_ID', 'Invalid avatar identifier');
+    const nextName = safeDisplayName(displayName, '');
+    if (!nextName) throw avatarError('AVATAR_NAME', 'Avatar display name is invalid');
+    const manifest = this._readManifest(avatarId);
+    if (manifest.name === nextName) {
+      return { id: avatarId, name: nextName, changed: false };
+    }
+    manifest.name = nextName;
+    atomicWriteJson(path.join(this.recordsDir, avatarId, 'manifest.json'), manifest);
+    return { id: avatarId, name: nextName, changed: true };
+  }
+
   _openRegisteredAsset(payloadRoot, descriptors, encodedRelative) {
     let relative;
     try {

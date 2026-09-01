@@ -93,3 +93,52 @@ test('failed committed-key verification removes only the newly-created vault', (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('reset moves a corrupt vault aside and a fresh key is created afterwards', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-storage-key-'));
+  const vault = new StorageKeyVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  try {
+    const first = vault.getOrCreateKey();
+    first.fill(0);
+    // Simulate a DPAPI master-key change: the stored ciphertext no longer decrypts.
+    const corruptVault = new StorageKeyVault({
+      storageDir: root,
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        encryptString: (value) => Buffer.from(`protected:${Buffer.from(value, 'utf8').toString('base64')}`, 'utf8'),
+        decryptString: () => { throw new Error('hash mismatch'); },
+      },
+    });
+    assert.throws(() => corruptVault.getOrCreateKey(), /corrupt or belongs to another Windows user/);
+
+    const result = corruptVault.reset({ reason: 'corrupt_vault_user_reset' });
+    assert.equal(result.reset, true);
+    assert.equal(result.recoveredCorruptVault, true);
+    assert.ok(result.supersededPath, 'the old ciphertext must be preserved on disk');
+    assert.equal(fs.existsSync(result.supersededPath), true);
+
+    const recovered = new StorageKeyVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+    const fresh = recovered.getOrCreateKey();
+    try {
+      assert.equal(fresh.length, STORAGE_KEY_BYTES);
+      assert.equal(fs.existsSync(path.join(root, 'database-key.vault')), true);
+    } finally {
+      fresh.fill(0);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('reset on a missing vault succeeds without touching other files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-storage-key-'));
+  const vault = new StorageKeyVault({ storageDir: root, safeStorage: fakeSafeStorage() });
+  try {
+    const result = vault.reset();
+    assert.equal(result.reset, true);
+    assert.equal(result.supersededPath, null);
+    assert.equal(fs.readdirSync(root).length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

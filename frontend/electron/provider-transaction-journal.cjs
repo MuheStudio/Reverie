@@ -82,20 +82,40 @@ class ProviderTransactionJournal {
   }
 }
 
+function isFactoryProviderConfig(value) {
+  try {
+    const llm = normalizeRecoveryProviderConfig(value).llm;
+    return llm.provider === 'ollama' && llm.model === '';
+  } catch {
+    return false;
+  }
+}
+
 function recoveryAction(transaction, currentConfig, snapshot) {
   const current = normalizeRecoveryProviderConfig(currentConfig);
   if (sameConnection(current, transaction.oldConfig)) return 'discard';
-  if (!sameConnection(current, transaction.newConfig)) return 'rollback';
-  if (transaction.credentialAction === 'preserve') return 'complete';
-  if (transaction.credentialAction === 'replace') {
-    return snapshot?.persistent?.transactionId === transaction.credentialTransactionId
-      || snapshot?.sessionTransactionId === transaction.credentialTransactionId
-      ? 'complete'
-      : 'rollback';
+  if (!sameConnection(current, transaction.newConfig)) {
+    // The live config moved on after this journal entry was written, so the
+    // entry is stale. Writing transaction.oldConfig back here used to
+    // overwrite NEWER user state — observed in the field as a saved API key
+    // "degrading" to the factory ollama default. Keep the current config and
+    // just drop the journal. The only rollback still justified: the live
+    // config is the factory default while the journal recorded a real user
+    // config, i.e. the settings file was reset underneath us.
+    if (isFactoryProviderConfig(current) && !isFactoryProviderConfig(transaction.oldConfig)) {
+      return 'rollback';
+    }
+    return 'discard';
   }
-  const cleared = Object.keys(snapshot?.persistent?.credential || {}).length === 0
-    && Object.keys(snapshot?.sessionCredential || {}).length === 0;
-  return cleared ? 'complete' : 'rollback';
+  if (transaction.credentialAction === 'preserve') return 'complete';
+  // The destination already committed; a credential transaction that never
+  // landed must NOT roll the destination back. Keeping the new config and
+  // surfacing the missing key is the honest recovery — the renderer shows the
+  // unconfigured state instead of silently resurrecting the old destination.
+  if (transaction.credentialAction === 'replace') return 'complete';
+  // 'clear' shares its connection with the old config, so a half-completed
+  // clear never justifies moving the destination back either.
+  return 'complete';
 }
 
 function normalizeTransactionId(value) {

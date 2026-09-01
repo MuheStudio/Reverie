@@ -65,6 +65,17 @@ class CommandBus:
                     code=ErrorCode.CONFLICT,
                     message="上一次请求未完成，为避免重复执行不会自动重试。",
                 )
+            if existing.state in {"generating", "dispatched"}:
+                # Stale in-flight row from a crashed attempt. Its outcome is
+                # unknowable from this process, so never re-run the handler:
+                # settle the ledger (dispatched rows upgrade to
+                # outcome_unknown inside fail_command) and refuse the replay.
+                self.store.fail_command(command.request_id, error_code="PROVIDER_OUTCOME_UNKNOWN")
+                return CommandResultV4.failure(
+                    command.request_id,
+                    code=ErrorCode.PROVIDER_OUTCOME_UNKNOWN,
+                    message="上一次请求中途断开，为避免重复执行不会自动重试。",
+                )
             value = await handler(command)
             committed = self.store.commit_command_result(command, value)
             return CommandResultV4.success(command.request_id, committed.result)

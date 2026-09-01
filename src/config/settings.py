@@ -326,6 +326,8 @@ class FeatureSettings(_ValidatedSettingsModel):
     proactive_event_stories_enabled: bool = Field(default=False)
     proactive_daily_limit: int = Field(default=2, ge=1, le=12)
     proactive_min_interval_minutes: int = Field(default=120, ge=15, le=1440)
+    proactive_wake_min_minutes: int = Field(default=2, ge=2, le=60)
+    proactive_wake_max_minutes: int = Field(default=10, ge=2, le=60)
     late_night_enabled: bool = Field(default=False)
     late_night_probability: float = Field(default=0.10, ge=0.01, le=0.30)
     late_night_message_enabled: bool = Field(default=False)
@@ -390,6 +392,8 @@ class FeatureSettings(_ValidatedSettingsModel):
     def _validate_dependent_ranges(self) -> "FeatureSettings":
         if self.thought_min_delay_minutes > self.thought_max_delay_minutes:
             raise ValueError("thought_min_delay_minutes cannot exceed thought_max_delay_minutes")
+        if self.proactive_wake_min_minutes > self.proactive_wake_max_minutes:
+            raise ValueError("proactive_wake_min_minutes cannot exceed proactive_wake_max_minutes")
         return self
 
 

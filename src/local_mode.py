@@ -167,6 +167,11 @@ class PythonSocketEgressGuard:
         self._original_getaddrinfo: Callable[..., Any] | None = None
         self._original_connect: Callable[..., Any] | None = None
         self._original_connect_ex: Callable[..., Any] | None = None
+        self._original_sendto: Callable[..., Any] | None = None
+        self._original_sendmsg: Callable[..., Any] | None = None
+        self._original_gethostbyname: Callable[..., Any] | None = None
+        self._original_gethostbyname_ex: Callable[..., Any] | None = None
+        self._original_gethostbyaddr: Callable[..., Any] | None = None
 
     def _require_host(self, host: object, operation: str) -> None:
         if self.gate.blocks_remote() and not _is_loopback_host(host):
@@ -179,11 +184,44 @@ class PythonSocketEgressGuard:
             original_getaddrinfo = socket.getaddrinfo
             original_connect = socket.socket.connect
             original_connect_ex = socket.socket.connect_ex
+            original_sendto = socket.socket.sendto
+            # sendmsg is POSIX-only; CPython on Windows does not expose it.
+            original_sendmsg = getattr(socket.socket, "sendmsg", None)
+            original_gethostbyname = socket.gethostbyname
+            original_gethostbyname_ex = socket.gethostbyname_ex
+            original_gethostbyaddr = socket.gethostbyaddr
             guard = self
 
             def guarded_getaddrinfo(host, *args, **kwargs):
                 guard._require_host(host, "external DNS lookup")
                 return original_getaddrinfo(host, *args, **kwargs)
+
+            def _unconnected_address_host(sock, address):
+                # Connected-socket sends carry no address; connect() was
+                # already gated. AF_UNIX uses a filesystem string, not a host.
+                if address is None:
+                    return None
+                if sock.family == getattr(socket, "AF_UNIX", object()):
+                    return None
+                return address[0] if isinstance(address, tuple) and address else address
+
+            def guarded_sendto(sock, *args, **kwargs):
+                address = kwargs.get("address")
+                if address is None and args and isinstance(args[-1], (tuple, str)):
+                    address = args[-1]
+                host = _unconnected_address_host(sock, address)
+                if host is not None:
+                    guard._require_host(host, "external datagram send")
+                return original_sendto(sock, *args, **kwargs)
+
+            def guarded_sendmsg(sock, *args, **kwargs):
+                address = kwargs.get("address")
+                if address is None and len(args) >= 4:
+                    address = args[3]
+                host = _unconnected_address_host(sock, address)
+                if host is not None:
+                    guard._require_host(host, "external datagram send")
+                return original_sendmsg(sock, *args, **kwargs)
 
             def guarded_connect(sock, address):
                 # AF_UNIX uses a filesystem string, not a host/port pair.
@@ -198,12 +236,35 @@ class PythonSocketEgressGuard:
                     guard._require_host(host, "external socket connection")
                 return original_connect_ex(sock, address)
 
+            def guarded_gethostbyname(host):
+                guard._require_host(host, "external DNS lookup")
+                return original_gethostbyname(host)
+
+            def guarded_gethostbyname_ex(host):
+                guard._require_host(host, "external DNS lookup")
+                return original_gethostbyname_ex(host)
+
+            def guarded_gethostbyaddr(address):
+                guard._require_host(address, "external reverse DNS lookup")
+                return original_gethostbyaddr(address)
+
             self._original_getaddrinfo = original_getaddrinfo
             self._original_connect = original_connect
             self._original_connect_ex = original_connect_ex
+            self._original_sendto = original_sendto
+            self._original_sendmsg = original_sendmsg
+            self._original_gethostbyname = original_gethostbyname
+            self._original_gethostbyname_ex = original_gethostbyname_ex
+            self._original_gethostbyaddr = original_gethostbyaddr
             socket.getaddrinfo = guarded_getaddrinfo
             socket.socket.connect = guarded_connect
             socket.socket.connect_ex = guarded_connect_ex
+            socket.socket.sendto = guarded_sendto
+            if original_sendmsg is not None:
+                socket.socket.sendmsg = guarded_sendmsg
+            socket.gethostbyname = guarded_gethostbyname
+            socket.gethostbyname_ex = guarded_gethostbyname_ex
+            socket.gethostbyaddr = guarded_gethostbyaddr
             self._installed = True
 
     def uninstall(self) -> None:
@@ -215,9 +276,19 @@ class PythonSocketEgressGuard:
             assert self._original_getaddrinfo is not None
             assert self._original_connect is not None
             assert self._original_connect_ex is not None
+            assert self._original_sendto is not None
+            assert self._original_gethostbyname is not None
+            assert self._original_gethostbyname_ex is not None
+            assert self._original_gethostbyaddr is not None
             socket.getaddrinfo = self._original_getaddrinfo
             socket.socket.connect = self._original_connect
             socket.socket.connect_ex = self._original_connect_ex
+            socket.socket.sendto = self._original_sendto
+            if self._original_sendmsg is not None:
+                socket.socket.sendmsg = self._original_sendmsg
+            socket.gethostbyname = self._original_gethostbyname
+            socket.gethostbyname_ex = self._original_gethostbyname_ex
+            socket.gethostbyaddr = self._original_gethostbyaddr
             self._installed = False
 
 

@@ -400,7 +400,7 @@ _IDENTITY_ATTACKS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"(?:forget|ignore|discard|replace|change).{0,24}(?:identity|persona|name|birthday|core values)"
             r"|(?:忘掉|忽略|删除|替换|改变|修改).{0,16}(?:身份|人格|姓名|名字|生日|核心价值)",
-            re.I,
+            re.I | re.DOTALL,
         ),
     ),
     (
@@ -408,7 +408,7 @@ _IDENTITY_ATTACKS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"(?:from now on|henceforth).{0,20}(?:you are|your name is)"
             r"|(?:从现在起|以后).{0,16}(?:你是|你叫|你的名字)",
-            re.I,
+            re.I | re.DOTALL,
         ),
     ),
 )

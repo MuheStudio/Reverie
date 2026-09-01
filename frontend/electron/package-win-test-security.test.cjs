@@ -59,6 +59,13 @@ test('test-build metadata is explicit and cannot be mistaken for a release', () 
   assert.equal(metadata.distribution, 'TEST_ONLY_DO_NOT_RELEASE');
 });
 
+test('portable package names support only deterministic validated test targets', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'script', 'package-win-test.cjs'), 'utf8');
+  assert.match(source, /REVERIE_WINDOWS_PACKAGE_NAME/);
+  assert.match(source, /Reverie-Windows-Test-/);
+  assert.match(source, /validated Reverie Windows test package name/);
+});
+
 test('release package seals Electron entrypoints in integrity-checked ASAR', () => {
   assert.equal(installerConfig.asar, true);
   assert.equal(installerConfig.electronFuses.enableEmbeddedAsarIntegrityValidation, true);
@@ -101,6 +108,10 @@ test('production payload audit rejects a reintroduced virtual environment', () =
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-production-audit-'));
   fs.mkdirSync(path.join(root, 'python'), { recursive: true });
   fs.writeFileSync(path.join(root, 'python', 'python.exe'), 'runtime');
+  fs.mkdirSync(path.join(root, 'src', 'immersion'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'immersion', '__init__.py'), '');
+  fs.writeFileSync(path.join(root, 'src', 'immersion', 'amap.py'), '');
+  fs.writeFileSync(path.join(root, 'src', 'notifications.py'), '');
   assert.equal(assertProductionPayload(root), true);
   fs.mkdirSync(path.join(root, 'venv'));
   assert.throws(() => assertProductionPayload(root), /forbidden|virtual environment/i);

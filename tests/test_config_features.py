@@ -19,6 +19,8 @@ def test_feature_settings_defaults() -> None:
     assert settings.web_search_windows == ["20:00-23:00"]
     assert settings.timeline_enabled is False
     assert settings.proactive_chat_enabled is False
+    assert settings.proactive_wake_min_minutes == 2
+    assert settings.proactive_wake_max_minutes == 10
     assert settings.late_night_enabled is False
     assert 0.01 <= settings.late_night_probability <= 0.30
     assert settings.late_night_message_enabled is False

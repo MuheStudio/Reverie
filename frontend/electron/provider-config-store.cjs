@@ -80,7 +80,10 @@ function normalizeRecoveryProviderConfig(value) {
 
 function providerBinding(scope, value) {
   if (scope !== 'llm') throw new TypeError('only the LLM credential scope is supported');
-  const normalized = normalizeProviderConfig(value);
+  // The recovery variant tolerates the shipped unconfigured default
+  // (ollama + empty model); the binding hash only covers provider + baseUrl,
+  // so the substituted placeholder model cannot change the hash.
+  const normalized = normalizeRecoveryProviderConfig(value);
   const config = normalized.llm;
   const provider = config.provider;
   return crypto.createHash('sha256').update(

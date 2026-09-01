@@ -10,6 +10,7 @@ import pytest
 
 from src.chat.delivery import (
     ChatDeliveryCoordinator,
+    ChatDeliveryError,
     delivery_targets,
     stable_characters_per_minute,
 )
@@ -563,4 +564,116 @@ async def test_wall_clock_rollback_cannot_create_an_hour_long_delay(tmp_path: Pa
 
     assert clock.sleeps
     assert max(clock.sleeps) <= 8.0
+    await delivery.shutdown()
+
+
+class RecordingKernelStore:
+    """Minimal kernel stand-in that records write-through user messages."""
+
+    def __init__(self) -> None:
+        self.appended: list[dict] = []
+        self.commands: list[object] = []
+
+    def append_user_message(self, **kwargs):
+        self.appended.append(kwargs)
+        return True
+
+    def begin_command(self, command):
+        self.commands.append(command)
+        return None
+
+    def command(self, request_id):
+        return None
+
+    def fail_command(self, request_id, *, error_code):
+        self.commands.append((request_id, error_code))
+
+
+@pytest.mark.asyncio
+async def test_accept_writes_user_message_through_to_kernel(tmp_path: Path) -> None:
+    kernel = RecordingKernelStore()
+    session = FakeSession(block=asyncio.Event())
+    sink = EventSink()
+    store = PendingChatStore(tmp_path / "pending-writethrough.json")
+    delivery = ChatDeliveryCoordinator(
+        store=store,
+        get_session=lambda: session,
+        emit=sink.emit,
+        scope_is_current=lambda _item: True,
+        local_mode_gate=LocalModeGate(desktop=False),
+        kernel_store=kernel,
+    )
+    request_id = "request_write_through"
+    accepted = payload(request_id, text="要被立刻记住的话")
+    # A live kernel store validates the persona fingerprint at begin_command.
+    accepted["persona_fingerprint"] = "a" * 64
+    await delivery.accept(accepted, client_id=CLIENT)
+
+    assert kernel.appended == [{
+        "request_id": request_id,
+        "conversation_id": "conversation_a",
+        "persona_id": "persona_a",
+        "text": "要被立刻记住的话",
+        "media": None,
+    }]
+    await delivery.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_accept_fails_closed_when_user_message_cannot_be_persisted(tmp_path: Path) -> None:
+    class FailingKernelStore(RecordingKernelStore):
+        def append_user_message(self, **kwargs):
+            raise OSError("disk full")
+
+    kernel = FailingKernelStore()
+    session = FakeSession()
+    sink = EventSink()
+    store = PendingChatStore(tmp_path / "pending-storage-failure.json")
+    delivery = ChatDeliveryCoordinator(
+        store=store,
+        get_session=lambda: session,
+        emit=sink.emit,
+        scope_is_current=lambda _item: True,
+        local_mode_gate=LocalModeGate(desktop=False),
+        kernel_store=kernel,
+    )
+    rejected = payload("request_storage_failure", text="这句话必须先保存")
+    rejected["persona_fingerprint"] = "a" * 64
+
+    with pytest.raises(ChatDeliveryError, match="未请求 API"):
+        await delivery.accept(rejected, client_id=CLIENT)
+
+    item = store.get_item("request_storage_failure")
+    assert item is not None
+    assert item["state"] == "failed"
+    assert item["provider_state"] == "not_started"
+    assert item["error"] == "storage_unavailable"
+    assert delivery.tasks == {}
+    assert kernel.commands[-1] == ("request_storage_failure", "STORAGE_UNAVAILABLE")
+    assert sink.events[-1][1] == "chat:state"
+    assert sink.events[-1][2]["state"] == "failed"
+    assert sink.events[-1][2]["label"] == "消息未保存，未请求 API"
+    await delivery.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_scope_changed_cancel_emits_terminal_state(tmp_path: Path) -> None:
+    session = FakeSession()
+    sink = EventSink()
+    store = PendingChatStore(tmp_path / "pending-scope-terminal.json")
+    delivery = ChatDeliveryCoordinator(
+        store=store,
+        get_session=lambda: session,
+        emit=sink.emit,
+        scope_is_current=lambda item: item.get("persona_id") == "persona_a",
+        local_mode_gate=LocalModeGate(desktop=False),
+    )
+    stale = payload("request_scope_terminal")
+    stale["persona_id"] = "persona_retired"
+    await delivery.accept(stale, client_id=CLIENT)
+    await wait_for_state(store, "request_scope_terminal", "cancelled")
+
+    states = [event for event in sink.events if event[1] == "chat:state"]
+    assert states, "scope-changed cancel must emit a terminal chat:state"
+    assert states[-1][2]["state"] == "cancelled"
     await delivery.shutdown()

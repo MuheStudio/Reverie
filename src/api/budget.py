@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
@@ -17,6 +18,9 @@ if TYPE_CHECKING:
     from ..config.settings import FeatureSettings
 
 
+logger = logging.getLogger("reverie.api.budget")
+
+
 class ApiBudgetExceeded(RuntimeError):
     """Raised only for background work when the configured budget is exhausted."""
 
@@ -26,6 +30,7 @@ class ApiBudgetTracker:
         self.settings = settings
         self.path = Path(path or WORLD_STATE_DB)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._process_started_at = time.time()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -60,18 +65,67 @@ class ApiBudgetTracker:
                     ON api_usage_calls(started_at DESC);
                 """
             )
+            self._reap_interrupted_started_rows(connection)
+
+    def _reap_interrupted_started_rows(self, connection: sqlite3.Connection) -> None:
+        """Settle ledger rows still 'started' from a previous dead process.
+
+        If the process died between the ledger insert and the provider
+        outcome, neither complete() nor fail() ever ran; the orphaned row
+        would otherwise haunt the daily background budget forever. Anything
+        stamped before this process started (minus a small clock-skew grace)
+        cannot be in flight here. The conservative failure direction is kept:
+        the row still counts as a consumed request, but as a finished one.
+        """
+        cursor = connection.execute(
+            """UPDATE api_usage_calls
+               SET finished_at=?, status='failed', error_type='process_interrupted'
+               WHERE status='started' AND started_at<=?""",
+            (time.time(), self._process_started_at - 60.0),
+        )
+        if cursor.rowcount:
+            logger.warning(
+                "Reaped %d orphaned 'started' budget row(s) from a previous process",
+                cursor.rowcount,
+            )
 
     @staticmethod
     def estimate_tokens(messages: list[dict[str, Any]], max_tokens: int) -> int:
+        # A base64 image part would serialize to hundreds of thousands of
+        # "characters" and explode the estimate, so multimodal parts are
+        # charged as text plus a fixed per-image allowance instead.
+        IMAGE_PART_TOKEN_ALLOWANCE = 800
         characters = 0
+        image_parts = 0
         for message in messages:
             content = message.get("content", "")
             if isinstance(content, str):
                 characters += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and str(part.get("type")) == "image_url":
+                        image_parts += 1
+                    elif isinstance(part, dict) and str(part.get("type")) == "text":
+                        characters += len(str(part.get("text") or ""))
+                    else:
+                        serialized = json.dumps(part, ensure_ascii=False, default=str)
+                        if len(serialized) > 4096:
+                            image_parts += 1
+                        else:
+                            characters += len(serialized)
             else:
-                characters += len(json.dumps(content, ensure_ascii=False, default=str))
+                serialized = json.dumps(content, ensure_ascii=False, default=str)
+                if len(serialized) > 4096:
+                    image_parts += 1
+                else:
+                    characters += len(serialized)
         # Conservative mixed Chinese/English approximation plus requested output.
-        return max(1, (characters + 1) // 2 + max(1, int(max_tokens)))
+        return max(
+            1,
+            (characters + 1) // 2
+            + image_parts * IMAGE_PART_TOKEN_ALLOWANCE
+            + max(1, int(max_tokens)),
+        )
 
     def begin(
         self,

@@ -24,11 +24,19 @@ const { BridgeHostProxy } = require('./bridge-host-proxy.cjs');
 const { FramedBridgeSupervisor } = require('./framed-bridge-supervisor.cjs');
 const { CredentialVault } = require('./credential-vault.cjs');
 const { StorageKeyVault } = require('./storage-key-vault.cjs');
+const {
+  ENDPOINT_BINDING: GOOGLE_PLACES_BINDING,
+  searchGooglePlaces,
+} = require('./google-places.cjs');
 const { registerDesktopSchemes } = require('./desktop-schemes.cjs');
 const { reconcileFocusNetworkGate } = require('./focus-gate-recovery.cjs');
 const { enterLocalModeWithDegradedBridge } = require('./focus-local-mode-transition.cjs');
 const { LocalNetworkGate } = require('./local-network-gate.cjs');
-const { parseNotificationTimestamp } = require('./notification-outbox.cjs');
+const {
+  attachNotificationClick,
+  nativeNotificationOptions,
+  processNotificationOutbox,
+} = require('./notification-outbox.cjs');
 const {
   ProviderConfigStore,
   normalizeProviderConfig,
@@ -51,6 +59,11 @@ const {
 } = require('./runtime-security.cjs');
 const { SafeLogger } = require('./safe-log.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
+const { resolveTestUserDataOverride } = require('./test-user-data.cjs');
+const {
+  FORMAL_APP_USER_MODEL_ID,
+  shouldSetFormalAppUserModelId,
+} = require('./windows-app-identity.cjs');
 
 const optionalModuleErrors = [];
 function optionalExport(modulePath, exportName) {
@@ -64,7 +77,10 @@ function optionalExport(modulePath, exportName) {
 
 const AvatarManager = optionalExport('./avatar-manager.cjs', 'AvatarManager');
 const installAvatarProtocol = optionalExport('./avatar-protocol.cjs', 'installAvatarProtocol');
-const FocusManager = null;
+// The companion timer is Electron-local (no Python bridge involvement), so it
+// is part of the MVP surface. FocusSoundManager stays stubbed until its UI
+// ships; the renderer treats a missing focusSound as "builtin sounds only".
+const FocusManager = optionalExport('./focus-manager.cjs', 'FocusManager');
 const FocusSoundManager = null;
 const installFocusSoundProtocol = null;
 const evaluateLive2DRuntime = optionalExport('./live2d-release-gate.cjs', 'evaluateLive2DRuntime');
@@ -72,9 +88,13 @@ const readRuntimeAssetsManifest = optionalExport(
   './live2d-runtime-assets.cjs',
   'readRuntimeAssetsManifest',
 );
-const stageNativeBackupSource = null;
-const WindowsLocationProvider = null;
-const installStickerAssetProtocol = null;
+const stageNativeBackupSource = optionalExport('./backup-file-stage.cjs', 'stageNativeBackupSource');
+// Sticker images render in chat bubbles through reverie-sticker://asset URLs;
+// without this handler those bubbles silently render empty.
+const installStickerAssetProtocol = optionalExport(
+  './sticker-asset-protocol.cjs',
+  'installStickerAssetProtocol',
+);
 const installLive2DCoreProtocol = optionalExport(
   './live2d-core-protocol.cjs',
   'installLive2DCoreProtocol',
@@ -82,16 +102,34 @@ const installLive2DCoreProtocol = optionalExport(
 
 const FRONTEND_DEV_URL = 'http://localhost:5173';
 const IS_DEV = !app.isPackaged;
-const APP_USER_MODEL_ID = 'studio.muhe.reverie';
 const BRIDGE_RESTART_MAX_MS = 30_000;
 
 registerDesktopSchemes(protocol);
 
-if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
+if (shouldSetFormalAppUserModelId({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+})) {
+  app.setAppUserModelId(FORMAL_APP_USER_MODEL_ID);
+}
 if (IS_DEV && process.env.REVERIE_USER_DATA_DIR) {
   const override = path.resolve(process.env.REVERIE_USER_DATA_DIR);
   fs.mkdirSync(override, { recursive: true });
   app.setPath('userData', override);
+}
+if (!IS_DEV && process.env.REVERIE_TEST_USER_DATA_DIR) {
+  const packageRoot = path.resolve(__dirname, '..', '..', '..');
+  const override = resolveTestUserDataOverride({
+    isPackaged: app.isPackaged,
+    packageRoot,
+    requestedPath: process.env.REVERIE_TEST_USER_DATA_DIR,
+  });
+  fs.mkdirSync(override, { recursive: true });
+  const sessionData = path.join(override, 'session');
+  fs.mkdirSync(sessionData, { recursive: true });
+  app.setPath('userData', override);
+  app.setPath('sessionData', sessionData);
 }
 
 const packagedIndex = path.join(__dirname, '..', 'dist', 'index.html');
@@ -119,7 +157,6 @@ let providerTransactionJournal = null;
 let avatarManager = null;
 let focusManager = null;
 let focusSoundManager = null;
-let windowsLocationProvider = null;
 let unregisterAvatarProtocol = null;
 let unregisterFocusSoundProtocol = null;
 let unregisterAppProtocol = null;
@@ -128,6 +165,7 @@ let unregisterLive2DCoreProtocol = null;
 let stickerAssetsRoot = null;
 let live2dCorePath = null;
 let live2dRuntimeAvailable = false;
+let bundledAvatarInstallError = null;
 let live2dRuntimeAssets = null;
 let ipcRegistrar = null;
 let notificationPollTimer = null;
@@ -273,6 +311,27 @@ function applyBundledYumiMapping(record) {
   return snapshot.records.find((item) => item.id === record.id) || record;
 }
 
+// The bundled public skin is displayed under its in-story persona name. The
+// model package itself (and YUMI_CHARACTER_RIGHTS.json) keeps the original
+// "yumi" identity; LICENSES_CREDITS documents the alias.
+const BUNDLED_AVATAR_DISPLAY_NAME = 'Hoshino Yumetsuki';
+const BUNDLED_AVATAR_LEGACY_NAMES = new Set(['Yumi']);
+
+function migrateBundledAvatarDisplayName() {
+  if (!avatarManager) return;
+  try {
+    const list = avatarManager.list();
+    const stale = list.records.find(
+      (record) => record.status === 'ready' && BUNDLED_AVATAR_LEGACY_NAMES.has(record.name),
+    );
+    if (!stale) return;
+    avatarManager.rename(stale.id, BUNDLED_AVATAR_DISPLAY_NAME);
+    console.info('[Electron] Bundled avatar display name migrated to', BUNDLED_AVATAR_DISPLAY_NAME);
+  } catch (error) {
+    console.warn('[Electron] Bundled avatar display name migration failed', error);
+  }
+}
+
 function getWindowIconPath() {
   return IS_DEV
     ? path.join(__dirname, '..', 'public', 'icon.ico')
@@ -353,6 +412,15 @@ async function authoritativeProviderConfig() {
     throw error;
   }
   const llm = publicProviderFromRuntime(await bridge.getProviderConfig());
+  try {
+    const cached = providerConfigStore?.get();
+    if (cached?.llm?.customProviderName
+      && sameProviderConnection({ llm }, cached)) {
+      llm.customProviderName = cached.llm.customProviderName;
+    }
+  } catch (error) {
+    console.error('[Electron] Provider display metadata recovery failed', error);
+  }
   return { llm };
 }
 
@@ -382,6 +450,9 @@ async function syncCredentialVault(options = {}) {
     llm: providerBinding('llm', providers),
   };
   const runtimeCredentials = credentialVault.readForRuntime({ bindings });
+  // Google Places is consumed only by the Electron main-process transport.
+  // Never include it in the object synchronized to Python.
+  delete runtimeCredentials.googlePlaces;
   for (const scope of options.clearScopes || []) runtimeCredentials[scope] = null;
   const result = await bridge.setCredentials(runtimeCredentials);
   const bindingMismatch = {
@@ -470,12 +541,13 @@ function showNativeNotification(title, body, options = {}) {
     ? '你有一条本地提醒。'
     : safeNotificationText(body, 500);
   if (!safeBody) return false;
-  const notification = new Notification({
-    title: safeTitle,
-    body: safeBody,
-    silent: Boolean(options.silent),
-  });
-  notification.on('click', showMainWindow);
+  const notification = new Notification(options.id
+    ? nativeNotificationOptions(
+      { id: options.id, title: safeTitle, body: safeBody },
+      { locked: generic, silent: options.silent },
+    )
+    : { title: safeTitle, body: safeBody, silent: Boolean(options.silent) });
+  attachNotificationClick(notification, showMainWindow);
   notification.show();
   return true;
 }
@@ -487,42 +559,24 @@ function notificationOutboxDir() {
 function pollNotificationOutbox() {
   const outbox = notificationOutboxDir();
   try {
-    fs.mkdirSync(outbox, { recursive: true });
-    const files = fs.readdirSync(outbox)
-      .filter((name) => /^[A-Za-z0-9_.-]+\.json$/.test(name))
-      .sort()
-      .slice(0, 20);
-    for (const name of files) {
-      const filePath = path.join(outbox, name);
-      try {
-        const stat = fs.lstatSync(filePath);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) {
-          throw new Error('Invalid notification outbox item');
-        }
-        const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        if (payload.schema !== 'reverie.notification.v1') throw new Error('Unknown notification schema');
-        const createdAt = parseNotificationTimestamp(payload.created_at);
-        if (!Number.isFinite(createdAt)) throw new Error('Invalid notification timestamp');
-        const tooOld = Date.now() - createdAt > 12 * 60 * 60 * 1000;
-        const localFocus = networkGate?.snapshot().active;
-        if (!tooOld && !localFocus) {
-          const shouldShow = !payload.only_when_unfocused
-            || !mainWindow
-            || mainWindow.isDestroyed()
-            || !mainWindow.isVisible()
-            || !mainWindow.isFocused();
-          if (shouldShow) showNativeNotification(payload.title, payload.body);
-        }
-        // Focus mode intentionally discards queued proactive notifications:
-        // there is no post-focus catch-up burst.
-        fs.unlinkSync(filePath);
-      } catch (error) {
-        const rejected = path.join(outbox, '..', 'rejected');
-        fs.mkdirSync(rejected, { recursive: true });
-        try { fs.renameSync(filePath, path.join(rejected, `${Date.now()}-${name}`)); } catch {}
-        console.warn('[Electron] Rejected notification outbox item', name, error);
-      }
-    }
+    processNotificationOutbox({
+      fs,
+      path,
+      outbox,
+      focusActive: () => Boolean(networkGate?.snapshot().active),
+      windowFocused: () => Boolean(
+        mainWindow
+        && !mainWindow.isDestroyed()
+        && mainWindow.isVisible()
+        && mainWindow.isFocused()
+      ),
+      showNotification: (payload) => showNativeNotification(payload.title, payload.body, {
+        id: payload.id,
+      }),
+      warn: (name, error) => {
+        console.warn('[Electron] Notification outbox item failed', name, error);
+      },
+    });
   } catch (error) {
     console.warn('[Electron] Notification outbox poll failed', error);
   }
@@ -765,6 +819,62 @@ async function setManualLocalMode(enabled) {
   }
 }
 
+function offerStorageKeyReset() {
+  const choice = dialog.showMessageBoxSync({
+    type: 'error',
+    title: '本地数据库密钥无法解密',
+    message: '加密密钥库已损坏，或属于其他 Windows 用户。',
+    detail: '“重置密钥库”会把旧密钥文件与现有本地数据库文件改名留档，然后用全新密钥启动；'
+      + '历史数据只能通过“完整本地备份恢复”找回。选择“退出”则保持现状，不做任何改动。',
+    buttons: ['退出', '重置密钥库并隔离本地数据库'],
+    cancelId: 0,
+    defaultId: 0,
+    noLink: true,
+  });
+  return choice === 1;
+}
+
+function quarantineUnreadableDatabases() {
+  const dataDir = prepareWritableDataDir();
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const databaseExtensions = new Set(['.sqlite3', '.sqlite', '.db']);
+  const sidecarSuffixes = ['-wal', '-shm', '-journal'];
+  let quarantined = 0;
+  const quarantine = (filePath) => {
+    try {
+      fs.renameSync(filePath, `${filePath}.unreadable-${stamp}`);
+      quarantined += 1;
+    } catch (error) {
+      console.error('[Electron] Could not quarantine unreadable database file', filePath, error);
+    }
+  };
+  const visit = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (databaseExtensions.has(path.extname(entry.name).toLowerCase())) {
+        quarantine(full);
+        for (const sidecar of sidecarSuffixes) {
+          quarantine(`${full}${sidecar}`);
+        }
+      }
+    }
+  };
+  visit(dataDir);
+  console.warn(`[Electron] Quarantined ${quarantined} database file(s) after storage-key reset`);
+}
+
 function createRuntimeModules() {
   const runtimeDir = path.join(app.getPath('userData'), 'runtime');
   stickerAssetsRoot = path.join(prepareWritableDataDir(), 'stickers', 'assets');
@@ -780,8 +890,20 @@ function createRuntimeModules() {
     safeStorage,
   });
   // Fail before opening a renderer if DPAPI is unavailable or the existing
-  // protected key cannot be decrypted for this Windows user.
-  const storageProbe = storageKeyVault.getOrCreateKey();
+  // protected key cannot be decrypted for this Windows user. A corrupt vault
+  // offers one explicit, user-confirmed reset instead of a boot loop.
+  let storageProbe;
+  try {
+    storageProbe = storageKeyVault.getOrCreateKey();
+  } catch (error) {
+    if (String(error?.code || '') !== 'REVERIE_STORAGE_KEY_CORRUPT'
+      || !offerStorageKeyReset()) {
+      throw error;
+    }
+    storageKeyVault.reset({ reason: 'corrupt_vault_user_reset' });
+    quarantineUnreadableDatabases();
+    storageProbe = storageKeyVault.getOrCreateKey();
+  }
   storageProbe.fill(0);
   providerConfigStore = new ProviderConfigStore({
     storageDir: path.join(runtimeDir, 'provider-config'),
@@ -789,15 +911,6 @@ function createRuntimeModules() {
   providerTransactionJournal = new ProviderTransactionJournal({
     storageDir: path.join(runtimeDir, 'provider-transaction'),
   });
-  if (WindowsLocationProvider) {
-    try {
-      windowsLocationProvider = new WindowsLocationProvider();
-    } catch (error) {
-      windowsLocationProvider = null;
-      console.error('[Electron] Windows location module initialization failed', error);
-    }
-  }
-
   bridge = new FramedBridgeSupervisor({ spawnChild: spawnBridgeChild });
   bridgeHostProxy = new BridgeHostProxy({ supervisor: bridge, broadcast });
   bridgeHostProxy.on('disconnect', (error) => {
@@ -858,13 +971,24 @@ function createRuntimeModules() {
                 || path.join(getRuntimeRoot(), '..', '..', '皮套-yumi'),
             )
           : path.join(process.resourcesPath, 'character');
+        // A failed default install must not blind the whole avatar module:
+        // keeping the manager (and its protocols) alive lets the renderer
+        // report the reason, and the next boot retries while records are empty.
         if (fs.existsSync(yumiSource) && avatarManager.list().records.length === 0) {
-          const installed = avatarManager.installTrustedDefaultDirectory(yumiSource, {
-            name: 'Yumi',
-            trustedOwnerAsset: true,
-          });
-          applyBundledYumiMapping(installed);
+          try {
+            const installed = avatarManager.installTrustedDefaultDirectory(yumiSource, {
+              name: BUNDLED_AVATAR_DISPLAY_NAME,
+              trustedOwnerAsset: true,
+            });
+            applyBundledYumiMapping(installed);
+          } catch (installError) {
+            bundledAvatarInstallError = installError instanceof Error
+              ? installError.message
+              : String(installError);
+            console.error('[Electron] Bundled yumi installation failed; it will retry on next boot', installError);
+          }
         } else if (avatarManager.list().records.length > 0) {
+          migrateBundledAvatarDisplayName();
           const current = avatarManager.list();
           const active = current.records.find((record) => record.id === current.activeId)
             || current.records[0];
@@ -1535,509 +1659,6 @@ async function commitProviderConfigurationUnlocked(input = {}) {
   return completedResult;
 }
 
-function registerLegacyIpcHandlers() {
-  if (ipcRegistrar) return;
-  ipcRegistrar = createSecureIpcRegistrar(ipcMain, trustedWindows, trustPolicy);
-  const { handle } = ipcRegistrar;
-
-  handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
-  handle('bridge:send', (_event, frame) => bridgeHostProxy.sendFromRenderer(frame));
-  handle('app:getVersion', () => app.getVersion());
-  handle('localMode:get', () => publicLocalModeState());
-  handle('localMode:set', async (_event, input = {}) => {
-    assertPlainObject(input, 'local mode');
-    if (typeof input.enabled !== 'boolean') throw new TypeError('enabled must be a boolean');
-    return setManualLocalMode(input.enabled);
-  });
-  handle('credentials:status', () => publicCredentialStatus());
-  handle('companionPreferences:get', () => companionPreferencesStore.get());
-  handle('companionPreferences:set', (_event, input = {}) => {
-    assertPlainObject(input, 'companion preferences');
-    return companionPreferencesStore.set(input);
-  });
-  handle('credentials:set', async (_event, input = {}) => {
-    assertPlainObject(input, 'credentials');
-    const scope = boundedString(input.scope, {
-      label: 'credential scope',
-      min: 1,
-      max: 16,
-    });
-    if (scope === 'llm') {
-      const error = new Error('LLM credentials must be tested and committed with their provider settings');
-      error.code = 'REVERIE_PROVIDER_TEST_REQUIRED';
-      throw error;
-    }
-    assertPlainObject(input.value, 'credential value');
-    try {
-      const cached = providerConfigStore.get();
-      credentialVault.set(scope, input.value, {
-        binding: providerBinding(scope, cached),
-      });
-    } catch (error) {
-      const code = String(error?.code || '');
-      if (!code.startsWith('REVERIE_')) throw error;
-      console.error('[Electron] Persistent credential write failed', code);
-      return broadcastCredentialStatus({
-        stored: hasStoredCredentials(publicCredentialStatus()),
-        runtimeApplied: false,
-        runtimePending: false,
-        writeError: {
-          code,
-          message: 'Windows 安全存储未完成写入；原有密钥未被覆盖。',
-        },
-      });
-    }
-    try {
-      return await syncCredentialVault();
-    } catch (error) {
-      // Persisted credentials remain valid even if the replaceable Python
-      // module is unavailable. Keep retrying in the background and report the
-      // truthful split state to the renderer instead of turning a saved key
-      // into a generic IPC failure.
-      console.error('[Electron] Stored credential runtime synchronization failed', error);
-      if (!bridge?.child) startBridge();
-      const status = publicCredentialStatus();
-      return broadcastCredentialStatus({
-        stored: hasStoredCredentials(status),
-        runtimeApplied: false,
-        runtimePending: true,
-        runtimeAppliedScopes: { llm: false, imageGen: false },
-      });
-    }
-  });
-  handle('credentials:setSession', async (_event, input = {}) => {
-    assertPlainObject(input, 'session credentials');
-    const scope = boundedString(input.scope, {
-      label: 'credential scope',
-      min: 1,
-      max: 16,
-    });
-    if (scope === 'llm') {
-      const error = new Error('LLM credentials must be tested and committed with their provider settings');
-      error.code = 'REVERIE_PROVIDER_TEST_REQUIRED';
-      throw error;
-    }
-    assertPlainObject(input.value, 'credential value');
-    const cached = providerConfigStore.get();
-    credentialVault.setSession(scope, input.value, {
-      binding: providerBinding(scope, cached),
-    });
-    try {
-      const status = await syncCredentialVault();
-      return {
-        ...status,
-        sessionWarning: '凭据仅保存在本次运行的内存中，退出 Reverie 后会消失。',
-      };
-    } catch (error) {
-      console.error('[Electron] Session credential runtime synchronization failed', error);
-      if (!bridge?.child) startBridge();
-      return broadcastCredentialStatus({
-        stored: hasStoredCredentials(publicCredentialStatus()),
-        runtimeApplied: false,
-        runtimePending: true,
-        sessionWarning: '凭据仅保存在本次运行的内存中，退出 Reverie 后会消失。',
-      });
-    }
-  });
-  handle('credentials:clear', async (_event, input = {}) => {
-    assertPlainObject(input, 'credential clear');
-    const scope = boundedString(input.scope, {
-      label: 'credential scope',
-      min: 1,
-      max: 16,
-    });
-    credentialVault.clear(scope);
-    try {
-      return await syncCredentialVault({ clearScopes: [scope] });
-    } catch (error) {
-      console.error('[Electron] Cleared credential runtime synchronization failed', error);
-      if (!bridge?.child) startBridge();
-      const status = publicCredentialStatus();
-      return broadcastCredentialStatus({
-        stored: hasStoredCredentials(status),
-        runtimeApplied: false,
-        runtimePending: true,
-        runtimeAppliedScopes: { llm: false, imageGen: false },
-      });
-    }
-  });
-  handle('providerConfig:get', () => authoritativeProviderConfig());
-  handle('providerConfig:test', (_event, input) => testProviderConfiguration(input));
-  handle('providerConfig:set', async (_event, input) => {
-    const current = await authoritativeProviderConfig();
-    const candidate = normalizeProviderConfig(input);
-    if (!sameLlmConnection(current, candidate)) {
-      const error = new Error('LLM provider, model, or endpoint changes require a successful API test');
-      error.code = 'REVERIE_PROVIDER_TEST_REQUIRED';
-      throw error;
-    }
-    const config = {
-      llm: current.llm,
-      ...(candidate.imageGen ? { imageGen: candidate.imageGen } : {}),
-    };
-    providerConfigStore.set(config);
-    await syncCredentialVault();
-    return config;
-  });
-  handle('providerConfig:commit', (_event, input) => commitProviderConfiguration(input));
-  handle('backup:exportNative', () => exportNativeBackup());
-  handle('backup:importNative', () => importNativeBackup());
-  handle('file:saveJson', (_event, input) => saveRendererJson(input));
-  handle('notification:show', (_event, input = {}) => {
-    assertPlainObject(input, 'notification');
-    return {
-      shown: showNativeNotification(
-        boundedString(input.title ?? 'Reverie', { label: 'title', max: 80 }),
-        boundedString(input.body ?? '', { label: 'body', max: 500 }),
-      ),
-    };
-  });
-  handle('notification:status', () => ({
-    supported: Notification.isSupported(),
-    platform: process.platform,
-    permission: process.platform === 'win32' ? 'managed_by_windows' : 'runtime',
-    appUserModelId: process.platform === 'win32' ? APP_USER_MODEL_ID : '',
-    installedIdentity: app.isPackaged,
-  }));
-  handle('system:openLocationSettings', async () => {
-    if (process.platform !== 'win32') {
-      const error = new Error('Windows location settings are unavailable on this platform');
-      error.code = 'REVERIE_PLATFORM_UNSUPPORTED';
-      throw error;
-    }
-    await shell.openExternal('ms-settings:privacy-location', { activate: true });
-    return { opened: true };
-  });
-  handle('location:getCurrent', async () => {
-    if (!windowsLocationProvider) {
-      return {
-        ok: false,
-        code: 'REVERIE_LOCATION_DEVICE_UNAVAILABLE',
-        status: 'ModuleUnavailable',
-        source: 'windows-winrt',
-      };
-    }
-    return windowsLocationProvider.requestCurrent();
-  });
-  handle('shell:openExternal', async (_event, input) => {
-    const value = boundedString(input, { label: 'URL', min: 1, max: 2048 });
-    const url = new URL(value);
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
-      throw new Error('Only credential-free HTTP(S) links may be opened externally');
-    }
-    networkGate.assertAllowed(url, 'External link');
-    await shell.openExternal(url.href, { activate: true });
-    return { opened: true };
-  });
-
-  handle('avatar:list', () => avatarManager
-    ? avatarManager.list()
-    : {
-        records: [],
-        activeId: null,
-        runtime: {
-          live2d: {
-            available: false,
-            licenseAccepted: false,
-            reason: 'Avatar module is unavailable',
-          },
-        },
-      });
-
-  handle('sticker:importFile', async (_event, input = {}) => {
-    assertPlainObject(input, 'sticker import');
-    if (stickerDialogPending) {
-      const error = new Error('A sticker import is already in progress');
-      error.code = 'REVERIE_OPERATION_IN_PROGRESS';
-      throw error;
-    }
-    const text = typeof input.text === 'string' ? input.text.trim().slice(0, 120) : '';
-    const normalizeTags = (value) => Array.isArray(value)
-      ? value
-          .filter((item) => typeof item === 'string')
-          .map((item) => item.trim().slice(0, 32))
-          .filter(Boolean)
-          .slice(0, 12)
-      : [];
-    stickerDialogPending = true;
-    try {
-      const selected = await dialog.showOpenDialog(mainWindow, {
-        title: '导入本地表情',
-        properties: ['openFile', 'dontAddToRecent'],
-        filters: [
-          { name: '图片与 GIF', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] },
-        ],
-      });
-      if (selected.canceled || selected.filePaths.length !== 1) {
-        return { canceled: true, item: null, items: [] };
-      }
-      const source = path.resolve(selected.filePaths[0]);
-      const stat = fs.lstatSync(source);
-      if (stat.isSymbolicLink() || !stat.isFile() || stat.size < 16 || stat.size > 5_000_000) {
-        throw new Error('Sticker file is not a safe regular image under 5 MB');
-      }
-      const result = await bridge.importStickerFile(source, {
-        text,
-        emotions: normalizeTags(input.emotions),
-        styleTags: normalizeTags(input.styleTags),
-      });
-      return {
-        canceled: false,
-        fileName: path.basename(source),
-        ...result,
-      };
-    } finally {
-      stickerDialogPending = false;
-    }
-  });
-  handle('avatar:beginImport', async () => {
-    if (!avatarManager) {
-      const error = new Error('Avatar module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    if (avatarDialogPending) throw new Error('An avatar import is already in progress');
-    avatarDialogPending = true;
-    try {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: '导入本地头像',
-        properties: ['openFile', 'dontAddToRecent'],
-        filters: [
-          { name: 'Reverie avatar', extensions: ['vrm', 'glb', 'zip'] },
-        ],
-      });
-      if (result.canceled || result.filePaths.length !== 1) return null;
-      const candidate = await runAvatarImportWorker(result.filePaths[0]);
-      broadcast('avatar:changed', avatarManager.list());
-      return candidate;
-    } finally {
-      avatarDialogPending = false;
-    }
-  });
-  handle('avatar:beginImportFolder', async () => {
-    if (!avatarManager) {
-      const error = new Error('Avatar module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    if (avatarDialogPending) throw new Error('An avatar import is already in progress');
-    if (!avatarManager.live2dRuntime.available) {
-      const error = new Error(avatarManager.live2dRuntime.reason || 'Live2D import is unavailable');
-      error.code = 'AVATAR_LIVE2D_DISABLED';
-      throw error;
-    }
-    avatarDialogPending = true;
-    try {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Import a Live2D folder',
-        properties: ['openDirectory', 'dontAddToRecent'],
-      });
-      if (result.canceled || result.filePaths.length !== 1) return null;
-      return await runAvatarImportWorker(result.filePaths[0], { sourceIsDirectory: true });
-    } finally {
-      avatarDialogPending = false;
-    }
-  });
-  handle('avatar:confirmPreview', (_event, input) => {
-    if (!avatarManager) throw new Error('Avatar module is unavailable');
-    assertPlainObject(input, 'avatar preview confirmation');
-    const report = input.report ?? {};
-    assertPlainObject(report, 'avatar renderer report');
-    if (report.detected != null) assertPlainObject(report.detected, 'avatar detected capabilities');
-    if (report.capabilities != null) assertPlainObject(report.capabilities, 'avatar renderer capabilities');
-    return avatarManager.markPreviewReady(
-      boundedString(input.importId, { label: 'importId', min: 32, max: 32 }),
-      report,
-    );
-  });
-  handle('avatar:discardImport', (_event, input) => {
-    if (!avatarManager) return { discarded: false };
-    assertPlainObject(input, 'avatar import discard');
-    return avatarManager.discardImport(
-      boundedString(input.importId, { label: 'importId', min: 32, max: 32 }),
-    );
-  });
-  handle('avatar:previewFailed', (_event, input) => {
-    if (!avatarManager) return { discarded: false };
-    assertPlainObject(input, 'avatar preview failure');
-    return avatarManager.discardImport(
-      boundedString(input.importId, { label: 'importId', min: 32, max: 32 }),
-    );
-  });
-  handle('avatar:commitImport', (_event, input) => {
-    if (!avatarManager) {
-      const error = new Error('Avatar module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    assertPlainObject(input, 'avatar commit');
-    const record = avatarManager.commitImport({
-      importId: boundedString(input.importId, { label: 'importId', min: 32, max: 32 }),
-      rightsConfirmed: input.rightsConfirmed === true,
-      warningAccepted: input.warningAccepted === true,
-    });
-    broadcast('avatar:changed', avatarManager.list());
-    return record;
-  });
-  handle('avatar:setActive', (_event, input) => {
-    if (!avatarManager) {
-      const error = new Error('Avatar module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    assertPlainObject(input, 'avatar activation');
-    const result = avatarManager.setActive(
-      input.id == null ? null : boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
-    );
-    broadcast('avatar:changed', avatarManager.list());
-    return result;
-  });
-  handle('avatar:remove', (_event, input) => {
-    if (!avatarManager) {
-      const error = new Error('Avatar module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    assertPlainObject(input, 'avatar removal');
-    const result = avatarManager.remove(
-      boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
-    );
-    broadcast('avatar:changed', avatarManager.list());
-    return result;
-  });
-  handle('avatar:addMotion', async (_event, input) => {
-    if (!avatarManager) throw new Error('Avatar module is unavailable');
-    assertPlainObject(input, 'avatar motion import');
-    const avatarId = boundedString(input.id, { label: 'avatar id', min: 36, max: 36 });
-    if (avatarDialogPending) throw new Error('An avatar import is already in progress');
-    avatarDialogPending = true;
-    try {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Attach a VRM animation',
-        properties: ['openFile', 'dontAddToRecent'],
-        filters: [{ name: 'VRM animation', extensions: ['vrma'] }],
-      });
-      if (result.canceled || result.filePaths.length !== 1) return null;
-      const motion = await runAvatarMotionWorker(avatarId, result.filePaths[0]);
-      broadcast('avatar:changed', avatarManager.list());
-      return motion;
-    } finally {
-      avatarDialogPending = false;
-    }
-  });
-  handle('avatar:removeMotion', (_event, input) => {
-    if (!avatarManager) throw new Error('Avatar module is unavailable');
-    if (avatarDialogPending) throw new Error('Wait for the current avatar import to finish');
-    assertPlainObject(input, 'avatar motion removal');
-    const result = avatarManager.removeMotion(
-      boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
-      boundedString(input.motionId, { label: 'motion id', min: 36, max: 36 }),
-    );
-    broadcast('avatar:changed', avatarManager.list());
-    return result;
-  });
-  handle('avatar:setMapping', (_event, input) => {
-    if (!avatarManager) throw new Error('Avatar module is unavailable');
-    if (avatarDialogPending) throw new Error('Wait for the current avatar import to finish');
-    assertPlainObject(input, 'avatar mapping');
-    const result = avatarManager.setMapping(
-      boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
-      boundedString(input.category, { label: 'mapping category', min: 6, max: 10 }),
-      boundedString(input.key, { label: 'mapping key', min: 1, max: 64 }),
-      input.target == null
-        ? null
-        : boundedString(input.target, { label: 'mapping target', min: 1, max: 128 }),
-    );
-    broadcast('avatar:changed', avatarManager.list());
-    return result;
-  });
-
-  handle('focusSound:list', () => focusSoundManager
-    ? { available: true, ...focusSoundManager.list() }
-    : { available: false, records: [] });
-  handle('focusSound:import', async () => {
-    if (!focusSoundManager) {
-      const error = new Error('Focus sound module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    if (focusSoundDialogPending) throw new Error('A focus sound import is already in progress');
-    focusSoundDialogPending = true;
-    try {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Import a focus sound',
-        properties: ['openFile', 'dontAddToRecent'],
-        filters: [{ name: 'Audio', extensions: ['aac', 'flac', 'm4a', 'mp3', 'ogg', 'wav'] }],
-      });
-      if (result.canceled || result.filePaths.length !== 1) return null;
-      const record = focusSoundManager.import(result.filePaths[0]);
-      broadcast('focusSound:changed', { available: true, ...focusSoundManager.list() });
-      return record;
-    } finally {
-      focusSoundDialogPending = false;
-    }
-  });
-  handle('focusSound:open', (_event, input) => {
-    if (!focusSoundManager) throw new Error('Focus sound module is unavailable');
-    assertPlainObject(input, 'focus sound open');
-    return focusSoundManager.get(
-      boundedString(input.id, { label: 'focus sound id', min: 36, max: 36 }),
-    );
-  });
-  handle('focusSound:remove', (_event, input) => {
-    if (!focusSoundManager) throw new Error('Focus sound module is unavailable');
-    if (focusSoundDialogPending) throw new Error('Wait for the current focus sound import to finish');
-    assertPlainObject(input, 'focus sound removal');
-    const result = focusSoundManager.remove(
-      boundedString(input.id, { label: 'focus sound id', min: 36, max: 36 }),
-    );
-    broadcast('focusSound:changed', { available: true, ...focusSoundManager.list() });
-    return result;
-  });
-
-  handle('focus:getState', () => focusManager
-    ? focusManager.getState()
-    : {
-        phase: 'idle',
-        id: null,
-        durationSeconds: 0,
-        remainingSeconds: 0,
-        startedAtUtc: null,
-        endsAtUtc: null,
-        pausedAtUtc: null,
-        available: false,
-      });
-  handle('focus:start', (_event, input) => {
-    if (!focusManager) {
-      const error = new Error('Focus module is unavailable');
-      error.code = 'REVERIE_MODULE_UNAVAILABLE';
-      throw error;
-    }
-    assertPlainObject(input, 'focus start');
-    if (!Number.isInteger(input.durationSeconds)) throw new TypeError('durationSeconds must be an integer');
-    return focusManager.start({ durationSeconds: input.durationSeconds });
-  });
-  handle('focus:pause', (_event, input) => {
-    assertPlainObject(input, 'focus pause');
-    validateSessionId(input.id);
-    return focusManager.pause();
-  });
-  handle('focus:resume', (_event, input) => {
-    assertPlainObject(input, 'focus resume');
-    validateSessionId(input.id);
-    return focusManager.resume();
-  });
-  handle('focus:stop', (_event, input) => {
-    assertPlainObject(input, 'focus stop');
-    validateSessionId(input.id);
-    return focusManager.stop();
-  });
-  handle('focus:ackAudioRearm', (_event, input) => {
-    assertPlainObject(input, 'audio rearm acknowledgement');
-    validateSessionId(input.id);
-    return focusManager.acknowledgeAudioRearm();
-  });
-}
 
 function bundledCharacterSnapshot() {
   const unavailable = {
@@ -2060,14 +1681,17 @@ function bundledCharacterSnapshot() {
   return {
     record,
     runtime: library.runtime,
+    ...(record === null && bundledAvatarInstallError
+      ? { installError: bundledAvatarInstallError }
+      : {}),
   };
 }
 
 /**
- * The production renderer receives one narrow capability interface. The old
- * platform handlers remain above only as migration reference and are never
- * registered; an XSS therefore cannot reach files, location, notifications,
- * custom avatars, games, backups, focus timers, or image generation.
+ * The production renderer receives one narrow capability interface registered
+ * in registerIpcHandlers(); the retired platform handlers were removed so an
+ * XSS cannot reach files, location, notifications, custom avatars, games,
+ * backups, focus timers, or image generation through ghost channels.
  */
 // ── cat-catch download service (GPL-3.0, Muhe Studio adaptation) ──
 // Vendored at src/download_service/electron_adapter.js. Registered through the
@@ -2093,7 +1717,7 @@ function getDownloadAdapter() {
 function downloadServiceEnabled() {
   if (!getDownloadAdapter()) return false;
   try {
-    const configPath = path.join(dataDir, 'config.json');
+    const configPath = path.join(prepareWritableDataDir(), 'config.json');
     const raw = fs.readFileSync(configPath, 'utf8');
     return Boolean(JSON.parse(raw)?.features?.download_service_enabled);
   } catch {
@@ -2258,7 +1882,31 @@ function registerIpcHandlers() {
 
   handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
   handle('bridge:send', (_event, frame) => bridgeHostProxy.sendFromRenderer(frame));
+  handle('stickers:pickImage', async () => {
+    // The renderer never receives raw bytes here — just the picked path,
+    // which it then forwards to Python over the authenticated bridge
+    // (sticker:import) for validation and content-addressed storage.
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择表情图片',
+      properties: ['openFile'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length !== 1) return { canceled: true };
+    return { canceled: false, filePath: result.filePaths[0] };
+  });
   handle('app:getVersion', () => app.getVersion());
+  handle('notification:show', (_event, input) => {
+    assertPlainObject(input, 'notification');
+    const title = typeof input.title === 'string' ? input.title : '';
+    const body = typeof input.body === 'string' ? input.body : '';
+    if (!title && !body) throw new TypeError('notification requires a title or body');
+    const shown = showNativeNotification(title, body);
+    return { shown };
+  });
+  handle('backup:nativeExport', () => exportNativeBackup());
+  handle('backup:nativeImport', () => importNativeBackup());
   handle('localMode:get', () => publicLocalModeState());
   handle('localMode:set', async (_event, input = {}) => {
     assertPlainObject(input, 'local mode');
@@ -2269,6 +1917,98 @@ function registerIpcHandlers() {
     return setManualLocalMode(input.enabled);
   });
   handle('credentials:status', () => publicCredentialStatus());
+  handle('places:status', () => {
+    const status = publicCredentialStatus();
+    return {
+      configured: {
+        amap: status.amap?.hasApiKey === true,
+        google: status.googlePlaces?.hasApiKey === true && status.googlePlaces?.bindingKnown === true,
+      },
+      secureStorageAvailable: status.persistentAvailable === true,
+    };
+  });
+  handle('places:setKey', (_event, input = {}) => {
+    assertPlainObject(input, 'Places key');
+    if (Object.keys(input).some((key) => !['provider', 'apiKey'].includes(key))
+      || !['amap', 'google'].includes(input.provider)) {
+      throw new TypeError('Places key payload is invalid');
+    }
+    const apiKey = boundedString(input.apiKey, { label: 'Places API key', min: 1, max: 256 });
+    if (input.provider === 'google') {
+      credentialVault.set('googlePlaces', { apiKey }, { binding: GOOGLE_PLACES_BINDING });
+    } else {
+      credentialVault.set('amap', { apiKey });
+    }
+    return { configured: true, secureStorageAvailable: true };
+  });
+  handle('places:deleteKey', (_event, input = {}) => {
+    assertPlainObject(input, 'Places key deletion');
+    if (Object.keys(input).some((key) => key !== 'provider')
+      || !['amap', 'google'].includes(input.provider)) {
+      throw new TypeError('Places key deletion payload is invalid');
+    }
+    credentialVault.clear(input.provider === 'google' ? 'googlePlaces' : 'amap');
+    return { configured: false, secureStorageAvailable: credentialVault.isAvailable() };
+  });
+  handle('places:resolve', (_event, input = {}) => {
+    assertPlainObject(input, 'Places provider selection');
+    if (Object.keys(input).some((key) => key !== 'selection')
+      || !['auto', 'amap', 'google'].includes(input.selection)) {
+      throw new TypeError('Places provider selection is invalid');
+    }
+    const status = publicCredentialStatus();
+    const configured = {
+      amap: status.amap?.hasApiKey === true,
+      google: status.googlePlaces?.hasApiKey === true && status.googlePlaces?.bindingKnown === true,
+    };
+    const provider = input.selection === 'auto'
+      ? (configured.amap ? 'amap' : (configured.google ? 'google' : null))
+      : input.selection;
+    return { provider, configured: provider ? configured[provider] : false };
+  });
+  handle('places:nearby', async (_event, input = {}) => {
+    assertPlainObject(input, 'Places nearby request');
+    const allowedTypes = new Set([
+      'restaurant', 'cafe', 'bakery', 'dessert', 'convenience', 'snacks', 'supermarket',
+    ]);
+    if (Object.keys(input).some((key) => ![
+      'provider', 'latitude', 'longitude', 'radiusM', 'placeTypes', 'consent',
+    ].includes(key)) || !['amap', 'google'].includes(input.provider) || input.consent !== true
+      || !Number.isFinite(input.latitude) || input.latitude < -90 || input.latitude > 90
+      || !Number.isFinite(input.longitude) || input.longitude < -180 || input.longitude > 180
+      || !Number.isInteger(input.radiusM) || input.radiusM < 300 || input.radiusM > 5000
+      || !Array.isArray(input.placeTypes) || input.placeTypes.length < 1
+      || input.placeTypes.length > 7
+      || input.placeTypes.some((kind) => typeof kind !== 'string' || !allowedTypes.has(kind))) {
+      throw new TypeError('Places nearby request is invalid');
+    }
+    if (networkGate?.snapshot?.().active) {
+      return { ok: false, code: 'local-mode', items: [], provider: input.provider === 'google' ? 'Google' : 'Amap' };
+    }
+    if (input.provider === 'google') {
+      const apiKey = credentialVault.readForRuntime({
+        bindings: { googlePlaces: GOOGLE_PLACES_BINDING },
+      }).googlePlaces?.apiKey;
+      if (!apiKey) return { ok: false, code: 'key-required', items: [], provider: 'Google' };
+      return searchGooglePlaces({
+        apiKey,
+        latitude: input.latitude,
+        longitude: input.longitude,
+        radiusM: input.radiusM,
+        placeTypes: [...new Set(input.placeTypes)],
+      });
+    }
+    const apiKey = credentialVault.readForRuntime().amap?.apiKey;
+    if (!apiKey) return { ok: false, code: 'key-required', items: [], provider: 'Amap' };
+    if (!bridge?.ready) return { ok: false, code: 'unavailable', items: [], provider: 'Amap' };
+    return bridge.requestAmapNearby({
+      api_key: apiKey,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      radius_m: input.radiusM,
+      place_types: [...new Set(input.placeTypes)],
+    });
+  });
   handle('credentials:clear', (_event, input = {}) => {
     assertPlainObject(input, 'credential clear');
     if (Object.keys(input).some((key) => key !== 'scope') || input.scope !== 'llm') {
@@ -2302,6 +2042,26 @@ function registerIpcHandlers() {
   handle('providerConfig:test', (_event, input) => testProviderConfiguration(input));
   handle('providerConfig:commit', (_event, input) => commitProviderConfiguration(input));
   handle('character:getBundled', () => bundledCharacterSnapshot());
+  // Companion timer. The manager is single-session, so pause/resume/stop take
+  // no session id on this side; the renderer keeps one for display only.
+  const requireFocus = () => {
+    if (!focusManager) throw new Error('Focus service is unavailable');
+    return focusManager;
+  };
+  handle('focus:getState', () => requireFocus().getState());
+  handle('focus:start', (_event, input) => {
+    assertPlainObject(input, 'focus start');
+    if (Object.keys(input).some((key) => key !== 'durationSeconds')
+      || !Number.isFinite(input.durationSeconds)
+      || input.durationSeconds <= 0) {
+      throw new TypeError('focus start payload is invalid');
+    }
+    return requireFocus().start({ durationSeconds: input.durationSeconds });
+  });
+  handle('focus:pause', () => requireFocus().pause());
+  handle('focus:resume', () => requireFocus().resume());
+  handle('focus:stop', () => requireFocus().stop());
+  handle('focus:acknowledgeAudioRearm', () => requireFocus().acknowledgeAudioRearm());
   registerDownloadHandlers(handle);
   handle('pet:toggle', () => togglePetWindow());
   handle('pet:show', () => showPetWindow());
@@ -2573,6 +2333,13 @@ if (hasSingleInstanceLock) {
     createTray();
     installPowerEvents();
     startBridge();
+
+    // Proactive companion reminders are written to the on-disk outbox by the
+    // Python host. Without this poll the files accumulate and no reminder
+    // ever reaches the user; each file carries its own 12h TTL.
+    pollNotificationOutbox();
+    notificationPollTimer = setInterval(pollNotificationOutbox, 15_000);
+    notificationPollTimer.unref?.();
 
     app.on('activate', () => {
       if (!mainWindow || mainWindow.isDestroyed()) createWindow();

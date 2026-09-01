@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { FramedBridgeSupervisor } = require('../electron/framed-bridge-supervisor.cjs');
+const { OMITTED_SOURCE_MODULES } = require('./production-runtime.cjs');
 
 const DEFAULT_TARGET_MARKER = path.join(
   path.resolve(__dirname, '..'),
@@ -45,16 +46,38 @@ function assertPackagedLayout(packageRoot) {
     }
   }
   for (const omitted of [
-    'affairs', 'ambient', 'archive', 'backup', 'diary', 'games', 'immersion',
-    'interest', 'keepsakes', 'notifications', 'social', 'stickers', 'timeline',
+    'affairs', 'ambient', 'archive', 'backup',
+    'interest', 'keepsakes', 'social', 'timeline',
     'web', 'work_manager',
   ]) {
+    if (!OMITTED_SOURCE_MODULES.includes(omitted)) {
+      throw new Error(
+        `Smoke omit boundary drifted: '${omitted}' is missing from OMITTED_SOURCE_MODULES in production-runtime.cjs`,
+      );
+    }
     const target = path.join(resources, 'src', omitted);
     if (fs.existsSync(target)) {
       throw new Error(`Non-MVP Python module was packaged: ${target}`);
     }
   }
-  for (const omittedFile of ['ambient.py', 'backup.py', 'notifications.py', 'work_manager.py']) {
+  // These are core companion capabilities: they must
+  // ship. Their absence once made packaged stickers/games silently inert.
+  for (const shipped of ['diary', 'games', 'immersion', 'stickers']) {
+    if (OMITTED_SOURCE_MODULES.includes(shipped)) {
+      throw new Error(
+        `Core companion module '${shipped}' must not appear in OMITTED_SOURCE_MODULES`,
+      );
+    }
+    const target = path.join(resources, 'src', shipped);
+    if (!fs.existsSync(target)) {
+      throw new Error(`Core companion module was not packaged: ${target}`);
+    }
+  }
+  const notifications = path.join(resources, 'src', 'notifications.py');
+  if (!fs.existsSync(notifications)) {
+    throw new Error(`Core companion module was not packaged: ${notifications}`);
+  }
+  for (const omittedFile of ['ambient.py', 'backup.py', 'work_manager.py']) {
     const target = path.join(resources, 'src', omittedFile);
     if (fs.existsSync(target)) {
       throw new Error(`Non-MVP Python module was packaged: ${target}`);

@@ -13,6 +13,7 @@ type Props = {
 type CharacterSnapshot = {
   record: AvatarRecord | null;
   runtime?: AvatarRuntime;
+  installError?: string;
 };
 
 const EXPRESSION_ORDER = ['joy', 'sad', 'angry', 'surprised', 'calm'] as const;
@@ -74,6 +75,13 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
     && runtime?.available
     && (runtime.licenseAccepted || runtime.developmentOnly),
   );
+  // When the stage cannot render, say exactly why: a gate refusal and a
+  // failed install need very different fixes.
+  const pendingReason = runtime?.available
+    ? (snapshot.installError
+      ? `角色安装失败：${snapshot.installError}`
+      : '正在准备角色资源…')
+    : (runtime?.reason || 'Live2D 资源或发布许可尚未就绪');
   const expression = useMemo(
     () => expressionFor(emotions, record),
     [emotions, record],
@@ -98,7 +106,7 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
           className={styles.live2dInteraction}
           role="button"
           tabIndex={0}
-          aria-label="Yumi Live2D 角色；点击挥手"
+          aria-label="Hoshino Yumetsuki Live2D 角色；点击挥手"
           onClick={() => requestMotion('wave')}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
@@ -113,7 +121,12 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
               width: 620,
               height: 760,
               resolution: Math.min(1.5, window.devicePixelRatio || 1),
-              maxFps: document.hidden ? 15 : 30,
+              // Constant on purpose: a hidden-state-dependent value here
+              // flips the useLive2D init-effect deps on every re-render while
+              // minimized, destroying and recreating the whole renderer (and
+              // the ref-based load gate then never reloads the model). rAF
+              // already stops for hidden pages, so this knob saved nothing.
+              maxFps: 30,
               backgroundAlpha: 0,
             }}
             modelUrl={record?.entryUrl}
@@ -141,7 +154,7 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
               : state === 'error'
                 ? `角色加载失败：${runtimeError || '未知错误'}`
                 : '正在准备角色…'
-            : '静态模式 · Live2D 资源或发布许可尚未就绪'}
+            : pendingReason}
         </span>
       </div>
     </section>

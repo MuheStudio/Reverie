@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..config.settings import WORLD_STATE_DB
+from ..storage.encrypted_sqlite import connect_database
 
 if TYPE_CHECKING:
     from ..api.adapter import LLMAdapter
@@ -79,7 +80,7 @@ class SocialUniverse:
     def _connect(self) -> sqlite3.Connection:
         if self._state_scope is not None:
             self._state_scope.require_current()
-        connection = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        connection = connect_database(self.path, timeout=30.0, isolation_level=None)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=DELETE")

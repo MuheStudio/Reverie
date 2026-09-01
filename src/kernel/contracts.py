@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
+import json
 import re
 from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, StrictBool, StrictInt, field_validator, model_validator
 
 
 PROTOCOL_VERSION = 4
@@ -27,6 +28,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("CHAT_REVEAL", "chat:reveal"),
     ("CHAT_STOP", "chat:stop"),
     ("CHAT_HISTORY", "chat:history"),
+    ("CHAT_MEDIA", "chat:media"),
     ("BRIDGE_AUTH", "bridge:auth"),
     ("LOCAL_MODE_SET", "local_mode:set"),
     ("MEMORY_QUERY", "memory:query"),
@@ -50,8 +52,10 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("MODULE_CONTROL", "module:control"),
     ("GAME_STATE_GET", "game_state:get"),
     ("GAME_STATE_PUT", "game_state:put"),
+    ("GAME_MOVE", "game:move"),
     ("RELATIONSHIP_GET", "relationship:get"),
     ("DIARY_REQUEST", "diary:request"),
+    ("DIARY_WRITE", "diary:write"),
     ("TIMELINE_REQUEST", "timeline:request"),
     ("AMBIENT_GET", "ambient:get"),
     ("API_BUDGET_GET", "api:budget:get"),
@@ -74,6 +78,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("STICKER_LIST", "sticker:list"),
     ("STICKER_COLLECT", "sticker:collect"),
     ("STICKER_REACT", "sticker:react"),
+    ("STICKER_IMPORT", "sticker:import"),
     ("STICKER_SEND", "sticker:send"),
     ("ANTI_AI_STATUS", "anti_ai:status"),
     ("IMMERSION_NEARBY", "immersion:nearby"),
@@ -87,6 +92,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("CHAT_ERROR", "chat:error"),
     ("CHAT_RETRACT", "chat:retract"),
     ("CHAT_HISTORY_RESULT", "chat:history:result"),
+    ("CHAT_MEDIA_RESULT", "chat:media:result"),
     ("BRIDGE_AUTH_OK", "bridge:auth_ok"),
     ("BRIDGE_AUTH_ERROR", "bridge:auth_error"),
     ("LOCAL_MODE_STATE", "local_mode:state"),
@@ -101,6 +107,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("ARCHIVE_RESULT", "archive:result"),
     ("MODULE_RESULT", "module:result"),
     ("GAME_STATE_RESULT", "game_state:result"),
+    ("GAME_MOVE_RESULT", "game:move:result"),
     ("RELATIONSHIP_DATA", "relationship:data"),
     ("DIARY_RESULT", "diary:result"),
     ("TIMELINE_RESULT", "timeline:result"),
@@ -133,6 +140,7 @@ MVP_COMMAND_NAMES = frozenset(
         "CHAT_STOP",
         "CHAT_REVEAL",
         "CHAT_HISTORY",
+        "CHAT_MEDIA",
         "MEMORY_QUERY",
         "MEMORY_LIST",
         "MEMORY_STORE",
@@ -147,8 +155,10 @@ MVP_COMMAND_NAMES = frozenset(
         "STICKER_LIST",
         "STICKER_COLLECT",
         "STICKER_REACT",
+        "STICKER_IMPORT",
         "GAME_STATE_GET",
         "GAME_STATE_PUT",
+        "GAME_MOVE",
         "IMMERSION_NEARBY",
         "IMMERSION_CLOSEUP",
         "IMMERSION_SMART_HOME",
@@ -160,6 +170,7 @@ MVP_COMMAND_NAMES = frozenset(
         "MODULE_LIST",
         "MODULE_CONTROL",
         "DIARY_REQUEST",
+        "DIARY_WRITE",
         "TIMELINE_REQUEST",
         "KEEPSAKE_LIST",
         "KEEPSAKE_ADD",
@@ -196,6 +207,7 @@ MVP_EVENT_NAMES = frozenset(
         "CHAT_ERROR",
         "CHAT_RETRACT",
         "CHAT_HISTORY_RESULT",
+        "CHAT_MEDIA_RESULT",
         "EMOTION_UPDATE",
         "MEMORY_RESULT",
         "MEMORY_SETTINGS_RESULT",
@@ -203,6 +215,7 @@ MVP_EVENT_NAMES = frozenset(
         "GROUP_RESULT",
         "STICKER_DATA",
         "GAME_STATE_RESULT",
+        "GAME_MOVE_RESULT",
         "IMMERSION_RESULT",
         "AMBIENT_RESULT",
         "API_BUDGET_RESULT",
@@ -266,6 +279,12 @@ class ChatSendPayload(_PayloadModel):
     request_id: str | None = Field(default=None, max_length=128)
     conversation_id: str = Field(default="dream-room", min_length=1, max_length=160)
     sent_at_utc: str | None = Field(default=None, max_length=64)
+    # Optional chat image attachment. The renderer either hands over a local
+    # absolute path from an Electron file dialog (preferred — keeps big base64
+    # out of the bridge frame) or a compressed data URL from clipboard paste.
+    image_path: str | None = Field(default=None, max_length=1_024)
+    image_data_url: str | None = Field(default=None, max_length=350_000)
+    sticker: "StickerAttachmentPayload | None" = None
 
     @field_validator("request_id")
     @classmethod
@@ -279,6 +298,96 @@ class ChatSendPayload(_PayloadModel):
     def validate_conversation_id(cls, value: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", value):
             raise ValueError("conversation_id contains unsupported characters")
+        return value
+
+    @field_validator("image_path")
+    @classmethod
+    def validate_image_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if "\x00" in value or any(ord(char) < 32 for char in value):
+            raise ValueError("image_path contains control characters")
+        if not re.fullmatch(r"([A-Za-z]:[\\/].*|/.+)", value, re.DOTALL):
+            raise ValueError("image_path must be an absolute local path")
+        return value
+
+    @field_validator("image_data_url")
+    @classmethod
+    def validate_image_data_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not re.fullmatch(
+            r"data:image/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\r\n]+",
+            value,
+        ):
+            raise ValueError("image_data_url must be a base64 image data URL")
+        return value
+
+
+class StickerAttachmentPayload(_PayloadModel):
+    """Sticker object the renderer may attach to a chat:send turn."""
+
+    id: str | None = Field(default=None, max_length=128)
+    text: str = Field(default="", max_length=400)
+    emotions: list[str] = Field(default_factory=list, max_length=24)
+    style_tags: list[str] = Field(default_factory=list, max_length=24)
+    image_data_url: str | None = Field(default=None, max_length=350_000)
+    source: str | None = Field(default=None, max_length=40)
+
+
+class ChatMediaPayload(_PayloadModel):
+    """Fetch one persisted chat media attachment as a data URL."""
+
+    media_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("media_id")
+    @classmethod
+    def validate_media_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", value):
+            raise ValueError("media_id contains unsupported characters")
+        return value
+
+
+class GameMovePayload(_PayloadModel):
+    """Ask the companion to choose the next move in a local board game.
+
+    ``state`` is the renderer's authoritative board serialization; Python
+    never mutates it — it only feeds the persona prompt and returns a raw
+    move candidate plus an in-character comment. Legality is enforced by the
+    renderer's rules engine.
+    """
+
+    game: str = Field(min_length=1, max_length=20)
+    state: dict[str, Any]
+
+    @field_validator("game")
+    @classmethod
+    def validate_game(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9_-]{1,20}", value):
+            raise ValueError("game contains unsupported characters")
+        return value
+
+    @model_validator(mode="after")
+    def validate_state_size(self) -> "GameMovePayload":
+        serialized = json.dumps(self.state, ensure_ascii=False, default=str)
+        if len(serialized) > 100_000:
+            raise ValueError("game state is too large")
+        return self
+
+
+class StickerImportPayload(_PayloadModel):
+    """Import a local image file as a user sticker via an Electron dialog."""
+
+    file_path: str = Field(min_length=1, max_length=1_024)
+    style_tags: list[str] = Field(default_factory=list, max_length=24)
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str) -> str:
+        if "\x00" in value or any(ord(char) < 32 for char in value):
+            raise ValueError("file_path contains control characters")
+        if not re.fullmatch(r"([A-Za-z]:[\\/].*|/.+)", value, re.DOTALL):
+            raise ValueError("file_path must be an absolute local path")
         return value
 
 
@@ -433,23 +542,52 @@ class MemoryTargetPayload(_PayloadModel):
         return value
 
 
-class MemoryStorePayload(_PayloadModel):
+class StandardMemoryStorePayload(_PayloadModel):
     """Store a user-selected chat record in a memory layer.
 
     ``permanent`` marks a precious memory (never decays, never confused);
     ``long_term``/``short_term`` remain forgettable.
     """
 
-    text: str = Field(min_length=1, max_length=2_000)
+    text: str = Field(default="", max_length=2_000)
     layer: Literal["long_term", "short_term", "permanent"] = "long_term"
+    preference: Literal["place", "category"] | None = None
+    display_label: str = Field(default="", max_length=120)
+    broad_category: str = Field(default="", max_length=80)
+    user_confirmed: StrictBool = False
 
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("memory text cannot be blank")
-        return cleaned
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_explicit_preference(self) -> "StandardMemoryStorePayload":
+        if self.preference is None:
+            if not self.text:
+                raise ValueError("memory text cannot be blank")
+            if self.display_label or self.broad_category or self.user_confirmed:
+                raise ValueError("preference fields require a preference kind")
+            return self
+        if self.user_confirmed is not True:
+            raise ValueError("place preference requires explicit confirmation")
+        if self.text:
+            raise ValueError("place preference text is constructed by the trusted host")
+        if self.preference == "place" and (not self.display_label or self.broad_category):
+            raise ValueError("place preference requires only a display label")
+        if self.preference == "category" and (not self.broad_category or self.display_label):
+            raise ValueError("category preference requires only a broad category")
+        return self
+
+
+class CoarseSystemLocationMemoryPayload(_PayloadModel):
+    kind: Literal["coarse_system_location"]
+    neighborhood_scale: Literal["neighborhood-scale", "city-scale", "regional-scale"]
+    user_confirmed: Literal[True]
+
+
+class MemoryStorePayload(RootModel[StandardMemoryStorePayload | CoarseSystemLocationMemoryPayload]):
+    """Strict union for normal memories and separately confirmed OS scale summaries."""
 
 
 class MemoryEditPayload(MemoryTargetPayload):
@@ -595,7 +733,9 @@ class TTSSynthesizePayload(_PayloadModel):
 class SettingsUpdatePayload(_PayloadModel):
     """The small settings surface that exists in the current MVP."""
 
-    section: Literal["onboarding", "memory", "chat", "personality", "features", "tts", "ui"]
+    section: Literal[
+        "onboarding", "memory", "chat", "personality", "features", "immersion", "tts", "ui"
+    ]
     completed: bool | None = None
     mode: Literal["mvp", "dream"] | None = None
 
@@ -631,6 +771,13 @@ class SettingsUpdatePayload(_PayloadModel):
     proactive_notifications_enabled: bool | None = None
     proactive_daily_limit: int | None = Field(default=None, ge=1, le=12)
     proactive_min_interval_minutes: int | None = Field(default=None, ge=15, le=1440)
+    proactive_wake_min_minutes: int | None = Field(default=None, ge=2, le=60)
+    proactive_wake_max_minutes: int | None = Field(default=None, ge=2, le=60)
+
+    immersion_location_enabled: bool | None = None
+    immersion_closeups_enabled: bool | None = None
+    immersion_smart_home_enabled: bool | None = None
+    immersion_location_radius_m: int | None = Field(default=None, ge=300, le=5000)
 
     @model_validator(mode="after")
     def validate_section_fields(self) -> "SettingsUpdatePayload":
@@ -671,6 +818,15 @@ class SettingsUpdatePayload(_PayloadModel):
                 "proactive_notifications_enabled",
                 "proactive_daily_limit",
                 "proactive_min_interval_minutes",
+                "proactive_wake_min_minutes",
+                "proactive_wake_max_minutes",
+            },
+            "immersion": {
+                "section",
+                "immersion_location_enabled",
+                "immersion_closeups_enabled",
+                "immersion_smart_home_enabled",
+                "immersion_location_radius_m",
             },
             "ui": {
                 "section",
@@ -692,6 +848,12 @@ class SettingsUpdatePayload(_PayloadModel):
             )
         if self.section == "onboarding" and self.completed is None:
             raise ValueError("onboarding settings require completed")
+        if (
+            self.proactive_wake_min_minutes is not None
+            and self.proactive_wake_max_minutes is not None
+            and self.proactive_wake_min_minutes > self.proactive_wake_max_minutes
+        ):
+            raise ValueError("proactive wake minimum cannot exceed maximum")
         return self
 
 
@@ -741,6 +903,7 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "chat:stop": ChatStopPayload,
     "chat:reveal": ChatTargetPayload,
     "chat:history": ChatHistoryPayload,
+    "chat:media": ChatMediaPayload,
     "memory:query": MemoryQueryPayload,
     "memory:list": MemoryListPayload,
     "memory:store": MemoryStorePayload,
@@ -755,8 +918,10 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "sticker:list": StickerListPayload,
     "sticker:collect": StickerCollectPayload,
     "sticker:react": StickerReactPayload,
+    "sticker:import": StickerImportPayload,
     "game_state:get": GameStateGetPayload,
     "game_state:put": GameStatePutPayload,
+    "game:move": GameMovePayload,
     "immersion:nearby": ImmersionNearbyPayload,
     "immersion:closeup": ImmersionCloseupPayload,
     "immersion:smart_home": ImmersionSmartHomePayload,
@@ -768,6 +933,7 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "module:list": EmptyPayload,
     "module:control": ModuleControlPayload,
     "diary:request": DiaryRequestPayload,
+    "diary:write": EmptyPayload,
     "timeline:request": EmptyPayload,
     "keepsake:list": KeepsakeListPayload,
     "keepsake:add": KeepsakeAddPayload,
@@ -801,6 +967,7 @@ MUTATING_COMMAND_NAMES = frozenset(
         "group:send",
         "sticker:collect",
         "sticker:react",
+        "sticker:import",
         "game_state:put",
         "archive:put",
         "archive:migrate",

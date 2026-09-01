@@ -8,17 +8,25 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   markRevealSent,
   migrateChatMessages,
+  sweepDisconnectedChatMessages,
+  sweepDisconnectedRequestStates,
   upsertRequestState,
   type ChatDeliveryState,
   type ChatMessageV2,
   type ChatRequestState,
 } from '@/components/DreamRoom/chatDeliveryMachine';
+import {
+  appendUniqueProactive,
+  mergeHistoryWithLiveProactive,
+} from '@/lib/proactiveMessages';
 import { WSMsgType } from '@/contracts/protocolV4.generated';
 import {
   ElectronBridgeSocket,
   isElectronIpcBridge,
   type BridgeSocketLike,
 } from '@/lib/electronBridgeSocket';
+import { normalizeStickerTags, toStickerAttachmentPayload } from '@/lib/stickerPayload';
+import { toChatImagePayload, type ChatImageAttachment } from '@/lib/chatImage';
 export {
   PROTOCOL_VERSION,
   WSMsgType,
@@ -98,6 +106,10 @@ export interface ChatMessage extends ChatMessageV2 {
   sticker?: StickerItem | null;
   deliveryId?: string;
   bubbleIndex?: number;
+  /** Data/object URL for a just-sent image (optimistic display only). */
+  attachmentPreview?: string;
+  /** Persisted attachment refs from authoritative history. */
+  media?: Array<{ media_id: string; mime?: string }>;
 }
 export interface ChatChunk { text: string; sticker?: StickerItem | null; }
 export interface ChatBubble {
@@ -1036,6 +1048,10 @@ export function useReverieWS(wsUrl?: string) {
       authenticatedRef.current = false;
       authPhaseRef.current = 'idle';
       rejectPendingRequests('The bridge connection closed');
+      // Mirror useMvpBridge: queued/generating bubbles must not survive a
+      // dead socket as eternal "已排队". The reconnect replays authoritative
+      // history, so this only keeps the UI honest while offline.
+      disconnectSweepRef.current?.();
       if (!mountedRef.current) return;
       // A terminal unavailable state (auth rejected, invalid protocol,
       // explicit failure) must never be re-armed by this loop.
@@ -1186,19 +1202,45 @@ export function useReverieWS(wsUrl?: string) {
     text: string,
     sticker?: StickerItem,
     suppliedRequestId?: string,
+    attachment?: ChatImageAttachment,
   ): string | null => {
     const requestId = suppliedRequestId || newRequestId();
     const sentAtUtc = nowUtc();
+    // Project the sticker to the strict wire contract (raw items carry
+    // display-only fields the backend rejects) and never send renderer-owned
+    // persona fields — the host owns the persona proof.
+    const wireSticker = sticker ? toStickerAttachmentPayload(sticker) : null;
     const payload = {
       text,
       request_id: requestId,
       conversation_id: 'dream-room',
-      persona_id: null,
       sent_at_utc: sentAtUtc,
-      ...(sticker ? { sticker } : {}),
+      ...(wireSticker ? { sticker: wireSticker } : {}),
+      ...toChatImagePayload(attachment),
     };
     return send(WSMsgType.CHAT_SEND, payload) ? requestId : null;
   }, [send]);
+
+  const fetchChatMedia = useCallback(async (mediaId: string): Promise<string> => {
+    const result = await request<{ data_url?: string }>(
+      WSMsgType.CHAT_MEDIA,
+      { media_id: mediaId },
+      { expectedType: 'chat:media:result', timeout: 15_000 },
+    );
+    const dataUrl = String(result?.data_url || '');
+    if (!dataUrl.startsWith('data:image/')) throw new Error('media unavailable');
+    return dataUrl;
+  }, [request]);
+
+  const importSticker = useCallback(async (filePath: string, styleTags: string[] = []) => {
+    const result = await request<{ ok?: boolean; item?: StickerItem; error?: string }>(
+      WSMsgType.STICKER_IMPORT,
+      { file_path: filePath, style_tags: normalizeStickerTags(styleTags, 8) },
+      { expectedType: 'sticker:data', timeout: 30_000 },
+    );
+    if (!result?.item) throw new Error(result?.error || '表情导入失败');
+    return result.item;
+  }, [request]);
   const cancelChat = useCallback((requestId: string) => (
     send(WSMsgType.CHAT_CANCEL, { request_id: requestId })
   ), [send]);
@@ -1249,6 +1291,24 @@ export function useReverieWS(wsUrl?: string) {
     options: { voice?: string; provider?: string } = {},
   ) => send(WSMsgType.TTS_SYNTHESIZE, { text, ...options }), [send]);
   const refreshDiary = useCallback(() => send(WSMsgType.DIARY_REQUEST, {}), [send]);
+  const diaryWriting = useRef(false);
+  const requestDiaryEntry = useCallback(async (): Promise<{ ok: boolean; error?: string }> => {
+    if (diaryWriting.current) return { ok: false, error: '她正在写日记' };
+    diaryWriting.current = true;
+    try {
+      const result = await request<{ ok?: boolean; error?: string }>(
+        WSMsgType.DIARY_WRITE,
+        {},
+        { expectedType: 'diary:result', timeout: 120_000 },
+      );
+      refreshDiary();
+      return { ok: Boolean(result?.ok), error: result?.error };
+    } catch (reason) {
+      return { ok: false, error: reason instanceof Error ? reason.message : '请求失败' };
+    } finally {
+      diaryWriting.current = false;
+    }
+  }, [refreshDiary, request]);
   const refreshTimeline = useCallback(() => send(WSMsgType.TIMELINE_REQUEST, {}), [send]);
   const refreshAmbient = useCallback(() => send(WSMsgType.AMBIENT_GET, {}), [send]);
   const refreshApiBudget = useCallback(() => send(WSMsgType.API_BUDGET_GET, {}), [send]);
@@ -1284,6 +1344,16 @@ export function useReverieWS(wsUrl?: string) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const v2RequestsSeenRef = useRef(new Set<string>());
   const revealSentRef = useRef(new Set<string>());
+  // connect() closes over this ref because it is declared before the chat
+  // state below; the sweep itself is registered once the setters exist.
+  const disconnectSweepRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    disconnectSweepRef.current = () => {
+      setChatMessages(sweepDisconnectedChatMessages);
+      setChatRequestStates(sweepDisconnectedRequestStates);
+    };
+    return () => { disconnectSweepRef.current = null; };
+  }, []);
   const [isTyping, setIsTyping] = useState(false);
   const [currentChunk, setCurrentChunk] = useState('');
   // Mirror of currentChunk kept outside the render cycle. CHAT_CHUNK writes
@@ -1337,7 +1407,8 @@ export function useReverieWS(wsUrl?: string) {
     subscribeResult(WSMsgType.RELATIONSHIP_DATA, (p: RelationshipData) => setRelationship(p));
     subscribeResult(WSMsgType.CHAT_HISTORY_RESULT, (payload: unknown) => {
       const items = extractArrayPayload(payload, ['items', 'messages', 'data']);
-      setChatMessages(migrateChatMessages(items) as ChatMessage[]);
+      const history = migrateChatMessages(items) as ChatMessage[];
+      setChatMessages((current) => mergeHistoryWithLiveProactive(history, current));
     });
     subscribeResult(WSMsgType.DIARY_RESULT, (p: unknown) => {
       const error = payloadError(p);
@@ -1605,22 +1676,36 @@ export function useReverieWS(wsUrl?: string) {
         return next;
       });
     }));
-    unsubs.push(subscribe(WSMsgType.PROACTIVE_MESSAGE, (p: { text?: string; messages?: string[]; notify?: boolean }) => {
+    unsubs.push(subscribe(WSMsgType.PROACTIVE_MESSAGE, (p: {
+      text?: string;
+      messages?: string[];
+      notify?: boolean;
+      proactive_id?: string;
+      created_at_utc?: string;
+      conversation_id?: string;
+      persona_id?: string;
+    }) => {
       const messages = Array.isArray(p.messages)
         ? p.messages.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
         : [p.text || ''].filter(Boolean);
       if (!messages.length) return;
+      const proactiveId = optionalString(p.proactive_id);
+      if (!proactiveId) return;
       setChatMessages((prev) => {
-        const next = [
-          ...prev,
-          ...messages.map((content) => makeChatMessage(
+        const incoming = messages.map((content, bubbleIndex) => makeChatMessage(
             'assistant',
             content,
-            nextMessageId('pro'),
-            { source: 'proactive' },
-          )),
-        ];
-        return next;
+            `${proactiveId}:${bubbleIndex}`,
+            {
+              source: 'proactive',
+              proactive_id: proactiveId,
+              bubble_index: bubbleIndex,
+              created_at_utc: optionalString(p.created_at_utc) || nowUtc(),
+              conversation_id: optionalString(p.conversation_id) || 'dream-room',
+              persona_id: optionalString(p.persona_id) || null,
+            },
+          ));
+        return appendUniqueProactive(prev, incoming);
       });
       if (p.notify) {
         showBrowserNotification(messages[0]);
@@ -1633,6 +1718,7 @@ export function useReverieWS(wsUrl?: string) {
     text: string,
     sticker?: StickerItem,
     requestId: string | null = null,
+    attachmentPreview?: string,
   ) => {
     const id = nextMessageId('usr');
     setChatMessages((prev) => {
@@ -1641,6 +1727,7 @@ export function useReverieWS(wsUrl?: string) {
         request_id: requestId,
         conversation_id: 'dream-room',
         delivery_state: requestId ? 'queued' : undefined,
+        ...(attachmentPreview ? { attachmentPreview } : {}),
       })];
       return next;
     });
@@ -1684,9 +1771,11 @@ export function useReverieWS(wsUrl?: string) {
   return {
     connState, send, request, subscribe,
     sendChat, cancelChat, revealChat: revealRequest, stopChat, setLocalMode, queryMemory, storeMemory, getRandomImage,
+    fetchChatMedia, importSticker,
     listTTS, synthesizeSpeech,
     refreshDiary, refreshTimeline, refreshAmbient, refreshApiBudget, refreshGroup,
     refreshKeepsakes, refreshStickers,
+    requestDiaryEntry,
     sendGroupMessage, unlockDiaryKey, readDiaryEntry,
     exportBackup, importBackup,
     collectSticker, reactSticker,

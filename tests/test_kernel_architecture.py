@@ -306,3 +306,38 @@ def test_module_registry_does_not_swallow_process_control_exceptions(
     registry.register(InterruptedModule())
     with pytest.raises(KeyboardInterrupt):
         registry.start("memory")
+
+
+def test_append_user_message_writes_through_before_generation(store, persona) -> None:
+    appended = store.append_user_message(
+        request_id="req_write_through_1",
+        conversation_id="conversation_write",
+        persona_id=persona.persona_id,
+        text="今天也要加油",
+    )
+    assert appended is True
+    page = store.message_page("conversation_write", persona_id=persona.persona_id)
+    assert [item["content"] for item in page["items"]] == ["今天也要加油"]
+    assert page["items"][0]["role"] == "user"
+    assert page["items"][0]["delivery_state"] == "accepted"
+
+
+def test_append_user_message_is_idempotent_per_request(store, persona) -> None:
+    kwargs = {
+        "request_id": "req_write_through_2",
+        "conversation_id": "conversation_write",
+        "persona_id": persona.persona_id,
+    }
+    assert store.append_user_message(text="第一遍", **kwargs) is True
+    assert store.append_user_message(text="第一遍", **kwargs) is False
+    page = store.message_page("conversation_write", persona_id=persona.persona_id)
+    assert len(page["items"]) == 1
+    assert page["items"][0]["content"] == "第一遍"
+
+
+def test_kernel_store_uses_full_sync_rollback_journal(store) -> None:
+    journal_mode = store._connection.execute("PRAGMA journal_mode").fetchone()[0]
+    synchronous = store._connection.execute("PRAGMA synchronous").fetchone()[0]
+
+    assert str(journal_mode).lower() == "delete"
+    assert int(synchronous) == 2

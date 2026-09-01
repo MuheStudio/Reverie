@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 56">
+  <!-- Original self-drawn asset for Reverie (GPL-3.0): one star lantern with
+       a short hanging string and a warm glow. Amber mirrors the lamp glow
+       used across the DreamRoom scene. -->
+  <defs>
+    <radialGradient id="starGlow" cx="50%" cy="57%" r="55%">
+      <stop offset="0%" stop-color="#f2c66d" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#f2c66d" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <line x1="20" y1="0" x2="20" y2="15" stroke="#a07f88" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="20" cy="32" r="21" fill="url(#starGlow)"/>
+  <polygon fill="#f2c66d" stroke="#d9a94f" stroke-width="1.4" stroke-linejoin="round"
+    points="20,19 21.7,26.77 27.64,21.48 24.45,28.77 32.36,27.98 25.5,32 32.36,36.02 24.45,35.23 27.64,42.52 21.7,37.23 20,45 18.3,37.23 12.36,42.52 15.55,35.23 7.64,36.02 14.5,32 7.64,27.98 15.55,28.77 12.36,21.48 18.3,26.77"/>
+</svg>

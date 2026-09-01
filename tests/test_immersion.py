@@ -47,20 +47,22 @@ def test_nearby_context_handles_bad_coordinates_without_raising() -> None:
     assert result["error"] == "Invalid coordinates"
 
 
-def test_nearby_context_rounds_location_and_filters_types() -> None:
+def test_nearby_context_does_not_project_location_and_filters_types() -> None:
     manager = ImmersionManager(FeatureSettings(immersion_location_enabled=True))
 
     result = manager.nearby_life_context(
         latitude=39.9042123,
         longitude=116.4074123,
-        place_types=["restaurant", "politics", "shop"],
+        place_types=["restaurant", "politics", "cafe"],
         radius_m=99999,
     )
 
     assert result["ok"] is True
-    assert result["coarse_location"] == {"latitude": 39.904, "longitude": 116.407}
+    assert "coarse_location" not in result
+    assert "latitude" not in result
+    assert "longitude" not in result
     assert result["radius_m"] == 5000
-    assert [place["kind"] for place in result["places"]] == ["restaurant", "shop"]
+    assert [place["kind"] for place in result["places"]] == ["restaurant", "cafe"]
     assert result["suggestions"][0]["ideas"]
 
 

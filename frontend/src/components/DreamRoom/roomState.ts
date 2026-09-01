@@ -341,6 +341,8 @@ export function formatRelationshipStage(relationship?: unknown): string {
   if (/acquaintance|familiar|friend|熟|朋友/.test(normalized)) return '熟悉';
   if (/close|trust|依赖|亲近|信任/.test(normalized)) return '亲近期';
   if (/bond|companion|陪伴|羁绊/.test(normalized)) return '陪伴期';
+  // Unknown backend stages used to leak raw English strings into the zh UI.
+  if (/^[a-z0-9_.\- ]+$/i.test(normalized)) return '关系仍在初醒';
   return raw;
 }
 

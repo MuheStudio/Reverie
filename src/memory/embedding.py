@@ -15,8 +15,13 @@ import numpy as np
 
 logger = logging.getLogger("reverie.memory.embedding")
 
-DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
+# Keep this aligned with settings.MemorySettings.embedding_model and the
+# packaged seed config: the product ships Chinese conversations, so the zh
+# model is the default, not the English one.
+DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_DIMENSIONS = 384
+_ZH_BGE_QUERY_INSTRUCTION = "为这个句子生成表示以用于检索相关文章："
+_EN_BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
 _embedding_models: dict[str, object] = {}
 _embedding_load_failures: set[str] = set()
 _embedding_lock = threading.RLock()
@@ -107,6 +112,16 @@ def embed_texts(texts: list[str], model_name: str = DEFAULT_MODEL) -> np.ndarray
     return np.asarray(embeddings, dtype=np.float32)
 
 
+def _bge_query_instruction(model_name: str) -> str | None:
+    """BGE query instruction for the model family, or None when unprefixed."""
+    name = (model_name or "").lower()
+    if "bge" not in name:
+        return None
+    if "zh" in name:
+        return _ZH_BGE_QUERY_INSTRUCTION
+    return _EN_BGE_QUERY_INSTRUCTION
+
+
 def embed_query(query: str, model_name: str = DEFAULT_MODEL) -> np.ndarray:
     """Embed a search query with the appropriate BGE prefix."""
     model = get_embedding_model(model_name)
@@ -114,9 +129,10 @@ def embed_query(query: str, model_name: str = DEFAULT_MODEL) -> np.ndarray:
         raise EmbeddingUnavailable(
             f"semantic embedding model is unavailable: {model_name}"
         )
-    prepared = query
-    if "bge" in model_name.lower() and not query.startswith("Represent this sentence"):
-        prepared = f"Represent this sentence for searching relevant passages: {query}"
+    instruction = _bge_query_instruction(model_name)
+    prepared = query if instruction is None or query.startswith(instruction) else (
+        f"{instruction}{query}"
+    )
     embedding = model.encode(
         [prepared],
         convert_to_numpy=True,

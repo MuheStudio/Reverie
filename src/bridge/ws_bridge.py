@@ -29,8 +29,10 @@ from websockets.server import WebSocketServerProtocol
 from ..kernel.contracts import (
     CommandEnvelopeV4,
     LEGACY_MESSAGE_TYPES,
+    MUTATING_COMMAND_NAMES,
     PersonaScopeV4,
 )
+from ..kernel.storage import IdempotencyConflict
 
 logger = logging.getLogger("reverie.bridge.ws")
 
@@ -116,6 +118,7 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MEMORY_EDIT: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_DELETE: MsgType.MEMORY_RESULT,
     MsgType.CHAT_HISTORY: MsgType.CHAT_HISTORY_RESULT,
+    MsgType.CHAT_MEDIA: MsgType.CHAT_MEDIA_RESULT,
     MsgType.MEMORY_SETTINGS_GET: MsgType.MEMORY_SETTINGS_RESULT,
     MsgType.MEMORY_STORE: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_CANDIDATE_LIST: MsgType.MEMORY_CANDIDATE_RESULT,
@@ -133,8 +136,10 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MODULE_CONTROL: MsgType.MODULE_RESULT,
     MsgType.GAME_STATE_GET: MsgType.GAME_STATE_RESULT,
     MsgType.GAME_STATE_PUT: MsgType.GAME_STATE_RESULT,
+    MsgType.GAME_MOVE: MsgType.GAME_MOVE_RESULT,
     MsgType.RELATIONSHIP_GET: MsgType.RELATIONSHIP_DATA,
     MsgType.DIARY_REQUEST: MsgType.DIARY_RESULT,
+    MsgType.DIARY_WRITE: MsgType.DIARY_RESULT,
     MsgType.TIMELINE_REQUEST: MsgType.TIMELINE_RESULT,
     MsgType.AMBIENT_GET: MsgType.AMBIENT_RESULT,
     MsgType.API_BUDGET_GET: MsgType.API_BUDGET_RESULT,
@@ -152,6 +157,7 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.STICKER_LIST: MsgType.STICKER_DATA,
     MsgType.STICKER_COLLECT: MsgType.STICKER_DATA,
     MsgType.STICKER_REACT: MsgType.STICKER_DATA,
+    MsgType.STICKER_IMPORT: MsgType.STICKER_DATA,
     MsgType.ANTI_AI_STATUS: MsgType.ANTI_AI_STATUS_RESULT,
     MsgType.IMMERSION_NEARBY: MsgType.IMMERSION_RESULT,
     MsgType.IMMERSION_CLOSEUP: MsgType.IMMERSION_RESULT,
@@ -402,12 +408,13 @@ async def _proactive_broadcast_loop() -> None:
         try:
             await asyncio.sleep(5)
             proactive = bridge_state.proactive
-            if not proactive or not hasattr(proactive, "drain_pending"):
-                continue
             electron_host = os.environ.get("REVERIE_BRIDGE_MODE") == "1"
-            if not _connections and not electron_host:
-                continue
-            for result in proactive.drain_pending():
+            pending_results = (
+                proactive.drain_pending()
+                if proactive and hasattr(proactive, "drain_pending")
+                else []
+            )
+            for result in pending_results:
                 async with _persona_effect_lock:
                     is_current = getattr(proactive, "is_result_current", None)
                     if not callable(is_current) or not is_current(result):
@@ -416,6 +423,21 @@ async def _proactive_broadcast_loop() -> None:
                     messages = list(getattr(result, "messages", []) or [])
                     if not messages:
                         continue
+                    proactive_id = str(getattr(result, "proactive_id", "") or "")
+                    created_at_utc = str(getattr(result, "created_at_utc", "") or "")
+                    conversation_id = str(
+                        getattr(result, "conversation_id", "dream-room") or "dream-room"
+                    )
+                    if not proactive_id or not created_at_utc or bridge_state.kernel_store is None:
+                        logger.error("Discarded proactive result without durable identity or kernel store")
+                        continue
+                    from src.kernel.contracts import PersonaScopeV4
+
+                    persona_scope = PersonaScopeV4(
+                        persona_id=result.persona_token.persona_id,
+                        epoch=result.persona_token.epoch,
+                        fingerprint=result.persona_token.fingerprint,
+                    )
                     notifications_enabled = bool(
                         getattr(
                             getattr(bridge_state.settings, "features", None),
@@ -423,39 +445,104 @@ async def _proactive_broadcast_loop() -> None:
                             True,
                         )
                     )
-                    if electron_host and notifications_enabled:
-                        try:
-                            from src.notifications import NotificationOutbox
-
-                            NotificationOutbox().enqueue(
-                                messages[0],
-                                title=str(getattr(bridge_state.persona, "name", "Reverie")),
-                                category=str(getattr(result, "trigger", "care")),
-                            )
-                        except Exception:
-                            logger.exception("Failed to enqueue native proactive notification")
                     payload = {
                         "messages": messages,
                         "text": "\n".join(messages),
                         "trigger": getattr(result, "trigger", ""),
                         "emotion_changes": getattr(result, "emotion_changes", {}),
                         "metadata": getattr(result, "metadata", {}),
+                        "proactive_id": proactive_id,
+                        "created_at_utc": created_at_utc,
+                        "conversation_id": conversation_id,
                         "persona_id": result.persona_token.persona_id,
                         "persona_epoch": result.persona_token.epoch,
                         "persona_fingerprint": result.persona_token.fingerprint,
                         "notify": notifications_enabled and not electron_host,
+                        "native_notification": notifications_enabled and electron_host,
+                        "notification_title": str(
+                            getattr(bridge_state.persona, "name", "Reverie")
+                        ),
                     }
-                    _apply_proactive_result_state(payload)
-                    if _connections:
+                    inserted = bridge_state.kernel_store.append_proactive_messages(
+                        proactive_id=proactive_id,
+                        conversation_id=conversation_id,
+                        persona=persona_scope,
+                        messages=messages,
+                        created_at_utc=created_at_utc,
+                        publication_payload=payload,
+                    )
+                    if not inserted:
+                        logger.info("Skipped replayed proactive result %s", proactive_id)
+            if bridge_state.kernel_store is None:
+                continue
+            active = bridge_state.kernel_store.active_persona()
+            if active is None:
+                continue
+            publications = bridge_state.kernel_store.pending_proactive_publications(
+                active.persona_id
+            )
+            for publication in publications:
+                proactive_id = publication["proactive_id"]
+                payload = publication["payload"]
+                publication_scope = (
+                    str(payload.get("persona_id", "")),
+                    int(payload.get("persona_epoch", 0) or 0),
+                    str(payload.get("persona_fingerprint", "")),
+                )
+                active_scope = (active.persona_id, active.epoch, active.fingerprint)
+                if publication_scope != active_scope:
+                    logger.info("Discarded stale proactive publication %s", proactive_id)
+                    bridge_state.kernel_store.claim_proactive_effects(proactive_id)
+                    bridge_state.kernel_store.mark_proactive_published(
+                        proactive_id, "notification"
+                    )
+                    bridge_state.kernel_store.mark_proactive_published(
+                        proactive_id, "broadcast"
+                    )
+                    continue
+                if bridge_state.kernel_store.claim_proactive_effects(proactive_id):
+                    try:
+                        _apply_proactive_result_state(payload)
+                    except Exception:
+                        # Claim-before-apply prevents duplicate non-idempotent
+                        # effects. This boundary is intentionally at-most-once.
+                        logger.exception("Failed to apply proactive state effects")
+                if not publication["notification_published"]:
+                    if payload.get("native_notification"):
                         try:
-                            await asyncio.wait_for(
-                                broadcast(MsgType.PROACTIVE_MESSAGE, payload),
-                                timeout=2.0,
+                            from src.notifications import NotificationOutbox
+
+                            NotificationOutbox().enqueue(
+                                str(payload.get("messages", [""])[0]),
+                                event_id=proactive_id,
+                                title=str(payload.get("notification_title", "Reverie")),
+                                category=str(payload.get("trigger", "care")),
+                                created_at=str(payload.get("created_at_utc", "")),
                             )
-                        except asyncio.TimeoutError:
-                            # A wedged renderer must not hold the persona
-                            # linearization gate and block an identity switch.
-                            logger.warning("Timed out broadcasting proactive result")
+                        except Exception:
+                            logger.exception("Failed to enqueue native proactive notification")
+                        else:
+                            bridge_state.kernel_store.mark_proactive_published(
+                                proactive_id, "notification"
+                            )
+                    else:
+                        bridge_state.kernel_store.mark_proactive_published(
+                            proactive_id, "notification"
+                        )
+                if _connections and not publication["broadcast_published"]:
+                    try:
+                        await asyncio.wait_for(
+                            broadcast(MsgType.PROACTIVE_MESSAGE, payload),
+                            timeout=2.0,
+                        )
+                    except asyncio.TimeoutError:
+                        # Broadcast is at-least-once: a crash after send and
+                        # before this acknowledgement may replay the stable id.
+                        logger.warning("Timed out broadcasting proactive result")
+                    else:
+                        bridge_state.kernel_store.mark_proactive_published(
+                            proactive_id, "broadcast"
+                        )
         except asyncio.CancelledError:
             return
         except Exception:
@@ -703,6 +790,7 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
     committed_request_ids = {
         str(item.get("request_id") or "") for item in page["items"]
     }
+    media_by_request = store.media_for_requests(committed_request_ids) or {}
     items = [
         {
             "id": item["message_id"],
@@ -713,9 +801,17 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
             "persona_id": persona_scope["persona_id"],
             "created_at_utc": item["created_at_utc"],
             "timestamp_status": "known",
-            "source": item["role"],
+            "source": (
+                "proactive" if item.get("source") == "proactive" else item["role"]
+            ),
+            "proactive_id": item.get("proactive_id"),
             "delivery_state": item["delivery_state"],
             "bubble_index": item["bubble_index"],
+            **(
+                {"media": media_by_request.get(str(item["request_id"])) or []}
+                if item["role"] == "user"
+                else {}
+            ),
         }
         for item in page["items"]
     ]
@@ -745,6 +841,34 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
             )
     items.sort(key=lambda item: (item["created_at_utc"], item["id"]))
     return {**page, "items": items}
+
+
+def _resolve_chat_attachment(request_payload: dict, sticker: Any) -> dict | None:
+    """Turn renderer attachment fields into one durable stored-media record.
+
+    Priority: explicit file path (Electron dialog) → pasted data URL →
+    sticker image. The big base64 payloads are consumed here so they never
+    reach the pending ledger or the kernel.
+    """
+    from ..chat.media import resolve_sticker_asset, store_from_data_url, store_from_file
+
+    image_path = str(request_payload.get("image_path") or "")
+    image_data_url = str(request_payload.get("image_data_url") or "")
+    request_payload.pop("image_data_url", None)
+    sticker_url = ""
+    if isinstance(sticker, dict):
+        sticker_url = str(sticker.get("image_data_url") or "")
+        sticker["image_data_url"] = ""
+    if image_path:
+        return store_from_file(image_path)
+    if image_data_url:
+        return store_from_data_url(image_data_url)
+    if sticker_url:
+        if sticker_url.startswith("reverie-sticker://"):
+            return resolve_sticker_asset(sticker_url)
+        if sticker_url.startswith("data:image/"):
+            return store_from_data_url(sticker_url)
+    return None
 
 
 @register_handler(MsgType.CHAT_SEND)
@@ -778,6 +902,32 @@ async def handle_chat_send(payload: dict, ws: WebSocketServerProtocol) -> dict |
     request_payload["persona_fingerprint"] = persona_scope["persona_fingerprint"]
     request_payload.setdefault("model_epoch", int(getattr(bridge_state, "model_epoch", 0) or 0))
     request_payload.setdefault("model_fingerprint", _model_fingerprint())
+    # Resolve the attachment to durable stored media BEFORE the request is
+    # accepted: the coordinator only ever sees a small file path, and a crash
+    # replay can still regenerate from the same bytes on disk.
+    image_media = None
+    sticker = request_payload.pop("sticker", None)
+    try:
+        image_media = _resolve_chat_attachment(request_payload, sticker)
+    except Exception as exc:
+        logger.warning("Chat attachment rejected: %s", exc)
+        return {"error": f"图片处理失败：{exc}", "scope": "chat"}
+    if image_media:
+        # The durable media path is the only image input that may enter the
+        # pending ledger and ChatSession. Data URLs are consumed above, so
+        # failing to write this path makes image history look correct while the
+        # provider silently receives a text-only turn.
+        request_payload["image_path"] = str(image_media.get("path") or "")
+        request_payload["media_id"] = str(image_media.get("media_id") or "")
+        request_payload["media_mime"] = str(image_media.get("mime") or "image/jpeg")
+        request_payload["media_bytes"] = int(image_media.get("bytes") or 0)
+    if sticker and bridge_state.stickers is not None:
+        # Sending a sticker is preference evidence — record it best-effort.
+        try:
+            if isinstance(sticker, dict):
+                bridge_state.stickers.record_user_sent(sticker)
+        except Exception:
+            logger.exception("Sticker usage recording failed; continuing chat")
     try:
         await _get_chat_coordinator().accept(request_payload, client_id=context.client_id)
         text = str(request_payload.get("text") or "")
@@ -808,6 +958,22 @@ async def handle_chat_cancel(payload: dict, ws: WebSocketServerProtocol) -> dict
     request_id = str(payload.get("request_id") or "")
     await _get_chat_coordinator().cancel(request_id, client_id=context.client_id)
     return None
+
+
+@register_handler(MsgType.CHAT_MEDIA)
+async def handle_chat_media(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    """Read one stored chat attachment back as a bounded data URL."""
+    context = _client_contexts.get(ws)
+    if not context or not context.authenticated:
+        return {"error": "bridge authentication required"}
+    from ..chat.media import ChatMediaError, load_data_url
+
+    media_id = str(payload.get("media_id") or "")
+    try:
+        data_url = load_data_url(media_id)
+    except ChatMediaError as exc:
+        return {"error": str(exc), "media_id": media_id}
+    return {"media_id": media_id, "mime": "image/jpeg", "data_url": data_url}
 
 
 @register_handler(MsgType.CHAT_STOP)
@@ -1066,9 +1232,45 @@ async def handle_memory_store(payload: dict, _ws: WebSocketServerProtocol) -> di
     layer = str(payload.get("layer", "long_term")).strip()
     if layer not in {"long_term", "short_term", "permanent"}:
         return {"ok": False, "error": f"Unsupported memory layer: {layer}"}
-    if not text:
+    preference = payload.get("preference")
+    if not text and preference is None and payload.get("kind") != "coarse_system_location":
         return {"ok": False, "error": "Memory text is empty"}
     try:
+        if payload.get("kind") == "coarse_system_location":
+            if set(payload) != {"kind", "neighborhood_scale", "user_confirmed"}:
+                return {"ok": False, "error": "System location memory payload contains unsupported data"}
+            if payload.get("user_confirmed") is not True:
+                return {"ok": False, "error": "Explicit system location memory confirmation is required"}
+            if not hasattr(bridge_state.memory, "confirm_coarse_system_location"):
+                return {"ok": False, "error": "System location summary memory is unavailable"}
+            result = bridge_state.memory.confirm_coarse_system_location(
+                str(payload.get("neighborhood_scale") or ""),
+            )
+            memory = result.get("memory") or {}
+            return {
+                "ok": True,
+                "id": memory.get("id", ""),
+                "layer": "long_term",
+                "source": "user_confirmed_system_location_summary",
+                "confirmed_at": memory.get("confirmed_at"),
+            }
+        if preference is not None:
+            if payload.get("user_confirmed") is not True:
+                return {"ok": False, "error": "Explicit preference confirmation is required"}
+            if not hasattr(bridge_state.memory, "confirm_place_preference"):
+                return {"ok": False, "error": "Confirmed preference memory is unavailable"}
+            result = bridge_state.memory.confirm_place_preference(
+                display_label=str(payload.get("display_label") or "") if preference == "place" else "",
+                broad_category=str(payload.get("broad_category") or "") if preference == "category" else "",
+            )
+            memory = result.get("memory") or {}
+            return {
+                "ok": True,
+                "id": memory.get("id", ""),
+                "layer": "long_term",
+                "source": "user_confirmed",
+                "confirmed_at": memory.get("confirmed_at"),
+            }
         if hasattr(bridge_state.memory, "store_manual_memory"):
             memory_id = bridge_state.memory.store_manual_memory(text, layer)
         else:
@@ -1505,6 +1707,60 @@ async def handle_diary_request(payload: dict, ws: WebSocketServerProtocol) -> di
     except Exception as exc:
         logger.exception("日记请求失败")
         return {"entries": [], "error": str(exc)}
+
+
+@register_handler(MsgType.GAME_MOVE)
+async def handle_game_move(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    """Ask the companion persona for the next move in a local board game.
+
+    Stateless by design: no game state is persisted or mutated here, and the
+    renderer's rules engine stays the sole legality authority. A failure
+    returns a structured error the renderer maps to its heuristic fallback.
+    """
+    context = _client_contexts.get(ws)
+    if not context or not context.authenticated:
+        return {"error": "bridge authentication required"}
+    adapter = bridge_state.adapter
+    if adapter is None:
+        return {"ok": False, "error": "AI 对手不可用（本地服务未就绪）"}
+    game = str(payload.get("game") or "")
+    state = payload.get("state")
+    if not isinstance(state, dict) or not state:
+        return {"ok": False, "error": "棋盘状态缺失"}
+    persona_name = str(getattr(bridge_state.persona, "name", "") or "星野幻月")
+    retry_note = str(payload.get("retry_note") or "")
+    try:
+        from ..games.companion import GameCompanionError, choose_move
+
+        result = await asyncio.wait_for(
+            choose_move(adapter, persona_name, game, state, retry_note=retry_note),
+            timeout=25.0,
+        )
+    except GameCompanionError as exc:
+        return {"ok": False, "error": str(exc)}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "她想了太久，走子超时"}
+    except Exception as exc:
+        logger.warning("Game companion move failed: %s", exc)
+        return {"ok": False, "error": "AI 对手暂时不可用"}
+    return {"ok": True, **result}
+
+
+@register_handler(MsgType.DIARY_WRITE)
+async def handle_diary_write(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """User-requested diary generation ("去写日记"). Same consent gates as the
+    daily trigger apply inside DiaryManager."""
+    diary = bridge_state.diary
+    if diary is None:
+        return {"ok": False, "error": "日记系统未初始化"}
+    try:
+        entry = await diary.generate_daily_entry(trigger="user_request")
+    except Exception as exc:
+        logger.exception("用户催写日记失败")
+        return {"ok": False, "error": str(exc)}
+    if entry is None:
+        return {"ok": False, "error": "她暂时还不能写日记（检查日记开关与 AI 授权）"}
+    return {"ok": True, "entry": entry.to_dict()}
 
 
 @register_handler(MsgType.TIMELINE_REQUEST)
@@ -1999,6 +2255,33 @@ async def handle_sticker_react(payload: dict, _ws: WebSocketServerProtocol) -> d
     }
 
 
+@register_handler(MsgType.STICKER_IMPORT)
+async def handle_sticker_import(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """Import a local image (path chosen via the Electron file dialog).
+
+    The path never reaches the bridge blindly trusted: ``collect_from_file``
+    re-validates size, magic bytes, and pixel limits before storing the
+    content-addressed asset.
+    """
+    if not bridge_state.stickers:
+        return {"ok": False, "items": [], "error": "表情包系统尚未初始化"}
+    file_path = str(payload.get("file_path") or "")
+    style_tags = payload.get("style_tags") if isinstance(payload.get("style_tags"), list) else []
+    try:
+        item = bridge_state.stickers.collect_from_file(
+            file_path,
+            style_tags=[str(tag) for tag in style_tags][:8],
+        )
+    except Exception as exc:
+        logger.warning("Sticker import failed for %s: %s", file_path, exc)
+        return {"ok": False, "items": [], "error": f"表情导入失败：{exc}"}
+    return {
+        "ok": bool(item),
+        "item": item.to_dict() if item else None,
+        "items": [entry.to_dict() for entry in bridge_state.stickers.list_items(100)],
+    }
+
+
 @register_handler(MsgType.ANTI_AI_STATUS)
 async def handle_anti_ai_status(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """Return the active anti-AI flavor guard status."""
@@ -2017,6 +2300,55 @@ async def handle_immersion_nearby(payload: dict, _ws: WebSocketServerProtocol) -
         place_types=payload.get("place_types"),
         radius_m=payload.get("radius_m", 1200),
     )
+
+
+async def _run_amap_nearby(value: Any) -> dict[str, Any]:
+    """Execute one host-authorized Amap request without retaining its inputs."""
+    from src.immersion import ImmersionManager
+    from src.immersion.amap import AmapPOIService, stable_amap_error
+    from src.local_mode import get_local_mode_gate
+
+    failure = {"success": False, "code": "unavailable", "items": []}
+    try:
+        # This check is intentionally before service/client creation and DNS.
+        get_local_mode_gate().require_remote("Amap nearby request")
+        if not isinstance(value, dict) or set(value) != {
+            "api_key", "latitude", "longitude", "radius_m", "place_types"
+        }:
+            return failure
+        key = value.get("api_key")
+        place_types = value.get("place_types")
+        if not isinstance(key, str) or not isinstance(place_types, list):
+            return failure
+        service = AmapPOIService(key)
+        manager = ImmersionManager(
+            type("AmapFeatures", (), {"immersion_location_enabled": True})(),
+            poi_service_factory=lambda: service,
+        )
+        result = await manager.nearby_life_context_async(
+            latitude=value.get("latitude"),
+            longitude=value.get("longitude"),
+            radius_m=value.get("radius_m"),
+            place_types=place_types,
+        )
+        items = result.get("real_places") if isinstance(result, dict) else None
+        if result.get("poi_status") != "ok" or not isinstance(items, list):
+            code = str(result.get("poi_status") or "unavailable")
+            if code not in {"timeout", "quota", "unavailable", "local-mode"}:
+                code = "unavailable"
+            return {"success": False, "code": code, "items": []}
+        allowed = {
+            "name", "broad_category", "distance_band", "district",
+            "short_address", "provider", "observed_at",
+        }
+        public_items = [
+            {field: str(item.get(field) or "") for field in allowed}
+            for item in items[:8]
+            if isinstance(item, dict) and set(item) <= allowed
+        ]
+        return {"success": True, "code": "ok", "items": public_items}
+    except Exception as error:
+        return {"success": False, "code": stable_amap_error(error), "items": []}
 
 
 @register_handler(MsgType.IMMERSION_CLOSEUP)
@@ -2635,6 +2967,20 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 features.proactive_daily_limit = clamp_int(payload["proactive_daily_limit"], 1, 12)
             if "proactive_min_interval_minutes" in payload:
                 features.proactive_min_interval_minutes = clamp_int(payload["proactive_min_interval_minutes"], 15, 1440)
+            wake_min = clamp_int(
+                payload.get("proactive_wake_min_minutes", features.proactive_wake_min_minutes), 2, 60
+            )
+            wake_max = clamp_int(
+                payload.get("proactive_wake_max_minutes", features.proactive_wake_max_minutes), 2, 60
+            )
+            if wake_min > wake_max:
+                raise ValueError("proactive wake minimum cannot exceed maximum")
+            features = features.model_copy(
+                update={
+                    "proactive_wake_min_minutes": wake_min,
+                    "proactive_wake_max_minutes": wake_max,
+                }
+            )
             if "ambient_book_pages_per_hour" in payload:
                 features.ambient_book_pages_per_hour = clamp_float(payload["ambient_book_pages_per_hour"], 0.1, 12.0)
             if "ambient_trace_interval_minutes" in payload:
@@ -2750,6 +3096,9 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             if bridge_state.proactive:
                 bridge_state.proactive.daily_limit = features.proactive_daily_limit
                 bridge_state.proactive.min_interval_minutes = features.proactive_min_interval_minutes
+                if hasattr(bridge_state.proactive, "wake_min_minutes"):
+                    bridge_state.proactive.wake_min_minutes = features.proactive_wake_min_minutes
+                    bridge_state.proactive.wake_max_minutes = features.proactive_wake_max_minutes
                 bridge_state.proactive.event_stories_enabled = features.proactive_event_stories_enabled
                 bridge_state.proactive.local_reflex_probability = features.local_care_reflex_probability
                 if hasattr(bridge_state.proactive, "web_surfing"):
@@ -2773,36 +3122,25 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             if not bridge_state.settings:
                 return {"ok": False, "error": "Settings are not initialized"}
 
-            def as_bool(value: Any) -> bool:
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, str):
-                    return value.strip().lower() in {"1", "true", "yes", "on"}
-                return bool(value)
-
-            def clamp_int(value: Any, minimum: int, maximum: int) -> int:
-                return min(maximum, max(minimum, int(float(value))))
-
-            features = bridge_state.settings.features
+            staged = bridge_state.settings.model_copy(deep=True)
+            features = staged.features
             for key in {
                 "immersion_location_enabled",
                 "immersion_closeups_enabled",
                 "immersion_smart_home_enabled",
             }:
                 if key in payload:
-                    setattr(features, key, as_bool(payload[key]))
+                    setattr(features, key, payload[key])
             if "immersion_location_radius_m" in payload:
-                features.immersion_location_radius_m = clamp_int(
-                    payload["immersion_location_radius_m"],
-                    300,
-                    5000,
-                )
+                features.immersion_location_radius_m = payload["immersion_location_radius_m"]
+
+            save_settings(staged)
+            bridge_state.settings = staged
             if bridge_state.immersion:
                 bridge_state.immersion.feature_settings = features
-            save_settings(bridge_state.settings)
             return {
                 "ok": True,
-                "features": bridge_state.settings.features.model_dump(),
+                "features": features.model_dump(),
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -2861,9 +3199,10 @@ def _allowed_bridge_origins() -> list[str | None]:
         for value in os.getenv("REVERIE_BRIDGE_ALLOWED_ORIGINS", "").split(",")
         if value.strip()
     ]
+    # "file://" and the opaque "null" origin are deliberately absent: the
+    # packaged renderer is served from reverie-app://app and development from
+    # the Vite dev server, so nothing legitimate presents those origins.
     defaults = [
-        "file://",
-        "null",
         "reverie-desktop",
         "reverie-app://app",
         "http://localhost:5173",
@@ -3241,6 +3580,24 @@ async def _authenticate_bridge_client(ws: WebSocketServerProtocol) -> BridgeClie
     )
 
 
+def _settle_mutating_command_error(msg_type: str, request_id: str, exc: BaseException) -> None:
+    """A mutating handler that raised must not leave its ledger row in-flight:
+    the next replay of the same request_id would re-execute the handler and
+    repeat its side effects. Settle the row to a terminal state instead."""
+    store = bridge_state.kernel_store
+    if store is None or not request_id or msg_type not in MUTATING_COMMAND_NAMES:
+        return
+    try:
+        if store.command(request_id) is None:
+            return
+        store.fail_command(
+            request_id,
+            error_code=exc.__class__.__name__[:120] or "HANDLER_ERROR",
+        )
+    except Exception:
+        logger.exception("Could not settle mutating command %s after handler failure", request_id)
+
+
 async def dispatch_authenticated_message(
     message: Any,
     endpoint: WebSocketServerProtocol,
@@ -3253,6 +3610,7 @@ async def dispatch_authenticated_message(
     business dispatcher. Authentication and transport framing stay outside it.
     """
     request_id = ""
+    msg_type = ""
     try:
         if not isinstance(message, dict):
             raise ValueError("message must be an object")
@@ -3324,6 +3682,7 @@ async def dispatch_authenticated_message(
             )
         return result
     except ValueError as exc:
+        _settle_mutating_command_error(msg_type, request_id, exc)
         await send_to_frontend(
             endpoint,
             MsgType.ERROR,
@@ -3331,8 +3690,9 @@ async def dispatch_authenticated_message(
             request_id=request_id,
         )
         return None
-    except Exception:
+    except Exception as exc:
         logger.exception("Authenticated bridge message failed")
+        _settle_mutating_command_error(msg_type, request_id, exc)
         await send_to_frontend(
             endpoint,
             MsgType.ERROR,
@@ -3440,30 +3800,98 @@ async def websocket_handler(ws: WebSocketServerProtocol):
                 )
 
                 handler = _handlers.get(msg_type)
-                if handler:
-                    if degraded_runtime_blocks(msg_type):
-                        result = {
-                            "ok": False,
-                            "error": "Capability modules are unavailable; the persona kernel remains active",
-                            "code": "runtime_capability_unavailable",
-                            "unavailable": list(bridge_state.runtime_unavailable),
-                        }
-                    elif persona_restart_blocks(msg_type):
-                        result = {
-                            "ok": False,
-                            "error": "Persona changed; restart is required before this operation",
-                            "code": "persona_restart_required",
-                            "restart_required": True,
-                        }
-                    else:
-                        result = await handler(payload, ws)
-                    if result is not None:
+                store = bridge_state.kernel_store
+                is_mutating = bool(handler) and msg_type in MUTATING_COMMAND_NAMES and store is not None
+                if is_mutating:
+                    # Same idempotency contract as the production stdio path:
+                    # mutating commands begin on the ledger first, and a stale
+                    # in-flight or terminal row never re-runs the handler.
+                    try:
+                        existing = store.begin_command(envelope)
+                    except IdempotencyConflict:
+                        await send_to_frontend(
+                            ws,
+                            MsgType.ERROR,
+                            {
+                                "message": "Duplicate command identity was rejected",
+                                "code": "idempotency_conflict",
+                            },
+                            request_id=request_id,
+                        )
+                        continue
+                    if existing.state == "committed":
                         await send_to_frontend(
                             ws,
                             response_type_for_request(msg_type),
-                            result,
+                            existing.result,
                             request_id=request_id,
                         )
+                        continue
+                    if existing.state in {"failed", "outcome_unknown"}:
+                        await send_to_frontend(
+                            ws,
+                            MsgType.ERROR,
+                            {
+                                "message": "The previous command did not complete safely",
+                                "code": "command_terminal",
+                            },
+                            request_id=request_id,
+                        )
+                        continue
+                    if existing.state in {"generating", "dispatched"}:
+                        try:
+                            store.fail_command(
+                                envelope.request_id,
+                                error_code="PROVIDER_OUTCOME_UNKNOWN",
+                            )
+                        except Exception:
+                            logger.exception("Could not settle stale command %s", envelope.request_id)
+                        await send_to_frontend(
+                            ws,
+                            MsgType.ERROR,
+                            {
+                                "message": "The previous command did not complete safely",
+                                "code": "command_terminal",
+                            },
+                            request_id=request_id,
+                        )
+                        continue
+                if handler:
+                    # Central dispatcher applies degraded-runtime gating,
+                    # persona-restart gating, the persona effect lock, and
+                    # error normalization for every frame.
+                    result = await dispatch_authenticated_message(
+                        {"type": msg_type, "payload": payload, "request_id": request_id},
+                        ws,
+                        emit_result=not is_mutating,
+                    )
+                    if is_mutating and result is not None:
+                        try:
+                            committed = store.commit_command_result(envelope, result)
+                        except Exception:
+                            try:
+                                store.fail_command(
+                                    envelope.request_id,
+                                    error_code="TRANSPORT_COMMIT_FAILED",
+                                )
+                            except Exception:
+                                pass
+                            await send_to_frontend(
+                                ws,
+                                MsgType.ERROR,
+                                {
+                                    "message": "The command result could not be committed safely",
+                                    "code": "storage_unavailable",
+                                },
+                                request_id=request_id,
+                            )
+                        else:
+                            await send_to_frontend(
+                                ws,
+                                response_type_for_request(msg_type),
+                                committed.result,
+                                request_id=request_id,
+                            )
                 else:
                     await send_to_frontend(
                         ws,
