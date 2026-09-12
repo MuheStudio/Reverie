@@ -97,7 +97,13 @@ N.E.K.O（Apache-2.0）在 NOTICE 中按协议保留了原 NOTICE 全文。若�
 
 双击安装 [`Reverie0.5.5-Setup-0.5.5-x64.exe`](https://github.com/Muhe-Studio/Reverie/releases)。默认装到 `C:\Program Files\Reverie`。第一次打开走新手引导：填 API、导入你自己的 Live2D、可选导入角色卡/世界书。卸载或重装不应抹掉 `%APPDATA%` 里已有的记忆和日记。
 
-## 从源码运行（开发者）
+## 二次开发
+
+欢迎大家对本项目做贡献， Reverie 本身是纯 Vibe coding 出来的。
+
+若用 Vibe coding 方式为本项目做贡献，建议本地克隆仓库后安装并启用[hoshinohatsuka](https://github.com/hoshinohatsuka)开发的一个Skill，可让AI快速了解本项目并准备接手。即[项目接手.Skill](https://github.com/hoshinohatsuka/project-relay-Skill)。建议使用模式A。
+
+若准备以古法编程对本项目做贡献也热烈欢迎，请参照下述方法。
 
 需要 Python 3.12、Node.js 18+、pnpm、Git。不要把用户数据写到别人的 `测试\` 目录。
 
