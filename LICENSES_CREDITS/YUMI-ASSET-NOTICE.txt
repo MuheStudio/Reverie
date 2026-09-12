@@ -1,46 +1,23 @@
 Yumi avatar asset notice
 
-Asset included in the application:
-  - frontend/src/assets/dreamroom/yumi-default-transparent.png (static preview)
-  - The full Live2D model (皮套-yumi: yumi.moc3, yumi.model3.json,
-    yumi.cdi3.json, yumi.physics3.json, yumi.vtube.json, yumi.8192/ texture,
-    tear.motion3.json, wave.motion3.json, *.exp3.json expressions) is bundled
-    only in a Live2D-enabled release build and is installed as the bundled
-    default character (character:getBundled).
+Public installers do **not** include the yumi Live2D model, textures,
+motions, or expressions. Cubism Core may ship under
+LIVE2D_PUBLICATION_LICENSE.json; character models are user-imported
+during onboarding.
 
-Source:
-  Local folder "皮套-yumi" at the project root
-  (H:\My-soft\vibe-projects\Reverie\皮套-yumi), supplied by the project owner
-  on 2026-07-25.
+A local `皮套-yumi` / `Live-2D-yumi` folder may still exist in the
+developer workspace for fixtures. Setting REVERIE_YUMI_SOURCE in
+development can load it for the current user profile only. That path
+is never staged into a public NSIS payload.
 
-License nature:
-  Yumi is a FREE PUBLIC avatar skin. The project owner confirms it may be
-  used, modified, and redistributed with this application without charge.
-  The character rights are declared in
-  LICENSES_CREDITS/YUMI_CHARACTER_RIGHTS.json (grants: commercial-use,
-  modification, redistribution-with-application).
+Source (developer fixture only):
+  Local folder supplied by the project owner on 2026-07-25.
 
 Live2D license:
-  The bundled renderer is pixi-live2d-display (MIT, vendored; license mirror
-  in LICENSES_CREDITS/LICENSE-MIT-pixi-live2d-display.txt). The Live2D
-  Cubism Core runtime (Live2DCubismCore.js) is Live2D Inc. software, sourced
-  from the open-source Luna-ts project for development use. Public
-  redistribution of the Cubism Core is covered by the Live2D Cubism SDK free
-  license terms recorded in
-  LICENSES_CREDITS/LIVE2D_PUBLICATION_LICENSE.json. Until a valid license is
-  recorded, the release pipeline refuses to ship the Live2D runtime and the
-  application falls back to the static preview.
+  The bundled renderer is pixi-live2d-display (MIT, vendored; license
+  mirror in LICENSE-MIT-pixi-live2d-display.txt). Live2DCubismCore.js
+  is Live2D Inc. software. Public redistribution of Cubism Core is
+  covered by the Cubism SDK free license terms in
+  LIVE2D_PUBLICATION_LICENSE.json.
 
-Before public redistribution, the project owner should record the original
-model creator and source URL in this notice and confirm the Live2D publication
-license terms. This notice is not a substitute for a Live2D Cubism application
-publication license.
-
-In-app display name (alias):
-  The application displays the bundled character under the persona name
-  "Hoshino Yumetsuki" (星野幻月). This is a roleplay alias chosen for
-  immersion; the underlying Live2D model remains the free public skin
-  "yumi" described above, and no authorship, origin, or rights-holdership
-  is claimed by the alias. Attribution and licensing for the model itself
-  are governed by this notice and YUMI_CHARACTER_RIGHTS.json. The model
-  package metadata (yumi.model3.json and related files) is unchanged.
+Character cards change persona text only. They do not replace Live2D.

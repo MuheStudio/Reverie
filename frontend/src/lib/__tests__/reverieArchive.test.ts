@@ -20,6 +20,9 @@ import {
   parseStrictJsonText,
   parseWorldBookImport,
   parseWorldBookImportText,
+  restoreFactoryCharacterPreset,
+  isFactoryPersonaScope,
+  FACTORY_PERSONA_ID,
 } from '../reverieArchive';
 
 beforeEach(() => {
@@ -149,6 +152,33 @@ describe('reverieArchive', () => {
     expect(archive.worldBooks[0].entries.some((entry) => entry.id === 'entry-yumetsuki-profile')).toBe(true);
   });
 
+  it('recognizes factory persona by id, not by display name', () => {
+    expect(isFactoryPersonaScope({ persona_id: FACTORY_PERSONA_ID })).toBe(true);
+    expect(isFactoryPersonaScope({ persona_id: 'imported-card', persona_fingerprint: 'ab' })).toBe(false);
+  });
+
+  it('does not ghost-reinsert a deleted factory character', () => {
+    const archive = normalizeArchive({
+      characters: [
+        {
+          id: 'imported-card',
+          name: '导入角色',
+          description: '用户导入的角色',
+          personality: '',
+          speakingStyle: '',
+          tags: ['SillyTavern'],
+        },
+      ],
+      activeCharacterIds: ['imported-card'],
+      worldBooks: [],
+    });
+
+    expect(archive.characters.map((card) => card.id)).toEqual(['imported-card']);
+    const restored = restoreFactoryCharacterPreset(archive);
+    expect(restored.characters[0].id).toBe('hoshino-yumetsuki');
+    expect(restored.characters.map((card) => card.id)).toContain('imported-card');
+  });
+
   it('reads and clears the retired archive only for one-way migration', () => {
     const archive = createDefaultArchive();
     localStorage.setItem('reverie:archive:v1', JSON.stringify(archive));
@@ -243,10 +273,100 @@ describe('reverieArchive', () => {
 
     expect(worldBook?.name).toBe('Arknights');
     expect(worldBook?.entries[0].id).toBe('entry_1');
-    expect(worldBook?.entries[0].key).toContain('Planet');
-    expect(worldBook?.entries[0].key).toContain('Earth');
+    expect(worldBook?.entries[0].keywords).toContain('Planet');
+    expect(worldBook?.entries[0].keywords).toContain('Earth');
+    expect(worldBook?.entries[0].secondaryKeywords).toEqual([]);
     expect(worldBook?.entries[0].alwaysActive).toBe(true);
     expect(worldBook?.entries[0].enabled).toBe(true);
+  });
+
+  it('keeps SillyTavern secondary_keys separate instead of merging them into keywords', () => {
+    const worldBook = parseWorldBookImportText(JSON.stringify({
+      name: 'Terra',
+      entries: [
+        {
+          uid: 9,
+          key: ['切尔诺伯格'],
+          secondary_keys: ['乌萨斯', '整合运动'],
+          keysecondary: ['龙门'],
+          selective: true,
+          insertion_order: 50,
+          position: 'after_char',
+          priority: 5,
+          case_sensitive: true,
+          comment: '切城',
+          content: '切尔诺伯格是一座移动城市。',
+          constant: false,
+          enabled: true,
+        },
+      ],
+    }), 'Terra');
+
+    const entry = worldBook?.entries[0];
+    expect(entry).toBeDefined();
+    expect(entry?.keywords).toEqual(['切尔诺伯格']);
+    expect(entry?.secondaryKeywords).toEqual(['乌萨斯', '整合运动', '龙门']);
+    expect(entry?.keywords).not.toContain('乌萨斯');
+    expect(entry?.selectiveLogic).toBe('and_any');
+    expect(entry?.position).toBe('after_char');
+    expect(entry?.insertionOrder).toBe(50);
+    expect(entry?.priority).toBe(5);
+    expect(entry?.caseSensitive).toBe(true);
+  });
+
+  it('round-trips a character_book style world book produced by the backend importer', () => {
+    // 与 Python 端 _extract_character_book 产出的字段格式一致
+    const worldBook = parseWorldBookImportText(JSON.stringify({
+      id: 'world_wb_20260909',
+      name: '诗怀雅的世界书',
+      createdAt: '2026-09-09T00:00:00+00:00',
+      updatedAt: '2026-09-09T00:00:00+00:00',
+      entries: [
+        {
+          id: 'entry_101',
+          keywords: ['切尔诺伯格'],
+          secondaryKeywords: ['乌萨斯'],
+          selectiveLogic: 'and_any',
+          content: '一座移动城市。',
+          enabled: true,
+          alwaysActive: true,
+          position: 'after_char',
+          insertionOrder: 42,
+          priority: 7,
+          caseSensitive: true,
+          comment: '切城',
+        },
+        {
+          id: 'entry_102',
+          keywords: ['龙门', '近卫局'],
+          secondaryKeywords: [],
+          selectiveLogic: 'and_any',
+          content: '诗怀雅的辖区。',
+          enabled: true,
+          alwaysActive: false,
+          position: 'before_char',
+          insertionOrder: 100,
+          priority: 0,
+          caseSensitive: false,
+          comment: '',
+        },
+      ],
+    }), '诗怀雅的世界书');
+
+    expect(worldBook?.name).toBe('诗怀雅的世界书');
+    expect(worldBook?.entries).toHaveLength(2);
+    const first = worldBook?.entries[0];
+    expect(first?.keywords).toEqual(['切尔诺伯格']);
+    expect(first?.secondaryKeywords).toEqual(['乌萨斯']);
+    expect(first?.alwaysActive).toBe(true);
+    expect(first?.position).toBe('after_char');
+    expect(first?.insertionOrder).toBe(42);
+    expect(first?.priority).toBe(7);
+    expect(first?.caseSensitive).toBe(true);
+    expect(first?.selectiveLogic).toBe('and_any');
+    const second = worldBook?.entries[1];
+    expect(second?.keywords).toEqual(['龙门', '近卫局']);
+    expect(second?.position).toBe('before_char');
   });
 
   it('does not import embedded SillyTavern instructions in the renderer', () => {

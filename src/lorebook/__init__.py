@@ -25,6 +25,53 @@ from typing import Optional
 
 logger = logging.getLogger("reverie.lorebook")
 
+
+def _is_nested_quantifier_pattern(pattern: str) -> bool:
+    """Detect classic ReDoS structures such as ``(a+)+`` / ``(a*)*``.
+
+    嵌套量词会让回溯次数随输入长度指数增长。命中即拒绝该正则并按字面
+    关键词降级匹配。注意：CPython 3.11 的 ``re`` 不提供匹配超时（timeout
+    参数到 3.13 才加入），且匹配期间持有 GIL，后台线程兜底同样会拖死
+    进程，因此必须在源头拦截灾难性结构而不是试图中断匹配。
+    """
+    stack: list[bool] = []
+    index = 0
+    length = len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            index += 1
+            while index < length and pattern[index] != "]":
+                if pattern[index] == "\\":
+                    index += 1
+                index += 1
+            index += 1
+            continue
+        if char == "(":
+            stack.append(False)  # 组内是否已出现量词
+        elif char == ")":
+            if not stack:
+                index += 1
+                continue
+            inner_has_quantifier = stack.pop()
+            quantifier_after = False
+            probe = index + 1
+            while probe < length and pattern[probe] in "*+?":
+                quantifier_after = True
+                probe += 1
+            if inner_has_quantifier and quantifier_after:
+                return True
+            if stack and quantifier_after:
+                stack[-1] = True
+        elif char in "*+?":
+            if stack:
+                stack[-1] = True
+        index += 1
+    return False
+
 # ── 数据结构 ────────────────────────────────────────────
 
 @dataclass
@@ -37,7 +84,16 @@ class LoreEntry:
     always_active: bool = False       # 始终激活（忽略关键词匹配）
     second_key: str = ""              # 辅助关键词（AND 条件，需同时匹配）
     selective: bool = False           # 选择性激活（需用户手动触发）
+    # ST V2 世界书导入的结构化辅助关键词：selective=False 时也参与
+    # selective_logic 匹配（legacy second_key 仍需 selective=True 才生效）。
+    secondary_keywords: list[str] = field(default_factory=list)
+    selective_logic: str = "and_any"  # and_any | and_all | not_any | not_all
     mode: str = "normal"              # normal | folder
+    case_sensitive: bool = False      # 关键词大小写敏感（默认不敏感）
+    priority: int = 0                 # token 预算耗尽时的淘汰优先级（低值先淘汰）
+    use_regex: bool = False           # 关键词按正则表达式匹配
+    depth: int = 0                    # 注入深度（0 = 紧跟系统提示）
+    role: str = "system"              # 注入角色：system | user | assistant
 
     def get_keys(self) -> list[str]:
         """解析触发关键词列表"""
@@ -45,20 +101,75 @@ class LoreEntry:
             return []
         return [k.strip() for k in self.key.split(",") if k.strip()]
 
+    def get_second_keys(self) -> list[str]:
+        """解析辅助关键词列表（结构化 secondary_keywords 优先，legacy second_key 兜底）"""
+        if self.secondary_keywords:
+            return [k.strip() for k in self.secondary_keywords if k.strip()]
+        if not self.second_key or not self.second_key.strip():
+            return []
+        return [k.strip() for k in self.second_key.split(",") if k.strip()]
+
     def build_pattern(self, full_word_matching: bool = False) -> re.Pattern | None:
-        """构建正则匹配模式"""
+        """构建正则匹配模式（普通关键词合并为单模式）"""
         keys = self.get_keys()
         if not keys:
             return None
+        flags = 0 if self.case_sensitive else re.IGNORECASE
         escaped = [re.escape(k) for k in keys]
         pattern = "|".join(escaped)
         if full_word_matching:
             pattern = r"\b(?:" + pattern + r")\b"
         try:
-            return re.compile(pattern, re.IGNORECASE)
+            return re.compile(pattern, flags)
         except re.error:
             logger.warning("无效的正则模式: key=%s", self.key)
             return None
+
+    def key_matches(self, text: str, *, full_word_matching: bool = False) -> list[str]:
+        """判断文本是否命中任意触发关键词。
+
+        返回命中的关键词列表。use_regex 时逐条执行正则；灾难性正则
+        （嵌套量词等 ReDoS 结构）在源头被拒绝并按字面关键词降级匹配，
+        避免引入不可中断的匹配过程。
+        """
+        keys = self.get_keys()
+        if not keys:
+            return []
+        flags = 0 if self.case_sensitive else re.IGNORECASE
+        matched: list[str] = []
+        if self.use_regex:
+            for key in keys:
+                if _is_nested_quantifier_pattern(key):
+                    logger.warning(
+                        "拒绝可能的灾难性正则，按字面关键词匹配: %s", key[:80]
+                    )
+                    candidate = key if self.case_sensitive else key.lower()
+                    needle = text if self.case_sensitive else text.lower()
+                    if candidate in needle:
+                        matched.append(key)
+                    continue
+                try:
+                    compiled = re.compile(key, flags)
+                except re.error:
+                    logger.warning("无效的正则 key=%s", key)
+                    continue
+                try:
+                    if compiled.search(text):
+                        matched.append(key)
+                except TimeoutError:  # 3.13+ 解释器若启用 timeout，安全降级
+                    continue
+            return matched
+        lowered = text if self.case_sensitive else text.lower()
+        for key in keys:
+            if full_word_matching:
+                compiled = re.compile(r"\b" + re.escape(key) + r"\b", flags)
+                if compiled.search(text):
+                    matched.append(key)
+            else:
+                candidate = key if self.case_sensitive else key.lower()
+                if candidate in lowered:
+                    matched.append(key)
+        return matched
 
 
 @dataclass
@@ -111,27 +222,51 @@ class LorebookMatcher:
         )
 
         # 检查每个关键词
-        matched_keys = []
-        for key in keys:
-            if full_word_matching:
-                pattern = re.compile(r"\b" + re.escape(key) + r"\b", re.IGNORECASE)
-                if pattern.search(combined):
-                    matched_keys.append(key)
-            else:
-                if key.lower() in combined.lower():
-                    matched_keys.append(key)
+        matched_keys = entry.key_matches(combined, full_word_matching=full_word_matching)
 
-        # 如果有 second_key，需要同时匹配
-        if entry.second_key:
-            second_keys = [k.strip() for k in entry.second_key.split(",") if k.strip()]
-            second_matched = any(
-                (re.compile(r"\b" + re.escape(sk) + r"\b", re.IGNORECASE).search(combined)
-                 if full_word_matching
-                 else sk.lower() in combined.lower())
-                for sk in second_keys
-            )
-            if not second_matched:
-                return False, ""
+        # 选择性(entry.selective)时按 selective_logic 计算辅助关键词条件；
+        # ST V2 导入的结构化 secondary_keywords 不需要 selective=True 也参与
+        # 匹配（否则 _scan_book 的 selective 跳过逻辑会让它们永久失效）。
+        second_keys = entry.get_second_keys() if (entry.selective or entry.secondary_keywords) else []
+        if second_keys:
+            flags = 0 if entry.case_sensitive else re.IGNORECASE
+            secondary_matched: list[str] = []
+            for sk in second_keys:
+                hit = False
+                if entry.use_regex:
+                    if _is_nested_quantifier_pattern(sk):
+                        logger.warning(
+                            "拒绝可能的灾难性辅助正则，按字面关键词匹配: %s", sk[:80]
+                        )
+                        candidate = sk if entry.case_sensitive else sk.lower()
+                        needle = combined if entry.case_sensitive else combined.lower()
+                        hit = candidate in needle
+                    else:
+                        try:
+                            compiled = re.compile(sk, flags)
+                        except re.error:
+                            logger.warning("无效的辅助正则 key=%s", sk)
+                            continue
+                        try:
+                            hit = compiled.search(combined) is not None
+                        except TimeoutError:  # 3.13+ 若启用 timeout，安全降级
+                            hit = False
+                else:
+                    candidate = sk if entry.case_sensitive else sk.lower()
+                    needle = combined if entry.case_sensitive else combined.lower()
+                    if candidate in needle:
+                        hit = True
+                if hit:
+                    secondary_matched.append(sk)
+            logic = (entry.selective_logic or "and_any").lower()
+            if logic == "not_any" and secondary_matched:
+                return False, "排除关键词命中"
+            if logic == "not_all" and len(secondary_matched) == len(second_keys):
+                return False, "全部排除关键词命中"
+            if logic == "and_all" and len(secondary_matched) != len(second_keys):
+                return False, "辅助关键词未全部命中"
+            if logic == "and_any" and not secondary_matched:
+                return False, "辅助关键词未命中"
 
         if matched_keys:
             return True, f"匹配关键词: {', '.join(matched_keys[:3])}"
@@ -164,6 +299,12 @@ class LorebookManager:
         insert_order: int = 100,
         second_key: str = "",
         selective: bool = False,
+        selective_logic: str = "and_any",
+        priority: int = 0,
+        case_sensitive: bool = False,
+        use_regex: bool = False,
+        depth: int = 0,
+        role: str = "system",
     ) -> LoreEntry:
         """添加一条世界书条目"""
         entry = LoreEntry(
@@ -174,6 +315,12 @@ class LorebookManager:
             insert_order=insert_order,
             second_key=second_key,
             selective=selective,
+            selective_logic=selective_logic,
+            priority=priority,
+            case_sensitive=case_sensitive,
+            use_regex=use_regex,
+            depth=depth,
+            role=role,
         )
         book = self._get_book(chat_id)
         book.entries.append(entry)
@@ -187,6 +334,65 @@ class LorebookManager:
             book.entries.pop(index)
             return True
         return False
+
+    def load_world_book(self, book: dict, chat_id: str | None = None) -> int:
+        """从一个前端形状的世界书字典加载条目（ST V2 导入/archive 持久化形状）。
+
+        ``book["entries"]`` 的每条使用与世界书编辑器一致的字段：
+        keywords / secondaryKeywords / selectiveLogic / content / enabled /
+        alwaysActive / insertionOrder / priority / caseSensitive / useRegex /
+        scanDepth / tokenBudget / depth / role / comment。返回加载的条目数。
+        """
+        entries = book.get("entries") or []
+        if not isinstance(entries, list):
+            return 0
+        target = self._get_book(chat_id)
+        target.name = str(book.get("name") or target.name)
+        target.scan_depth = int(book.get("scanDepth") or target.scan_depth or 50)
+        target.token_budget = int(book.get("tokenBudget") or target.token_budget or 500)
+        seen = 0
+        disabled = 0
+        for raw in entries:
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("enabled") is False:
+                disabled += 1
+                continue
+            logic = str(raw.get("selectiveLogic") or "and_any").strip().lower()
+            if logic not in {"and_any", "and_all", "not_any", "not_all"}:
+                logic = "and_any"
+            keywords = raw.get("keywords") or []
+            if isinstance(keywords, str):
+                keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+            elif isinstance(keywords, list):
+                keywords = [str(k).strip() for k in keywords if str(k).strip()]
+            secondary = raw.get("secondaryKeywords") or []
+            if isinstance(secondary, str):
+                secondary = [k.strip() for k in secondary.split(",") if k.strip()]
+            elif isinstance(secondary, list):
+                secondary = [str(k).strip() for k in secondary if str(k).strip()]
+            always_active = raw.get("alwaysActive") is True
+            # selective 保持 False：始终自动扫描；辅助关键词与 selective_logic
+            # 由 get_second_keys/match_entry 的 secondary_keywords 路径处理。
+            target.entries.append(LoreEntry(
+                key=", ".join(keywords),
+                comment=str(raw.get("comment") or raw.get("id") or ""),
+                content=str(raw.get("content") or ""),
+                insert_order=int(raw.get("insertionOrder") or 100),
+                always_active=always_active,
+                secondary_keywords=secondary,
+                selective_logic=logic,
+                priority=int(raw.get("priority") or 0),
+                case_sensitive=raw.get("caseSensitive") is True,
+                use_regex=raw.get("useRegex") is True,
+                depth=int(raw.get("depth") or 0),
+                role=str(raw.get("role") or "system"),
+            ))
+            seen += 1
+        target.entries.sort(key=lambda e: e.insert_order)
+        if seen > 0:
+            logger.info("世界书《%s》已加载 %d 条（跳过 disabled %d）", target.name, seen, disabled)
+        return seen
 
     def update_entry(
         self, index: int, chat_id: str | None = None, **kwargs
@@ -271,17 +477,34 @@ class LorebookManager:
         entries: list[tuple[LoreEntry, str]],
         max_tokens: int,
     ) -> list[tuple[LoreEntry, str]]:
-        """按 token 预算裁剪激活条目"""
-        result = []
-        token_count = 0
-        # 粗略估算：1 token ≈ 0.75 个中文字符 ≈ 4 个英文字符
-        for entry, reason in entries:
-            estimated = len(entry.content) // 2  # 粗略估算
-            if token_count + estimated > max_tokens and not entry.always_active:
-                continue
-            result.append((entry, reason))
-            token_count += estimated
-        return result
+        """按 token 预算裁剪激活条目。
+
+        保持传入顺序（insert_order 已排序）；超预算时按 priority 升序
+        淘汰普通条目（低 priority 先被淘汰），always_active 条目永不淘汰。
+        """
+        result = list(entries)
+        evictable = [
+            (index, entry, reason)
+            for index, (entry, reason) in enumerate(result)
+            if not entry.always_active
+        ]
+        evictable.sort(key=lambda item: item[1].priority)
+
+        def total_tokens(active: set[int]) -> int:
+            return sum(
+                len(entry.content) // 2
+                for index, (entry, _reason) in enumerate(result)
+                if index in active
+            )
+
+        active = set(range(len(result)))
+        if total_tokens(active) <= max_tokens:
+            return result
+        for index, _entry, _reason in evictable:
+            if total_tokens(active) <= max_tokens:
+                break
+            active.discard(index)
+        return [item for index, item in enumerate(result) if index in active]
 
     def assemble_lorebook_prompt(
         self,

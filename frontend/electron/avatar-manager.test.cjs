@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -279,6 +280,113 @@ test('avatar protocol parser rejects encoded separators and non-asset authoritie
   );
 });
 
+test('Live2D folder import is refused when the Cubism runtime is gated off', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-disabled-'));
+  const source = path.join(root, 'character');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'avatar.model3.json'), JSON.stringify({
+    Version: 3,
+    FileReferences: { Moc: 'avatar.moc3', Textures: ['textures/texture.png'] },
+  }));
+  const manager = new AvatarManager({
+    storageDir: path.join(root, 'avatars'),
+    live2dRuntime: {
+      available: false,
+      coreAvailable: false,
+      reason: 'Live2D public runtime is disabled by the build and runtime gates',
+    },
+  });
+  assert.throws(
+    () => manager.beginImportDirectory(source),
+    (error) => error.code === 'AVATAR_LIVE2D_DISABLED'
+      && /disabled by the build and runtime gates/i.test(error.message),
+  );
+});
+
+test('Live2D folder import records texture downscale warnings and refreshes hashes', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-downscale-'));
+  const source = path.join(root, 'character');
+  fs.mkdirSync(path.join(source, 'textures'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'avatar.model3.json'), JSON.stringify({
+    Version: 3,
+    FileReferences: { Moc: 'avatar.moc3', Textures: ['textures/texture.png'] },
+  }));
+  const moc = Buffer.alloc(8, 0);
+  moc.write('MOC3', 0, 4, 'ascii');
+  moc.writeUInt32LE(4, 4);
+  fs.writeFileSync(path.join(source, 'avatar.moc3'), moc);
+  const pixel = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  );
+  fs.writeFileSync(path.join(source, 'textures', 'texture.png'), pixel);
+  const output = path.join(root, 'output');
+  fs.mkdirSync(output);
+  const replacement = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  );
+  const validated = validateLive2DDirectory(source, output, {
+    textureTransformer: (payloadRoot) => {
+      const target = path.join(payloadRoot, 'textures', 'texture.png');
+      fs.writeFileSync(target, replacement);
+      return [{ path: 'textures/texture.png', before: [8192, 8192], after: [4096, 4096] }];
+    },
+  });
+  assert.equal(validated.stats.mocVersion, 4);
+  assert.ok(validated.warnings.some((warning) => warning.includes('texture_downscaled:textures/texture.png:8192x8192')));
+  const hashed = crypto.createHash('sha256').update(replacement).digest('hex');
+  assert.equal(validated.files.find((file) => file.path === 'textures/texture.png').sha256, hashed);
+});
+
+test('Live2D texture transform failure is fail-open and still imports', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-transform-fail-'));
+  const source = path.join(root, 'character');
+  fs.mkdirSync(path.join(source, 'textures'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'avatar.model3.json'), JSON.stringify({
+    Version: 3,
+    FileReferences: { Moc: 'avatar.moc3', Textures: ['textures/texture.png'] },
+  }));
+  fs.writeFileSync(path.join(source, 'avatar.moc3'), 'MOC3fail');
+  fs.writeFileSync(
+    path.join(source, 'textures', 'texture.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
+  const output = path.join(root, 'output');
+  fs.mkdirSync(output);
+  const validated = validateLive2DDirectory(source, output, {
+    textureTransformer: () => {
+      throw new Error('pillow missing');
+    },
+  });
+  assert.equal(validated.entryRelative, 'avatar.model3.json');
+  assert.ok(validated.warnings.some((warning) => warning.startsWith('texture_downscale_unavailable:')));
+});
+
+test('Live2D textures at the 8192px limit still import without a transformer', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-8192-'));
+  const source = path.join(root, 'character');
+  fs.mkdirSync(path.join(source, 'textures'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'avatar.model3.json'), JSON.stringify({
+    Version: 3,
+    FileReferences: { Moc: 'avatar.moc3', Textures: ['textures/texture.png'] },
+  }));
+  fs.writeFileSync(path.join(source, 'avatar.moc3'), 'MOC3size');
+  const png = Buffer.alloc(24, 0);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png, 0);
+  png.writeUInt32BE(8192, 16);
+  png.writeUInt32BE(8192, 20);
+  fs.writeFileSync(path.join(source, 'textures', 'texture.png'), png);
+  const output = path.join(root, 'output');
+  fs.mkdirSync(output);
+  const validated = validateLive2DDirectory(source, output);
+  assert.equal(validated.stats.textures[0].width, 8192);
+  assert.equal(validated.stats.textures[0].height, 8192);
+});
+
 test('Live2D folder import enforces the same closed-world package rules', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-folder-'));
   const source = path.join(root, 'character');
@@ -305,6 +413,32 @@ test('Live2D folder import enforces the same closed-world package rules', () => 
     () => validateLive2DDirectory(source, fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-live2d-out-'))),
     /unsupported/i,
   );
+});
+
+test('selecting a model3.json file imports the containing Live2D folder', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-avatar-model3-file-'));
+  const source = path.join(root, 'character');
+  fs.mkdirSync(path.join(source, 'textures'), { recursive: true });
+  const model3 = path.join(source, 'avatar.model3.json');
+  fs.writeFileSync(model3, JSON.stringify({
+    Version: 3,
+    FileReferences: { Moc: 'avatar.moc3', Textures: ['textures/texture.png'] },
+  }));
+  fs.writeFileSync(path.join(source, 'avatar.moc3'), 'MOC3file');
+  fs.writeFileSync(
+    path.join(source, 'textures', 'texture.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
+  const manager = new AvatarManager({
+    storageDir: path.join(root, 'avatars'),
+    live2dRuntime: { available: true, coreAvailable: true, reason: '' },
+  });
+  const candidate = manager.beginImport(model3);
+  assert.equal(candidate.kind, 'live2d');
+  assert.equal(candidate.preview.format, 'live2d');
 });
 
 test('preview expiry discards staging and never changes the old active avatar', () => {

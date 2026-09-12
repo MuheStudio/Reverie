@@ -10,6 +10,7 @@ A single session represents one continuous conversation thread.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import deque
@@ -48,18 +49,83 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("reverie.chat.session")
 
+# Per-image char allowance for serialized-size estimation. Mirrors
+# budget.estimate_tokens: a base64 data URL must never be counted by its
+# raw length or one image would evict the whole scope.
+_IMAGE_PART_TOKEN_ALLOWANCE_CHARS = 800
+
+
+def _content_chars(content: Any) -> int:
+    """Cheap serialized-size estimate for one history entry's content."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    total += len(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    total += _IMAGE_PART_TOKEN_ALLOWANCE_CHARS
+                else:
+                    serialized = json.dumps(part, ensure_ascii=False, default=str)
+                    total += len(serialized) if len(serialized) <= 4096 else _IMAGE_PART_TOKEN_ALLOWANCE_CHARS
+            else:
+                total += len(str(part))
+        return total
+    return len(json.dumps(content, ensure_ascii=False, default=str))
+
 
 class ProviderCallFailed(RuntimeError):
     """A possibly billable provider request failed outside persona dialogue."""
 
     code = "PROVIDER_OUTCOME_UNKNOWN"
 
-    def __init__(self, cause: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        cause: BaseException | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> None:
         self.cause_type = cause.__class__.__name__ if cause is not None else "ProviderError"
-        super().__init__("供应商请求未完成；为避免重复计费，Reverie 不会自动重试。")
+        self.status_code = getattr(cause, "status_code", None) if cause is not None else None
+        super().__init__(_provider_failure_summary(cause, timeout_seconds=timeout_seconds))
+
+
+def _provider_failure_summary(
+    cause: BaseException | None,
+    *,
+    timeout_seconds: float | None = None,
+) -> str:
+    """Clause-110 appendix: the provider's own failure summary reaches the
+    user verbatim (sanitized upstream by the adapter) — no retry, no
+    persona-voiced wrapper, no hidden follow-up call."""
+    base = "供应商请求未完成；为避免重复计费，Reverie 不会自动重试。"
+    parts: list[str] = []
+    if cause is not None and _is_timeout_exception(cause):
+        timeout_text = f"{timeout_seconds:g} 秒" if timeout_seconds else "时限内"
+        parts.append(f"请求超时：模型服务 {timeout_text} 未响应")
+    if cause is not None:
+        code = getattr(cause, "code", None)
+        if isinstance(code, str) and code:
+            code_text = f"错误码 {code}"
+            status_code = getattr(cause, "status_code", None)
+            if isinstance(status_code, int):
+                code_text += f"，HTTP {status_code}"
+            parts.append(code_text)
+        message = str(cause).strip().rstrip("。")
+        if message and message != cause.__class__.__name__:
+            parts.append(message)
+    if not parts:
+        return base
+    return f"{'；'.join(parts)}。{base}"
 
 
 _IMAGE_PLACEHOLDER = "\n[用户发来了一张图片，但当前模型不支持识图，请自然地回应]"
+
+# Single provider-call deadline for the main reply path; surfaced verbatim in
+# the timeout error summary (clause-110 appendix).
+_PROVIDER_CALL_TIMEOUT_SECONDS = 30.0
 
 
 def _read_image_data_url(image_path: str) -> str:
@@ -138,6 +204,13 @@ class ChatSession:
     # what the model sees.
     MAX_TRACKED_CONVERSATIONS = 32
     MAX_HISTORY_ENTRIES = 200
+    # Serialized-content hard caps (chars, CJK-inclusive), applied pairwise.
+    # The entry cap bounds memory; the tail cap bounds every request's prompt
+    # size. Both are hard, local, and independent of summarization success —
+    # a failed compressor must never be able to grow the context without
+    # bound ("summaries are an optimization, not a safety mechanism").
+    MAX_HISTORY_CHARS = 240_000
+    MAX_PROMPT_TAIL_CHARS = 48_000
     MAX_COMMITTED_REQUEST_IDS = 4096
 
     def __init__(
@@ -163,9 +236,11 @@ class ChatSession:
         ambient_presence: "AmbientPresence | None" = None,
         thought_engine: "ThoughtOfYouEngine | None" = None,
         social_universe: "SocialUniverse | None" = None,
+        lorebook_mgr: "Any | None" = None,
         hypa_compressor: "Any | None" = None,
         hypa_max_context_tokens: int = 2000,
         hypa_compress_cooldown_seconds: int = 300,
+        imported_prompt_opts: dict | None = None,
     ) -> None:
         self.persona = persona
         self.adapter = adapter
@@ -185,6 +260,7 @@ class ChatSession:
         self.ambient_presence = ambient_presence
         self.thought_engine = thought_engine
         self.social_universe = social_universe
+        self.lorebook_mgr = lorebook_mgr
         # Optional HypaMemory V3 long-context compression (Risuai GPL port).
         # Consumes API through the adapter's memory_summary consent purpose, so
         # it is only ever active when the owner enables hypa_compression_enabled.
@@ -192,6 +268,8 @@ class ChatSession:
         self._hypa_max_context_tokens = int(hypa_max_context_tokens or 2000)
         self._hypa_cooldown = float(hypa_compress_cooldown_seconds or 0.0)
         self._hypa_last_compress = 0.0
+        # 卡作者提示词运行时开关（默认关闭）。由 bridge 在导入/更新时注入。
+        self.imported_prompt_opts: dict = dict(imported_prompt_opts or {})
         if speech_habit_engine is None:
             from ..persona.speech_habits import SpeechHabitEngine
 
@@ -245,8 +323,54 @@ class ChatSession:
         return history
 
     def _trim_history(self, history: list[dict]) -> None:
+        """Bound one conversation scope by entries AND serialized characters.
+
+        Entries are appended strictly as user/assistant pairs, so eviction
+        always removes whole pairs: the count cap rounds down to an even
+        keep, and the char cap walks backwards once, dropping the oldest
+        pairs until the scope fits.
+        """
         if len(history) > self.MAX_HISTORY_ENTRIES:
-            del history[:-self.MAX_HISTORY_ENTRIES]
+            keep = self.MAX_HISTORY_ENTRIES - (self.MAX_HISTORY_ENTRIES % 2)
+            del history[:-keep]
+        total = 0
+        cutoff = len(history)
+        exceeded = False
+        for index in range(len(history) - 1, -1, -1):
+            total += _content_chars(history[index].get("content"))
+            if total > self.MAX_HISTORY_CHARS:
+                cutoff = index + 1
+                exceeded = True
+                break
+        if not exceeded:
+            return
+        if cutoff % 2:
+            cutoff += 1
+        if 0 < cutoff < len(history):
+            del history[:cutoff]
+
+    def _prompt_tail(self, conversation_id: str) -> list[dict]:
+        """The most recent turns sent to the provider, chars-bounded.
+
+        The request tail is the actual cost surface: without a cap, a few
+        huge pasted messages would re-send megabytes on every single turn.
+        Eviction is pairwise, so the tail never ends mid-exchange.
+        """
+        tail = list(self._history_for(conversation_id)[-20:])
+        total = 0
+        cutoff = len(tail)
+        exceeded = False
+        for index in range(len(tail) - 1, -1, -1):
+            total += _content_chars(tail[index].get("content"))
+            if total > self.MAX_PROMPT_TAIL_CHARS:
+                cutoff = index + 1
+                exceeded = True
+                break
+        if not exceeded:
+            return tail
+        if cutoff % 2:
+            cutoff += 1
+        return tail[cutoff:]
 
     def _remember_committed_request_id(self, request_id: str) -> None:
         if request_id not in self._committed_request_ids:
@@ -476,11 +600,25 @@ class ChatSession:
         # ── Step 4: Build system prompt ───────────────────
         from ..persona.prompt_builder import build_system_prompt
 
-        # Only delayed, locally saved web fragments may enter normal chat.
+        # Cached keyless-search items (already sanitizer-approved) may enter
+        # normal chat with [N] excerpts. Thought-of-you remains a delayed
+        # fallback that only carries title/summary.
         web_context = ""
         web_item_id = ""
         thought_item_id = ""
-        if self.thought_engine:
+        cited_web_item = None
+        if self.web is not None and bool(getattr(self.web, "keyless_search_enabled", False)):
+            try:
+                cited_web_item = self.web.get_fresh_item(mark_used=False)
+                if cited_web_item is not None:
+                    web_context = self.web.format_for_chat(cited_web_item)
+                    web_item_id = cited_web_item.id
+            except Exception:
+                logger.exception("Keyless web citation failed; continuing without it")
+                cited_web_item = None
+                web_context = ""
+                web_item_id = ""
+        if not web_context and self.thought_engine:
             try:
                 thought_now = self.world_clock.now()
                 thought = self.thought_engine.select_for_chat(user_message, now=thought_now)
@@ -515,6 +653,27 @@ class ChatSession:
             logger.exception("World clock failed; using local process time without holiday claims")
             current_time = datetime.now()
             calendar_context = f"当前时间：{current_time.strftime('%Y-%m-%d %H:%M')}；节假日状态未知，不得猜测"
+
+        # World book (lorebook) injection: active entries are matched against
+        # the current user message plus the recent conversation tail. The
+        # in-flight user message is not yet in history at prompt-assembly time,
+        # so append it explicitly — world books activate on what the user just
+        # said. Any failure degrades to empty context — never chat.
+        lorebook_context = ""
+        if self.lorebook_mgr is not None:
+            try:
+                lore_tail = self._prompt_tail(conversation_id)
+                match_window = list(lore_tail)
+                match_window.append({"role": "user", "content": user_message})
+                if match_window:
+                    lorebook_context = self.lorebook_mgr.assemble_lorebook_prompt(
+                        match_window,
+                        max_tokens=800,
+                    )
+            except Exception:
+                logger.exception("World book context failed; continuing without it")
+                lorebook_context = ""
+
         try:
             allow_environment_description = bool(getattr(self.scheduler, "allow_environment_description", False))
         except Exception:
@@ -548,13 +707,15 @@ class ChatSession:
                 flaws_context=flaws_context,
                 availability_context=availability_context,
                 allow_environment_description=allow_environment_description,
+                lorebook_context=lorebook_context,
+                imported_prompt_opts=self.imported_prompt_opts,
             )
         except Exception:
             logger.exception("Full prompt assembly failed; using identity-safe minimal prompt")
             system_prompt = self._minimal_system_prompt(current_time, current_emotions, intimacy)
 
         # ── Step 5: LLM call ──────────────────────────────
-        conversation_tail = list(self._history_for(conversation_id)[-20:])
+        conversation_tail = self._prompt_tail(conversation_id)
 
         # Optional HypaMemory V3 long-context summary enrichment.
         hypa_summary_block = ""
@@ -598,14 +759,24 @@ class ChatSession:
             if hypa_summary_block:
                 messages.append({"role": "system", "content": hypa_summary_block})
             messages.extend(conversation_tail)
+            post_history = self._imported_post_history_block()
+            if post_history:
+                messages.append({"role": "system", "content": post_history})
             messages.append(_build_vision_user_turn(
                 f"{guard.llm_text}{avoidance_hint}{image_note}",
                 image_path,
             ))
             try:
                 response = await asyncio.wait_for(
-                    self.adapter.chat(messages, purpose="chat_reply", background=False),
-                    timeout=30.0,
+                    self.adapter.chat(
+                        messages,
+                        purpose="chat_reply",
+                        background=False,
+                        enable_native_search=bool(
+                            getattr(self.feature_settings, "web_native_search_enabled", False)
+                        ),
+                    ),
+                    timeout=_PROVIDER_CALL_TIMEOUT_SECONDS,
                 )
                 raw_reply = response.content
             except LocalModeBlocked:
@@ -626,7 +797,9 @@ class ChatSession:
                     image_note = _IMAGE_PLACEHOLDER
                     continue
                 logger.exception("LLM provider request failed after dispatch")
-                raise ProviderCallFailed(exc) from exc
+                raise ProviderCallFailed(
+                    exc, timeout_seconds=_PROVIDER_CALL_TIMEOUT_SECONDS,
+                ) from exc
 
             # ── Step 6: Output filtering ──────────────────
             filtered = filter_output_detail(raw_reply)
@@ -692,6 +865,16 @@ class ChatSession:
         except Exception:
             logger.exception("Speech habits failed; preserving guarded reply")
         raw_reply = self._safe_addressing(raw_reply)
+        if cited_web_item is not None:
+            try:
+                from ..web.evidence import strip_orphan_citations
+
+                raw_reply = strip_orphan_citations(
+                    raw_reply,
+                    len(getattr(cited_web_item, "evidence", None) or []),
+                )
+            except Exception:
+                logger.exception("Orphan web citation strip failed; keeping guarded reply")
 
         # Style and relationship modules run after the first guard, so guard
         # their final output as well. Imported catchphrases are not trusted.
@@ -884,6 +1067,17 @@ class ChatSession:
                     sticker = random.choice(candidates)
                     sticker_payload = sticker.to_dict()
                     self.stickers.record_use(sticker)
+
+        if (
+            not defer_side_effects
+            and cited_web_item is not None
+            and not degraded_provider_failure
+            and self.web
+        ):
+            try:
+                self.web.mark_used(cited_web_item)
+            except Exception:
+                logger.exception("Keyless web citation marker failed after successful reply")
 
         if (
             not defer_side_effects
@@ -1322,6 +1516,27 @@ class ChatSession:
         except Exception:
             logger.exception("Reflex continuity shaping failed")
             return text
+
+    def _imported_post_history_block(self) -> str:
+        """Render the quarantined card-author post-history instructions (opt-in)."""
+        if self.imported_prompt_opts.get("use_imported_post_history_instructions") is not True:
+            return ""
+        raw = str(
+            self.persona.identity.get("imported_post_history_instructions", "") or ""
+        ).strip()
+        if not raw:
+            return ""
+        # 只支持 {{original}} 宏且只替换一次；其余 {{...}} 被转义。
+        expanded = raw.replace("{{original}}", "", 1)
+        import re as _re
+
+        expanded = _re.sub(r"\{\{[^}]*\}\}", "", expanded)
+        return (
+            "=== CARD AUTHOR POST-HISTORY INSTRUCTIONS (user-enabled) ===\n"
+            "Apply the character card author's style guidance to your reply "
+            "below, while keeping the IDENTITY and transparency rules above.\n\n"
+            + expanded[:4000]
+        )
 
     def _minimal_system_prompt(
         self,

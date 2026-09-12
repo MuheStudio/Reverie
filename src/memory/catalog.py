@@ -15,8 +15,11 @@ from typing import Callable, Iterable, Iterator
 
 from src.storage.encrypted_sqlite import connect_database
 
+from .lifecycle_constants import protection_tier_for_text
+
 RETENTION_LAYERS = {"permanent", "long_term", "short_term"}
 COGNITIVE_LAYERS = {"episodic", "semantic", "procedural"}
+USAGE_SIGNALS = {"injected", "reply_overlap", "user_confirmed", "user_rejected", "auto_reinforce"}
 
 
 def memory_terms(text: str) -> list[str]:
@@ -36,10 +39,11 @@ def memory_terms(text: str) -> list[str]:
 class MemoryCatalog:
     """SQLite source of truth; vector databases are disposable derivatives."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, fold_worker=None) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._fold_worker = fold_worker
         self._connection = connect_database(
             self.path,
             timeout=30.0,
@@ -157,6 +161,18 @@ class MemoryCatalog:
             );
             CREATE INDEX IF NOT EXISTS idx_memory_candidates_status_time
                 ON memory_candidates(status,created_at,id);
+            CREATE TABLE IF NOT EXISTS memory_usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                weight REAL NOT NULL,
+                turn_id TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_usage_events_memory
+                ON memory_usage_events(memory_id,created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_usage_events_created
+                ON memory_usage_events(created_at);
             """
         )
         # Forward-compatible migration for databases created before lifecycle
@@ -174,6 +190,8 @@ class MemoryCatalog:
             ("supersedes_id", "TEXT NOT NULL DEFAULT ''"),
             ("confirmation_state", "TEXT NOT NULL DEFAULT 'observed'"),
             ("confirmed_at", "REAL"),
+            ("protection_tier", "INTEGER NOT NULL DEFAULT 0"),
+            ("pinned", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in columns:
                 self._connection.execute(
@@ -187,6 +205,53 @@ class MemoryCatalog:
             "CREATE INDEX IF NOT EXISTS idx_memory_fact_current "
             "ON memory_records(fact_key,lifecycle_state,fact_revision DESC)"
         )
+        # Entity co-occurrence index (Phase 1B, 2026-09-09)
+        from .entity_index import create_entity_tables
+        create_entity_tables(self._connection)
+        # Evidence chain + typed atoms (Phase 1C, 2026-09-09)
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memory_evidence_refs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                created_at REAL NOT NULL,
+                CHECK (relation IN ('source','derived_from','supports','conflicts','supersedes')),
+                FOREIGN KEY (memory_id) REFERENCES memory_records(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_evidence_refs_memory
+                ON memory_evidence_refs(memory_id, relation);
+            CREATE INDEX IF NOT EXISTS idx_evidence_refs_target
+                ON memory_evidence_refs(target_id, relation);
+
+            CREATE TABLE IF NOT EXISTS memory_atoms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id TEXT NOT NULL,
+                atom_type TEXT NOT NULL,
+                subject TEXT NOT NULL DEFAULT '',
+                predicate TEXT NOT NULL DEFAULT '',
+                object TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0.8,
+                extraction_reason TEXT NOT NULL DEFAULT '',
+                review_status TEXT NOT NULL DEFAULT 'pending',
+                created_at REAL NOT NULL,
+                CHECK (atom_type IN (
+                    'preference','constraint','promise','event','lesson','temporal_fact'
+                )),
+                CHECK (review_status IN ('pending','approved','rejected')),
+                FOREIGN KEY (memory_id) REFERENCES memory_records(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_atoms_type_status
+                ON memory_atoms(atom_type, review_status);
+            CREATE INDEX IF NOT EXISTS idx_atoms_memory
+                ON memory_atoms(memory_id);
+            """
+        )
+        # Fold worker job queue (Phase 1D, 2026-09-09)
+        from .fold_worker import create_job_tables
+        create_job_tables(self._connection)
 
     @staticmethod
     def _candidate_row(row: sqlite3.Row | dict) -> dict:
@@ -357,8 +422,8 @@ class MemoryCatalog:
                         trust_level,sanitizer_status,sanitizer_flags_json,keywords,
                         embedding_model_version,embedding_status,lifecycle_state,
                         fact_key,fact_revision,supersedes_id,confirmation_state,confirmed_at,
-                        created_at,updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        created_at,updated_at,protection_tier,pinned
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         memory_id,
@@ -386,6 +451,8 @@ class MemoryCatalog:
                         now,
                         now,
                         now,
+                        protection_tier_for_text(proposed_text),
+                        0,
                     ),
                 )
                 connection.execute(
@@ -433,6 +500,12 @@ class MemoryCatalog:
                 raise
             else:
                 self._connection.execute("COMMIT")
+
+    @staticmethod
+    def _escape_like_term(term: str) -> str:
+        """Escape a term for use in a LIKE clause with ESCAPE '\\'."""
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
 
     @staticmethod
     def _row(row: sqlite3.Row | dict) -> dict:
@@ -490,6 +563,13 @@ class MemoryCatalog:
         )
         with self.transaction() as connection:
             self._insert_record(connection, payload, now)
+        # P1D: auto-enqueue fold jobs after successful write
+        if self._fold_worker is not None:
+            memory_id = payload[0]
+            self._fold_worker.enqueue('extract_atoms', {'memory_id': memory_id},
+                                     dedupe_key=f'atoms:{memory_id}')
+            self._fold_worker.enqueue('evidence_check', {'memory_id': memory_id},
+                                     dedupe_key=f'evidence:{memory_id}')
 
     def _prepare_record(
         self,
@@ -554,6 +634,7 @@ class MemoryCatalog:
             str(trust_level)[:200], str(sanitizer_status)[:200],
             json.dumps(flags, ensure_ascii=False),
             " ".join(memory_terms(cleaned)), model_version, "pending", now, now,
+            protection_tier_for_text(cleaned),
         )
         return payload, now
 
@@ -565,8 +646,8 @@ class MemoryCatalog:
                 id,text,retention_layer,cognitive_layer,timestamp,event_time,importance,
                 emotions_json,source_type,source_uri,source_hash,trust_level,
                 sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
-                embedding_status,created_at,updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                embedding_status,created_at,updated_at,protection_tier
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
                 text=excluded.text, retention_layer=excluded.retention_layer,
                 cognitive_layer=excluded.cognitive_layer, timestamp=excluded.timestamp,
@@ -577,6 +658,7 @@ class MemoryCatalog:
                 sanitizer_flags_json=excluded.sanitizer_flags_json, keywords=excluded.keywords,
                 embedding_model_version=excluded.embedding_model_version,
                 embedding_status='pending', lifecycle_state='active',
+                protection_tier=excluded.protection_tier,
                 mention_count=memory_records.mention_count + 1,
                 updated_at=excluded.updated_at
             """,
@@ -586,6 +668,9 @@ class MemoryCatalog:
             "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
             (payload[0], now, "stored"),
         )
+        # Index entities for co-occurrence retrieval boost (Phase 1B)
+        from .entity_index import index_entities
+        index_entities(connection, payload[0], payload[1], now=now)
 
     def replace_prefixed_facts(
         self,
@@ -751,6 +836,7 @@ class MemoryCatalog:
             cursor = connection.execute(
                 """UPDATE memory_records SET lifecycle_state='expired',updated_at=?
                    WHERE lifecycle_state='active' AND retention_layer!='permanent'
+                     AND COALESCE(pinned,0)=0 AND COALESCE(protection_tier,0)=0
                      AND timestamp<?""",
                 (time.time(), cutoff),
             )
@@ -776,8 +862,7 @@ class MemoryCatalog:
         if terms:
             where = " OR ".join("keywords LIKE ? ESCAPE '\\'" for _ in terms)
             params: list[object] = [
-                f"%{term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
-                for term in terms
+                self._escape_like_term(term) for term in terms
             ]
             params.append(max(1, int(limit)))
             order = "timestamp ASC, importance DESC" if oldest_first else "importance DESC, timestamp DESC"
@@ -807,8 +892,7 @@ class MemoryCatalog:
         if terms:
             where = " OR ".join("keywords LIKE ? ESCAPE '\\'" for _ in terms)
             params: list[object] = [
-                f"%{term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
-                for term in terms
+                self._escape_like_term(term) for term in terms
             ]
             params.append(bounded_limit)
             with self._lock:
@@ -922,6 +1006,221 @@ class MemoryCatalog:
                 "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
                 [(memory_id, now, "retrieved") for memory_id in ids],
             )
+
+    # ── Lifecycle governance (P0 batch): usage signals, pins, budget ──
+
+    def record_usage_event(
+        self,
+        *,
+        memory_id: str,
+        signal: str,
+        weight: float,
+        turn_id: str = "",
+        created_at: float | None = None,
+    ) -> bool:
+        """Append one lifecycle usage signal. Unknown memory ids are dropped
+        silently (tombstone tolerance): signals must never resurrect rows."""
+        if signal not in USAGE_SIGNALS:
+            raise ValueError(f"Unsupported usage signal: {signal}")
+        if not memory_id:
+            return False
+        try:
+            weight_value = float(weight)
+        except (TypeError, ValueError):
+            return False
+        if weight_value != weight_value or weight_value in (float("inf"), float("-inf")):
+            return False
+        with self.transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM memory_records WHERE id=?", (memory_id,)
+            ).fetchone()
+            if not exists:
+                return False
+            connection.execute(
+                "INSERT INTO memory_usage_events(memory_id,signal,weight,turn_id,created_at)"
+                " VALUES (?,?,?,?,?)",
+                (
+                    memory_id,
+                    signal,
+                    max(-10.0, min(10.0, weight_value)),
+                    str(turn_id or "")[:200],
+                    float(created_at if created_at is not None else time.time()),
+                ),
+            )
+        return True
+
+    def usage_scores_since(self, since_timestamp: float) -> dict[str, float]:
+        """Aggregate weighted usage per memory since the given timestamp."""
+        with self.transaction() as connection:
+            rows = connection.execute(
+                "SELECT memory_id, SUM(weight) AS total FROM memory_usage_events"
+                " WHERE created_at>=? GROUP BY memory_id",
+                (float(since_timestamp),),
+            ).fetchall()
+        return {str(row["memory_id"]): float(row["total"] or 0.0) for row in rows}
+
+    def prune_usage_events(self, *, before_timestamp: float) -> int:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "DELETE FROM memory_usage_events WHERE created_at<?",
+                (float(before_timestamp),),
+            )
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+    def set_pinned(self, memory_id: str, pinned: bool) -> bool:
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE memory_records SET pinned=?, updated_at=? WHERE id=?",
+                (1 if pinned else 0, time.time(), memory_id),
+            )
+        return cursor.rowcount > 0
+
+    def count_pinned(self) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS total FROM memory_records WHERE pinned=1"
+        ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def layer_char_usage(self) -> dict[str, int]:
+        """Sum of stored text lengths per retention layer (budget pressure input)."""
+        rows = self._connection.execute(
+            "SELECT retention_layer AS layer, SUM(LENGTH(text)) AS chars"
+            " FROM memory_records WHERE lifecycle_state='active'"
+            " GROUP BY retention_layer"
+        ).fetchall()
+        return {str(row["layer"]): int(row["chars"] or 0) for row in rows}
+
+    # ── Evidence chain (Phase 1C, 2026-09-09) ──
+
+    def add_evidence_ref(
+        self,
+        *,
+        memory_id: str,
+        relation: str,
+        target_id: str,
+        confidence: float = 1.0,
+    ) -> int:
+        """Link two memories via an evidence relationship."""
+        valid_relations = {"source", "derived_from", "supports", "conflicts", "supersedes"}
+        if relation not in valid_relations:
+            raise ValueError(f"Unsupported evidence relation: {relation}")
+        now = time.time()
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """INSERT INTO memory_evidence_refs
+                       (memory_id, relation, target_id, confidence, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (str(memory_id), relation, str(target_id),
+                 max(0.0, min(1.0, float(confidence))), now),
+            )
+        return int(cursor.lastrowid)
+
+    def get_evidence_refs(self, memory_id: str) -> list[dict]:
+        """Return all evidence references originating from a memory."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM memory_evidence_refs WHERE memory_id=? ORDER BY created_at",
+                (str(memory_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_referencing(self, target_id: str) -> list[dict]:
+        """Return all evidence references pointing to a target memory."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM memory_evidence_refs WHERE target_id=? ORDER BY created_at",
+                (str(target_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def find_conflicts(self, memory_id: str) -> list[dict]:
+        """Return evidence refs where this memory is in a 'conflicts' relation."""
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT * FROM memory_evidence_refs
+                   WHERE relation='conflicts'
+                     AND (memory_id=? OR target_id=?)
+                   ORDER BY created_at""",
+                (str(memory_id), str(memory_id)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ── Typed atoms (Phase 1C, 2026-09-09) ──
+
+    def add_atom(
+        self,
+        *,
+        memory_id: str,
+        atom_type: str,
+        subject: str = "",
+        predicate: str = "",
+        object: str = "",
+        confidence: float = 0.8,
+        extraction_reason: str = "",
+    ) -> int:
+        """Store a typed atomic fact derived from a memory."""
+        valid_types = {"preference", "constraint", "promise", "event", "lesson", "temporal_fact"}
+        if atom_type not in valid_types:
+            raise ValueError(f"Unsupported atom type: {atom_type}")
+        now = time.time()
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                """INSERT INTO memory_atoms
+                       (memory_id, atom_type, subject, predicate, object,
+                        confidence, extraction_reason, review_status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
+                (
+                    str(memory_id),
+                    atom_type,
+                    str(subject)[:500],
+                    str(predicate)[:500],
+                    str(object)[:2000],
+                    max(0.0, min(1.0, float(confidence))),
+                    str(extraction_reason)[:500],
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def list_atoms(
+        self,
+        memory_id: str | None = None,
+        *,
+        atom_type: str | None = None,
+        review_status: str = "all",
+        limit: int = 200,
+    ) -> list[dict]:
+        """Query typed atoms with optional filters."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if memory_id is not None:
+            clauses.append("memory_id=?")
+            params.append(str(memory_id))
+        if atom_type is not None:
+            clauses.append("atom_type=?")
+            params.append(str(atom_type))
+        if review_status != "all":
+            clauses.append("review_status=?")
+            params.append(str(review_status))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(max(1, min(2000, int(limit))))
+        with self._lock:
+            rows = self._connection.execute(
+                f"SELECT * FROM memory_atoms{where} ORDER BY created_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_atom_status(self, atom_id: int, status: str) -> bool:
+        """Approve or reject a typed atom."""
+        if status not in {"pending", "approved", "rejected"}:
+            raise ValueError(f"Invalid atom review status: {status}")
+        with self.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE memory_atoms SET review_status=? WHERE id=?",
+                (status, int(atom_id)),
+            )
+        return cursor.rowcount > 0
 
     def record_recall_confusion(
         self,
@@ -1116,6 +1415,8 @@ class MemoryCatalog:
             confirmed_at = None if raw_confirmed_at is None else float(raw_confirmed_at)
             if confirmed_at is not None and not math.isfinite(confirmed_at):
                 raise ValueError("Backup contains a non-finite confirmation timestamp")
+            protection_tier = 1 if int(record.get("protection_tier", 0) or 0) else 0
+            pinned = 1 if int(record.get("pinned", 0) or 0) else 0
             prepared.append((
                 memory_id, text, retention, cognitive, timestamp, event_time,
                 max(0.0, min(1.0, importance)),
@@ -1128,6 +1429,7 @@ class MemoryCatalog:
                 model_version,
                 "pending", lifecycle_state, fact_key, fact_revision,
                 supersedes_id, confirmation_state, confirmed_at, now, now,
+                protection_tier, pinned,
             ))
         with self.transaction() as connection:
             connection.execute("DELETE FROM memory_records")
@@ -1137,8 +1439,9 @@ class MemoryCatalog:
                        emotions_json,source_type,source_uri,source_hash,trust_level,
                        sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
                        embedding_status,lifecycle_state,fact_key,fact_revision,
-                       supersedes_id,confirmation_state,confirmed_at,created_at,updated_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       supersedes_id,confirmation_state,confirmed_at,created_at,updated_at,
+                       protection_tier,pinned
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 prepared,
             )
         return len(prepared)
@@ -1165,8 +1468,9 @@ class MemoryCatalog:
                    emotions_json,source_type,source_uri,source_hash,trust_level,
                    sanitizer_status,sanitizer_flags_json,keywords,embedding_model_version,
                    embedding_status,lifecycle_state,fact_key,fact_revision,
-                   supersedes_id,confirmation_state,confirmed_at,created_at,updated_at
-               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   supersedes_id,confirmation_state,confirmed_at,created_at,updated_at,
+                   protection_tier,pinned
+               ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                    text=excluded.text,retention_layer=excluded.retention_layer,
                    cognitive_layer=excluded.cognitive_layer,timestamp=excluded.timestamp,
@@ -1183,7 +1487,8 @@ class MemoryCatalog:
                     supersedes_id=excluded.supersedes_id,
                     confirmation_state=excluded.confirmation_state,
                     confirmed_at=excluded.confirmed_at,
-                    created_at=excluded.created_at,updated_at=excluded.updated_at"""
+                    created_at=excluded.created_at,updated_at=excluded.updated_at,
+                    protection_tier=excluded.protection_tier,pinned=excluded.pinned"""
         with self.transaction() as connection:
             connection.execute(
                 "CREATE TEMP TABLE IF NOT EXISTS reverie_import_seen_ids(id TEXT PRIMARY KEY)"
@@ -1285,6 +1590,8 @@ class MemoryCatalog:
         confirmed_at = None if raw_confirmed_at is None else float(raw_confirmed_at)
         if confirmed_at is not None and not math.isfinite(confirmed_at):
             raise ValueError("Backup contains a non-finite confirmation timestamp")
+        protection_tier = 1 if int(record.get("protection_tier", 0) or 0) else 0
+        pinned = 1 if int(record.get("pinned", 0) or 0) else 0
         return (
             memory_id, text, retention, cognitive, timestamp, event_time,
             max(0.0, min(1.0, importance)),
@@ -1296,6 +1603,7 @@ class MemoryCatalog:
             " ".join(memory_terms(text)), model_version,
             "pending", lifecycle_state, fact_key, fact_revision,
             supersedes_id, confirmation_state, confirmed_at, now, now,
+            protection_tier, pinned,
         )
 
     def reset_embedding_derivatives(self) -> None:

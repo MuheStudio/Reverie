@@ -46,9 +46,7 @@ function assertPackagedLayout(packageRoot) {
     }
   }
   for (const omitted of [
-    'affairs', 'ambient', 'archive', 'backup',
-    'interest', 'keepsakes', 'social', 'timeline',
-    'web', 'work_manager',
+    'affairs', 'anime_service', 'interest', 'timeline', 'ui', 'work_manager',
   ]) {
     if (!OMITTED_SOURCE_MODULES.includes(omitted)) {
       throw new Error(
@@ -62,7 +60,10 @@ function assertPackagedLayout(packageRoot) {
   }
   // These are core companion capabilities: they must
   // ship. Their absence once made packaged stickers/games silently inert.
-  for (const shipped of ['diary', 'games', 'immersion', 'stickers']) {
+  for (const shipped of [
+    'diary', 'games', 'immersion', 'stickers',
+    'web', 'ambient', 'archive', 'lorebook', 'backup', 'social', 'keepsakes',
+  ]) {
     if (OMITTED_SOURCE_MODULES.includes(shipped)) {
       throw new Error(
         `Core companion module '${shipped}' must not appear in OMITTED_SOURCE_MODULES`,
@@ -77,10 +78,16 @@ function assertPackagedLayout(packageRoot) {
   if (!fs.existsSync(notifications)) {
     throw new Error(`Core companion module was not packaged: ${notifications}`);
   }
-  for (const omittedFile of ['ambient.py', 'backup.py', 'work_manager.py']) {
+  for (const omittedFile of ['work_manager.py']) {
     const target = path.join(resources, 'src', omittedFile);
     if (fs.existsSync(target)) {
       throw new Error(`Non-MVP Python module was packaged: ${target}`);
+    }
+  }
+  for (const shippedFile of ['ambient.py', 'backup.py']) {
+    const target = path.join(resources, 'src', shippedFile);
+    if (!fs.existsSync(target)) {
+      throw new Error(`Core companion module was not packaged: ${target}`);
     }
   }
   return { resources, python, entrypoint };

@@ -40,6 +40,7 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "memory:edit",
   "memory:list",
   "memory:query",
+  "memory:reinforce",
   "memory:settings:get",
   "memory:store",
   "module:control",
@@ -58,7 +59,8 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "tts:list",
   "tts:synthesize",
   "user:profile:get",
-  "user:profile:update"
+  "user:profile:update",
+  "video:download"
 ]));
 const MESSAGE_NAMES = Object.freeze(new Set([
   "ai_usage:result",
@@ -100,7 +102,9 @@ const MESSAGE_NAMES = Object.freeze(new Set([
   "sticker:data",
   "timeline:result",
   "tts:result",
-  "user:profile:result"
+  "user:profile:result",
+  "video:download:progress",
+  "video:download:result"
 ]));
 
 module.exports = { COMMAND_NAMES, MESSAGE_NAMES };

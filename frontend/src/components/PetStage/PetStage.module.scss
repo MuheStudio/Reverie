@@ -1,119 +1,347 @@
 .petStage {
+  --ink: #302a3e;
+  --paper: rgba(255, 252, 244, 0.96);
   position: relative;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
   background: transparent;
+  color: var(--ink);
   user-select: none;
-  font-family: system-ui, 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
-.dragRegion {
+.modelRegion {
   position: absolute;
-  inset: 0;
-  -webkit-app-region: drag;
+  inset: 4px 8px 74px;
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: center;
+  cursor: grab;
+
+  &:active { cursor: grabbing; }
 }
 
 .avatarCanvas {
-  width: 100%;
+  width: min(100%, 300px);
   height: 100%;
+  pointer-events: none;
 }
 
 .staticAvatar {
-  width: 180px;
-  height: 240px;
-  margin-bottom: 24px;
+  position: relative;
+  width: min(58vw, 184px);
+  height: min(64vh, 248px);
+  margin-top: 18px;
   display: grid;
   place-items: center;
-  border-radius: 28px;
-  background: linear-gradient(160deg, rgba(64, 76, 130, 0.5), rgba(20, 23, 39, 0.65));
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  border: 3px solid rgba(48, 42, 62, 0.82);
+  border-radius: 48% 52% 43% 46% / 39% 41% 55% 58%;
+  background:
+    radial-gradient(circle at 72% 24%, rgba(255, 255, 255, 0.75) 0 4%, transparent 5%),
+    linear-gradient(155deg, rgba(249, 220, 231, 0.94), rgba(172, 153, 205, 0.94));
+  box-shadow: 7px 9px 0 rgba(48, 42, 62, 0.16), 0 16px 38px rgba(38, 29, 57, 0.26);
+  transform: rotate(-1.5deg);
+}
+
+.petEarLeft,
+.petEarRight {
+  position: absolute;
+  top: -17px;
+  width: 52px;
+  height: 57px;
+  border: 3px solid rgba(48, 42, 62, 0.82);
+  background: #d6badb;
+  z-index: -1;
+}
+
+.petEarLeft {
+  left: 13px;
+  border-radius: 10px 70% 10px 70%;
+  transform: rotate(-18deg);
+}
+
+.petEarRight {
+  right: 13px;
+  border-radius: 70% 10px 70% 10px;
+  transform: rotate(18deg);
 }
 
 .petFace {
-  width: 96px;
-  height: 96px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #f2e3cf, #d9b98f 60%, #b98a5e);
   position: relative;
+  width: 104px;
+  height: 96px;
+  border: 3px solid var(--ink);
+  border-radius: 50% 47% 48% 45%;
+  background: #fff8e8;
 
   &::before,
   &::after {
     content: '';
     position: absolute;
     top: 34px;
-    width: 10px;
-    height: 14px;
-    border-radius: 50%;
-    background: #3b2f2a;
+    width: 12px;
+    height: 17px;
+    border-radius: 48%;
+    background: var(--ink);
+    box-shadow: inset 3px 3px 0 #fff;
   }
 
-  &::before {
-    left: 26px;
-  }
-
-  &::after {
-    right: 26px;
-  }
+  &::before { left: 24px; }
+  &::after { right: 24px; }
 }
 
 .bubble {
   position: absolute;
-  left: 12px;
-  right: 36px;
   top: 16px;
-  padding: 10px 14px;
-  border-radius: 14px;
-  background: rgba(20, 23, 39, 0.88);
-  color: #eef0f6;
-  font-size: 13px;
-  line-height: 1.55;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
-  -webkit-app-region: no-drag;
-  max-height: 45%;
-  overflow: hidden;
+  right: 18px;
+  width: min(62vw, 220px);
+  max-height: 36vh;
+  padding: 13px 16px;
+  border: 2px solid var(--ink);
+  border-radius: 48% 44% 46% 42% / 24% 28% 25% 27%;
+  background: var(--paper);
+  box-shadow: 4px 5px 0 rgba(48, 42, 62, 0.18), 0 10px 26px rgba(38, 29, 57, 0.2);
+  backdrop-filter: blur(6px);
+  transform: rotate(0.8deg);
+  z-index: 3;
+  animation: bubbleRise 260ms ease-out;
 
   p {
     margin: 0;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 6;
-    -webkit-box-orient: vertical;
+    overflow: auto;
+    max-height: calc(36vh - 26px);
+    user-select: text;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.55;
+    scrollbar-width: thin;
   }
 }
 
 .bubbleTail {
   position: absolute;
-  bottom: -8px;
-  left: 32px;
-  width: 0;
-  height: 0;
-  border-left: 8px solid transparent;
-  border-right: 8px solid transparent;
-  border-top: 10px solid rgba(20, 23, 39, 0.88);
+  right: 27px;
+  bottom: -16px;
+  width: 25px;
+  height: 20px;
+  border-right: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+  background: var(--paper);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  transform: skewX(-22deg) rotate(7deg);
+}
+
+.streamingDot {
+  position: absolute;
+  right: 13px;
+  bottom: 9px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9a5d91;
+  animation: inkPulse 900ms ease-in-out infinite alternate;
 }
 
 .closeButton {
   position: absolute;
-  top: 10px;
-  right: 10px;
-  width: 26px;
-  height: 26px;
-  border: none;
+  top: 8px;
+  left: 8px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(48, 42, 62, 0.28);
   border-radius: 50%;
-  background: rgba(20, 23, 39, 0.55);
-  color: #cdd2e0;
-  font-size: 16px;
-  line-height: 1;
+  background: rgba(255, 252, 244, 0.76);
+  color: var(--ink);
   cursor: pointer;
-  -webkit-app-region: no-drag;
-  z-index: 2;
+  z-index: 5;
+}
 
-  &:hover {
-    background: rgba(20, 23, 39, 0.85);
-    color: #fff;
+.composerArea {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  left: 8px;
+  z-index: 6;
+}
+
+.composer {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 6px;
+  border: 2px solid rgba(48, 42, 62, 0.82);
+  border-radius: 18px 15px 19px 16px;
+  background: rgba(255, 252, 244, 0.94);
+  box-shadow: 4px 5px 0 rgba(48, 42, 62, 0.16);
+}
+
+.iconButton,
+.sendButton,
+.stickerItem {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 3px solid rgba(144, 83, 135, 0.42);
+    outline-offset: 2px;
   }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.38;
+  }
+}
+
+.iconButton,
+.sendButton {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+
+  &:not(:disabled):hover { background: rgba(154, 93, 145, 0.13); }
+}
+
+.sendButton {
+  border: 1px solid rgba(48, 42, 62, 0.68);
+  background: #553e69;
+  color: #fffaf0;
+
+  &:not(:disabled):hover { background: #765581; }
+}
+
+.inputWrap {
+  flex: 1 1 auto;
+  min-width: 0;
+
+  input {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 7px 4px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 13px/1.3 'Microsoft YaHei UI', 'Segoe UI', sans-serif;
+    user-select: text;
+
+    &::placeholder { color: rgba(48, 42, 62, 0.52); }
+  }
+}
+
+.stickerTray {
+  position: absolute;
+  right: 0;
+  bottom: 59px;
+  left: 0;
+  max-height: min(180px, 38vh);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+  gap: 6px;
+  padding: 9px;
+  overflow: auto;
+  border: 2px solid var(--ink);
+  border-radius: 18px 15px 14px 20px;
+  background: var(--paper);
+  box-shadow: 4px 5px 0 rgba(48, 42, 62, 0.18);
+}
+
+.stickerItem {
+  min-width: 0;
+  min-height: 62px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+
+  &:not(:disabled):hover {
+    border-color: rgba(48, 42, 62, 0.22);
+    background: rgba(154, 93, 145, 0.1);
+  }
+
+  img {
+    width: 38px;
+    height: 38px;
+    object-fit: contain;
+  }
+
+  span {
+    width: 100%;
+    overflow: hidden;
+    color: rgba(48, 42, 62, 0.78);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.emptyStickers {
+  grid-column: 1 / -1;
+  margin: 16px;
+  color: rgba(48, 42, 62, 0.58);
+  font-size: 12px;
+  text-align: center;
+}
+
+.status {
+  position: absolute;
+  right: 9px;
+  bottom: 54px;
+  margin: 0;
+  padding: 3px 7px;
+  border-radius: 7px;
+  background: rgba(48, 42, 62, 0.82);
+  color: #fffaf0;
+  font-size: 10px;
+  line-height: 1.3;
+
+  &:empty { display: none; }
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes inkPulse {
+  from { opacity: 0.35; transform: scale(0.75); }
+  to { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes bubbleRise {
+  from { opacity: 0; transform: translateY(10px) rotate(0.8deg) scale(0.92); }
+  to { opacity: 1; transform: translateY(0) rotate(0.8deg) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streamingDot { animation: none; }
+  .staticAvatar { transform: none; }
+  .bubble { animation: none; }
 }

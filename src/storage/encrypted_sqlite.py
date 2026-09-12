@@ -201,14 +201,34 @@ def _open_encrypted(
         raise
 
 
+def _has_write_sidecar(path: Path) -> bool:
+    """True when a leftover rollback/WAL file would need a write to recover."""
+
+    for suffix in ("-journal", "-wal", "-shm"):
+        sidecar = Path(f"{path}{suffix}")
+        try:
+            stat = sidecar.lstat()
+        except FileNotFoundError:
+            continue
+        if sidecar.is_symlink() or not stat_module.S_ISREG(stat.st_mode):
+            continue
+        if stat.st_size > 0:
+            return True
+    return False
+
+
 def _verify_encrypted_database(path: Path, key: bytes) -> None:
+    # SQLCipher recovery of a leftover DELETE journal writes the replayed
+    # pages back to the main file. A URI `mode=ro` open then fails with
+    # "attempt to write a readonly database" and kills the desktop host
+    # before the stdio ready frame. Recover those sidecars read-write.
     connection = _open_encrypted(
         path,
         key,
         timeout=5.0,
         check_same_thread=True,
         isolation_level=None,
-        read_only=True,
+        read_only=not _has_write_sidecar(path),
     )
     try:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
@@ -217,6 +237,10 @@ def _verify_encrypted_database(path: Path, key: bytes) -> None:
         cipher_errors = connection.execute("PRAGMA cipher_integrity_check").fetchall()
         if cipher_errors:
             raise EncryptedStorageError("encrypted database page authentication failed")
+    except EncryptedStorageError:
+        raise
+    except Exception as exc:
+        raise EncryptedStorageError("encrypted database could not be verified") from exc
     finally:
         connection.close()
 

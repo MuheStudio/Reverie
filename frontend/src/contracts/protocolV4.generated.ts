@@ -8,6 +8,7 @@ export const WSMsgType = {
   CHAT_STOP: "chat:stop",
   CHAT_HISTORY: "chat:history",
   CHAT_MEDIA: "chat:media",
+  VIDEO_DOWNLOAD: "video:download",
   BRIDGE_AUTH: "bridge:auth",
   LOCAL_MODE_SET: "local_mode:set",
   MEMORY_QUERY: "memory:query",
@@ -16,13 +17,13 @@ export const WSMsgType = {
   MEMORY_DELETE: "memory:delete",
   MEMORY_SETTINGS_GET: "memory:settings:get",
   MEMORY_STORE: "memory:store",
+  MEMORY_REINFORCE: "memory:reinforce",
   MEMORY_CANDIDATE_LIST: "memory:candidates:list",
   MEMORY_CANDIDATE_CONFIRM: "memory:candidates:confirm",
   MEMORY_CANDIDATE_REJECT: "memory:candidates:reject",
   EMOTION_GET: "emotion:get",
   PERSONA_GET: "persona:get",
   PERSONA_IMPORT: "persona:import",
-  PERSONA_LIST: "persona:list",
   PERSONA_ACTIVATE: "persona:activate",
   ARCHIVE_GET: "archive:get",
   ARCHIVE_PUT: "archive:put",
@@ -58,7 +59,6 @@ export const WSMsgType = {
   STICKER_COLLECT: "sticker:collect",
   STICKER_REACT: "sticker:react",
   STICKER_IMPORT: "sticker:import",
-  STICKER_SEND: "sticker:send",
   ANTI_AI_STATUS: "anti_ai:status",
   IMMERSION_NEARBY: "immersion:nearby",
   IMMERSION_CLOSEUP: "immersion:closeup",
@@ -72,6 +72,8 @@ export const WSMsgType = {
   CHAT_RETRACT: "chat:retract",
   CHAT_HISTORY_RESULT: "chat:history:result",
   CHAT_MEDIA_RESULT: "chat:media:result",
+  VIDEO_DOWNLOAD_RESULT: "video:download:result",
+  VIDEO_DOWNLOAD_PROGRESS: "video:download:progress",
   BRIDGE_AUTH_OK: "bridge:auth_ok",
   BRIDGE_AUTH_ERROR: "bridge:auth_error",
   LOCAL_MODE_STATE: "local_mode:state",
@@ -110,7 +112,7 @@ export const WSMsgType = {
 } as const;
 
 export type LegacyMessageType = typeof WSMsgType[keyof typeof WSMsgType];
-export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:media" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "diary:write" | "emotion:get" | "game:move" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:list" | "memory:candidates:reject" | "memory:delete" | "memory:edit" | "memory:list" | "memory:query" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:import" | "sticker:list" | "sticker:react" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update";
+export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:media" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "diary:write" | "emotion:get" | "game:move" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:list" | "memory:candidates:reject" | "memory:delete" | "memory:edit" | "memory:list" | "memory:query" | "memory:reinforce" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:import" | "sticker:list" | "sticker:react" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update" | "video:download";
 
 export interface PersonaScopeV4 {
   persona_id: string;

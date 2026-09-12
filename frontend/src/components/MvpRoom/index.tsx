@@ -1,8 +1,9 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   Brain,
   Check,
+  Cloud,
   ImagePlus,
   KeyRound,
   MessageCircle,
@@ -16,6 +17,7 @@ import {
   Square,
   Trash2,
   Users,
+  Video,
   X,
 } from 'lucide-react';
 import { useMvpBridge } from '@/hooks/useMvpBridge';
@@ -31,6 +33,7 @@ import {
   type ChatImageAttachment,
 } from '@/lib/chatImage';
 import { ChatImage } from '@/components/chat/ChatImage';
+import { ChatVideo, isVideoMime } from '@/components/chat/ChatVideo';
 import {
   consumeFallbackDraft,
   loadReverieChatDraft,
@@ -38,6 +41,7 @@ import {
   saveReverieChatDraft,
 } from '@/lib/reverieChatStorage';
 import BundledCharacter from './BundledCharacter';
+import VoicePackManagerPanel from '@/components/settings/VoicePackManagerPanel';
 import styles from './MvpRoom.module.scss';
 
 // Raw backend delivery-state enums (ready_waiting, accepted, …) must not leak
@@ -56,6 +60,17 @@ const DELIVERY_STATE_LABELS: Record<string, string> = {
 };
 
 type Tab = 'chat' | 'memory' | 'settings';
+
+// User-specified liability disclaimer for the video download feature. Adopted
+// verbatim (see 待实施计划/…/视频下载到聊天发送-实施设计方案.md §1.2). It gates the
+// feature: the user must scroll it to the bottom and check the acknowledgement
+// box before the backend will accept video_download_enabled=true. The backend
+// enforces the same fail-closed invariant independently (ws_bridge features
+// branch), so this UI gate is defence-in-depth, not the sole guard.
+const VIDEO_DOWNLOAD_DISCLAIMER =
+  '本功能仅供下载用户拥有版权或已获授权的视频，禁止用于下载受版权保护且未经授权的内容。'
+  + '用户需自行承担使用本工具的全部法律责任，开发者不对用户的任何行为负责。'
+  + '本工具按“原样”提供，开发者不承担任何直接或间接责任。';
 
 // Sticker assets come back either as inline data URLs or as
 // reverie-sticker://asset references served by the Electron protocol.
@@ -386,11 +401,6 @@ export default function MvpRoom() {
   const [uiMode, setUiMode] = useState<'mvp' | 'dream'>('mvp');
   const [uiModeNotice, setUiModeNotice] = useState('');
   const [retention, setRetention] = useState(730);
-  const [adultConfirmed, setAdultConfirmed] = useState(false);
-  const [aiConfirmed, setAiConfirmed] = useState(false);
-  const [age, setAge] = useState(18);
-  const [nickname, setNickname] = useState('');
-  const [onboardingSaving, setOnboardingSaving] = useState(false);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
 
   const personaName = useMemo(() => (
@@ -398,9 +408,6 @@ export default function MvpRoom() {
     || text(bridge.persona?.display_name)
     || '她'
   ), [bridge.persona]);
-  const uiSettings = isRecord(bridge.settings.ui) ? bridge.settings.ui : null;
-  const onboardingKnown = bridge.connection === 'connected' && uiSettings !== null;
-  const onboardingCompleted = uiSettings?.onboarding_completed === true;
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ block: 'end' });
@@ -487,26 +494,6 @@ export default function MvpRoom() {
     }
   };
 
-  const completeOnboarding = async () => {
-    if (!adultConfirmed || !aiConfirmed || age < 18 || age > 120) return;
-    setOnboardingSaving(true);
-    await bridge.completeOnboarding({
-      name: '',
-      nickname: nickname.trim(),
-      age,
-      birthday: '',
-      identity: '',
-      schedule: '',
-      interests: [],
-      hobbies: [],
-      favorite_topics: [],
-      favorite_games: [],
-      favorite_anime: [],
-      important_dates: {},
-    });
-    setOnboardingSaving(false);
-  };
-
   return (
     <main className={styles.shell} data-testid="mvp-room">
       <div className={styles.atmosphere} aria-hidden="true" />
@@ -563,7 +550,26 @@ export default function MvpRoom() {
         {bridge.error && (
           <div className={styles.errorBanner} role="alert">
             <span>{bridge.error}</span>
-            <button type="button" aria-label="关闭错误" onClick={bridge.clearError}><X size={15} /></button>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button
+                type="button"
+                style={{ fontSize: 11, padding: '2px 8px', border: '1px solid rgba(255,255,255,0.3)', borderRadius: 6, background: 'transparent', color: 'inherit', cursor: 'pointer' }}
+                onClick={() => {
+                  const log = [
+                    `Reverie 错误日志 — ${new Date().toISOString()}`,
+                    '',
+                    `错误信息: ${bridge.error}`,
+                    '',
+                    '— 请将此内容粘贴到 GitHub Issue 或发送给开发者 —',
+                  ].join('\n');
+                  void navigator.clipboard?.writeText(log).then(
+                    () => window.electronAPI?.showNotification?.('已复制', '错误信息已复制到剪贴板，可直接粘贴。'),
+                    () => undefined,
+                  );
+                }}
+              >复制错误</button>
+              <button type="button" aria-label="关闭错误" onClick={bridge.clearError}><X size={15} /></button>
+            </div>
           </div>
         )}
 
@@ -587,12 +593,19 @@ export default function MvpRoom() {
                 <article key={message.id} data-role={message.role}>
                   {message.role === 'user' && (message.attachmentPreview || (message.media?.length)) && (
                     <span className={styles.messageImage}>
-                      <ChatImage
-                        mediaId={message.media?.[0]?.media_id || ''}
-                        previewUrl={message.attachmentPreview}
-                        fetcher={bridge.fetchChatMedia}
-                        alt="发送的图片"
-                      />
+                      {isVideoMime(message.media?.[0]?.mime) ? (
+                        <ChatVideo
+                          mediaId={message.media?.[0]?.media_id || ''}
+                          mime={message.media?.[0]?.mime}
+                        />
+                      ) : (
+                        <ChatImage
+                          mediaId={message.media?.[0]?.media_id || ''}
+                          previewUrl={message.attachmentPreview}
+                          fetcher={bridge.fetchChatMedia}
+                          alt="发送的图片"
+                        />
+                      )}
                     </span>
                   )}
                   {message.content && message.content !== '[图片]' && <p>{message.content}</p>}
@@ -746,7 +759,7 @@ export default function MvpRoom() {
                   });
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
+                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     send();
                   }
@@ -835,7 +848,7 @@ export default function MvpRoom() {
                 disabled={bridge.connection !== 'connected'}
                 onChange={(event) => setGroupDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     if (!bridge.sendGroupMessage(groupDraft)) return;
                     setGroupDraft('');
@@ -1312,6 +1325,23 @@ export default function MvpRoom() {
             </section>
             <section className={styles.settingsSection}>
               <header>
+                <Video size={18} />
+                <div>
+                  <strong>视频下载</strong>
+                  <span>把冲浪时遇到的视频下载后，作为单条视频消息发给她。默认关闭，需先同意免责声明。</span>
+                </div>
+              </header>
+              <VideoDownloadControl
+                connection={bridge.connection}
+                features={isRecord(bridge.settings.features) ? bridge.settings.features : null}
+                updateSettings={bridge.updateSettings}
+                saveSettings={bridge.saveSettings}
+                downloadVideo={bridge.downloadVideo}
+                sendChat={bridge.sendChat}
+              />
+            </section>
+            <section className={styles.settingsSection}>
+              <header>
                 <Settings size={18} />
                 <div>
                   <strong>界面模式</strong>
@@ -1345,63 +1375,30 @@ export default function MvpRoom() {
               </button>
               <p className={styles.statusLine} role="status">{uiModeNotice}</p>
             </section>
+            <section className={styles.settingsSection}>
+              <header>
+                <Settings size={18} />
+                <div>
+                  <strong>语音包</strong>
+                  <span>导入 GPT-SoVITS v2 四件套文件夹，保存在本机应用数据目录。</span>
+                </div>
+              </header>
+              <VoicePackManagerPanel />
+            </section>
+            <section className={styles.settingsSection}>
+              <header>
+                <Cloud size={18} />
+                <div>
+                  <strong>云服务（开发中）</strong>
+                  <span>云接口已预留、尚未开放：记忆、情绪、关系、日记与聊天目前全部只保存在这台电脑本地。</span>
+                </div>
+              </header>
+              <p className={styles.statusLine}>云同步上线后，这里会提供开关与数据迁移入口；换机可以先在“她的房间 → 备份”里做本地导出/导入。</p>
+            </section>
           </section>
         )}
       </section>
 
-      {onboardingKnown && !onboardingCompleted && (
-        <div className={styles.onboardingBackdrop}>
-          <section className={styles.onboarding} role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
-            <ShieldCheck size={32} />
-            <h1 id="onboarding-title">开始前，先确认边界</h1>
-            <p>
-              Reverie 面向 18 岁以上用户。{personaName} 是 AI 角色，可能出错；记忆候选需要你确认，
-              危机、医疗、法律与财务问题应寻求现实中的专业支持。
-            </p>
-            <label>
-              <span>你的年龄</span>
-              <input
-                type="number"
-                min={18}
-                max={120}
-                value={age}
-                onChange={(event) => setAge(Number(event.target.value))}
-              />
-            </label>
-            <label>
-              <span>希望被怎样称呼（可选）</span>
-              <input
-                value={nickname}
-                maxLength={80}
-                onChange={(event) => setNickname(event.target.value)}
-              />
-            </label>
-            <label className={styles.checkbox}>
-              <input
-                type="checkbox"
-                checked={adultConfirmed}
-                onChange={(event) => setAdultConfirmed(event.target.checked)}
-              />
-              <span>我已年满 18 岁。</span>
-            </label>
-            <label className={styles.checkbox}>
-              <input
-                type="checkbox"
-                checked={aiConfirmed}
-                onChange={(event) => setAiConfirmed(event.target.checked)}
-              />
-              <span>我理解这是 AI 陪伴，不是真人，也不会替代现实支持。</span>
-            </label>
-            <button
-              type="button"
-              disabled={onboardingSaving || !adultConfirmed || !aiConfirmed || age < 18 || age > 120}
-              onClick={() => { void completeOnboarding(); }}
-            >
-              确认并进入
-            </button>
-          </section>
-        </div>
-      )}
     </main>
   );
 }
@@ -1440,5 +1437,204 @@ function LocalModeControl() {
       </button>
       <span role="status">{message || (state?.enabled ? '当前禁止远程网络。' : '当前允许所选 Provider 联网。')}</span>
     </div>
+  );
+}
+
+// Video download compliance gate. Mirrors the fail-closed invariant enforced by
+// the backend (ws_bridge features branch): the feature cannot be enabled unless
+// the user has acknowledged the liability disclaimer. This UI adds a
+// scroll-to-bottom requirement before the acknowledgement checkbox unlocks, so
+// the user cannot blind-accept. The backend re-checks acknowledgement on save,
+// so a tampered client still cannot enable the feature without acknowledgement.
+function VideoDownloadControl({
+  connection,
+  features,
+  updateSettings,
+  saveSettings,
+  downloadVideo,
+  sendChat,
+}: {
+  connection: string;
+  features: Record<string, unknown> | null;
+  updateSettings: (payload: Record<string, unknown>) => unknown;
+  saveSettings: (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  downloadVideo: (sourceUrl: string, pageTitle?: string) => Promise<{
+    mediaId: string;
+    mime: string;
+    pageTitle: string;
+  }>;
+  sendChat: (raw: string, attachment?: {
+    path?: string;
+    previewUrl?: string;
+    videoMediaId?: string;
+    videoMime?: string;
+  }) => string | null;
+}) {
+  const [enabled, setEnabled] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  // Whether the disclaimer has been read to the bottom this session. Reset only
+  // on mount; a saved acknowledgement pre-satisfies it so returning users are
+  // not forced to re-scroll to toggle the feature.
+  const [scrolledToBottom, setScrolledToBottom] = useState(false);
+  const [notice, setNotice] = useState('');
+  const disclaimerRef = useRef<HTMLParagraphElement | null>(null);
+
+  // Hydrate from authoritative backend state. A previously acknowledged
+  // disclaimer also unlocks the checkbox without re-scrolling.
+  useEffect(() => {
+    if (!features) return;
+    const savedEnabled = features.video_download_enabled === true;
+    const savedAck = features.video_download_disclaimer_acknowledged === true;
+    setEnabled(savedEnabled);
+    setAcknowledged(savedAck);
+    if (savedAck) setScrolledToBottom(true);
+  }, [features]);
+
+  // Measurement guard (Murphy M): a short disclaimer that fits without a
+  // scrollbar can never fire onScroll, which would lock the checkbox forever.
+  // If the content is not actually scrollable, treat it as already read.
+  const measureScrollable = useCallback((node: HTMLParagraphElement | null) => {
+    disclaimerRef.current = node;
+    if (node && node.scrollHeight - node.clientHeight <= 1) {
+      setScrolledToBottom(true);
+    }
+  }, []);
+
+  const onDisclaimerScroll = () => {
+    const node = disclaimerRef.current;
+    if (!node) return;
+    if (node.scrollTop + node.clientHeight >= node.scrollHeight - 4) {
+      setScrolledToBottom(true);
+    }
+  };
+
+  const save = () => {
+    // Enforce the fail-closed pairing client-side too: an unacknowledged
+    // disclaimer forces the feature off before the request is even sent.
+    const nextEnabled = acknowledged ? enabled : false;
+    if (!updateSettings({
+      section: 'features',
+      video_download_disclaimer_acknowledged: acknowledged,
+      video_download_enabled: nextEnabled,
+    })) {
+      setNotice('保存失败：本地服务未连接。');
+      return;
+    }
+    setNotice(nextEnabled
+      ? '已开启视频下载。仅用于你拥有版权或已获授权的内容。'
+      : acknowledged
+        ? '已保存：视频下载当前关闭。'
+        : '已撤销同意：视频下载已关闭。');
+  };
+
+  const downloadAndSend = async () => {
+    const url = sourceUrl.trim();
+    if (!url) {
+      setNotice('请粘贴一条公开的 http(s) 视频地址。');
+      return;
+    }
+    if (!acknowledged || !enabled) {
+      setNotice('请先阅读免责声明并开启视频下载。');
+      return;
+    }
+    if (connection !== 'connected' || downloadBusy) return;
+    const nextEnabled = acknowledged ? enabled : false;
+    setDownloadBusy(true);
+    setNotice('正在保存设置并下载视频…');
+    try {
+      const saved = await saveSettings({
+        section: 'features',
+        video_download_disclaimer_acknowledged: acknowledged,
+        video_download_enabled: nextEnabled,
+      });
+      if (saved.ok !== true) {
+        setNotice('设置未保存成功，无法下载。');
+        return;
+      }
+      setNotice('正在下载视频…');
+      const downloaded = await downloadVideo(url);
+      if (!sendChat(downloaded.pageTitle, {
+        videoMediaId: downloaded.mediaId,
+        videoMime: downloaded.mime,
+      })) {
+        setNotice('视频已下载，但未能作为聊天消息发出。');
+        return;
+      }
+      setSourceUrl('');
+      setNotice('视频已作为一条聊天消息发出。默认不自动播放。');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '视频下载失败。');
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p
+        ref={measureScrollable}
+        className={styles.videoDisclaimer}
+        onScroll={onDisclaimerScroll}
+        tabIndex={0}
+        role="region"
+        aria-label="视频下载免责声明"
+      >
+        {VIDEO_DOWNLOAD_DISCLAIMER}
+      </p>
+      <label className={styles.checkboxStack}>
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          disabled={!scrolledToBottom}
+          onChange={(event) => {
+            const next = event.target.checked;
+            setAcknowledged(next);
+            // Revoking acknowledgement immediately disables the feature intent,
+            // matching the backend's fail-closed invariant.
+            if (!next) setEnabled(false);
+          }}
+        />
+        <span>
+          我已阅读并同意上述免责声明{!scrolledToBottom && '（请先滑动阅读到底部）'}
+        </span>
+      </label>
+      <label className={styles.checkboxStack}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={!acknowledged}
+          onChange={(event) => setEnabled(event.target.checked)}
+        />
+        <span>开启视频下载功能</span>
+      </label>
+      <label className={styles.field}>
+        <span>视频地址（公开 http/https 直链或 m3u8）</span>
+        <input
+          value={sourceUrl}
+          onChange={(event) => setSourceUrl(event.target.value)}
+          placeholder="https://example.com/video.mp4"
+          disabled={!enabled || downloadBusy}
+        />
+      </label>
+      <div className={styles.actionRow}>
+        <button
+          type="button"
+          disabled={connection !== 'connected'}
+          onClick={save}
+        >
+          保存视频下载设置
+        </button>
+        <button
+          type="button"
+          disabled={connection !== 'connected' || !enabled || downloadBusy}
+          onClick={() => void downloadAndSend()}
+        >
+          {downloadBusy ? '正在下载…' : '下载并发送到聊天'}
+        </button>
+      </div>
+      <p className={styles.statusLine} role="status">{notice}</p>
+    </>
   );
 }

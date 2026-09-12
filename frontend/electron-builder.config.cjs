@@ -9,12 +9,19 @@ const outputRoot = process.env.REVERIE_WINDOWS_OUT
   ? path.resolve(process.env.REVERIE_WINDOWS_OUT)
   : path.join(
       reverieRoot,
-      '\u5c06Reverie\u6253\u5305\u81f3\u5404\u4e2a\u5e73\u53f0',
-      '\u534a\u6210\u54c1',
+      '将Reverie打包至各个平台',
+      '半成品',
       'Windows',
     );
 const stagingResources = path.join(frontendRoot, '.installer-resources');
 const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
+const onboardingTestInstaller = process.env.REVERIE_ONBOARDING_TEST_INSTALLER === '1';
+const productName = onboardingTestInstaller
+  ? 'Reverie Onboarding Test 20260905'
+  : 'Reverie';
+const appId = onboardingTestInstaller
+  ? 'studio.muhe.reverie.onboarding-test-20260905'
+  : 'studio.muhe.reverie';
 
 const extraResources = [
   { from: path.join(stagingResources, 'src'), to: 'src' },
@@ -33,14 +40,24 @@ const extraResources = [
   { from: path.join(frontendRoot, 'public', 'icon.ico'), to: 'icon.ico' },
 ];
 
-if (live2dBuildEnabled) {
+if (onboardingTestInstaller) {
   for (const name of [
-    'LIVE2D_PUBLICATION_LICENSE.json',
-    'YUMI_CHARACTER_RIGHTS.json',
     'LIVE2D_RUNTIME_ENABLED',
     'LIVE2D-RUNTIME-ASSETS.json',
     'Live2DCubismCore.js',
-    'character',
+    'downscale-live2d-textures.py',
+  ]) {
+    const source = path.join(stagingResources, name);
+    if (!fs.existsSync(source)) throw new Error(`Live2D test runtime output is missing: ${name}`);
+    extraResources.push({ from: source, to: name });
+  }
+} else if (live2dBuildEnabled) {
+  for (const name of [
+    'LIVE2D_PUBLICATION_LICENSE.json',
+    'LIVE2D_RUNTIME_ENABLED',
+    'LIVE2D-RUNTIME-ASSETS.json',
+    'Live2DCubismCore.js',
+    'downscale-live2d-textures.py',
   ]) {
     const source = path.join(stagingResources, name);
     if (!fs.existsSync(source)) {
@@ -63,8 +80,8 @@ for (const name of ['LICENSE', 'NOTICE', 'CREDITS.md', 'AGPL_EXCLUDED.md']) {
 }
 
 module.exports = {
-  appId: 'studio.muhe.reverie',
-  productName: 'Reverie',
+  appId,
+  productName,
   copyright: 'Copyright (C) Muhe Studio contributors',
   asar: true,
   compression: 'maximum',
@@ -88,24 +105,30 @@ module.exports = {
     buildResources: path.join(frontendRoot, 'public'),
   },
   files: ['**/*'],
+  extraFiles: onboardingTestInstaller
+    ? [{ from: path.join(stagingResources, 'TEST-BUILD-DO-NOT-RELEASE.json'), to: 'TEST-BUILD-DO-NOT-RELEASE.json' }]
+    : [],
   extraResources,
   win: {
     target: [{ target: 'nsis', arch: ['x64'] }],
     icon: path.join(frontendRoot, 'public', 'icon.ico'),
-    executableName: 'Reverie',
+    executableName: onboardingTestInstaller ? 'Reverie-Onboarding-Test' : 'Reverie',
     requestedExecutionLevel: 'asInvoker',
-    artifactName: 'Reverie-Setup-${version}-x64.${ext}',
+    artifactName: onboardingTestInstaller
+      ? 'Reverie-Onboarding-Test-20260905-Setup-${version}-x64.${ext}'
+      : 'Reverie0.5.5-Setup-${version}-x64.${ext}',
     publish: null,
   },
   nsis: {
     oneClick: false,
-    perMachine: false,
-    selectPerMachineByDefault: false,
+    perMachine: true,
+    selectPerMachineByDefault: true,
     allowElevation: true,
     allowToChangeInstallationDirectory: true,
-    createDesktopShortcut: true,
+    createDesktopShortcut: false,
     createStartMenuShortcut: true,
-    shortcutName: 'Reverie',
+    shortcutName: productName,
+    include: path.join(frontendRoot, 'nsis', 'installer.nsh'),
     runAfterFinish: true,
     deleteAppDataOnUninstall: false,
     differentialPackage: false,

@@ -79,10 +79,28 @@ function securityError(message) {
   return error;
 }
 
-function installWebContentsSecurity(app, trustPolicy) {
+function installWebContentsSecurity(app, trustPolicy, { openExternal } = {}) {
   if (!app || !trustPolicy) throw new TypeError('app and trustPolicy are required');
+  // Sanctioned external-link channel: https links the renderer opens with
+  // target="_blank" go to the system browser; the child window itself is
+  // always denied. Every other scheme stays fully denied. will-navigate
+  // keeps locking in-app navigation, so the main window can never be driven
+  // off the trusted origin — the browser opens BECAUSE we deny the window.
+  const openInSystemBrowser = typeof openExternal === 'function' ? openExternal : null;
   const listener = (_event, contents) => {
-    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.setWindowOpenHandler(({ url } = {}) => {
+      if (openInSystemBrowser && typeof url === 'string' && url.startsWith('https://')) {
+        try {
+          const result = openInSystemBrowser(url);
+          if (result && typeof result.catch === 'function') {
+            result.catch(() => {});
+          }
+        } catch {
+          /* a failed open must never crash the window */
+        }
+      }
+      return { action: 'deny' };
+    });
     contents.on('will-attach-webview', (event) => event.preventDefault());
     contents.on('will-navigate', (event, url) => {
       if (!trustPolicy.isTrustedUrl(url)) event.preventDefault();

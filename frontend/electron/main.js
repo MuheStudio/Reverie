@@ -1,5 +1,17 @@
 'use strict';
 
+// A closed terminal or a dead parent process leaves the inherited stdio pipes
+// with no reader. The next console write would then raise EPIPE as an
+// uncaught exception and take the whole main process down behind an error
+// dialog. Log delivery must never be fatal, so absorb stream errors here.
+for (const stdio of [process.stdout, process.stderr]) {
+  stdio?.on?.('error', (error) => {
+    if (error && (error.code === 'EPIPE' || error.code === 'ERR_STREAM_DESTROYED'
+      || error.code === 'ERR_STREAM_WRITE_AFTER_END')) return;
+    throw error;
+  });
+}
+
 const {
   app,
   BrowserWindow,
@@ -10,6 +22,7 @@ const {
   powerMonitor,
   protocol,
   safeStorage,
+  screen,
   session,
   shell,
   Tray,
@@ -61,8 +74,7 @@ const { SafeLogger } = require('./safe-log.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
 const { resolveTestUserDataOverride } = require('./test-user-data.cjs');
 const {
-  FORMAL_APP_USER_MODEL_ID,
-  shouldSetFormalAppUserModelId,
+  resolveAppUserModelId,
 } = require('./windows-app-identity.cjs');
 
 const optionalModuleErrors = [];
@@ -76,6 +88,10 @@ function optionalExport(modulePath, exportName) {
 }
 
 const AvatarManager = optionalExport('./avatar-manager.cjs', 'AvatarManager');
+const VoicePackManager = optionalExport('./voice-pack-manager.cjs', 'VoicePackManager');
+const gptSovitsRuntimeRelease = require('./gpt-sovits-runtime-release-status.cjs');
+const { PetBoundsStore, clampBounds } = require('./pet-bounds-store.cjs');
+const { createPetDrag } = require('./pet-drag.cjs');
 const installAvatarProtocol = optionalExport('./avatar-protocol.cjs', 'installAvatarProtocol');
 // The companion timer is Electron-local (no Python bridge involvement), so it
 // is part of the MVP surface. FocusSoundManager stays stubbed until its UI
@@ -95,6 +111,13 @@ const installStickerAssetProtocol = optionalExport(
   './sticker-asset-protocol.cjs',
   'installStickerAssetProtocol',
 );
+// Downloaded chat videos stream to <video> bubbles through
+// reverie-video://asset URLs (Range-capable); base64 data URLs would blow up
+// renderer memory for large videos.
+const installVideoAssetProtocol = optionalExport(
+  './video-asset-protocol.cjs',
+  'installVideoAssetProtocol',
+);
 const installLive2DCoreProtocol = optionalExport(
   './live2d-core-protocol.cjs',
   'installLive2DCoreProtocol',
@@ -106,12 +129,13 @@ const BRIDGE_RESTART_MAX_MS = 30_000;
 
 registerDesktopSchemes(protocol);
 
-if (shouldSetFormalAppUserModelId({
+const appUserModelId = resolveAppUserModelId({
   platform: process.platform,
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
-})) {
-  app.setAppUserModelId(FORMAL_APP_USER_MODEL_ID);
+});
+if (appUserModelId) {
+  app.setAppUserModelId(appUserModelId);
 }
 if (IS_DEV && process.env.REVERIE_USER_DATA_DIR) {
   const override = path.resolve(process.env.REVERIE_USER_DATA_DIR);
@@ -140,7 +164,11 @@ const trustPolicy = createRendererTrustPolicy({
   packagedIndex,
   packagedUrl: packagedRendererUrl,
 });
-installWebContentsSecurity(app, trustPolicy);
+installWebContentsSecurity(app, trustPolicy, {
+  // https links opened with target="_blank" go to the system browser; the
+  // child window is still denied (onboarding vendor links, docs, etc.).
+  openExternal: (url) => shell.openExternal(url),
+});
 
 let mainWindow = null;
 let petWindow = null;
@@ -155,14 +183,18 @@ let storageKeyVault = null;
 let providerConfigStore = null;
 let providerTransactionJournal = null;
 let avatarManager = null;
+let voicePackManager = null;
+let petBoundsStore = null;
 let focusManager = null;
 let focusSoundManager = null;
 let unregisterAvatarProtocol = null;
 let unregisterFocusSoundProtocol = null;
 let unregisterAppProtocol = null;
 let unregisterStickerAssetProtocol = null;
+let unregisterVideoAssetProtocol = null;
 let unregisterLive2DCoreProtocol = null;
 let stickerAssetsRoot = null;
+let videoAssetsRoot = null;
 let live2dCorePath = null;
 let live2dRuntimeAvailable = false;
 let bundledAvatarInstallError = null;
@@ -175,6 +207,8 @@ let backendRestartAttempts = 0;
 let isQuitting = false;
 let screenLocked = false;
 let avatarDialogPending = false;
+let voicePackDialogPending = false;
+const voicePackImportSessions = new Map();
 let focusSoundDialogPending = false;
 let stickerDialogPending = false;
 let backupDialogPending = false;
@@ -338,10 +372,69 @@ function getWindowIconPath() {
     : path.join(process.resourcesPath, 'icon.ico');
 }
 
+const petBridgeRequests = new Map();
+const PET_STICKER_CACHE_TTL_MS = 15 * 60 * 1000;
+let petStickerCache = [];
+let petStickerCacheAt = 0;
+let petActiveRequestId = null;
+
+function sendToTrustedWindow(windowRef, channel, payload) {
+  if (!windowRef || windowRef.isDestroyed()) return;
+  if (!trustPolicy.isTrustedUrl(windowRef.webContents.getURL())) return;
+  windowRef.webContents.send(channel, payload);
+}
+
+function observePetBridgeFrame(frame) {
+  const payload = frame?.payload && typeof frame.payload === 'object' ? frame.payload : {};
+  const requestId = typeof frame?.request_id === 'string' ? frame.request_id : '';
+  const pending = requestId ? petBridgeRequests.get(requestId) : null;
+  if (pending && pending.expectedTypes.has(frame.type)) {
+    petBridgeRequests.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.resolve(payload);
+  }
+  if (frame?.type === 'sticker:data' && Array.isArray(payload.items)) {
+    petStickerCache = payload.items;
+    petStickerCacheAt = Date.now();
+  }
+
+  const chatRequestId = typeof payload.request_id === 'string' ? payload.request_id : '';
+  const belongsToPet = Boolean(petActiveRequestId && chatRequestId === petActiveRequestId);
+  let event = null;
+  if (frame?.type === 'chat:chunk' && typeof payload.text === 'string') {
+    if (belongsToPet) event = { type: 'chunk', text: payload.text.slice(0, 12_000) };
+  } else if (frame?.type === 'chat:done') {
+    if (belongsToPet) {
+      const messages = Array.isArray(payload.messages)
+        ? payload.messages
+            .filter((item) => typeof item === 'string' && item.trim())
+            .slice(0, 16)
+        : [];
+      const text = messages.join('').slice(0, 12_000);
+      petActiveRequestId = null;
+      event = { type: 'done', text, messages };
+    }
+  } else if (frame?.type === 'chat:typing') {
+    if (belongsToPet) event = { type: 'typing', typing: Boolean(payload.typing) };
+  } else if (frame?.type === 'chat:error') {
+    if (belongsToPet) {
+      petActiveRequestId = null;
+      event = { type: 'error', message: '回复生成失败，请在主界面查看详细原因。' };
+    }
+  } else if (frame?.type === 'error' && (belongsToPet || requestId === petActiveRequestId)) {
+    petActiveRequestId = null;
+    event = { type: 'error', message: String(payload.error || payload.message || '请求被本地服务拒绝。').slice(0, 500) };
+  } else if (frame?.type === 'chat:state'
+    && belongsToPet
+    && ['done', 'cancelled', 'failed', 'failed_uncertain', 'error'].includes(String(payload.state || payload.status))) {
+    petActiveRequestId = null;
+  }
+  if (event) sendToTrustedWindow(petWindow, 'pet:chatEvent', event);
+}
+
 function broadcast(channel, payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (!trustPolicy.isTrustedUrl(mainWindow.webContents.getURL())) return;
-  mainWindow.webContents.send(channel, payload);
+  sendToTrustedWindow(mainWindow, channel, payload);
+  if (channel === 'bridge:message') observePetBridgeFrame(payload);
 }
 
 function sendLifecycle(state) {
@@ -694,6 +787,12 @@ function startBridge() {
 }
 
 async function killBridgeFailClosed() {
+  if (petActiveRequestId) {
+    petActiveRequestId = null;
+    sendToTrustedWindow(petWindow, 'pet:chatEvent', {
+      type: 'error', message: '本地服务连接已中断，请等待恢复后重试。',
+    });
+  }
   bridgeHostProxy?.disconnect();
   await bridge?.stopAndWait('SIGKILL');
   broadcast('bridge:changed', { ready: false });
@@ -877,7 +976,11 @@ function quarantineUnreadableDatabases() {
 
 function createRuntimeModules() {
   const runtimeDir = path.join(app.getPath('userData'), 'runtime');
+  petBoundsStore = new PetBoundsStore(path.join(runtimeDir, 'pet'));
   stickerAssetsRoot = path.join(prepareWritableDataDir(), 'stickers', 'assets');
+  // Downloaded chat videos live under chat-media/video (sha256-addressed);
+  // served read-only over reverie-video:// with Range support.
+  videoAssetsRoot = path.join(prepareWritableDataDir(), 'chat-media', 'video');
   networkGate = new LocalNetworkGate({ storageDir: path.join(runtimeDir, 'network') });
   networkGate.install(session.defaultSession);
   networkGate.installNodeGuards();
@@ -926,6 +1029,12 @@ function createRuntimeModules() {
   });
   bridge.on('exit', (error) => {
     bridgeHostProxy?.disconnect();
+    if (petActiveRequestId) {
+      petActiveRequestId = null;
+      sendToTrustedWindow(petWindow, 'pet:chatEvent', {
+        type: 'error', message: '本地服务意外退出，Reverie 正在尝试恢复。',
+      });
+    }
     broadcast('bridge:changed', { ready: false });
     scheduleBridgeRestart(error);
   });
@@ -965,16 +1074,13 @@ function createRuntimeModules() {
         live2dRuntime,
       });
       if (live2dRuntime.available) {
+        // Packaged builds never auto-install a character. Cubism distribution
+        // does not allow shipping a model with the app; users import one in
+        // onboarding. Dev may still point REVERIE_YUMI_SOURCE at a local folder.
         const yumiSource = IS_DEV
-          ? path.resolve(
-              process.env.REVERIE_YUMI_SOURCE
-                || path.join(getRuntimeRoot(), '..', '..', '皮套-yumi'),
-            )
-          : path.join(process.resourcesPath, 'character');
-        // A failed default install must not blind the whole avatar module:
-        // keeping the manager (and its protocols) alive lets the renderer
-        // report the reason, and the next boot retries while records are empty.
-        if (fs.existsSync(yumiSource) && avatarManager.list().records.length === 0) {
+          ? path.resolve(process.env.REVERIE_YUMI_SOURCE || '')
+          : '';
+        if (IS_DEV && yumiSource && fs.existsSync(yumiSource) && avatarManager.list().records.length === 0) {
           try {
             const installed = avatarManager.installTrustedDefaultDirectory(yumiSource, {
               name: BUNDLED_AVATAR_DISPLAY_NAME,
@@ -985,7 +1091,7 @@ function createRuntimeModules() {
             bundledAvatarInstallError = installError instanceof Error
               ? installError.message
               : String(installError);
-            console.error('[Electron] Bundled yumi installation failed; it will retry on next boot', installError);
+            console.error('[Electron] Dev Live2D fixture installation failed', installError);
           }
         } else if (avatarManager.list().records.length > 0) {
           migrateBundledAvatarDisplayName();
@@ -998,6 +1104,14 @@ function createRuntimeModules() {
     } catch (error) {
       avatarManager = null;
       console.error('[Electron] Avatar module initialization failed', error);
+    }
+  }
+  if (VoicePackManager) {
+    try {
+      voicePackManager = new VoicePackManager({ storageDir: app.getPath('userData') });
+    } catch (error) {
+      voicePackManager = null;
+      console.error('[Electron] Voice-pack module initialization failed', error);
     }
   }
   if (FocusSoundManager) {
@@ -1047,6 +1161,22 @@ function validateSessionId(id) {
   if (focusManager.getState().id !== value) throw new Error('Focus session identifier does not match');
 }
 
+function getLive2DTextureTransformerConfig() {
+  const scriptPath = IS_DEV
+    ? path.join(__dirname, '..', 'script', 'downscale-live2d-textures.py')
+    : path.join(process.resourcesPath, 'downscale-live2d-textures.py');
+  if (!isRegularUnlinkedFile(scriptPath)) return null;
+  try {
+    return {
+      pythonPath: getPythonCommand(),
+      scriptPath,
+      maxDimension: 4096,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function runAvatarImportWorker(sourcePath, { sourceIsDirectory = false } = {}) {
   if (!avatarManager) {
     const error = new Error('Avatar module is unavailable');
@@ -1062,6 +1192,7 @@ function runAvatarImportWorker(sourcePath, { sourceIsDirectory = false } = {}) {
         importId,
         storageDir: avatarManager.storageDir,
         live2dRuntime: avatarManager.live2dRuntime,
+        textureTransformer: getLive2DTextureTransformerConfig(),
       },
       resourceLimits: {
         maxOldGenerationSizeMb: 1024,
@@ -1875,10 +2006,144 @@ function registerDownloadHandlers(handle) {
   });
 }
 
+function requestPetBridge(type, payload, expectedTypes, timeoutMs = 15_000) {
+  const requestId = `pet_${crypto.randomBytes(18).toString('base64url')}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      petBridgeRequests.delete(requestId);
+      const error = new Error('The local companion service did not answer in time');
+      error.code = 'REVERIE_BRIDGE_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+    timer.unref?.();
+    petBridgeRequests.set(requestId, { expectedTypes: new Set(expectedTypes), resolve, reject, timer });
+    try {
+      bridgeHostProxy.sendFromRenderer({ type, payload, request_id: requestId });
+    } catch (error) {
+      clearTimeout(timer);
+      petBridgeRequests.delete(requestId);
+      reject(error);
+    }
+  });
+}
+
+function publicVoicePackRecord(record) {
+  if (!record || typeof record !== 'object') return record;
+  const { recordPath: _recordPath, ...safe } = record;
+  return safe;
+}
+
+function beginVoicePackWorker(sourcePath) {
+  if (!voicePackManager) {
+    throw Object.assign(new Error('Voice-pack module is unavailable'), { code: 'REVERIE_MODULE_UNAVAILABLE' });
+  }
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'voice-pack-import-worker.cjs'), {
+      workerData: { storageDir: app.getPath('userData'), sourcePath },
+      resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32, stackSizeMb: 8 },
+    });
+    const timeout = setTimeout(() => {
+      void worker.terminate();
+      reject(Object.assign(new Error('Voice-pack validation timed out'), { code: 'VOICE_PACK_IMPORT_TIMEOUT' }));
+    }, 5 * 60 * 1000);
+    timeout.unref?.();
+    const fail = (error) => {
+      clearTimeout(timeout);
+      void worker.terminate();
+      reject(error);
+    };
+    worker.once('error', () => fail(Object.assign(new Error('Voice-pack worker failed'), { code: 'VOICE_PACK_IMPORT_FAILED' })));
+    worker.once('message', (message) => {
+      if (message?.type === 'error') {
+        fail(Object.assign(new Error(String(message.message)), { code: String(message.code) }));
+        return;
+      }
+      if (message?.type !== 'preview' || typeof message.preview?.previewId !== 'string') return;
+      clearTimeout(timeout);
+      const previewId = message.preview.previewId;
+      const expiry = setTimeout(() => {
+        voicePackImportSessions.delete(previewId);
+        void worker.terminate();
+      }, 15 * 60 * 1000);
+      expiry.unref?.();
+      voicePackImportSessions.set(previewId, { worker, expiry });
+      resolve(message.preview);
+    });
+  });
+}
+
+function commitVoicePackWorker(previewId, confirmation) {
+  const session = voicePackImportSessions.get(previewId);
+  if (!session) throw Object.assign(new Error('Voice-pack preview is invalid or expired'), { code: 'VOICE_PACK_PREVIEW_INVALID' });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      voicePackImportSessions.delete(previewId);
+      void session.worker.terminate();
+      reject(Object.assign(new Error('Voice-pack installation timed out'), { code: 'VOICE_PACK_IMPORT_TIMEOUT' }));
+    }, 10 * 60 * 1000);
+    timeout.unref?.();
+    const cleanup = () => {
+      clearTimeout(timeout);
+      clearTimeout(session.expiry);
+      voicePackImportSessions.delete(previewId);
+      void session.worker.terminate();
+    };
+    session.worker.once('error', () => {
+      cleanup();
+      reject(Object.assign(new Error('Voice-pack worker failed'), { code: 'VOICE_PACK_IMPORT_FAILED' }));
+    });
+    session.worker.on('message', (message) => {
+      if (!['committed', 'error'].includes(message?.type)) return;
+      cleanup();
+      if (message.type === 'committed') resolve(message.record);
+      else reject(Object.assign(new Error(String(message.message)), { code: String(message.code) }));
+    });
+    session.worker.postMessage({ type: 'commit', previewId, confirmation });
+  });
+}
+
+function setActiveVoicePackWorker(id) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'voice-pack-import-worker.cjs'), {
+      workerData: { storageDir: app.getPath('userData'), operation: 'setActive', id },
+      resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 32, stackSizeMb: 8 },
+    });
+    const timeout = setTimeout(() => {
+      void worker.terminate();
+      reject(Object.assign(new Error('Voice-pack activation timed out'), { code: 'VOICE_PACK_IMPORT_TIMEOUT' }));
+    }, 5 * 60 * 1000);
+    timeout.unref?.();
+    const finish = (error, value) => {
+      clearTimeout(timeout);
+      void worker.terminate();
+      if (error) reject(error); else resolve(value);
+    };
+    worker.once('error', () => finish(Object.assign(new Error('Voice-pack worker failed'), { code: 'VOICE_PACK_IMPORT_FAILED' })));
+    worker.once('message', (message) => {
+      if (message?.type === 'active') finish(null, { activeId: message.id });
+      else if (message?.type === 'error') finish(Object.assign(new Error(String(message.message)), { code: String(message.code) }));
+    });
+  });
+}
+
 function registerIpcHandlers() {
   if (ipcRegistrar) return;
   ipcRegistrar = createSecureIpcRegistrar(ipcMain, trustedWindows, trustPolicy);
   const { handle } = ipcRegistrar;
+  const requireMainWindow = (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      const error = new Error('This operation is available only from the main Reverie window');
+      error.code = 'REVERIE_SECURITY';
+      throw error;
+    }
+  };
+  const requirePetWindow = (event) => {
+    if (!petWindow || petWindow.isDestroyed() || event.sender !== petWindow.webContents) {
+      const error = new Error('This operation is available only from the desktop pet');
+      error.code = 'REVERIE_SECURITY';
+      throw error;
+    }
+  };
 
   handle('bridge:getConnectionConfig', () => bridgeHostProxy.getRendererConfig());
   handle('bridge:send', (_event, frame) => bridgeHostProxy.sendFromRenderer(frame));
@@ -1897,6 +2162,36 @@ function registerIpcHandlers() {
     return { canceled: false, filePath: result.filePaths[0] };
   });
   handle('app:getVersion', () => app.getVersion());
+  handle('app:getUiSnapshot', () => {
+    // Electron can read the durable UI flags without the Python host.
+    // Onboarding must appear even if the companion process is still starting.
+    try {
+      const raw = JSON.parse(fs.readFileSync(
+        path.join(prepareWritableDataDir(), 'config.json'),
+        'utf8',
+      ));
+      const ui = raw && typeof raw.ui === 'object' && raw.ui && !Array.isArray(raw.ui)
+        ? raw.ui
+        : {};
+      return {
+        onboarding_completed: ui.onboarding_completed === true,
+        onboarding_version: Number(ui.onboarding_version) || 0,
+        onboarding_state: typeof ui.onboarding_state === 'string' ? ui.onboarding_state : '',
+        onboarding_last_step: typeof ui.onboarding_last_step === 'string' ? ui.onboarding_last_step : '',
+        experience_mode: ui.experience_mode === 'core' ? 'core' : 'full',
+        mode: ui.mode === 'dream' ? 'dream' : 'mvp',
+      };
+    } catch {
+      return {
+        onboarding_completed: false,
+        onboarding_version: 0,
+        onboarding_state: '',
+        onboarding_last_step: '',
+        experience_mode: 'full',
+        mode: 'mvp',
+      };
+    }
+  });
   handle('notification:show', (_event, input) => {
     assertPlainObject(input, 'notification');
     const title = typeof input.title === 'string' ? input.title : '';
@@ -2042,6 +2337,238 @@ function registerIpcHandlers() {
   handle('providerConfig:test', (_event, input) => testProviderConfiguration(input));
   handle('providerConfig:commit', (_event, input) => commitProviderConfiguration(input));
   handle('character:getBundled', () => bundledCharacterSnapshot());
+  handle('avatar:list', (event) => {
+    requireMainWindow(event);
+    if (!avatarManager) throw Object.assign(new Error('Avatar module is unavailable'), { code: 'REVERIE_MODULE_UNAVAILABLE' });
+    return avatarManager.list();
+  });
+  handle('avatar:beginImport', async (event) => {
+    requireMainWindow(event);
+    if (avatarDialogPending) throw Object.assign(new Error('An avatar picker is already open'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    avatarDialogPending = true;
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: '选择头像包', properties: ['openFile'],
+        filters: [{ name: '头像包', extensions: ['vrm', 'glb', 'zip'] }],
+      });
+      if (result.canceled || result.filePaths.length !== 1) return null;
+      return runAvatarImportWorker(result.filePaths[0]);
+    } finally { avatarDialogPending = false; }
+  });
+  handle('avatar:beginImportFolder', async (event) => {
+    requireMainWindow(event);
+    if (avatarDialogPending) throw Object.assign(new Error('An avatar picker is already open'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    avatarDialogPending = true;
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: '选择 Live2D 模型文件夹', properties: ['openDirectory'],
+      });
+      if (result.canceled || result.filePaths.length !== 1) return null;
+      return runAvatarImportWorker(result.filePaths[0], { sourceIsDirectory: true });
+    } finally { avatarDialogPending = false; }
+  });
+  handle('avatar:beginImportLive2DFile', async (event) => {
+    requireMainWindow(event);
+    if (avatarDialogPending) throw Object.assign(new Error('An avatar picker is already open'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    avatarDialogPending = true;
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: '选择 Live2D 的 model3.json 或 zip 包',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Live2D 模型', extensions: ['json', 'zip'] },
+        ],
+      });
+      if (result.canceled || result.filePaths.length !== 1) return null;
+      const sourcePath = result.filePaths[0];
+      if (/\.zip$/i.test(sourcePath)) return runAvatarImportWorker(sourcePath);
+      if (/\.model3\.json$/i.test(sourcePath)) {
+        return runAvatarImportWorker(path.dirname(sourcePath), { sourceIsDirectory: true });
+      }
+      throw Object.assign(
+        new Error('请选择 Cubism 的 *.model3.json，或包含完整模型的 .zip'),
+        { code: 'REVERIE_AVATAR_DROPPED_TYPE' },
+      );
+    } finally { avatarDialogPending = false; }
+  });
+  // Drag-and-drop entry: the renderer resolves the dropped File to a path via
+  // webUtils in the preload and sends only the path string. The same worker
+  // validation runs as with the dialog; the dialog stays as the fallback.
+  handle('avatar:importDroppedPath', async (event, input = {}) => {
+    requireMainWindow(event);
+    assertPlainObject(input, 'avatar drop');
+    const sourcePath = boundedString(input.path, { label: 'dropped avatar path', min: 2, max: 1024 });
+    if (avatarDialogPending) throw Object.assign(new Error('An avatar import is already running'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    avatarDialogPending = true;
+    try {
+      const stat = await fs.promises.stat(sourcePath);
+      const sourceIsDirectory = stat.isDirectory();
+      const isModelJson = /\.model3\.json$/i.test(sourcePath);
+      if (!sourceIsDirectory && !/\.(zip|vrm|glb)$/i.test(sourcePath) && !isModelJson) {
+        throw Object.assign(
+          new Error('请选择包含 model3.json 的 Live2D 文件夹、*.model3.json、.zip，或 VRM/GLB 文件'),
+          { code: 'REVERIE_AVATAR_DROPPED_TYPE' },
+        );
+      }
+      if (isModelJson) {
+        return await runAvatarImportWorker(path.dirname(sourcePath), { sourceIsDirectory: true });
+      }
+      return await runAvatarImportWorker(sourcePath, sourceIsDirectory ? { sourceIsDirectory: true } : {});
+    } finally { avatarDialogPending = false; }
+  });
+  handle('avatar:confirmPreview', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar preview');
+    return avatarManager.markPreviewReady(
+      boundedString(input.importId, { label: 'avatar import id', min: 20, max: 128 }),
+      { detected: input.detected, capabilities: input.capabilities },
+    );
+  });
+  for (const [channel, operation] of [
+    ['avatar:failPreview', 'fail'],
+    ['avatar:discardImport', 'discard'],
+  ]) {
+    handle(channel, (event, input = {}) => {
+      requireMainWindow(event); assertPlainObject(input, operation);
+      return avatarManager.discardImport(
+        boundedString(input.importId, { label: 'avatar import id', min: 20, max: 128 }),
+      );
+    });
+  }
+  handle('avatar:commitImport', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar commit');
+    const record = avatarManager.commitImport({
+      importId: boundedString(input.importId, { label: 'avatar import id', min: 20, max: 128 }),
+      rightsConfirmed: input.rightsConfirmed === true,
+      warningAccepted: input.warningsAccepted === true,
+    });
+    broadcast('avatar:changed', avatarManager.list());
+    return record;
+  });
+  handle('avatar:setActive', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar selection');
+    const result = avatarManager.setActive(
+      input.id == null ? null : boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
+    );
+    broadcast('avatar:changed', avatarManager.list());
+    return result;
+  });
+  handle('avatar:remove', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar removal');
+    const result = avatarManager.remove(boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }));
+    broadcast('avatar:changed', avatarManager.list());
+    return result;
+  });
+  handle('avatar:setMapping', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar mapping');
+    const category = boundedString(input.category, { label: 'mapping category', min: 1, max: 16 });
+    if (!['expression', 'action'].includes(category)) throw new TypeError('avatar mapping category is invalid');
+    return avatarManager.setMapping(
+      boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
+      category,
+      boundedString(input.key, { label: 'mapping key', min: 1, max: 64 }),
+      input.target == null ? null : boundedString(input.target, { label: 'mapping target', min: 1, max: 256 }),
+    );
+  });
+  handle('avatar:addMotion', async (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar motion');
+    const avatarId = boundedString(input.id, { label: 'avatar id', min: 36, max: 36 });
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择 VRMA 动作', properties: ['openFile'], filters: [{ name: 'VRMA', extensions: ['vrma'] }],
+    });
+    if (result.canceled || result.filePaths.length !== 1) return null;
+    return runAvatarMotionWorker(avatarId, result.filePaths[0]);
+  });
+  handle('avatar:removeMotion', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'avatar motion removal');
+    return avatarManager.removeMotion(
+      boundedString(input.id, { label: 'avatar id', min: 36, max: 36 }),
+      boundedString(input.motionId, { label: 'motion id', min: 36, max: 36 }),
+    );
+  });
+
+  handle('voicePack:list', (event) => {
+    requireMainWindow(event);
+    const listing = voicePackManager?.list?.() || { records: [], corrupt: [] };
+    return {
+      available: Boolean(voicePackManager),
+      records: (listing.records || []).map(publicVoicePackRecord),
+      corrupt: listing.corrupt || [],
+    };
+  });
+  handle('voicePack:beginImport', async (event) => {
+    requireMainWindow(event);
+    if (!voicePackManager) throw Object.assign(new Error('Voice-pack module is unavailable'), { code: 'REVERIE_MODULE_UNAVAILABLE' });
+    if (voicePackDialogPending) throw Object.assign(new Error('A voice-pack picker is already open'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    voicePackDialogPending = true;
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: '选择 GPT-SoVITS 语音包文件夹', properties: ['openDirectory'],
+      });
+      if (result.canceled || result.filePaths.length !== 1) return null;
+      return beginVoicePackWorker(result.filePaths[0]);
+    } finally { voicePackDialogPending = false; }
+  });
+  // Drag-and-drop entry mirroring the dialog flow; copy-only semantics and
+  // worker validation are unchanged.
+  handle('voicePack:importDroppedPath', async (event, input = {}) => {
+    requireMainWindow(event);
+    assertPlainObject(input, 'voice pack drop');
+    if (!voicePackManager) throw Object.assign(new Error('Voice-pack module is unavailable'), { code: 'REVERIE_MODULE_UNAVAILABLE' });
+    const sourcePath = boundedString(input.path, { label: 'dropped voice pack path', min: 2, max: 1024 });
+    if (voicePackDialogPending) throw Object.assign(new Error('A voice-pack import is already running'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    voicePackDialogPending = true;
+    try {
+      const stat = await fs.promises.stat(sourcePath);
+      if (!stat.isDirectory()) {
+        throw Object.assign(
+          new Error('语音包需要以文件夹形式拖入（包含 GPT/SoVITS/参考音频/文本四件）'),
+          { code: 'REVERIE_VOICE_PACK_DROPPED_TYPE' },
+        );
+      }
+      return await beginVoicePackWorker(sourcePath);
+    } finally { voicePackDialogPending = false; }
+  });
+  handle('voicePack:commitImport', async (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'voice-pack commit');
+    const previewId = boundedString(input.previewId, { label: 'voice-pack preview id', min: 36, max: 36 });
+    return commitVoicePackWorker(previewId, {
+        rightsAttested: input.rightsAttested === true,
+        runtimeFamily: input.runtimeFamily,
+        runtimeVersion: input.runtimeVersion,
+    });
+  });
+  handle('voicePack:setActive', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'voice-pack selection');
+    if (input.id == null) return { activeId: voicePackManager.setActive(null) };
+    return setActiveVoicePackWorker(
+      boundedString(input.id, { label: 'voice-pack id', min: 36, max: 36 }),
+    );
+  });
+  handle('voicePack:remove', (event, input = {}) => {
+    requireMainWindow(event); assertPlainObject(input, 'voice-pack removal');
+    return { removed: voicePackManager.remove(
+      boundedString(input.id, { label: 'voice-pack id', min: 36, max: 36 }),
+    ) };
+  });
+  handle('ttsRuntime:status', (event) => {
+    requireMainWindow(event);
+    return {
+      available: gptSovitsRuntimeRelease.available === true,
+      state: 'unavailable',
+      reason: gptSovitsRuntimeRelease.reason,
+      recipeVersion: null,
+    };
+  });
+  handle('ttsRuntime:start', (event) => {
+    requireMainWindow(event);
+    const error = new Error(gptSovitsRuntimeRelease.reason);
+    error.code = 'REVERIE_TTS_RUNTIME_RELEASE_UNAVAILABLE';
+    throw error;
+  });
+  handle('ttsRuntime:cancel', (event) => {
+    requireMainWindow(event);
+    return { cancelled: false, state: 'unavailable' };
+  });
   // Companion timer. The manager is single-session, so pause/resume/stop take
   // no session id on this side; the renderer keeps one for display only.
   const requireFocus = () => {
@@ -2067,6 +2594,122 @@ function registerIpcHandlers() {
   handle('pet:show', () => showPetWindow());
   handle('pet:hide', () => hidePetWindow());
   handle('pet:isVisible', () => Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible()));
+  // Manual window drag (Luna-ts pattern): the renderer streams total
+  // screen-space deltas; placement is absolute from the drag start so no
+  // rounding drift can accumulate. The debounced bounds persistence stays
+  // wired to the window's own 'move' event.
+  let petDrag = null;
+  handle('pet:drag-start', (event) => {
+    requirePetWindow(event);
+    if (!petWindow || petWindow.isDestroyed()) return { active: false };
+    petDrag = createPetDrag({
+      getPosition: () => (petWindow && !petWindow.isDestroyed() ? petWindow.getPosition() : [0, 0]),
+      setPosition: (x, y) => {
+        if (petWindow && !petWindow.isDestroyed()) petWindow.setPosition(x, y);
+      },
+    });
+    return { active: petDrag.begin() !== null };
+  });
+  handle('pet:drag-move', (event, input = {}) => {
+    requirePetWindow(event);
+    assertPlainObject(input, 'pet drag move');
+    if (!petDrag || !petDrag.active) return { moved: false };
+    const dx = Number(input.dx);
+    const dy = Number(input.dy);
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)
+      || Math.abs(dx) > 100_000 || Math.abs(dy) > 100_000) {
+      throw new RangeError('pet drag delta is out of range');
+    }
+    petDrag.move(dx, dy);
+    return { moved: true };
+  });
+  handle('pet:drag-end', (event) => {
+    requirePetWindow(event);
+    if (petDrag) {
+      petDrag.end();
+      petDrag = null;
+    }
+    return { ended: true };
+  });
+  handle('pet:sendChat', (event, input = {}) => {
+    requirePetWindow(event); assertPlainObject(input, 'pet chat');
+    if (petActiveRequestId) throw Object.assign(new Error('A pet chat request is already active'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    const text = boundedString(input.text, { label: 'pet chat text', min: 1, max: 2000 }).trim();
+    const requestId = `pet_chat_${crypto.randomBytes(16).toString('base64url')}`;
+    bridgeHostProxy.sendFromRenderer({
+      type: 'chat:send',
+      payload: {
+        text,
+        request_id: requestId,
+        conversation_id: 'dream-room',
+        sent_at_utc: new Date().toISOString(),
+      },
+      request_id: requestId,
+    });
+    petActiveRequestId = requestId;
+    return { accepted: true, requestId };
+  });
+  handle('pet:cancelChat', (event) => {
+    requirePetWindow(event);
+    if (!petActiveRequestId) return { cancelled: false };
+    bridgeHostProxy.sendFromRenderer({
+      type: 'chat:cancel', payload: { request_id: petActiveRequestId },
+    });
+    return { cancelled: true };
+  });
+  handle('pet:listStickers', async (event) => {
+    requirePetWindow(event);
+    const result = await requestPetBridge('sticker:list', { limit: 100 }, ['sticker:data']);
+    if (Array.isArray(result.items)) {
+      petStickerCache = result.items;
+      petStickerCacheAt = Date.now();
+    }
+    return { items: petStickerCache };
+  });
+  handle('pet:importSticker', async (event) => {
+    requirePetWindow(event);
+    const result = await dialog.showOpenDialog(petWindow, {
+      title: '选择表情图片', properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }],
+    });
+    if (result.canceled || result.filePaths.length !== 1) return { canceled: true };
+    const imported = await requestPetBridge('sticker:import', {
+      file_path: result.filePaths[0], style_tags: ['用户导入'],
+    }, ['sticker:data'], 30_000);
+    return { canceled: false, item: imported.item || null };
+  });
+  handle('pet:sendSticker', (event, input = {}) => {
+    requirePetWindow(event); assertPlainObject(input, 'pet sticker');
+    if (petActiveRequestId) throw Object.assign(new Error('A pet chat request is already active'), { code: 'REVERIE_OPERATION_IN_PROGRESS' });
+    const id = boundedString(input.id, { label: 'sticker id', min: 1, max: 128 });
+    if (Date.now() - petStickerCacheAt > PET_STICKER_CACHE_TTL_MS) {
+      throw Object.assign(new Error('The sticker library is stale; reopen the sticker tray first'), {
+        code: 'REVERIE_STICKER_CACHE_STALE',
+      });
+    }
+    const sticker = petStickerCache.find((item) => item && String(item.id) === id);
+    if (!sticker) throw new TypeError('Sticker is not in the current local library');
+    const requestId = `pet_chat_${crypto.randomBytes(16).toString('base64url')}`;
+    const wire = {
+      id,
+      text: typeof sticker.text === 'string' ? sticker.text.slice(0, 80) : '',
+      emotions: Array.isArray(sticker.emotions)
+        ? sticker.emotions.filter((item) => typeof item === 'string').slice(0, 8) : [],
+      image_data_url: typeof sticker.image_data_url === 'string' ? sticker.image_data_url : '',
+      style_tags: Array.isArray(sticker.style_tags)
+        ? sticker.style_tags.filter((item) => typeof item === 'string').slice(0, 8) : [],
+    };
+    bridgeHostProxy.sendFromRenderer({
+      type: 'chat:send',
+      payload: {
+        text: wire.text || '[表情]', request_id: requestId, conversation_id: 'dream-room',
+        sent_at_utc: new Date().toISOString(), sticker: wire,
+      },
+      request_id: requestId,
+    });
+    petActiveRequestId = requestId;
+    return { accepted: true, requestId };
+  });
 }
 
 function createTray() {
@@ -2182,13 +2825,11 @@ function createWindow() {
   return mainWindow;
 }
 
-const PET_WINDOW_SIZE = { width: 260, height: 360 };
+const PET_WINDOW_SIZE = { width: 460, height: 680 };
 
 function trustedWindows() {
-  // The registrar accepts IPC only from these windows. The desktop pet shares
-  // the same preload/trusted origin (reverie-app://app/index.html#pet), so it
-  // may use the pet:* surface; every other channel stays gated to the main
-  // window by the shared sender/frame/URL checks.
+  // The registrar accepts IPC only from these windows. The desktop pet uses a
+  // separate narrow preload; channel handlers still validate the exact sender.
   return [mainWindow, petWindow].filter((windowRef) => Boolean(windowRef));
 }
 
@@ -2198,22 +2839,37 @@ function petWindowIsAlive() {
 
 function createPetWindow() {
   if (petWindowIsAlive()) return petWindow;
-  const bounds = mainWindow?.getBounds?.() || { x: 0, y: 0 };
-  petWindow = new BrowserWindow({
+  const bounds = mainWindow?.getBounds?.() || screen.getPrimaryDisplay().workArea;
+  const display = screen.getDisplayMatching(bounds);
+  const workArea = display.workArea;
+  const fallback = {
     width: PET_WINDOW_SIZE.width,
     height: PET_WINDOW_SIZE.height,
-    x: Math.max(0, bounds.x + bounds.width - PET_WINDOW_SIZE.width - 24),
-    y: Math.max(0, bounds.y + 24),
+    x: Math.min(
+    workArea.x + workArea.width - PET_WINDOW_SIZE.width,
+    Math.max(workArea.x, bounds.x + (bounds.width || 0) - PET_WINDOW_SIZE.width - 24),
+    ),
+    y: Math.min(
+    workArea.y + workArea.height - PET_WINDOW_SIZE.height,
+    Math.max(workArea.y, bounds.y + 24),
+    ),
+  };
+  const savedBounds = petBoundsStore?.load?.();
+  const initialBounds = clampBounds(savedBounds, screen.getAllDisplays(), fallback);
+  petWindow = new BrowserWindow({
+    ...initialBounds,
     frame: false,
     transparent: true,
-    resizable: false,
+    resizable: true,
+    minWidth: 360,
+    minHeight: 520,
     movable: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     show: false,
     title: 'Reverie 桌宠',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'pet-preload.js'),
       nodeIntegration: false,
       nodeIntegrationInWorker: false,
       nodeIntegrationInSubFrames: false,
@@ -2228,6 +2884,7 @@ function createPetWindow() {
       spellcheck: false,
     },
   });
+  const createdPetWindow = petWindow;
   petWindow.setAlwaysOnTop(true, 'floating');
   if (IS_DEV) {
     petWindow.loadURL(FRONTEND_DEV_URL + '#pet').catch((error) => {
@@ -2241,7 +2898,27 @@ function createPetWindow() {
   petWindow.once('ready-to-show', () => {
     if (petWindowIsAlive()) petWindow.showInactive();
   });
-  petWindow.on('closed', () => { petWindow = null; });
+  let saveBoundsTimer = null;
+  const persistBounds = () => {
+    clearTimeout(saveBoundsTimer);
+    saveBoundsTimer = setTimeout(() => {
+      if (createdPetWindow.isDestroyed() || petWindow !== createdPetWindow) return;
+      const current = createdPetWindow.getBounds();
+      const currentDisplay = screen.getDisplayMatching(current);
+      try {
+        petBoundsStore?.save?.(currentDisplay.id, current, currentDisplay.scaleFactor);
+      } catch (error) {
+        console.warn('[Electron] Desktop pet bounds could not be saved', error);
+      }
+    }, 250);
+    saveBoundsTimer.unref?.();
+  };
+  petWindow.on('move', persistBounds);
+  petWindow.on('resize', persistBounds);
+  petWindow.on('closed', () => {
+    clearTimeout(saveBoundsTimer);
+    if (petWindow === createdPetWindow) petWindow = null;
+  });
   return petWindow;
 }
 
@@ -2298,7 +2975,13 @@ function installPowerEvents() {
   });
 }
 
-const hasSingleInstanceLock = acquireSingleInstance(app, showMainWindow);
+const hasSingleInstanceLock = acquireSingleInstance(app, showMainWindow, {
+  // A redirected second launch must not look like a dead app: raise the
+  // existing window and tell the user what happened.
+  onRedirected: () => {
+    showNativeNotification('Reverie', 'Reverie 已在运行，已为你聚焦现有窗口。');
+  },
+});
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     setupLogging();
@@ -2323,6 +3006,15 @@ if (hasSingleInstanceLock) {
       unregisterStickerAssetProtocol = installStickerAssetProtocol(
         protocol,
         stickerAssetsRoot,
+        {
+          allowedOrigins: [IS_DEV ? new URL(FRONTEND_DEV_URL).origin : 'reverie-app://app'],
+        },
+      );
+    }
+    if (installVideoAssetProtocol && videoAssetsRoot) {
+      unregisterVideoAssetProtocol = installVideoAssetProtocol(
+        protocol,
+        videoAssetsRoot,
         {
           allowedOrigins: [IS_DEV ? new URL(FRONTEND_DEV_URL).origin : 'reverie-app://app'],
         },
@@ -2370,6 +3062,16 @@ app.on('before-quit', (event) => {
     ipcRegistrar?.dispose();
     ipcRegistrar = null;
     focusManager?.dispose();
+    for (const pending of petBridgeRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(Object.assign(new Error('Reverie is shutting down'), { code: 'REVERIE_SHUTDOWN' }));
+    }
+    petBridgeRequests.clear();
+    for (const session of voicePackImportSessions.values()) {
+      clearTimeout(session.expiry);
+      void session.worker.terminate();
+    }
+    voicePackImportSessions.clear();
     bridgeHostProxy?.disconnect();
     try {
       await bridge?.stopAndWait('SIGTERM', 5000);
@@ -2387,6 +3089,8 @@ app.on('before-quit', (event) => {
     unregisterAppProtocol = null;
     unregisterStickerAssetProtocol?.();
     unregisterStickerAssetProtocol = null;
+    unregisterVideoAssetProtocol?.();
+    unregisterVideoAssetProtocol = null;
     unregisterLive2DCoreProtocol?.();
     unregisterLive2DCoreProtocol = null;
     tray?.destroy();

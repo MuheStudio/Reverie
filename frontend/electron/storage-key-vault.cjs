@@ -4,6 +4,11 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+// ⚠️ Electron safeStorage sync APIs (encryptString/decryptString) are slated
+// for removal in a future major (electron/electron#53662). Still supported on
+// Electron 42; migrate to encryptStringAsync/decryptStringAsync together with
+// credential-vault.cjs at the next Electron upgrade (see P2-3 in
+// 对抗式审查与修复计划-2026-09-09.md).
 const STORAGE_KEY_SCHEMA = 'reverie.storage-key.v1';
 const STORAGE_KEY_BYTES = 32;
 const MAX_VAULT_BYTES = 64 * 1024;

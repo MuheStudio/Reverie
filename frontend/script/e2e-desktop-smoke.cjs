@@ -150,6 +150,7 @@ async function main() {
           ...process.env,
           REVERIE_USER_DATA_DIR: userDataDir,
           REVERIE_OPEN_DEVTOOLS: '0',
+          REVERIE_YUMI_SOURCE: path.resolve(projectRoot, '..', '..', 'Live-2D-yumi'),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
@@ -174,11 +175,17 @@ async function main() {
       providerTest: typeof window.electronAPI?.providerConfig?.test,
       providerCommit: typeof window.electronAPI?.providerConfig?.commit,
       characterGet: typeof window.electronAPI?.character?.get,
+      avatarImport: typeof window.electronAPI?.avatar?.beginImportFolder,
+      voiceImport: typeof window.electronAPI?.voicePack?.beginImport,
+      runtimeStatus: typeof window.electronAPI?.ttsRuntime?.status,
     })`);
     assert.deepEqual(apiSurface, {
       providerTest: 'function',
       providerCommit: 'function',
       characterGet: 'function',
+      avatarImport: 'function',
+      voiceImport: 'function',
+      runtimeStatus: 'function',
     });
     await waitFor(
       () => evaluate(cdp, `(async () => {
@@ -192,6 +199,18 @@ async function main() {
       'Python authority',
       45_000,
     );
+    const onboarding = await waitFor(
+      () => evaluate(cdp, `(() => {
+        const dialog = document.querySelector('[aria-label="Reverie 新手引导"]');
+        return dialog ? {
+          text: (dialog.textContent || '').slice(0, 1200),
+          version: (dialog.textContent || '').includes('ONBOARDING V2'),
+          deepseek: (dialog.textContent || '').includes('DeepSeek'),
+        } : null;
+      })()`),
+      'Onboarding V2',
+    );
+    assert.equal(onboarding.version, true, JSON.stringify(onboarding));
 
     const provider = await evaluate(cdp, `(async () => {
       const config = { llm: {
@@ -275,10 +294,40 @@ async function main() {
     const screenshotPath = path.join(outputRoot, 'desktop-live2d.png');
     fs.writeFileSync(screenshotPath, Buffer.from(screenshot.data, 'base64'));
 
+    await evaluate(cdp, 'window.electronAPI.pet.show()', { userGesture: true });
+    const petTarget = await waitFor(async () => {
+      const response = await fetch(`http://127.0.0.1:${debuggingPort}/json/list`);
+      const targets = await response.json();
+      return targets.find((item) => item.type === 'page' && item.url.includes('#pet'));
+    }, 'desktop pet renderer');
+    const petCdp = await connectCdp(petTarget.webSocketDebuggerUrl);
+    await petCdp.call('Runtime.enable');
+    const petSurface = await waitFor(
+      () => evaluate(petCdp, `(() => {
+        const value = {
+          keys: Object.keys(window.electronAPI || {}).sort(),
+          petKeys: Object.keys(window.electronAPI?.pet || {}).sort(),
+          composer: Boolean(document.querySelector('[aria-label="桌宠聊天"]')),
+          provider: typeof window.electronAPI?.providerConfig,
+        };
+        return value.keys.includes('character') && value.keys.includes('pet') && value.composer
+          ? value
+          : null;
+      })()`),
+      'desktop pet narrow surface',
+    );
+    assert.deepEqual(petSurface.keys, ['character', 'pet']);
+    assert.equal(petSurface.composer, true);
+    assert.equal(petSurface.provider, 'undefined');
+    petCdp.close();
+    await evaluate(cdp, 'window.electronAPI.pet.hide()');
+
     const report = {
       apiSurface,
+      onboarding,
       provider,
       live2d,
+      petSurface,
       screenshotPath,
       electronLogTail: electronLogs.join('').split(/\r?\n/).filter(Boolean).slice(-12),
     };

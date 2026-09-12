@@ -5,6 +5,7 @@ registry + ordered sentence synthesis. Providers:
 
 - ``gemini``: Google Gemini TTS (protocol from airi, MIT)
 - ``openai``: OpenAI-compatible audio/speech endpoint
+- ``gpt-sovits``: user-run GPT-SoVITS v2 on loopback (no bundled runtime)
 
 Usage::
 
@@ -25,6 +26,7 @@ from .registry import (
 )
 from .runner import split_sentences, synthesize_ordered
 from .workers.gemini import build_gemini_worker, register_gemini
+from .workers.gpt_sovits import build_gpt_sovits_worker, register_gpt_sovits
 from .workers.openai import build_openai_worker, register_openai
 
 __all__ = [
@@ -32,10 +34,12 @@ __all__ = [
     "TTSProvider",
     "TTSUnavailableError",
     "build_gemini_worker",
+    "build_gpt_sovits_worker",
     "build_openai_worker",
     "build_selected",
     "register",
     "register_gemini",
+    "register_gpt_sovits",
     "register_openai",
     "registered_providers",
     "resolve_selected",
@@ -47,6 +51,7 @@ __all__ = [
 def _register_defaults() -> None:
     register_gemini()
     register_openai()
+    register_gpt_sovits()
 
 
 _register_defaults()

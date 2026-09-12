@@ -27,6 +27,7 @@ export interface ChatMessageV2 {
   delivery_id?: string;
   bubble_index?: number;
   proactive_id?: string;
+  media?: Array<{ media_id: string; mime?: string }>;
 }
 
 export interface ChatRequestState {
@@ -124,6 +125,18 @@ export function migrateChatMessages(value: unknown): ChatMessageV2[] {
           : undefined,
       proactive_id: typeof raw.proactive_id === 'string' && raw.proactive_id
         ? raw.proactive_id
+        : undefined,
+      media: Array.isArray((raw as { media?: unknown }).media)
+        ? (raw as { media: unknown[] }).media.flatMap((entry) => {
+          if (!entry || typeof entry !== 'object') return [];
+          const mediaId = typeof (entry as { media_id?: unknown }).media_id === 'string'
+            ? (entry as { media_id: string }).media_id
+            : '';
+          const mime = typeof (entry as { mime?: unknown }).mime === 'string'
+            ? (entry as { mime: string }).mime
+            : undefined;
+          return mediaId ? [{ media_id: mediaId, mime }] : [];
+        })
         : undefined,
     }];
   });

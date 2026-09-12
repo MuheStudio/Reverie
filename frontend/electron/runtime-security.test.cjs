@@ -8,7 +8,67 @@ const {
   createRendererTrustPolicy,
   createSecureIpcRegistrar,
   installPermissionPolicy,
+  installWebContentsSecurity,
 } = require('./runtime-security.cjs');
+
+test('https window-open goes to the system browser, everything else is denied', () => {
+  const listeners = new Map();
+  const app = {
+    on(event, handler) { listeners.set(event, handler); },
+    removeListener(event) { listeners.delete(event); },
+  };
+  const policy = createRendererTrustPolicy({
+    isDev: false,
+    packagedUrl: 'reverie-app://app/index.html',
+  });
+  const opened = [];
+  const handlers = [];
+  const contents = {
+    setWindowOpenHandler(handler) { handlers.push(handler); },
+    on(event, handler) {
+      if (event === 'will-navigate') handlers.push(handler);
+    },
+  };
+  installWebContentsSecurity(app, policy, {
+    openExternal: (url) => { opened.push(url); },
+  });
+  listeners.get('web-contents-created')(null, contents);
+
+  const openHandler = handlers[0];
+  assert.equal(openHandler({ url: 'https://platform.deepseek.com/' }).action, 'deny');
+  assert.deepEqual(opened, ['https://platform.deepseek.com/']);
+  assert.equal(openHandler({ url: 'http://platform.deepseek.com/' }).action, 'deny');
+  assert.equal(openHandler({ url: 'file:///C:/Windows/System32/calc.exe' }).action, 'deny');
+  assert.equal(openHandler({ url: 'javascript:alert(1)' }).action, 'deny');
+  assert.equal(openHandler({}).action, 'deny');
+  assert.equal(opened.length, 1, 'only https is ever opened externally');
+
+  const navigateHandler = handlers[1];
+  const event = { preventDefault() { event.prevented = true; } };
+  navigateHandler(event, 'https://platform.deepseek.com/');
+  assert.equal(event.prevented, true, 'will-navigate keeps locking in-app navigation');
+});
+
+test('a throwing openExternal never crashes the window and no channel means plain deny', () => {
+  const listeners = new Map();
+  const app = {
+    on(event, handler) { listeners.set(event, handler); },
+    removeListener() {},
+  };
+  const policy = createRendererTrustPolicy({ isDev: false, packagedUrl: 'reverie-app://app/index.html' });
+  const contents = { setWindowOpenHandler(handler) { contents.handler = handler; }, on() {} };
+
+  installWebContentsSecurity(app, policy, {
+    openExternal: () => { throw new Error('boom'); },
+  });
+  listeners.get('web-contents-created')(null, contents);
+  assert.equal(contents.handler({ url: 'https://example.com/' }).action, 'deny');
+
+  const contentsNoChannel = { setWindowOpenHandler(handler) { contentsNoChannel.handler = handler; }, on() {} };
+  installWebContentsSecurity(app, policy);
+  listeners.get('web-contents-created')(null, contentsNoChannel);
+  assert.equal(contentsNoChannel.handler({ url: 'https://example.com/' }).action, 'deny');
+});
 
 test('renderer trust policy rejects subframes, foreign senders, and lookalike origins', () => {
   const policy = createRendererTrustPolicy({

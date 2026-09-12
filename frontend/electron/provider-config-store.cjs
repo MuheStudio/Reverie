@@ -18,6 +18,36 @@ function text(value, label, max = 2048) {
   return value;
 }
 
+function isPrivateOrLinkLocalHostname(hostname) {
+  // Loopback (localhost / 127.x / ::1) is allowed — Ollama's default
+  // endpoint is http://127.0.0.1:11434. Everything else that is not a public
+  // internet address is refused as a SSRF / metadata-exfiltration surface
+  // (169.254.169.254 cloud metadata, RFC1918 private nets, link-local).
+  const host = String(hostname || '').toLowerCase();
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost')) return false;
+  if (host.includes(':')) {
+    // IPv6 literal: allow only ::1 (loopback), refuse the rest.
+    return host !== '::1';
+  }
+  const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (literal === '::1') return false;
+  const parts = literal.split('.').map((p) => Number(p));
+  if (parts.length === 4 && parts.every((p) => Number.isInteger(p) && p >= 0 && p <= 255)) {
+    const [a, b] = parts;
+    if (a === 10) return true;
+    if (a === 127) return false; // loopback allowed
+    if (a === 169 && b === 254) return true; // link-local metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 0 || a === 100 || a === 198 || a === 203) return true; // reserved-ish
+    return false;
+  }
+  // Non-numeric hostname: allow; DNS rebinding is out of scope for a
+  // user-typed provider endpoint on a desktop app.
+  return false;
+}
+
 function providerUrl(value, label) {
   const raw = text(value, label);
   let parsed;
@@ -25,6 +55,9 @@ function providerUrl(value, label) {
   if (!['http:', 'https:'].includes(parsed.protocol)
     || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new TypeError(`${label} must be an HTTP(S) origin/path without credentials, query, or fragment`);
+  }
+  if (isPrivateOrLinkLocalHostname(parsed.hostname)) {
+    throw new TypeError(`${label} must point to a public or loopback address`);
   }
   return parsed.toString().replace(/\/$/, '');
 }

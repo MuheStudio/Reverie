@@ -494,14 +494,16 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
   if (mocReferences.length !== 1) {
     throw avatarError('AVATAR_LIVE2D_MOC', 'Live2D package must reference exactly one .moc3 file');
   }
-  const mocHeader = Buffer.alloc(4);
+  const mocHeader = Buffer.alloc(8);
   const mocPath = path.join(outputDir, ...mocReferences[0].split('/'));
   const mocFd = fs.openSync(mocPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  let mocVersion = null;
   try {
-    if (fs.readSync(mocFd, mocHeader, 0, mocHeader.length, 0) !== 4
-      || mocHeader.toString('ascii') !== 'MOC3') {
+    const read = fs.readSync(mocFd, mocHeader, 0, mocHeader.length, 0);
+    if (read < 4 || mocHeader.subarray(0, 4).toString('ascii') !== 'MOC3') {
       throw avatarError('AVATAR_LIVE2D_MOC', 'Live2D .moc3 header is invalid');
     }
+    if (read >= 8) mocVersion = mocHeader.readUInt32LE(4);
   } finally {
     fs.closeSync(mocFd);
   }
@@ -556,6 +558,7 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
       fileCount: files.size,
       expandedBytes: normalizedExpandedBytes,
       modelVersion: version,
+      mocVersion,
       textures: textureStats,
       estimatedVramBytes: estimatedTextureBytes,
       detected: {
@@ -570,7 +573,7 @@ function validateLive2DExtracted(outputDir, fileDescriptors, expandedBytes) {
   };
 }
 
-function validateLive2DPackage(zipBuffer, outputDir) {
+function validateLive2DPackage(zipBuffer, outputDir, options = {}) {
   const parsed = parseZip(zipBuffer);
   const files = [];
   for (const entry of parsed.entries) {
@@ -595,7 +598,57 @@ function validateLive2DPackage(zipBuffer, outputDir) {
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     });
   }
-  return validateLive2DExtracted(outputDir, files, parsed.expandedBytes);
+  return finalizeLive2DExtracted(outputDir, files, parsed.expandedBytes, options);
+}
+
+function applyLive2DTextureTransforms(outputDir, descriptors, transformer) {
+  if (typeof transformer !== 'function') return { descriptors, warnings: [] };
+  let transforms;
+  try {
+    transforms = transformer(outputDir) || [];
+  } catch (error) {
+    const detail = String(error instanceof Error ? error.message : error).slice(0, 200);
+    return {
+      descriptors,
+      warnings: [`texture_downscale_unavailable:${detail || 'transform failed'}`],
+    };
+  }
+  if (!Array.isArray(transforms) || transforms.length === 0) {
+    return { descriptors, warnings: [] };
+  }
+  const refreshed = descriptors.map((descriptor) => {
+    const target = path.join(outputDir, ...descriptor.path.split('/'));
+    if (!isInside(outputDir, target)) {
+      throw avatarError('AVATAR_PATH_ESCAPE', `Live2D texture transform escaped staging: ${descriptor.path}`);
+    }
+    const bytes = fs.readFileSync(target);
+    return {
+      ...descriptor,
+      size: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    };
+  });
+  const warnings = [];
+  for (const entry of transforms) {
+    const relative = String(entry?.path || '').replace(/\\/g, '/');
+    if (!refreshed.some((descriptor) => descriptor.path === relative)) continue;
+    const before = Array.isArray(entry.before) ? entry.before.join('x') : '?';
+    const after = Array.isArray(entry.after) ? entry.after.join('x') : '?';
+    warnings.push(`texture_downscaled:${relative}:${before}\u2192${after}`);
+  }
+  return { descriptors: refreshed, warnings };
+}
+
+function finalizeLive2DExtracted(outputDir, descriptors, expandedBytes, options = {}) {
+  const applied = applyLive2DTextureTransforms(outputDir, descriptors, options.textureTransformer);
+  const actualExpanded = applied.descriptors.reduce((sum, file) => sum + file.size, 0);
+  const validation = validateLive2DExtracted(
+    outputDir,
+    applied.descriptors,
+    Number.isSafeInteger(actualExpanded) ? actualExpanded : expandedBytes,
+  );
+  validation.warnings = [...applied.warnings, ...validation.warnings];
+  return validation;
 }
 
 function inventoryLive2DDirectory(sourceDir) {
@@ -681,7 +734,7 @@ function inventoryLive2DDirectory(sourceDir) {
   return { sourceRoot, files, expandedBytes };
 }
 
-function validateLive2DDirectory(sourceDir, outputDir) {
+function validateLive2DDirectory(sourceDir, outputDir, options = {}) {
   const inventory = inventoryLive2DDirectory(sourceDir);
   const descriptors = [];
   for (const file of inventory.files) {
@@ -696,7 +749,7 @@ function validateLive2DDirectory(sourceDir, outputDir) {
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     });
   }
-  return validateLive2DExtracted(outputDir, descriptors, inventory.expandedBytes);
+  return finalizeLive2DExtracted(outputDir, descriptors, inventory.expandedBytes, options);
 }
 
 function parsePngSize(bytes) {
@@ -1196,6 +1249,9 @@ class AvatarManager {
         ? 'Live2D Cubism Core is missing'
         : options.live2dRuntime?.reason || '',
     });
+    this.live2dTextureTransformer = typeof options.live2dTextureTransformer === 'function'
+      ? options.live2dTextureTransformer
+      : null;
     fs.mkdirSync(this.stagingDir, { recursive: true });
     fs.mkdirSync(this.motionStagingDir, { recursive: true });
     fs.mkdirSync(this.recordsDir, { recursive: true });
@@ -1345,15 +1401,32 @@ class AvatarManager {
 
   beginImport(sourcePath, options = {}) {
     const source = path.resolve(String(sourcePath || ''));
+    if (source.toLowerCase().endsWith('.model3.json')) {
+      return this.beginImportDirectory(path.dirname(source), options);
+    }
     const extension = path.extname(source).toLowerCase();
     const kind = extension === '.vrm' ? 'vrm' : extension === '.glb' ? 'glb' : extension === '.zip' ? 'live2d' : null;
-    if (!kind) throw avatarError('AVATAR_FORMAT', 'Choose a .vrm, .glb, or .zip avatar package');
+    if (!kind) {
+      throw avatarError(
+        'AVATAR_FORMAT',
+        'Choose a Live2D folder, *.model3.json, .zip, .vrm, or .glb',
+      );
+    }
     return this._beginImport(source, { ...options, kind, extension, sourceIsDirectory: false });
   }
 
   beginImportDirectory(sourcePath, options = {}) {
     const source = path.resolve(String(sourcePath || ''));
-    return this._beginImport(source, {
+    let directory = source;
+    try {
+      const stat = fs.lstatSync(source);
+      if (stat.isFile() && source.toLowerCase().endsWith('.model3.json')) {
+        directory = path.dirname(source);
+      }
+    } catch {
+      // _beginImport / inventoryLive2DDirectory re-validate the resolved path.
+    }
+    return this._beginImport(directory, {
       ...options,
       kind: 'live2d',
       extension: '',
@@ -1377,13 +1450,17 @@ class AvatarManager {
       let validation;
       let sourceCopy = null;
       if (sourceIsDirectory) {
-        validation = validateLive2DDirectory(source, payloadDir);
+        validation = validateLive2DDirectory(source, payloadDir, {
+          textureTransformer: this.live2dTextureTransformer,
+        });
       } else {
         sourceCopy = path.join(partial, 'source.bin');
         copySource(source, sourceCopy, kind === 'live2d' ? MAX_ZIP_BYTES : MAX_AVATAR_BYTES);
       }
       if (!sourceIsDirectory && kind === 'live2d') {
-        validation = validateLive2DPackage(fs.readFileSync(sourceCopy), payloadDir);
+        validation = validateLive2DPackage(fs.readFileSync(sourceCopy), payloadDir, {
+          textureTransformer: this.live2dTextureTransformer,
+        });
       } else if (!sourceIsDirectory) {
         const targetName = `avatar${extension}`;
         const target = path.join(payloadDir, targetName);
@@ -1446,6 +1523,7 @@ class AvatarManager {
         },
         requiresRightsConfirmation: true,
         requiresWarningAcceptance: candidate.warnings.length > 0,
+        modelRuntimeVersion: candidate.stats?.mocVersion ?? null,
       };
     } catch (error) {
       try { fs.rmSync(partial, { recursive: true, force: true }); } catch {}

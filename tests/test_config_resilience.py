@@ -77,7 +77,7 @@ def test_packaging_seed_validates_against_current_settings_model() -> None:
     settings = settings_module._Settings(**payload)
 
     assert settings.llm.provider == "ollama"
-    assert settings.memory.short_term_forget_probability == 0.005
+    assert settings.memory.short_term_forget_probability == 0.05
     assert settings.memory.misremember_probability == 0.05
 
 

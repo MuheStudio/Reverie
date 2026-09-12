@@ -17,7 +17,7 @@ def test_feature_settings_defaults() -> None:
     assert settings.web_surfing_enabled is False
     assert settings.web_disclaimer_acknowledged is False
     assert settings.web_search_windows == ["20:00-23:00"]
-    assert settings.timeline_enabled is False
+    assert settings.timeline_enabled is True
     assert settings.proactive_chat_enabled is False
     assert settings.proactive_wake_min_minutes == 2
     assert settings.proactive_wake_max_minutes == 10

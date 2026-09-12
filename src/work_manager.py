@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .chat.scheduler import MessageScheduler
     from .config.settings import FeatureSettings
     from .diary import DiaryEntry, DiaryManager
+    from .emotion.system import EmotionSystem
     from .persona.persona_card import Persona
     from .affairs import PersonalAffairManager
     from .interest import InterestTracker
@@ -75,6 +76,7 @@ class WorkManager:
         world_clock: "WorldClock | None" = None,
         ambient_presence: "AmbientPresence | None" = None,
         state_scope: "PersonaModuleState | None" = None,
+        emotion: "EmotionSystem | None" = None,
     ) -> None:
         self.persona = persona
         if callable(getattr(self.persona, "seal_identity", None)):
@@ -98,6 +100,7 @@ class WorkManager:
         self.affair_manager = affair_manager
         self.interest_tracker = interest_tracker
         self.memory = memory
+        self.emotion = emotion
         self.ambient_presence = ambient_presence
         if world_clock is None:
             from .world import WorldClock
@@ -155,6 +158,26 @@ class WorkManager:
             self._diary_writing = False
             logger.info("WorkManager stopped")
 
+    def _apply_affair_emotion_outcomes(self, updates: list[dict[str, Any]]) -> None:
+        """Affair outcomes are non-chat life events: they must move the
+        emotional state too, not only the affair ledger."""
+        emotion = self.emotion
+        if emotion is None or not updates:
+            return
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            title = str(update.get("title") or "").strip()[:80] or "一件小事"
+            completed = str(update.get("status")) == "completed"
+            outcome = f"{'完成了' if completed else '推进了'}「{title}」"
+            try:
+                emotion.apply_event_outcome(
+                    outcome,
+                    explicit_changes={"joy": 8.0 if completed else 3.0},
+                )
+            except Exception:
+                logger.exception("Affair emotion outcome failed; life loop continues")
+
     async def _run_loop(self) -> None:
         while True:
             try:
@@ -172,7 +195,8 @@ class WorkManager:
         now = self.world_clock.coerce(now).replace(tzinfo=None)
         try:
             if self.affair_manager is not None:
-                self.affair_manager.advance_due(now)
+                updates = self.affair_manager.advance_due(now)
+                self._apply_affair_emotion_outcomes(updates)
         except StalePersonaEpoch:
             raise
         except Exception:

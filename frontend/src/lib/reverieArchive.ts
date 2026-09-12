@@ -5,6 +5,18 @@ export const REVERIE_ARCHIVE_STORAGE_KEY = 'reverie:archive:v1';
 export const REVERIE_BACKUP_SCHEMA = 'reverie.backup.v1';
 export const REVERIE_CHARACTER_SCHEMA = 'reverie.character-card.v1';
 export const REVERIE_WORLDBOOK_SCHEMA = 'reverie.world-book.v1';
+export const FACTORY_PERSONA_ID = 'builtin_hoshino_yumetsuki';
+export const FACTORY_PERSONA_FINGERPRINTS = [
+  '33400d02c76445fad79ac7be10f9173c3e8f5f924a8daf1b76d04cf728d0e8c0',
+  '4e7eba3ebeeb0809517d8c87d5dc146e01bf7bff5231d2fdde7724c5ac078a18',
+] as const;
+
+export function isFactoryPersonaScope(scope: { persona_id?: unknown; persona_fingerprint?: unknown } | null | undefined): boolean {
+  const personaId = typeof scope?.persona_id === 'string' ? scope.persona_id : '';
+  const fingerprint = typeof scope?.persona_fingerprint === 'string' ? scope.persona_fingerprint.toLowerCase() : '';
+  if (personaId === FACTORY_PERSONA_ID) return true;
+  return FACTORY_PERSONA_FINGERPRINTS.includes(fingerprint as typeof FACTORY_PERSONA_FINGERPRINTS[number]);
+}
 
 export type MemoryRetentionYears = 1 | 2 | 3;
 
@@ -33,18 +45,37 @@ export interface ReverieCharacterCard {
   personality: string;
   speakingStyle: string;
   firstMessage?: string;
+  alternateGreetings?: string[];
+  importedSystemPrompt?: string;
+  importedPostHistoryInstructions?: string;
+  useImportedSystemPrompt?: boolean;
+  useImportedPostHistoryInstructions?: boolean;
   tags: string[];
   createdAt: string;
   updatedAt: string;
 }
 
+export type SelectiveLogic = 'and_any' | 'and_all' | 'not_any' | 'not_all';
+export type LoreInjectionRole = 'system' | 'user' | 'assistant';
+
 export interface WorldBookEntry {
   id: string;
-  key: string;
-  comment: string;
+  keywords: string[];
+  secondaryKeywords: string[];
+  selectiveLogic: SelectiveLogic;
   content: string;
-  alwaysActive: boolean;
   enabled: boolean;
+  alwaysActive: boolean;
+  position: 'before_char' | 'after_char';
+  insertionOrder: number;
+  priority: number;
+  caseSensitive: boolean;
+  comment: string;
+  scanDepth: number | null;
+  tokenBudget: number | null;
+  useRegex: boolean;
+  depth: number;
+  role: LoreInjectionRole;
 }
 
 export interface ReverieWorldBook {
@@ -53,6 +84,9 @@ export interface ReverieWorldBook {
   entries: WorldBookEntry[];
   createdAt: string;
   updatedAt: string;
+  scanDepth: number;
+  tokenBudget: number;
+  recursiveScanning: boolean;
 }
 
 export interface ReverieArchive {
@@ -153,21 +187,6 @@ function asStringArray(value: unknown): string[] {
 }
 
 export type BackupLLMConfig = Omit<LLMConfig, 'apiKey' | 'customHeaders'>;
-
-function asLooseStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => asString(item).trim())
-      .filter(Boolean);
-  }
-  if (typeof value === 'string') {
-    return value
-      .split(/[、，,]/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-  return [];
-}
 
 const DANGEROUS_JSON_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -412,6 +431,11 @@ export function createDefaultCharacterCard(timestamp = nowIso()): ReverieCharact
     personality: '外冷内热。虽然是大名鼎鼎的科学家，日常却不把逻辑放在第一位，反而很温柔；喜欢二次元，喜欢用各种网络梗，也爱收集表情包。她害怕孤独，讨厌被冷落，容易吃醋。',
     speakingStyle: '自然、亲近、带一点二次元和网络梗的松弛感。口头禅是“嗯嗯”“好耶”“唔”。绝对不说“作为AI”“根据资料”“客观来看”等会让关系出戏的表达。',
     firstMessage: '嗯嗯，今天也回来了。要不要先坐一会儿？我有在等你哦。',
+    alternateGreetings: [],
+    importedSystemPrompt: '',
+    importedPostHistoryInstructions: '',
+    useImportedSystemPrompt: false,
+    useImportedPostHistoryInstructions: false,
     tags: ['预设角色', '星野幻月', '科学家', '长期陪伴'],
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -422,30 +446,66 @@ export function createDefaultWorldBook(timestamp = nowIso()): ReverieWorldBook {
   return {
     id: 'default-world-book',
     name: '星野幻月的世界书',
+    scanDepth: 50,
+    tokenBudget: 500,
+    recursiveScanning: false,
     entries: [
       {
         id: 'entry-home-room',
-        key: '房间, Reverie, 归处',
-        comment: '共同空间',
+        keywords: ['房间', 'Reverie', '归处'],
+        secondaryKeywords: [],
+        selectiveLogic: 'and_any',
         content: 'Reverie 的起始房间是两人共同维护的私人空间，用来保存记忆、关系进展和日常痕迹。',
         alwaysActive: true,
         enabled: true,
+        position: 'before_char',
+        insertionOrder: 100,
+        priority: 0,
+        caseSensitive: false,
+        comment: '共同空间',
+        scanDepth: null,
+        tokenBudget: null,
+        useRegex: false,
+        depth: 0,
+        role: 'system',
       },
       {
         id: 'entry-yumetsuki-profile',
-        key: '星野幻月, Hoshino Yumetsuki, 沐禾工作室',
-        comment: '预设角色核心身份',
+        keywords: ['星野幻月', 'Hoshino Yumetsuki', '沐禾工作室'],
+        secondaryKeywords: [],
+        selectiveLogic: 'and_any',
         content: '星野幻月（Hoshino Yumetsuki），19 岁，生日是 2007 年 3 月 2 日。她是核物理学家、数学家，也是“沐禾工作室”的联合创建者之一兼 45% 股份持有者。作息时间是 9:00～23:00，喜欢写日记。',
         alwaysActive: true,
         enabled: true,
+        position: 'before_char',
+        insertionOrder: 100,
+        priority: 0,
+        caseSensitive: false,
+        comment: '预设角色核心身份',
+        scanDepth: null,
+        tokenBudget: null,
+        useRegex: false,
+        depth: 0,
+        role: 'system',
       },
       {
         id: 'entry-yumetsuki-speech',
-        key: '口头禅, 禁用表达, 说话方式',
-        comment: '角色口吻边界',
+        keywords: ['口头禅', '禁用表达', '说话方式'],
+        secondaryKeywords: [],
+        selectiveLogic: 'and_any',
         content: '自然、亲近、带一点二次元和网络梗的松弛感。口头禅是“嗯嗯”“好耶”“唔”。绝对不说“作为AI”“根据资料”“客观来看”等会让关系出戏的表达。',
         alwaysActive: true,
         enabled: true,
+        position: 'before_char',
+        insertionOrder: 100,
+        priority: 0,
+        caseSensitive: false,
+        comment: '角色口吻边界',
+        scanDepth: null,
+        tokenBudget: null,
+        useRegex: false,
+        depth: 0,
+        role: 'system',
       },
     ],
     createdAt: timestamp,
@@ -495,46 +555,130 @@ function normalizeCharacter(value: unknown): ReverieCharacterCard | null {
     personality: asString(value.personality),
     speakingStyle: asString(value.speakingStyle),
     firstMessage: asString(value.firstMessage),
+    alternateGreetings: asStringArray(value.alternateGreetings),
+    importedSystemPrompt: asString(value.importedSystemPrompt),
+    importedPostHistoryInstructions: asString(value.importedPostHistoryInstructions),
+    useImportedSystemPrompt: value.useImportedSystemPrompt === true,
+    useImportedPostHistoryInstructions: value.useImportedPostHistoryInstructions === true,
     tags: asStringArray(value.tags),
     createdAt: asString(value.createdAt, timestamp),
     updatedAt: asString(value.updatedAt, timestamp),
   };
 }
 
+function asSelectiveLogic(value: unknown): SelectiveLogic {
+  const normalized = asString(value).toLowerCase();
+  return normalized === 'and_all' || normalized === 'not_any' || normalized === 'not_all'
+    ? normalized
+    : 'and_any';
+}
+
+function asEntryPosition(value: unknown): 'before_char' | 'after_char' {
+  return asString(value).toLowerCase() === 'after_char' ? 'after_char' : 'before_char';
+}
+
+function asKeywordArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => asString(item).trim())
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(/[、，,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function asNullableNumber(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? Math.floor(num) : null;
+}
+
+function asInjectionRole(value: unknown): LoreInjectionRole {
+  const normalized = asString(value).toLowerCase();
+  return normalized === 'user' || normalized === 'assistant' ? normalized : 'system';
+}
+
+function asBool(value: unknown): boolean {
+  return value === true;
+}
+
 function normalizeWorldBookEntry(value: unknown): WorldBookEntry | null {
   if (!isRecord(value)) return null;
   const content = asString(value.content).trim();
   if (!content) return null;
+  const keywords = value.keywords !== undefined
+    ? asKeywordArray(value.keywords)
+    : asKeywordArray(value.key);
   return {
     id: asString(value.id, createId('entry')),
-    key: asString(value.key),
-    comment: asString(value.comment),
+    keywords,
+    secondaryKeywords: asKeywordArray(value.secondaryKeywords),
+    selectiveLogic: asSelectiveLogic(value.selectiveLogic),
     content,
     alwaysActive: Boolean(value.alwaysActive ?? value.always_active),
     enabled: value.enabled !== false,
+    position: asEntryPosition(value.position),
+    insertionOrder: toNonNegativeInt(value.insertionOrder, value.insertion_order, 100),
+    priority: toNonNegativeInt(value.priority, undefined, 0),
+    caseSensitive: Boolean(value.caseSensitive ?? value.case_sensitive),
+    comment: asString(value.comment),
+    scanDepth: asNullableNumber(value.scanDepth ?? value.scan_depth),
+    tokenBudget: asNullableNumber(value.tokenBudget ?? value.token_budget),
+    useRegex: asBool(value.useRegex ?? value.use_regex),
+    depth: toNonNegativeInt(value.depth, undefined, 0),
+    role: asInjectionRole(value.role),
   };
+}
+
+function toNonNegativeInt(...candidates: Array<unknown>): number {
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    const num = Number(candidate);
+    if (Number.isFinite(num) && num >= 0) return Math.floor(num);
+  }
+  return 0;
 }
 
 function normalizeSillyTavernWorldBookEntry(value: unknown): WorldBookEntry | null {
   if (!isRecord(value)) return null;
   const content = asString(value.content).trim();
   if (!content) return null;
-  const keys = [
-    ...asLooseStringArray(value.key),
-    ...asLooseStringArray(value.keys),
-    ...asLooseStringArray(value.keysecondary),
-    ...asLooseStringArray(value.secondary_keys),
-  ];
+  const keywords = [...asKeywordArray(value.keys), ...asKeywordArray(value.key)];
   const uidValue = value.id ?? value.uid ?? createId('entry');
   const uid = typeof uidValue === 'string' ? uidValue : String(uidValue);
   return {
     id: uid.startsWith('entry_') ? uid : `entry_${uid}`,
-    key: Array.from(new Set(keys)).join(', '),
-    comment: asString(value.comment).trim() || asString(value.name).trim(),
+    keywords: Array.from(new Set(keywords)),
+    secondaryKeywords: Array.from(new Set([
+      ...asKeywordArray(value.secondary_keys),
+      ...asKeywordArray(value.keysecondary),
+    ])),
+    selectiveLogic: asEntrySelectiveLogic(value),
     content,
     alwaysActive: value.constant === true,
     enabled: value.enabled !== false && value.disable !== true,
+    position: asEntryPosition(value.position),
+    insertionOrder: toNonNegativeInt(value.insertion_order, value.insertionOrder, 100),
+    priority: toNonNegativeInt(value.priority, undefined, 0),
+    caseSensitive: value.case_sensitive === true || value.caseSensitive === true,
+    comment: asString(value.comment).trim() || asString(value.name).trim(),
+    scanDepth: asNullableNumber(value.scan_depth ?? value.scanDepth),
+    tokenBudget: asNullableNumber(value.token_budget ?? value.tokenBudget),
+    useRegex: value.use_regex === true || value.useRegex === true,
+    depth: toNonNegativeInt(value.depth, undefined, 0),
+    role: asInjectionRole(value.role),
   };
+}
+
+function asEntrySelectiveLogic(value: Record<string, unknown>): SelectiveLogic {
+  const explicit = asString(value.selective_logic ?? value.selectiveLogic).toLowerCase();
+  if (explicit === 'and_all' || explicit === 'not_any' || explicit === 'not_all') return explicit;
+  return 'and_any';
 }
 
 function looksLikeSillyTavernWorldBook(value: unknown): boolean {
@@ -571,6 +715,9 @@ function normalizeSillyTavernWorldBook(value: unknown, fallbackName = 'SillyTave
     entries,
     createdAt: asString(value.createdAt, timestamp),
     updatedAt: asString(value.updatedAt, timestamp),
+    scanDepth: toNonNegativeInt(value.scan_depth, value.scanDepth, 50),
+    tokenBudget: toNonNegativeInt(value.token_budget, value.tokenBudget, 500),
+    recursiveScanning: asBool(value.recursive_scanning ?? value.recursiveScanning),
   };
 }
 
@@ -588,6 +735,9 @@ function normalizeWorldBook(value: unknown): ReverieWorldBook | null {
     entries,
     createdAt: asString(value.createdAt, timestamp),
     updatedAt: asString(value.updatedAt, timestamp),
+    scanDepth: toNonNegativeInt(value.scanDepth, value.scan_depth, 50),
+    tokenBudget: toNonNegativeInt(value.tokenBudget, value.token_budget, 500),
+    recursiveScanning: asBool(value.recursiveScanning ?? value.recursive_scanning),
   };
 }
 
@@ -612,7 +762,7 @@ function migrateCharacterCard(card: ReverieCharacterCard): ReverieCharacterCard 
 function migrateWorldBooks(worldBooks: ReverieWorldBook[]): ReverieWorldBook[] {
   const defaultWorldBook = createDefaultWorldBook();
   const existingIndex = worldBooks.findIndex((book) => book.id === defaultWorldBook.id);
-  if (existingIndex < 0) return [defaultWorldBook, ...worldBooks];
+  if (existingIndex < 0) return worldBooks;
 
   const existing = worldBooks[existingIndex];
   const entryIds = new Set(existing.entries.map((entry) => entry.id));
@@ -629,6 +779,22 @@ function migrateWorldBooks(worldBooks: ReverieWorldBook[]): ReverieWorldBook[] {
     : book));
 }
 
+export function restoreFactoryCharacterPreset(archive: ReverieArchive, timestamp = nowIso()): ReverieArchive {
+  const preset = createDefaultCharacterCard(timestamp);
+  const characters = [
+    preset,
+    ...archive.characters.filter((card) => card.id !== preset.id && card.id !== 'hoshino-gengetsu'),
+  ];
+  const worldBooks = archive.worldBooks.some((book) => book.id === 'default-world-book')
+    ? archive.worldBooks
+    : [createDefaultWorldBook(timestamp), ...archive.worldBooks];
+  return {
+    characters,
+    activeCharacterIds: [preset.id, ...archive.activeCharacterIds.filter((id) => id !== preset.id && id !== 'hoshino-gengetsu')],
+    worldBooks,
+  };
+}
+
 export function normalizeArchive(value: unknown): ReverieArchive {
   const fallback = createDefaultArchive();
   if (!isRecord(value)) return fallback;
@@ -639,21 +805,24 @@ export function normalizeArchive(value: unknown): ReverieArchive {
   const worldBooks = Array.isArray(value.worldBooks)
     ? value.worldBooks.map(normalizeWorldBook).filter((book): book is ReverieWorldBook => Boolean(book))
     : [];
+  const explicitEmpty = Array.isArray(value.characters) && value.characters.length === 0;
+  const explicitEmptyBooks = Array.isArray(value.worldBooks) && value.worldBooks.length === 0;
 
   const preset = createDefaultCharacterCard();
-  const migratedCharacters = (characters.length ? characters : fallback.characters).map(migrateCharacterCard);
-  const safeCharacters = migratedCharacters.some((character) => character.id === preset.id)
-    ? migratedCharacters
-    : [preset, ...migratedCharacters];
-  const characterIds = new Set(safeCharacters.map((character) => character.id));
+  const migratedCharacters = (characters.length || explicitEmpty ? characters : fallback.characters).map(migrateCharacterCard);
+  const characterIds = new Set(migratedCharacters.map((character) => character.id));
   const activeCharacterIds = asStringArray(value.activeCharacterIds)
     .map((id) => (id === 'hoshino-gengetsu' ? preset.id : id))
     .filter((id) => characterIds.has(id));
-  const safeWorldBooks = migrateWorldBooks(worldBooks.length ? worldBooks : fallback.worldBooks);
+  const safeWorldBooks = migrateWorldBooks(
+    worldBooks.length || explicitEmptyBooks ? worldBooks : fallback.worldBooks,
+  );
 
   return {
-    characters: safeCharacters,
-    activeCharacterIds: activeCharacterIds.length ? activeCharacterIds : [safeCharacters[0].id],
+    characters: migratedCharacters,
+    activeCharacterIds: activeCharacterIds.length
+      ? activeCharacterIds
+      : (migratedCharacters[0] ? [migratedCharacters[0].id] : []),
     worldBooks: safeWorldBooks,
   };
 }

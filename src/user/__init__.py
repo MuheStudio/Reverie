@@ -237,40 +237,63 @@ class UserManager:
         if changed:
             self.save()
 
+    def restore_default_profile(self) -> UserProfile:
+        """Replace editable fields with the factory 星野白夜 profile."""
+        default = default_user_profile()
+        for key, value in default.to_dict().items():
+            if key in {"first_seen", "last_seen", "session_count", "sticker_preferences"}:
+                continue
+            setattr(self.profile, key, value)
+        self.save()
+        return self.profile
+
     def update_profile(self, data: dict) -> UserProfile:
-        """Update editable profile fields from a JSON payload."""
+        """Update editable profile fields from a JSON payload.
+
+        Empty values never erase existing data: a client that submits a
+        partial or blank profile (the onboarding finish commit being the
+        historical offender) updates only what it actually provides. There
+        is no feature that intentionally clears profile fields, so blank
+        payloads are treated as "not provided", not as "clear".
+        """
         list_fields = {
             "interests", "hobbies", "favorite_topics", "favorite_games",
             "favorite_anime", "long_term_goals", "habits", "historical_events",
         }
         scalar_fields = {"name", "nickname", "identity", "schedule"}
         for key in scalar_fields:
-            if key in data:
-                setattr(self.profile, key, str(data.get(key) or "").strip())
-        if "birthday" in data:
-            self.profile.birthday = self._normalize_date(str(data.get("birthday") or "").strip())
+            if key in data and str(data.get(key) or "").strip():
+                setattr(self.profile, key, str(data[key]).strip())
+        if "birthday" in data and str(data.get("birthday") or "").strip():
+            self.profile.birthday = self._normalize_date(str(data["birthday"]).strip())
         if "age" in data:
             try:
                 age = int(data["age"])
-                self.profile.age = age if age > 0 else None
+                if age > 0:
+                    self.profile.age = age
             except (TypeError, ValueError):
-                self.profile.age = None
+                pass
         for key in list_fields:
-            if key in data:
-                raw = data.get(key)
-                if isinstance(raw, str):
-                    items = self._split_list(raw)
-                elif isinstance(raw, list):
-                    items = [str(item).strip() for item in raw if str(item).strip()]
-                else:
-                    items = []
+            if key not in data:
+                continue
+            raw = data.get(key)
+            if isinstance(raw, str):
+                items = self._split_list(raw)
+            elif isinstance(raw, list):
+                items = [str(item).strip() for item in raw if str(item).strip()]
+            else:
+                items = []
+            if items:
                 setattr(self.profile, key, items)
-        if isinstance(data.get("important_dates"), dict):
-            self.profile.important_dates = {
+        dates = data.get("important_dates")
+        if isinstance(dates, dict):
+            normalized = {
                 str(k).strip(): str(v).strip()
-                for k, v in data["important_dates"].items()
+                for k, v in dates.items()
                 if str(k).strip() and str(v).strip()
             }
+            if normalized:
+                self.profile.important_dates = normalized
         self.save()
         return self.profile
 

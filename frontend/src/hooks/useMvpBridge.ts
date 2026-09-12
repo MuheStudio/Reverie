@@ -13,6 +13,7 @@ import {
   appendUniqueProactive,
   mergeHistoryWithLiveProactive,
 } from '@/lib/proactiveMessages';
+import { parseSillyTavernPngPayload, parseWorldBookImportText } from '@/lib/reverieArchive';
 
 const CONVERSATION_ID = 'dream-room';
 const MAX_CHAT_TEXT = 20_000;
@@ -35,11 +36,15 @@ const EVENT_NAMES = new Set([
   'group:result',
   'sticker:data',
   'persona:data',
+  'persona:import:result',
+  'archive:result',
   'relationship:data',
   'user:profile:result',
   'settings:update:result',
   'settings:get:result',
   'anti_ai:status:result',
+  'video:download:result',
+  'video:download:progress',
   'error',
   'heartbeat',
 ]);
@@ -351,6 +356,13 @@ export function useMvpBridge() {
         if (!id || !state) break;
         if (['done', 'cancelled', 'failed', 'failed_uncertain', 'error'].includes(state)) {
           setActiveRequestId((current) => current === id ? null : current);
+          if (state === 'failed' || state === 'failed_uncertain') {
+            const detail = stringValue(payload.error).trim();
+            const code = stringValue(payload.code).trim();
+            setError(detail
+              ? `生成失败：${detail}${code ? ` [${code}]` : ''}（没有自动重试，以免产生重复回复）`
+              : '消息生成失败；没有自动重试，以免产生重复回复。');
+          }
         } else {
           setActiveRequestId(id);
         }
@@ -360,11 +372,16 @@ export function useMvpBridge() {
         )));
         break;
       }
-      case 'chat:error':
+      case 'chat:error': {
         setIsTyping(false);
         setActiveRequestId(null);
-        setError('消息生成失败；没有自动重试，以免产生重复回复。');
+        const detail = stringValue(payload.error).trim();
+        const code = stringValue(payload.code).trim();
+        setError(detail
+          ? `生成失败：${detail}${code ? ` [${code}]` : ''}（没有自动重试，以免产生重复回复）`
+          : '消息生成失败；没有自动重试，以免产生重复回复。');
         break;
+      }
       case 'chat:retract': {
         const replacement = stringValue(payload.replacement).trim();
         setMessages((current) => [
@@ -472,9 +489,16 @@ export function useMvpBridge() {
       case 'anti_ai:status:result':
         setAntiAiStatus(payload);
         break;
-      case 'error':
-        setError('本地服务拒绝了这次操作。为避免泄露内部信息，详细错误未显示。');
+      case 'video:download:result':
         break;
+      case 'error': {
+        const detail = stringValue(payload.error || payload.message).trim();
+        const code = stringValue(payload.code).trim();
+        setError(detail
+          ? `本地服务拒绝了操作：${detail}${code ? ` [${code}]` : ''}`
+          : '本地服务拒绝了这次操作（未返回详情）。点击「导出错误日志」可定位原因。');
+        break;
+      }
       default:
         break;
     }
@@ -493,7 +517,11 @@ export function useMvpBridge() {
     }
     if (!mountedRef.current) return;
     if (!config || config.protocolVersion !== PROTOCOL_VERSION || !config.url) {
-      setConnection('unavailable');
+      // The Python host is still coming up on a cold boot. Treat this as a
+      // retryable disconnect so the wizard can mount as soon as auth succeeds.
+      setConnection('disconnected');
+      clearTimeout(reconnectRef.current);
+      reconnectRef.current = setTimeout(() => connectRef.current(), RECONNECT_MS);
       return;
     }
     let socket: BridgeSocketLike;
@@ -537,7 +565,10 @@ export function useMvpBridge() {
           refreshConfirmedOn(socket);
           return;
         }
-        if (!EVENT_NAMES.has(frame.type)) throw new Error('undeclared event');
+        // Room-only events (diary/timeline/runtime:activity/...) must not
+        // tear down this connection. AppShell keeps this hook mounted while
+        // DreamRoom is showing, so unknown declared events are ignored.
+        if (!EVENT_NAMES.has(frame.type)) return;
         applyFrame(frame, socket);
       } catch {
         authenticatedRef.current = false;
@@ -620,7 +651,12 @@ export function useMvpBridge() {
     }
   }, [sendOn]);
 
-  const sendChat = useCallback((raw: string, attachment?: { path?: string; previewUrl?: string }) => {
+  const sendChat = useCallback((raw: string, attachment?: {
+    path?: string;
+    previewUrl?: string;
+    videoMediaId?: string;
+    videoMime?: string;
+  }) => {
     const text = raw.trim();
     if (!text || text.length > MAX_CHAT_TEXT || activeRequestId) return null;
     const id = requestId('chat');
@@ -632,12 +668,16 @@ export function useMvpBridge() {
       : attachment?.previewUrl?.startsWith('data:')
         ? { image_data_url: attachment.previewUrl }
         : {};
+    const videoPayload = attachment?.videoMediaId
+      ? { video_media_id: attachment.videoMediaId }
+      : {};
     if (!command('chat:send', {
       text,
       request_id: id,
       conversation_id: CONVERSATION_ID,
       sent_at_utc: sentAtUtc,
       ...imagePayload,
+      ...videoPayload,
     }, id)) return null;
     setMessages((current) => [...current, {
       id: requestId('user'),
@@ -647,6 +687,9 @@ export function useMvpBridge() {
       requestId: id,
       deliveryState: 'queued',
       ...(attachment?.previewUrl ? { attachmentPreview: attachment.previewUrl } : {}),
+      ...(attachment?.videoMediaId ? {
+        media: [{ media_id: attachment.videoMediaId, mime: attachment.videoMime || 'video/mp4' }],
+      } : {}),
     }]);
     setActiveRequestId(id);
     setError('');
@@ -727,7 +770,18 @@ export function useMvpBridge() {
     return item;
   }, [requestResult]);
 
-  const completeOnboarding = useCallback(async (profile: Record<string, unknown>) => {
+  const completeOnboarding = useCallback(async (
+    profile: Record<string, unknown>,
+    finalFields: {
+      onboarding_version: number;
+      onboarding_last_step: string;
+      experience_mode: 'full' | 'core';
+    },
+    searchConsent?: {
+      nativeSearch: boolean;
+      keylessSearch: boolean;
+    },
+  ) => {
     try {
       const savedProfile = await requestResult(
         'user:profile:update',
@@ -737,12 +791,44 @@ export function useMvpBridge() {
       if (savedProfile.error || !isRecord(savedProfile.profile)) {
         throw new Error('profile was not committed');
       }
+      if (searchConsent) {
+        const searchSaved = await requestResult(
+          'settings:update',
+          {
+            section: 'personality',
+            web_native_search_enabled: searchConsent.nativeSearch,
+            surf_keyless_search_enabled: searchConsent.keylessSearch,
+            web_surfing_enabled: searchConsent.keylessSearch,
+            web_disclaimer_acknowledged: searchConsent.keylessSearch,
+          },
+          'settings:update:result',
+        );
+        if (searchSaved.ok !== true) throw new Error('search consent was not committed');
+      }
       const completed = await requestResult(
         'settings:update',
-        { section: 'onboarding', completed: true },
+        {
+          section: 'onboarding',
+          completed: true,
+          onboarding_version: finalFields.onboarding_version,
+          onboarding_state: 'complete',
+          onboarding_last_step: finalFields.onboarding_last_step,
+          experience_mode: finalFields.experience_mode,
+        },
         'settings:update:result',
       );
       if (completed.ok !== true) throw new Error('onboarding marker was not committed');
+      const roomMode = finalFields.experience_mode === 'core' ? 'mvp' : 'dream';
+      try {
+        await requestResult(
+          'settings:update',
+          { section: 'ui', mode: roomMode },
+          'settings:update:result',
+        );
+      } catch {
+        // Completion already persisted. The wizard can still enter the room
+        // through onCompleted; a later settings save retries the mode write.
+      }
       return true;
     } catch {
       setError('引导信息没有完整保存；完成标记未写入，请稍后重试。');
@@ -772,6 +858,23 @@ export function useMvpBridge() {
     error,
     clearError: () => setError(''),
     sendChat,
+    downloadVideo: async (sourceUrl: string, pageTitle?: string) => {
+      const cleaned = sourceUrl.trim();
+      if (!cleaned) throw new Error('请粘贴一条公开的 http(s) 视频地址。');
+      const result = await requestResult('video:download', {
+        source_url: cleaned,
+        conversation_id: CONVERSATION_ID,
+        ...(pageTitle ? { page_title: pageTitle } : {}),
+      }, 'video:download:result', 180_000);
+      if (result.ok !== true || typeof result.media_id !== 'string' || !result.media_id) {
+        throw new Error(stringValue(result.error) || '视频下载失败。');
+      }
+      return {
+        mediaId: result.media_id,
+        mime: stringValue(result.mime) || 'video/mp4',
+        pageTitle: stringValue(result.page_title) || cleaned,
+      };
+    },
     cancelChat,
     fetchChatMedia,
     sendSticker,
@@ -820,6 +923,11 @@ export function useMvpBridge() {
       return request;
     },
     updateSettings: (payload: Record<string, unknown>) => command('settings:update', payload),
+    saveSettings: (payload: Record<string, unknown>) => requestResult(
+      'settings:update',
+      payload,
+      'settings:update:result',
+    ),
     updateUserProfile: (profile: Record<string, unknown>) => command(
       'user:profile:update',
       { profile },
@@ -841,5 +949,49 @@ export function useMvpBridge() {
     },
     reactToSticker: (id: string, liked: boolean) => command('sticker:react', { id, liked }),
     completeOnboarding,
+    importCharacterCard: async (file: File) => {
+      const isPng = file.type === 'image/png' || /\.png$/i.test(file.name);
+      const raw = isPng
+        ? JSON.stringify(parseSillyTavernPngPayload(await file.arrayBuffer()))
+        : await file.text();
+      if (!raw || raw === 'null') {
+        throw new Error(isPng
+          ? '这是一张普通图，没有角色卡数据。请使用官网原文件或 JSON。'
+          : '没有找到可读取的角色卡 JSON');
+      }
+      if (!window.confirm('导入成功后会立刻把她换成这张角色卡。旧的星野幻月可从预设恢复。确认吗？')) {
+        return '已取消导入，当前身份未改变。';
+      }
+      const result = await requestResult('persona:import', {
+        json: raw,
+        filename: file.name,
+        identity_change_confirmed: true,
+        actor: 'owner',
+        reason: 'onboarding imported a live character card',
+      }, 'persona:import:result', 30_000);
+      if (result.ok !== true) throw new Error(stringValue(result.error) || '角色卡导入失败');
+      const activated = result.activated === true && result.restart_required !== true;
+      return activated
+        ? `已导入并切换为 ${stringValue(isRecord(result.persona) ? result.persona.name : '') || '新角色'}，可直接聊天。`
+        : (stringValue(result.world_book_warning) || '角色卡已保存，但未能热切换为当前身份。');
+    },
+    importWorldBook: async (file: File) => {
+      const worldBook = parseWorldBookImportText(await file.text(), file.name.replace(/\.json$/i, '') || undefined);
+      if (!worldBook) throw new Error('世界书 JSON 无法识别。请使用酒馆/Chub 导出的原文件。');
+      const current = await requestResult('archive:get', {}, 'archive:result', 15_000);
+      const archive = isRecord(current.archive) ? current.archive : { characters: [], activeCharacterIds: [], worldBooks: [] };
+      const books = Array.isArray(archive.worldBooks) ? archive.worldBooks.filter(isRecord) : [];
+      const nextBooks = [...books.filter((book) => stringValue(book.id) !== worldBook.id), worldBook];
+      const put = await requestResult('archive:put', {
+        archive: {
+          characters: Array.isArray(archive.characters) ? archive.characters : [],
+          activeCharacterIds: Array.isArray(archive.activeCharacterIds) ? archive.activeCharacterIds : [],
+          worldBooks: nextBooks,
+        },
+        expected_revision: Number(current.revision) || 0,
+      }, 'archive:result', 15_000);
+      if (put.ok !== true) throw new Error(stringValue(put.error) || '世界书未能写入档案');
+      return `已导入世界书「${worldBook.name}」，共 ${worldBook.entries.length} 条设定。`;
+    },
   };
 }

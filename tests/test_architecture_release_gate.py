@@ -73,7 +73,14 @@ def test_retired_reference_projects_and_worldbook_file_are_not_runtime_dependenc
 
     runtime = _text(ROOT / "frontend" / "script" / "production-runtime.cjs")
     assert "'neko_core'" not in runtime
-    assert "'lorebook'" in runtime
+    # lorebook is a first-class MVP capability now: it must be packaged (not
+    # in OMITTED) and constructed by the composition root. The legacy flat
+    # `lorebook.json` data file stays retired — world books live in the
+    # persona-scoped archive store.
+    assert "'lorebook'" not in runtime
+    composition = _text(ROOT / "src" / "mvp_runtime.py")
+    assert "from src.lorebook import LorebookManager" in composition
+    assert "lorebook_mgr=lorebook_mgr" in composition
 
 
 def test_framed_production_transport_requires_v4_commands() -> None:
@@ -104,9 +111,26 @@ def test_mvp_shell_has_no_platform_or_custom_avatar_import_graph() -> None:
         "beginImport",
         "setActive",
         "yumi-default-transparent",
+        "yumi-default.png",
     ):
         assert retired not in merged
     assert "character?.get()" in character
+
+
+def test_public_installer_never_stages_a_live2d_character() -> None:
+    installer = _text(ROOT / "frontend" / "script" / "package-win-installer.cjs")
+    builder = _text(ROOT / "frontend" / "electron-builder.config.cjs")
+    assert "stageLive2DCoreOnlyTestRuntime" in installer
+    assert "stageLive2DRuntimeAssets" not in installer
+    assert "resolveOptionalYumiSource" not in installer
+    assert "YUMI_CHARACTER_RIGHTS.json" not in builder
+    assert "'character'" not in builder
+    dream = _text(FRONTEND / "components" / "DreamRoom" / "CharacterStage.tsx")
+    assert "yumi-default-transparent" not in dream
+    assert "yumi-default.png" not in dream
+    runtime = _text(ROOT / "src" / "mvp_runtime.py")
+    compile(runtime, "mvp_runtime.py", "exec")
+    assert "compileProductionPythonSource" in installer
 
 
 def test_electron_runtime_does_not_duplicate_corresponding_source_maps() -> None:

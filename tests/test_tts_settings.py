@@ -8,8 +8,8 @@ from src.kernel.contracts import SettingsUpdatePayload
 
 def test_tts_settings_defaults() -> None:
     settings = TTSSettings()
-    assert settings.provider == "gemini"
-    assert settings.enabled is False
+    assert settings.provider == "gpt-sovits"
+    assert settings.enabled is True
     assert settings.voice == ""
     assert settings.model == ""
     assert settings.resolved_api_key == "" or len(settings.resolved_api_key) > 3
@@ -19,7 +19,7 @@ def test_tts_settings_persists_without_api_key() -> None:
     settings = _Settings()
     data = settings.model_dump()
     assert "tts" in data
-    assert set(data["tts"]) == {"provider", "model", "voice", "enabled"}
+    assert set(data["tts"]) == {"provider", "model", "voice", "enabled", "base_url"}
 
 
 def test_settings_update_payload_accepts_tts_section() -> None:

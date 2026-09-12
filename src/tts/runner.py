@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 
-from .registry import SynthesizeFn
+from .registry import SynthesizeFn, TTSUnavailableError
 
 logger = logging.getLogger("reverie.tts")
 
@@ -53,6 +53,8 @@ async def synthesize_ordered(
                 audio = await synthesize(sentence, voice)
                 if audio:
                     results[index] = audio
+            except TTSUnavailableError:
+                raise
             except Exception:
                 logger.exception("TTS sentence %d failed; skipping", index)
 

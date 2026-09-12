@@ -13,6 +13,7 @@ test('desktop schemes are secure/standard/fetch-capable and never bypass CSP', (
       'reverie-focus',
       'reverie-live2d-core',
       'reverie-sticker',
+      'reverie-video',
     ],
   );
   for (const entry of SCHEMES) {

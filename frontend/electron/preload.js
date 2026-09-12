@@ -42,6 +42,7 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "memory:edit",
   "memory:list",
   "memory:query",
+  "memory:reinforce",
   "memory:settings:get",
   "memory:store",
   "module:control",
@@ -60,7 +61,8 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "tts:list",
   "tts:synthesize",
   "user:profile:get",
-  "user:profile:update"
+  "user:profile:update",
+  "video:download"
 ]));
 /* END GENERATED PROTOCOL V4 COMMANDS */
 
@@ -188,6 +190,9 @@ function publicProviderConfig(value = {}) {
 const api = Object.freeze({
   platform: process.platform,
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  appState: Object.freeze({
+    getUiSnapshot: () => ipcRenderer.invoke('app:getUiSnapshot'),
+  }),
   getPathForFile: (file) => {
     if (!file || typeof file !== 'object') throw new TypeError('file is invalid');
     return webUtils.getPathForFile(file);
@@ -310,6 +315,84 @@ const api = Object.freeze({
     get: () => ipcRenderer.invoke('character:getBundled'),
   }),
 
+  avatar: Object.freeze({
+    list: () => ipcRenderer.invoke('avatar:list'),
+    onChanged: (callback) => subscribe('avatar:changed', callback),
+    beginImport: () => ipcRenderer.invoke('avatar:beginImport'),
+    beginImportFolder: () => ipcRenderer.invoke('avatar:beginImportFolder'),
+    beginImportLive2DFile: () => ipcRenderer.invoke('avatar:beginImportLive2DFile'),
+    importDropped: (file) => {
+      if (!file || typeof file !== 'object') throw new TypeError('dropped file is invalid');
+      return ipcRenderer.invoke('avatar:importDroppedPath', {
+        path: webUtils.getPathForFile(file),
+      });
+    },
+    confirmPreview: (importId, report = {}) => ipcRenderer.invoke('avatar:confirmPreview', {
+      importId: boundedText(importId, 'avatar import id', 128),
+      detected: report.detected,
+      capabilities: report.capabilities,
+    }),
+    failPreview: (importId) => ipcRenderer.invoke('avatar:failPreview', {
+      importId: boundedText(importId, 'avatar import id', 128),
+    }),
+    discardImport: (importId) => ipcRenderer.invoke('avatar:discardImport', {
+      importId: boundedText(importId, 'avatar import id', 128),
+    }),
+    commitImport: (importId, confirmation = {}) => ipcRenderer.invoke('avatar:commitImport', {
+      importId: boundedText(importId, 'avatar import id', 128),
+      rightsConfirmed: confirmation.rightsConfirmed === true,
+      warningsAccepted: confirmation.warningsAccepted === true,
+    }),
+    setActive: (id) => ipcRenderer.invoke('avatar:setActive', {
+      id: id == null ? null : boundedText(id, 'avatar id', 36),
+    }),
+    remove: (id) => ipcRenderer.invoke('avatar:remove', {
+      id: boundedText(id, 'avatar id', 36),
+    }),
+    setMapping: (id, category, key, target) => ipcRenderer.invoke('avatar:setMapping', {
+      id: boundedText(id, 'avatar id', 36),
+      category: boundedText(category, 'mapping category', 16),
+      key: boundedText(key, 'mapping key', 64),
+      target: target == null ? null : boundedText(target, 'mapping target', 256),
+    }),
+    addMotion: (id) => ipcRenderer.invoke('avatar:addMotion', {
+      id: boundedText(id, 'avatar id', 36),
+    }),
+    removeMotion: (id, motionId) => ipcRenderer.invoke('avatar:removeMotion', {
+      id: boundedText(id, 'avatar id', 36),
+      motionId: boundedText(motionId, 'motion id', 36),
+    }),
+  }),
+
+  voicePack: Object.freeze({
+    list: () => ipcRenderer.invoke('voicePack:list'),
+    beginImport: () => ipcRenderer.invoke('voicePack:beginImport'),
+    importDropped: (file) => {
+      if (!file || typeof file !== 'object') throw new TypeError('dropped file is invalid');
+      return ipcRenderer.invoke('voicePack:importDroppedPath', {
+        path: webUtils.getPathForFile(file),
+      });
+    },
+    commitImport: (previewId, confirmation = {}) => ipcRenderer.invoke('voicePack:commitImport', {
+      previewId: boundedText(previewId, 'voice-pack preview id', 36),
+      rightsAttested: confirmation.rightsAttested === true,
+      runtimeFamily: boundedText(confirmation.runtimeFamily, 'voice runtime family', 32),
+      runtimeVersion: boundedText(confirmation.runtimeVersion, 'voice runtime version', 16),
+    }),
+    setActive: (id) => ipcRenderer.invoke('voicePack:setActive', {
+      id: id == null ? null : boundedText(id, 'voice-pack id', 36),
+    }),
+    remove: (id) => ipcRenderer.invoke('voicePack:remove', {
+      id: boundedText(id, 'voice-pack id', 36),
+    }),
+  }),
+
+  ttsRuntime: Object.freeze({
+    status: () => ipcRenderer.invoke('ttsRuntime:status'),
+    start: () => ipcRenderer.invoke('ttsRuntime:start'),
+    cancel: () => ipcRenderer.invoke('ttsRuntime:cancel'),
+  }),
+
   focus: Object.freeze({
     getState: () => ipcRenderer.invoke('focus:getState'),
     start: (durationSeconds) => {
@@ -332,6 +415,16 @@ const api = Object.freeze({
     show: () => ipcRenderer.invoke('pet:show'),
     hide: () => ipcRenderer.invoke('pet:hide'),
     isVisible: () => ipcRenderer.invoke('pet:isVisible'),
+    onChatEvent: (callback) => subscribe('pet:chatEvent', callback),
+    sendChat: (text) => ipcRenderer.invoke('pet:sendChat', {
+      text: boundedText(text, 'pet chat text', 2000),
+    }),
+    cancelChat: () => ipcRenderer.invoke('pet:cancelChat'),
+    listStickers: () => ipcRenderer.invoke('pet:listStickers'),
+    importSticker: () => ipcRenderer.invoke('pet:importSticker'),
+    sendSticker: (id) => ipcRenderer.invoke('pet:sendSticker', {
+      id: boundedText(id, 'sticker id', 128),
+    }),
   }),
 
   stickers: Object.freeze({

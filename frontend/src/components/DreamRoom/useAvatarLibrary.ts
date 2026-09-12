@@ -87,6 +87,21 @@ export function useAvatarLibrary() {
     }
   }, [api, busy, candidate]);
 
+  const beginImportLive2DFile = useCallback(async () => {
+    if (!api?.beginImportLive2DFile || busy || candidate) return;
+    setBusy(true);
+    setError('');
+    try {
+      const next = await api.beginImportLive2DFile();
+      setCandidate(next);
+      setPreviewState(next ? 'loading' : 'idle');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : translate('dream.avatarInspectionFailed'));
+    } finally {
+      setBusy(false);
+    }
+  }, [api, busy, candidate]);
+
   const confirmPreview = useCallback(async (detected: AvatarDetected) => {
     if (!api || !candidate || busy || previewState === 'ready') return previewState === 'ready';
     try {
@@ -250,6 +265,7 @@ export function useAvatarLibrary() {
     refresh,
     beginImport,
     beginImportFolder,
+    beginImportLive2DFile,
     confirmPreview,
     failPreview,
     commitImport,

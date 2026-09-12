@@ -52,18 +52,18 @@ def test_retention_rejects_values_between_choices(days: int) -> None:
 def test_probability_boundaries_remain_strict_after_assignment() -> None:
     settings = MemorySettings(
         long_term_forget_probability=0.01,
-        short_term_forget_probability=0.001,
+        short_term_forget_probability=0.01,
         misremember_probability=0.05,
     )
     for field, value in (
         ("long_term_forget_probability", 0.009),
-        ("short_term_forget_probability", 0.0009),
+        ("short_term_forget_probability", 0.009),
         ("misremember_probability", 0.101),
     ):
         with pytest.raises(ValidationError):
             setattr(settings, field, value)
     with pytest.raises(ValidationError):
-        MemorySettings(short_term_forget_probability=0.011)
+        MemorySettings(short_term_forget_probability=0.11)
     with pytest.raises(ValidationError):
         MemorySettings(misremember_probability=0.009)
     with pytest.raises(ValidationError):

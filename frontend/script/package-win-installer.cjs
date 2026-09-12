@@ -4,14 +4,15 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const {
   assertLive2DReleaseGate,
-  readCharacterRightsManifest,
 } = require('../electron/live2d-release-gate.cjs');
-const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
-const { createTextureTransformer } = require('./live2d-build-assets.cjs');
+const {
+  stageLive2DCoreOnlyTestRuntime,
+} = require('../electron/live2d-runtime-assets.cjs');
 const { createSeedConfig } = require('./seed-config.cjs');
 const { verifyPackagedWindowsIcons } = require('./windows-icon-verification.cjs');
 const {
   assertProductionPayload,
+  compileProductionPythonSource,
   copyProductionPythonSource,
   preparePythonRuntime,
   writeProductionInventory,
@@ -31,14 +32,18 @@ const outputRoot = process.env.REVERIE_WINDOWS_OUT
 const appStage = path.join(frontendRoot, '.installer-app');
 const resourceStage = path.join(frontendRoot, '.installer-resources');
 const sourceStage = path.join(frontendRoot, '.installer-source');
-const sourceArchive = path.join(outputRoot, 'Reverie-0.1.0-Corresponding-Source.zip');
 const live2dBuildEnabled = process.env.REVERIE_LIVE2D_PUBLIC_BUILD === '1';
+const onboardingTestInstaller = process.env.REVERIE_ONBOARDING_TEST_INSTALLER === '1';
+const installerArtifactName = onboardingTestInstaller
+  ? 'Reverie-Onboarding-Test-20260905-Setup-0.1.0-x64.exe'
+  : 'Reverie0.5.5-Setup-0.5.5-x64.exe';
+const sourceArtifactName = onboardingTestInstaller
+  ? 'Reverie-Onboarding-Test-20260905-Corresponding-Source.zip'
+  : 'Reverie0.5.5-Corresponding-Source.zip';
+const sourceArchive = path.join(outputRoot, sourceArtifactName);
 const live2dLicenseSource = process.env.REVERIE_LIVE2D_LICENSE_PATH
   ? path.resolve(process.env.REVERIE_LIVE2D_LICENSE_PATH)
   : path.join(projectRoot, 'LICENSES_CREDITS', 'LIVE2D_PUBLICATION_LICENSE.json');
-const characterRightsSource = process.env.REVERIE_YUMI_RIGHTS_PATH
-  ? path.resolve(process.env.REVERIE_YUMI_RIGHTS_PATH)
-  : path.join(projectRoot, 'LICENSES_CREDITS', 'YUMI_CHARACTER_RIGHTS.json');
 
 function isInside(parent, child) {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
@@ -106,9 +111,9 @@ function run(command, args, env = {}) {
   }
 }
 
-function runCaptured(command, args) {
+function runCaptured(command, args, cwd = frontendRoot) {
   const result = spawnSync(command, args, {
-    cwd: frontendRoot,
+    cwd,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
     env: process.env,
@@ -133,6 +138,12 @@ function buildRenderer() {
 }
 
 function enforceLive2DReleaseBoundary() {
+  if (onboardingTestInstaller) {
+    if (live2dBuildEnabled) {
+      throw new Error('Onboarding test installer must not use the public Live2D release mode');
+    }
+    return;
+  }
   assertLive2DReleaseGate({
     buildEnabled: live2dBuildEnabled ? '1' : '0',
     licensePath: live2dLicenseSource,
@@ -146,39 +157,65 @@ function enforceLive2DReleaseBoundary() {
     ],
   });
   if (!live2dBuildEnabled) return;
-  readCharacterRightsManifest(characterRightsSource, {
-    appId: 'studio.muhe.reverie',
-    assetId: 'yumi',
-  });
   copyRecursive(
     live2dLicenseSource,
     path.join(resourceStage, 'LIVE2D_PUBLICATION_LICENSE.json'),
   );
-  copyRecursive(
-    characterRightsSource,
-    path.join(resourceStage, 'YUMI_CHARACTER_RIGHTS.json'),
-  );
   fs.writeFileSync(
     path.join(resourceStage, 'LIVE2D_RUNTIME_ENABLED'),
-    'Licensed Live2D public runtime enabled for this build.\r\n',
+    'Licensed Live2D public runtime enabled for this build. No character model is bundled.\r\n',
     'utf8',
   );
 }
 
-function stageLicensedLive2DAssets() {
-  if (!live2dBuildEnabled) return null;
-  const coreSource = process.env.REVERIE_LIVE2D_CORE_PATH
+function resolveLive2DCoreSource() {
+  const configured = process.env.REVERIE_LIVE2D_CORE_PATH
     ? path.resolve(process.env.REVERIE_LIVE2D_CORE_PATH)
     : '';
-  const modelSource = process.env.REVERIE_YUMI_SOURCE
-    ? path.resolve(process.env.REVERIE_YUMI_SOURCE)
-    : path.resolve(reverieRoot, '皮套-yumi');
-  return stageLive2DRuntimeAssets({
+  if (!configured) {
+    throw new Error(
+      'REVERIE_LIVE2D_CORE_PATH is required when Live2D is enabled. '
+      + 'Point it at a regular Live2DCubismCore.js file.',
+    );
+  }
+  const stat = fs.lstatSync(configured);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1) {
+    throw new Error(`Live2D Cubism Core is missing or not a regular file: ${configured}`);
+  }
+  return configured;
+}
+
+function stageLicensedLive2DAssets() {
+  if (onboardingTestInstaller) {
+    const coreSource = resolveLive2DCoreSource();
+    const manifest = stageLive2DCoreOnlyTestRuntime({
+      coreSource,
+      resourceRoot: resourceStage,
+      mode: 'internal-test',
+    });
+    fs.writeFileSync(
+      path.join(resourceStage, 'LIVE2D_RUNTIME_ENABLED'),
+      'Internal test-only Cubism Core runtime. No character model is bundled.\r\n',
+      'utf8',
+    );
+    writeJson(path.join(resourceStage, 'TEST-BUILD-DO-NOT-RELEASE.json'), {
+      schema: 'reverie.windows-test-build.v1',
+      product: 'Reverie Onboarding Test 20260905',
+      publishable: false,
+      distribution: 'TEST_ONLY_DO_NOT_RELEASE',
+      live2dReleaseGate: 'core-only-import-test',
+      isolatedUserData: true,
+      generatedAtUtc: new Date().toISOString(),
+    });
+    return manifest;
+  }
+  if (!live2dBuildEnabled) return null;
+  const coreSource = resolveLive2DCoreSource();
+  console.warn('[package:win] Public Live2D builds ship Cubism Core only; character models are user-imported.');
+  return stageLive2DCoreOnlyTestRuntime({
     coreSource,
-    modelSource,
     resourceRoot: resourceStage,
     mode: 'public',
-    transformCharacter: createTextureTransformer({ projectRoot, frontendRoot }),
   });
 }
 
@@ -197,9 +234,9 @@ function prepareDesktopApp() {
     },
   );
   writeJson(path.join(appStage, 'package.json'), {
-    name: 'reverie-desktop',
-    productName: 'Reverie',
-    version: '0.1.0',
+    name: onboardingTestInstaller ? 'reverie-onboarding-test' : 'reverie-desktop',
+    productName: onboardingTestInstaller ? 'Reverie Onboarding Test 20260905' : 'Reverie',
+    version: '0.5.5',
     description: 'Local-first digital companion',
     author: 'Muhe Studio contributors',
     main: 'electron/main.js',
@@ -288,9 +325,17 @@ function collectFrontendLicenses() {
   if (!pnpmCli || !fs.existsSync(pnpmCli)) {
     throw new Error('Run this build through "pnpm package:win" so npm_execpath is available.');
   }
+  // When the build runs from a substituted drive (short paths so the NSIS
+  // compiler can open app-builder-lib's templates), pnpm's package index only
+  // resolves from the REAL path — collect licenses there. Everything else
+  // stays on the substituted path.
+  const licensesRoot = process.env.REVERIE_LICENSES_FRONTEND_ROOT
+    ? path.resolve(process.env.REVERIE_LICENSES_FRONTEND_ROOT)
+    : frontendRoot;
   const report = JSON.parse(runCaptured(
     process.execPath,
     [pnpmCli, 'licenses', 'list', '--prod', '--json'],
+    licensesRoot,
   ));
   const licenseRoot = path.join(resourceStage, 'THIRD_PARTY_LICENSES', 'npm');
   const inventory = [];
@@ -302,7 +347,7 @@ function collectFrontendLicenses() {
       const resolvedVersions = versions.length > 0
         ? versions
         : packagePaths.map((packagePath) => {
-            if (!isInside(frontendRoot, packagePath)) {
+            if (!isInside(licensesRoot, packagePath)) {
               throw new Error(`npm license source escaped frontend root: ${packagePath}`);
             }
             const metadata = JSON.parse(
@@ -321,7 +366,7 @@ function collectFrontendLicenses() {
       });
       for (let index = 0; index < packagePaths.length; index += 1) {
         const packagePath = packagePaths[index];
-        if (!isInside(frontendRoot, packagePath)) {
+        if (!isInside(licensesRoot, packagePath)) {
           throw new Error(`npm license source escaped frontend root: ${packagePath}`);
         }
         const version = resolvedVersions[Math.min(index, resolvedVersions.length - 1)];
@@ -336,12 +381,12 @@ function collectFrontendLicenses() {
   }
   writeJson(path.join(licenseRoot, 'inventory.json'), inventory);
 
-  const elephantopsLink = path.join(frontendRoot, 'node_modules', 'elephantops');
+  const elephantopsLink = path.join(licensesRoot, 'node_modules', 'elephantops');
   if (!fs.existsSync(elephantopsLink)) {
     throw new Error('GPL dependency source is missing: node_modules/elephantops');
   }
   const elephantops = fs.realpathSync(elephantopsLink);
-  if (!isInside(frontendRoot, elephantops)) {
+  if (!isInside(licensesRoot, elephantops)) {
     throw new Error(`GPL dependency source escaped frontend root: ${elephantops}`);
   }
   copyRecursive(
@@ -376,7 +421,13 @@ function compressSourceBundle() {
 }
 
 function buildInstaller() {
-  const electronBuilderCli = require.resolve('electron-builder/out/cli/cli.js');
+  const electronBuilderCli = process.env.REVERIE_ELECTRON_BUILDER_CLI
+    ? path.resolve(process.env.REVERIE_ELECTRON_BUILDER_CLI)
+    : require.resolve('electron-builder/out/cli/cli.js');
+  const cliStat = fs.lstatSync(electronBuilderCli);
+  if (!cliStat.isFile() || cliStat.isSymbolicLink()) {
+    throw new Error('Electron Builder CLI override must be a regular file');
+  }
   run(
     process.execPath,
     [electronBuilderCli, '--config', 'electron-builder.config.cjs', '--win', 'nsis', '--x64', '--publish', 'never'],
@@ -386,13 +437,17 @@ function buildInstaller() {
 
 function verifyWindowsIcons() {
   verifyPackagedWindowsIcons({
-    executable: path.join(outputRoot, 'win-unpacked', 'Reverie.exe'),
+    executable: path.join(
+      outputRoot,
+      'win-unpacked',
+      onboardingTestInstaller ? 'Reverie-Onboarding-Test.exe' : 'Reverie.exe',
+    ),
     resourceIcon: path.join(outputRoot, 'win-unpacked', 'resources', 'icon.ico'),
   });
 }
 
 function writeArtifactHash() {
-  const installer = path.join(outputRoot, 'Reverie-Setup-0.1.0-x64.exe');
+  const installer = path.join(outputRoot, installerArtifactName);
   if (!fs.existsSync(installer)) throw new Error(`Installer not found: ${installer}`);
   const hash = crypto.createHash('sha256').update(fs.readFileSync(installer)).digest('hex');
   if (!fs.existsSync(sourceArchive)) throw new Error(`Source archive not found: ${sourceArchive}`);
@@ -403,10 +458,30 @@ function writeArtifactHash() {
     `${sourceHash}  ${path.basename(sourceArchive)}\r\n`,
     'ascii',
   );
-  writeJson(path.join(outputRoot, 'Reverie-Setup-0.1.0-build-info.json'), {
-    product: 'Reverie', version: '0.1.0', architecture: 'x64',
+  writeJson(path.join(
+    outputRoot,
+    onboardingTestInstaller
+      ? 'Reverie-Onboarding-Test-20260905-build-info.json'
+      : 'Reverie0.5.5-Setup-build-info.json',
+  ), {
+    product: onboardingTestInstaller ? 'Reverie Onboarding Test 20260905' : 'Reverie',
+    version: onboardingTestInstaller ? '0.1.0' : '0.5.5',
+    architecture: 'x64',
     installer: path.basename(installer), sha256: hash,
     license: 'GPL-3.0-only', asar: true, sourceIncludedInRuntime: false,
+    publishable: !onboardingTestInstaller,
+    isolatedUserData: onboardingTestInstaller,
+    bundledCharacter: false,
+    bundledVoicePack: false,
+    live2d: {
+      enabled: live2dBuildEnabled || onboardingTestInstaller,
+      mode: onboardingTestInstaller
+        ? 'internal-test-core-only'
+        : live2dBuildEnabled
+          ? 'public-core-only'
+          : 'disabled',
+      bundledCharacter: false,
+    },
     correspondingSource: path.basename(sourceArchive), correspondingSourceSha256: sourceHash,
     sourceRoot: projectRoot,
   });
@@ -423,6 +498,13 @@ function main() {
     buildRenderer();
     enforceLive2DReleaseBoundary();
     stageLicensedLive2DAssets();
+    if (live2dBuildEnabled || onboardingTestInstaller) {
+      const transformScript = path.join(frontendRoot, 'script', 'downscale-live2d-textures.py');
+      if (!fs.existsSync(transformScript)) {
+        throw new Error('Live2D texture downscale script is missing');
+      }
+      copyRecursive(transformScript, path.join(resourceStage, 'downscale-live2d-textures.py'));
+    }
     prepareDesktopApp();
     prepareSeedData();
     copyProductionPythonSource(
@@ -430,6 +512,7 @@ function main() {
       path.join(resourceStage, 'src'),
       resourceStage,
     );
+    compileProductionPythonSource(path.join(resourceStage, 'src'), projectRoot);
     const runtime = preparePythonRuntime({
       projectRoot,
       frontendRoot,
@@ -448,7 +531,7 @@ function main() {
     // Scan the exact staged payload as the final release gate. This catches a
     // dependency or build step that introduced Cubism Core/models after the
     // source-input scan.
-    if (!live2dBuildEnabled) {
+    if (!live2dBuildEnabled && !onboardingTestInstaller) {
       assertLive2DReleaseGate({
         buildEnabled: '0',
         scanRoots: [appStage, resourceStage],

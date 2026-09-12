@@ -15,6 +15,11 @@ import re
 import time
 from typing import TYPE_CHECKING, Iterable
 
+from .lifecycle_constants import (
+    PROMISE_FACT_MARKERS,
+    PROTECTED_FACT_MARKERS as _BASE_PROTECTED_MARKERS,
+)
+
 if TYPE_CHECKING:
     from .versioned_store import VersionedVectorStore
 
@@ -38,15 +43,8 @@ _DOMAIN_MARKERS: dict[str, tuple[str, ...]] = {
     "book": ("book", "novel", "\u5c0f\u8bf4", "\u4e66", "\u6f2b\u753b"),
 }
 
-_PROTECTED_FACT_MARKERS = (
-    "my name", "your name", "birthday", "years old", "relationship", "anniversary",
-    "identity", "address", "phone number", "password", "account", "medical", "medicine",
-    "allergy", "trauma", "deadline", "appointment", "\u59d3\u540d", "\u540d\u5b57",
-    "\u5e74\u9f84", "\u751f\u65e5", "\u7eaa\u5ff5\u65e5", "\u5173\u7cfb\u9636\u6bb5",
-    "\u8eab\u4efd", "\u6027\u522b", "\u5730\u5740", "\u624b\u673a\u53f7", "\u5bc6\u7801",
-    "\u8d26\u53f7", "\u75c5\u53f2", "\u836f\u7269", "\u8fc7\u654f", "\u521b\u4f24",
-    "\u957f\u671f\u76ee\u6807", "\u622a\u6b62\u65e5\u671f", "\u9884\u7ea6",
-)
+# Single source of truth lives in lifecycle_constants (shared with catalog).
+_PROTECTED_FACT_MARKERS = _BASE_PROTECTED_MARKERS + PROMISE_FACT_MARKERS
 
 _CORRECTION_MARKERS = (
     "\u8bb0\u9519", "\u641e\u9519", "\u8bb0\u53cd", "\u8bb0\u4e32", "\u6211\u8bf4\u7684\u662f",

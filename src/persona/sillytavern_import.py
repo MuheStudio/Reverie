@@ -29,6 +29,8 @@ MAX_CONTAINER_ITEMS = 20_000
 MAX_NAME_CHARS = 120
 MAX_PROFILE_CHARS = 24_000
 MAX_GREETING_CHARS = 4_000
+MAX_WORLD_BOOK_ENTRIES = 200
+MAX_WORLD_ENTRY_CONTENT = 4_000
 SUPPORTED_SPECS = {
     "chara_card_v2": "2.0",
     "chara_card_v3": "3.0",
@@ -94,6 +96,7 @@ class CharacterCardImportReport:
     warnings: list[str] = field(default_factory=list)
     ignored_fields: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    character_book: list[dict[str, Any]] = field(default_factory=list)
 
     def public_summary(self) -> dict[str, Any]:
         return {
@@ -105,6 +108,7 @@ class CharacterCardImportReport:
             "warnings": list(self.warnings),
             "ignored_fields": list(self.ignored_fields),
             "remote_assets_blocked": True,
+            "world_book_entry_count": len(self.character_book),
         }
 
 
@@ -233,7 +237,7 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
     if not traits:
         traits = ["保持导入角色档案中描述的人格特征"]
 
-    for key in ("system_prompt", "post_history_instructions", "character_book", "extensions", "assets"):
+    for key in ("extensions", "assets"):
         value = data.get(key)
         if value not in (None, "", [], {}):
             ignored_fields.append(key)
@@ -242,13 +246,46 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
         if value not in (None, "", [], {}):
             ignored_fields.append(key)
 
+    character_book, book_warnings = _extract_character_book(data, macro_name)
+    ignored_fields.extend(f"character_book:{warning}" for warning in book_warnings)
+    raw_character_book = data.get("character_book") if isinstance(data.get("character_book"), dict) else {}
+
+    # 卡作者的 system_prompt / post_history_instructions 默认隔离保存，
+    # 仅在用户显式 opt-in 后才注入（Phase 6 安全接线）。
+    imported_system_prompt = _clean_text(
+        _replace_macros(data.get("system_prompt", ""), macro_name),
+        8_000,
+    )
+    imported_post_history_instructions = _clean_text(
+        _replace_macros(data.get("post_history_instructions", ""), macro_name),
+        8_000,
+    )
+    system_prompt_unsafe = _unsafe_instruction_flags(imported_system_prompt)
+    post_history_unsafe = _unsafe_instruction_flags(imported_post_history_instructions)
+    for key, value in (
+        ("system_prompt", imported_system_prompt),
+        ("post_history_instructions", imported_post_history_instructions),
+    ):
+        if not value:
+            continue
+        if (key == "system_prompt" and system_prompt_unsafe) or (
+            key == "post_history_instructions" and post_history_unsafe
+        ):
+            ignored_fields.append(f"{key}:untrusted_injection")
+        else:
+            ignored_fields.append(f"{key}:stored_untrusted")
+
     remote_avatar = _clean_text(data.get("avatar", ""), 2_000)
     warnings = [
         *compatibility_warnings,
         "角色卡内容按不可信数据处理，不能覆盖 Reverie 的安全规则与人格连续性规则",
     ]
     if ignored_fields:
-        warnings.append("卡内系统提示、lorebook、脚本或扩展数据已隔离，未执行")
+        warnings.append("卡内系统提示、脚本或扩展数据已隔离，未执行")
+    if imported_system_prompt or imported_post_history_instructions:
+        warnings.append("卡作者提示词已隔离保存，默认不启用；可在角色卡编辑器中选择性开启")
+    if character_book:
+        warnings.append(f"卡内世界书已安全导入（{len(character_book)} 条设定）")
     if remote_avatar:
         warnings.append("远程头像地址已记录但默认禁止联网加载")
     if unsafe_message_fields:
@@ -272,6 +309,19 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
         "message_example": _replace_macros(message_examples, macro_name),
         "remote_avatar_url": remote_avatar,
         "remote_assets_blocked": True,
+        "imported_system_prompt": imported_system_prompt,
+        "imported_post_history_instructions": imported_post_history_instructions,
+        "character_book_meta": {
+            "scan_depth": raw_character_book.get("scan_depth", 50) if isinstance(raw_character_book, dict) else 50,
+            "token_budget": raw_character_book.get("token_budget", 500) if isinstance(raw_character_book, dict) else 500,
+            "recursive_scanning": (
+                raw_character_book.get("recursive_scanning") is True
+                if isinstance(raw_character_book, dict)
+                else False
+            ),
+        },
+        "untrusted": True,
+        "injection_warning": bool(system_prompt_unsafe or post_history_unsafe),
         "ignored_fields": list(ignored_fields),
     }
     persona = Persona(
@@ -291,6 +341,8 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
             "first_message": metadata["first_message"],
             "alternate_greetings": metadata["alternate_greetings"],
             "message_example": metadata["message_example"],
+            "imported_system_prompt": imported_system_prompt,
+            "imported_post_history_instructions": imported_post_history_instructions,
         },
         personality_traits=traits,
         values=[],
@@ -322,6 +374,7 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
         warnings=warnings,
         ignored_fields=ignored_fields,
         metadata=metadata,
+        character_book=character_book,
     )
 
 
@@ -400,47 +453,13 @@ def list_imported_personas(persona_dir: Path) -> dict[str, Any]:
 
 
 def _legacy_activate_imported_persona(persona_dir: Path, profile_id: str) -> dict[str, Any]:
-    """Select an imported profile for the next process start."""
+    """Retired: live identity uses the privileged epoch transaction."""
 
+    _ = (persona_dir, profile_id)
     raise CharacterCardImportError(
         "privileged_activation_required",
         "Legacy persona activation is disabled; use the privileged epoch transaction",
     )
-
-    root = Path(persona_dir).resolve()
-    registry_path = root / "registry.json"
-    registry = _load_registry(registry_path)
-    profile = registry.get("profiles", {}).get(str(profile_id))
-    if not isinstance(profile, dict):
-        raise CharacterCardImportError("profile_not_found", "找不到要启用的本地角色档案")
-    relative = Path(str(profile.get("persona_path", "")))
-    if relative.is_absolute() or ".." in relative.parts:
-        raise CharacterCardImportError("unsafe_profile_path", "角色档案路径不安全")
-    persona_path = (root / relative).resolve()
-    try:
-        persona_path.relative_to(root)
-    except ValueError as exc:
-        raise CharacterCardImportError("unsafe_profile_path", "角色档案越过了本地存储边界") from exc
-    if not persona_path.is_file() or persona_path.is_symlink():
-        raise CharacterCardImportError("profile_missing", "角色档案文件不存在或不是普通文件")
-    try:
-        from .persona_card import load_persona
-
-        loaded_persona = load_persona(persona_path)
-        persona_data = loaded_persona.to_dict()
-    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise CharacterCardImportError("profile_corrupt", "角色档案文件已经损坏") from exc
-    if not isinstance(persona_data, dict) or not _clean_text(persona_data.get("name", ""), MAX_NAME_CHARS):
-        raise CharacterCardImportError("profile_corrupt", "角色档案缺少有效名称")
-    _atomic_json_write(root / "active.json", persona_data)
-    registry["active_id"] = str(profile_id)
-    _atomic_json_write(registry_path, registry)
-    return {
-        "ok": True,
-        "active_id": str(profile_id),
-        "name": _clean_text(persona_data.get("name", ""), MAX_NAME_CHARS),
-        "restart_required": True,
-    }
 
 
 def _load_persona_file(path: Path, *, code: str = "profile_corrupt") -> Persona:
@@ -568,7 +587,7 @@ def activate_imported_persona(
         "persona_id": envelope.persona_id,
         "identity_fingerprint": envelope.fingerprint,
         "identity_version": envelope.version,
-        "restart_required": True,
+        "restart_required": False,
         **({"warning": warning} if warning else {}),
     }
 
@@ -818,6 +837,100 @@ def _unsafe_instruction_flags(text: str) -> list[str]:
     normalized = unicodedata.normalize("NFKC", str(text))
     normalized = _BIDI_AND_INVISIBLE.sub("", normalized)
     return [name for name, pattern in _UNSAFE_PROFILE_PATTERNS if pattern.search(normalized)]
+
+
+def _extract_character_book(
+    data: dict[str, Any],
+    macro_name: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Safely convert a V2/V3 embedded world book into Reverie world-book entries.
+
+    The card's ``character_book`` is untrusted content.  Each entry's content is
+    cleaned, size-bounded, and screened with the same injection patterns as the
+    profile fields.  A single unsafe entry is isolated with a warning instead of
+    rejecting the whole card.  The returned entries use the same field names as
+    the renderer's ``WorldBookEntry`` so they can be persisted verbatim.
+    """
+    raw_book = data.get("character_book")
+    if not isinstance(raw_book, dict):
+        return [], []
+    raw_entries = raw_book.get("entries")
+    if isinstance(raw_entries, dict):
+        entries_iter = raw_entries.values()
+    elif isinstance(raw_entries, list):
+        entries_iter = raw_entries
+    else:
+        return [], []
+
+    normalized: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for raw_entry in entries_iter:
+        if len(normalized) >= MAX_WORLD_BOOK_ENTRIES:
+            warnings.append("truncated")
+            break
+        if not isinstance(raw_entry, dict):
+            warnings.append("skipped_invalid")
+            continue
+        content = _clean_text(raw_entry.get("content", ""), MAX_WORLD_ENTRY_CONTENT)
+        if not content:
+            warnings.append("skipped_empty")
+            continue
+        unsafe = _unsafe_instruction_flags(content)
+        if unsafe:
+            warnings.append("entry_unsafe")
+            continue
+
+        def _keys(value: Any, limit: int = 100) -> list[str]:
+            if isinstance(value, list):
+                return [
+                    item.strip()
+                    for item in (str(part) for part in value)
+                    if item.strip()
+                ][:limit]
+            if isinstance(value, str):
+                return [part.strip() for part in re.split(r"[、，,]", value) if part.strip()][:limit]
+            return []
+
+        uid_value = raw_entry.get("id", raw_entry.get("uid"))
+        uid = str(uid_value) if uid_value is not None else f"wb_{len(normalized) + 1}"
+        if not uid.startswith("entry_"):
+            uid = f"entry_{uid}"
+        position = str(raw_entry.get("position") or "before_char").strip().lower()
+        role = str(raw_entry.get("role") or "system").strip().lower()
+        normalized.append({
+            "id": uid[:160],
+            "keywords": _keys(raw_entry.get("keys", raw_entry.get("key"))),
+            "secondaryKeywords": _keys(raw_entry.get("secondary_keys", raw_entry.get("keysecondary"))),
+            # selective=true 的 AND 语义由独立的 secondaryKeywords + and_any 表达，
+            # 与前端 WorldBookEntry 的 selectiveLogic 枚举保持一致。
+            "selectiveLogic": "and_any",
+            "content": _replace_macros(content, macro_name),
+            "enabled": raw_entry.get("enabled", True) is not False and raw_entry.get("disable") is not True,
+            "alwaysActive": raw_entry.get("constant") is True,
+            "position": position if position in {"before_char", "after_char"} else "before_char",
+            "insertionOrder": _bounded_int(raw_entry.get("insertion_order", 100), default=100),
+            "priority": _bounded_int(raw_entry.get("priority", 0), default=0),
+            "caseSensitive": raw_entry.get("case_sensitive") is True,
+            "comment": _clean_text(
+                raw_entry.get("comment", raw_entry.get("name", "")), 500
+            ),
+            "scanDepth": _bounded_int(raw_entry.get("scan_depth"), default=50) if raw_entry.get("scan_depth") is not None else None,
+            "tokenBudget": _bounded_int(raw_entry.get("token_budget"), default=500) if raw_entry.get("token_budget") is not None else None,
+            "useRegex": raw_entry.get("use_regex") is True,
+            "depth": _bounded_int(raw_entry.get("depth", 0), default=0),
+            "role": role if role in {"user", "assistant"} else "system",
+        })
+    return normalized, warnings
+
+
+def _bounded_int(value: Any, *, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _clean_text(value: Any, limit: int) -> str:

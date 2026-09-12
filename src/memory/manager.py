@@ -30,7 +30,25 @@ from ..persona.identity import identity_attack_flags, require_identity_safe_memo
 from .catalog import memory_terms
 from .candidates import explicit_fact_key, extract_memory_candidate
 from .cognitive_decay import CognitiveDecaySystem
+from .entity_index import entity_boost_candidates
+from .temporal_intent import detect_temporal_intent, temporal_recency_boost
 from .layers import MemoryLayers
+from .lifecycle_constants import (
+    AUTO_REINFORCE_AMOUNT,
+    AUTO_REINFORCE_DAILY_CAP,
+    BUDGET_PRESSURE_MAX,
+    BUDGET_PRESSURE_SLOPE,
+    BUDGET_PRESSURE_THRESHOLD,
+    CUE_REACTIVATION_CAP,
+    INJECTED_EVENT_WEIGHT,
+    PENDING_INJECTION_WINDOW_SECONDS,
+    PIN_LIMIT,
+    REPLY_OVERLAP_EVENT_WEIGHT,
+    REPLY_OVERLAP_THRESHOLD,
+    RESIDENT_BOOST_CAP,
+    USAGE_EVENT_RETENTION_DAYS,
+    USER_SIGNAL_WEIGHT,
+)
 from .versioned_store import VersionedVectorStore
 
 if TYPE_CHECKING:
@@ -96,6 +114,14 @@ class MemoryManager:
         # Initialize layers (seeds permanent memory on first run)
         self.layers = MemoryLayers(self.store, persona)
 
+        # P1D: Initialize fold worker and wire it to the catalog
+        from .fold_worker import FoldWorker
+        self.fold_worker = FoldWorker(
+            self.store.catalog._connection, self.store.catalog._lock,
+        )
+        self.fold_worker.set_catalog(self.store.catalog)
+        self.store.catalog._fold_worker = self.fold_worker
+
         # Initialize forgetting system
         self.forgetting = CognitiveDecaySystem(
             self.store,
@@ -120,6 +146,9 @@ class MemoryManager:
         )
         self._last_growth_at = 0.0
         self._last_memory_activity_at = time.monotonic()
+        # P0-3 引用反馈闭环：本轮检索注入的记忆（id/text/时间戳），由
+        # store_interaction 消费后归因为 usage 事件；窗口外残留直接作废。
+        self._pending_injection: list[dict] = []
 
         logger.info(
             "MemoryManager initialized — %d total memories (%d permanent)",
@@ -160,6 +189,8 @@ class MemoryManager:
         self._require_current()
         self._last_memory_activity_at = time.monotonic()
         self.forgetting.resolve_user_correction(user_message)
+        if self.settings.memory_lifecycle_governance_enabled:
+            self._record_reply_usage(assistant_reply)
         # Assistant output is not evidence about the user. The canonical chat
         # ledger already preserves the reply with its role; memory recall keeps
         # only the user-authored source so a hallucination cannot become a fact.
@@ -211,7 +242,7 @@ class MemoryManager:
                 source_uri=source_uri,
                 source_hash=source_hash,
             )
-            if importance > 0.6:
+            if importance > self._long_term_capture_bar():
                 self.layers.store_long_term(
                     text,
                     importance=importance,
@@ -297,16 +328,26 @@ class MemoryManager:
     def weaken_memory(self, memory_id: str, amount: float = 0.1) -> bool:
         """Lower a memory's importance without deleting it."""
         self._require_current()
-        return self._commit(
+        changed = self._commit(
             lambda: self._adjust_memory_importance(memory_id, -abs(amount), touch=False)
         )
+        if changed and self.settings.memory_lifecycle_governance_enabled:
+            self.store.catalog.record_usage_event(
+                memory_id=memory_id, signal="user_rejected", weight=-USER_SIGNAL_WEIGHT,
+            )
+        return changed
 
     def strengthen_memory(self, memory_id: str, amount: float = 0.1) -> bool:
         """Raise a memory's importance so it is retained and retrieved more often."""
         self._require_current()
-        return self._commit(
+        changed = self._commit(
             lambda: self._adjust_memory_importance(memory_id, abs(amount), touch=False)
         )
+        if changed and self.settings.memory_lifecycle_governance_enabled:
+            self.store.catalog.record_usage_event(
+                memory_id=memory_id, signal="user_confirmed", weight=USER_SIGNAL_WEIGHT,
+            )
+        return changed
 
     def reactivate_memory(self, memory_id: str, amount: float = 0.15) -> bool:
         """Refresh a memory's timestamp and strengthen it after renewed relevance."""
@@ -315,7 +356,142 @@ class MemoryManager:
             reactivated = self.store.catalog.reactivate(memory_id)
             strengthened = self._adjust_memory_importance(memory_id, abs(amount), touch=True)
             return reactivated or strengthened
-        return self._commit(commit_reactivation)
+        changed = self._commit(commit_reactivation)
+        if changed and self.settings.memory_lifecycle_governance_enabled:
+            self.store.catalog.record_usage_event(
+                memory_id=memory_id, signal="user_confirmed", weight=USER_SIGNAL_WEIGHT,
+            )
+        return changed
+
+    def pin_memory(self, memory_id: str) -> dict:
+        """Pin one memory: budget pressure and confusion never set it aside.
+
+        Manual pinning is capped (墨菲：用户把全库钉死会让压力阀失效)。
+        """
+        self._require_current()
+        if not self.store.catalog.set_pinned(memory_id, True):
+            return {"ok": False, "error": "记忆不存在"}
+        if self.store.catalog.count_pinned() > PIN_LIMIT:
+            self.store.catalog.set_pinned(memory_id, False)
+            return {"ok": False, "error": f"最多固定 {PIN_LIMIT} 条记忆"}
+        return {"ok": True}
+
+    def unpin_memory(self, memory_id: str) -> bool:
+        self._require_current()
+        return self.store.catalog.set_pinned(memory_id, False)
+
+    # ── Lifecycle governance (P0 batch) ────────────────────
+
+    def _long_term_capture_bar(self) -> float:
+        """P0-2 预算压力阀：库越满，新记忆进入长期层越难。
+
+        ALTM 常量（0.70 触发 / 0.35 斜率）落在 Reverie 的实际晋升点——
+        store_interaction 的"重要度>0.6 进长期层"判定上。压力阀只影响新
+        记忆的准入；已存记忆、保护档与 pinned 永不被压力挤出。
+        """
+        if not self.settings.memory_lifecycle_governance_enabled:
+            return 0.6
+        usage = self.store.catalog.layer_char_usage()
+        chars = usage.get("long_term", 0) + usage.get("permanent", 0)
+        budget = max(1, int(self.settings.memory_long_budget_chars))
+        pressure = min(BUDGET_PRESSURE_MAX, chars / budget)
+        if pressure <= BUDGET_PRESSURE_THRESHOLD:
+            return 0.6
+        return min(0.95, 0.6 + BUDGET_PRESSURE_SLOPE * (pressure - BUDGET_PRESSURE_THRESHOLD))
+
+    def _record_reply_usage(self, assistant_reply: str) -> None:
+        """P0-3：消费本轮注入并归因为 usage 事件。
+
+        自报告通道不存在——"被注入"是弱信号（weight 0.2），"回复与记忆
+        的本地词面重叠"是中等信号（weight 1.0）；模型无法宣称自己用了
+        哪条记忆，作弊面为零。窗口外的残留注入直接作废。
+        """
+        pending = self._pending_injection
+        self._pending_injection = []
+        if not pending:
+            return
+        now_ts = time.time()
+        turn_id = uuid.uuid4().hex[:16]
+        reply_terms = set(memory_terms(str(assistant_reply or "")))
+        for entry in pending:
+            memory_id = str(entry.get("id", ""))
+            if not memory_id:
+                continue
+            if now_ts - float(entry.get("ts", 0.0)) > PENDING_INJECTION_WINDOW_SECONDS:
+                continue
+            self.store.catalog.record_usage_event(
+                memory_id=memory_id,
+                signal="injected",
+                weight=INJECTED_EVENT_WEIGHT,
+                turn_id=turn_id,
+            )
+            memory_terms_set = set(memory_terms(str(entry.get("text", ""))))
+            if not memory_terms_set or not reply_terms:
+                continue
+            overlap = len(reply_terms & memory_terms_set) / len(memory_terms_set)
+            if overlap >= REPLY_OVERLAP_THRESHOLD:
+                self.store.catalog.record_usage_event(
+                    memory_id=memory_id,
+                    signal="reply_overlap",
+                    weight=REPLY_OVERLAP_EVENT_WEIGHT,
+                    turn_id=turn_id,
+                )
+
+    def _run_governance_cycle(self) -> dict:
+        """P0 治理周期：压力观测、usage 信号聚合、自动强化（封顶）、清理。"""
+        catalog = self.store.catalog
+        usage = catalog.layer_char_usage()
+        chars = usage.get("long_term", 0) + usage.get("permanent", 0)
+        budget = max(1, int(self.settings.memory_long_budget_chars))
+        pressure = min(BUDGET_PRESSURE_MAX, chars / budget)
+        catalog.metadata_set("memory_budget_pressure", f"{pressure:.6f}")
+        result: dict = {
+            "enabled": bool(self.settings.memory_lifecycle_governance_enabled),
+            "budget": {
+                "long_plus_permanent_chars": chars,
+                "budget_chars": budget,
+                "pressure": round(pressure, 4),
+                "capture_bar": self._long_term_capture_bar(),
+            },
+        }
+        if not self.settings.memory_lifecycle_governance_enabled:
+            return result
+        result["usage_events_pruned"] = catalog.prune_usage_events(
+            before_timestamp=time.time() - USAGE_EVENT_RETENTION_DAYS * 86400.0
+        )
+        window_start = float(catalog.metadata_get("usage_aggregation_at") or 0.0) or (
+            time.time() - 86400.0
+        )
+        scores = catalog.usage_scores_since(window_start)
+        catalog.metadata_set("usage_aggregation_at", f"{time.time():.6f}")
+        today = datetime.now().strftime("%Y-%m-%d")
+        if catalog.metadata_get("auto_reinforce_date") != today:
+            catalog.metadata_set("auto_reinforce_date", today)
+            catalog.metadata_set("auto_reinforce_count", "0")
+        try:
+            used_today = int(catalog.metadata_get("auto_reinforce_count") or 0)
+        except ValueError:
+            used_today = 0
+        reinforced = 0
+        for memory_id, score in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
+            if used_today + reinforced >= AUTO_REINFORCE_DAILY_CAP:
+                break
+            if score < REPLY_OVERLAP_THRESHOLD:
+                break
+            # 直接调内部调整并写 auto_reinforce 事件；不走 strengthen_memory
+            # （那会把自动行为误记成 user_confirmed 手动信号）。
+            if self._commit(
+                lambda mid=memory_id: self._adjust_memory_importance(
+                    mid, AUTO_REINFORCE_AMOUNT, touch=False)
+            ):
+                catalog.record_usage_event(
+                    memory_id=memory_id, signal="auto_reinforce", weight=0.0,
+                )
+                reinforced += 1
+        catalog.metadata_set("auto_reinforce_count", str(used_today + reinforced))
+        result["auto_reinforced"] = reinforced
+        result["signals_aggregated"] = len(scores)
+        return result
 
     def store_manual_memory(self, text: str, layer: str) -> str:
         """Store a user-selected chat record in the requested memory layer.
@@ -401,6 +577,8 @@ class MemoryManager:
             "confirmed_at": row.get("confirmed_at"),
             "lifecycle_state": str(row.get("lifecycle_state", "")),
             "updated_at": float(row.get("updated_at", 0.0) or 0.0),
+            "protection_tier": int(row.get("protection_tier", 0) or 0),
+            "pinned": bool(int(row.get("pinned", 0) or 0)),
         }
 
     def list_confirmed_memories(self, *, limit: int = 100) -> list[dict]:
@@ -710,6 +888,8 @@ class MemoryManager:
             "short_term_misremembering_enabled": self.settings.short_term_misremembering_enabled,
             "long_term_misremember_probability": self.settings.long_term_misremember_probability,
             "short_term_misremember_probability": self.settings.short_term_misremember_probability,
+            "memory_lifecycle_governance_enabled": self.settings.memory_lifecycle_governance_enabled,
+            "memory_long_budget_chars": self.settings.memory_long_budget_chars,
             "autonomous_memory_enabled": self.feature_settings.autonomous_memory_enabled,
             "autonomous_memory_llm_enabled": self.feature_settings.autonomous_memory_llm_enabled,
             "self_growth_enabled": self.feature_settings.self_growth_enabled,
@@ -904,6 +1084,7 @@ class MemoryManager:
 
         first_intent = any(marker in query.lower() for marker in ("第一次", "最早", "起初", "first time", "earliest"))
         event_intent = first_intent or any(marker in query.lower() for marker in ("什么时候", "哪天", "发生", "吵架", "when"))
+        temporal_intent = detect_temporal_intent(query)
         candidates = self.store.candidate_rows(
             query,
             limit=max(120, k * 30),
@@ -919,6 +1100,17 @@ class MemoryManager:
         oldest = min(timestamps, default=0.0)
         newest = max(timestamps, default=oldest)
         span = max(1.0, newest - oldest)
+
+        # P1B: entity co-occurrence boost (0.0–0.08 additive per candidate)
+        candidate_ids = [
+            str(row.get("id", "")) for row in candidates
+            if row.get("layer") != "permanent" and row.get("trust_level") != "untrusted_web"
+        ]
+        entity_boosts = entity_boost_candidates(
+            self.store.catalog._connection,
+            query_text=query,
+            candidate_ids=candidate_ids,
+        ) if candidate_ids else {}
 
         scored: list[tuple[float, dict]] = []
         for row in candidates:
@@ -944,6 +1136,9 @@ class MemoryManager:
                 else 0.0
             )
             emotion_score = self._emotion_query_score(query, row.get("emotions", {}))
+            # P1B: temporal intent boost (±0.08)
+            age_days = max(0.0, (time.time() - timestamp) / 86400.0) if timestamp else 0.0
+            temporal_intent_boost = temporal_recency_boost(temporal_intent, age_days)
             relevance = max(lexical, vector_score)
             retention = self.forgetting.retention(row)
             memory_weight = self.forgetting.retrieval_weight(row)
@@ -953,18 +1148,43 @@ class MemoryManager:
                 and not (first_intent and cognitive == "episodic" and overlap)
             ):
                 continue
-            # A strong cue can surface a weak trace, but does not erase decay.
-            cue_reactivation = relevance * (1.0 - retention) * 0.35
-            decayed_relevance = relevance * min(1.5, memory_weight + cue_reactivation)
-            score = (
-                decayed_relevance * 0.62
-                + lexical * 0.16
-                + importance * 0.08
-                + frequency * 0.04
-                + cognitive_score
-                + temporal_score * 0.24
-                + emotion_score * 0.10
-            )
+            if self.settings.memory_lifecycle_governance_enabled:
+                # P0-1 驻留/查询分离：排名证据只反映任务相关；衰减仅保留
+                # 三条拟真通路——资格门（上）、有界驻留加成、钳制的突袭想起。
+                cue_reactivation = min(
+                    relevance * (1.0 - retention) * 0.35,
+                    CUE_REACTIVATION_CAP,
+                )
+                row_id = str(row.get("id", ""))
+                score = (
+                    relevance * 0.62
+                    + lexical * 0.16
+                    + importance * 0.08
+                    + frequency * 0.04
+                    + cognitive_score
+                    + temporal_score * 0.24
+                    + emotion_score * 0.10
+                    + retention * RESIDENT_BOOST_CAP
+                    + cue_reactivation
+                    + entity_boosts.get(row_id, 0.0)
+                    + temporal_intent_boost
+                )
+            else:
+                # A strong cue can surface a weak trace, but does not erase decay.
+                cue_reactivation = relevance * (1.0 - retention) * 0.35
+                decayed_relevance = relevance * min(1.5, memory_weight + cue_reactivation)
+                row_id = str(row.get("id", ""))
+                score = (
+                    decayed_relevance * 0.62
+                    + lexical * 0.16
+                    + importance * 0.08
+                    + frequency * 0.04
+                    + cognitive_score
+                    + temporal_score * 0.24
+                    + emotion_score * 0.10
+                    + entity_boosts.get(row_id, 0.0)
+                    + temporal_intent_boost
+                )
             if overlap or rank is not None:
                 scored.append((score, row))
 
@@ -996,6 +1216,14 @@ class MemoryManager:
             )
         else:
             rendered = [str(row["text"]) for row in selected_rows]
+        if self.settings.memory_lifecycle_governance_enabled:
+            # P0-3：登记本轮注入（permanent 身份记忆常驻注入，不计信号）。
+            now_ts = time.time()
+            self._pending_injection = [
+                {"id": str(row.get("id", "")), "text": str(row.get("text", "")), "ts": now_ts}
+                for row in selected_rows
+                if str(row.get("layer", row.get("retention_layer", ""))) != "permanent"
+            ]
         self.store.catalog.touch_access(str(row.get("id", "")) for row in selected_rows)
         return [*permanent, *rendered]
 
@@ -1161,6 +1389,16 @@ class MemoryManager:
         }
         summary["growth"] = self.run_self_growth_cycle()
         summary["reembedding"] = await asyncio.to_thread(self.run_reembedding_batch, True)
+        summary["governance"] = self._run_governance_cycle()
+        # P1D: process offline fold jobs (atom extraction, evidence checks, etc.)
+        fold_worker = getattr(self.store.catalog, '_fold_worker', None)
+        if fold_worker is not None:
+            try:
+                fold_processed = fold_worker.process_batch(max_jobs=10)
+            except Exception:
+                logger.exception("fold_worker batch failed")
+                fold_processed = 0
+            summary["fold_worker"] = {"processed": fold_processed}
         return summary
 
     def run_reembedding_batch(self, force: bool = False, limit: int = 24) -> dict:
@@ -1423,6 +1661,8 @@ class MemoryManager:
             "supersedes_id": str(row.get("supersedes_id", "")),
             "confirmation_state": str(row.get("confirmation_state", "observed")),
             "confirmed_at": row.get("confirmed_at"),
+            "protection_tier": int(row.get("protection_tier", 0) or 0),
+            "pinned": int(row.get("pinned", 0) or 0),
         }
 
     def _adjust_memory_importance(self, memory_id: str, delta: float, *, touch: bool) -> bool:

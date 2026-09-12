@@ -122,12 +122,22 @@ def test_settings_and_profile_payloads_reject_cross_section_and_minor_data() -> 
                 "reply_delay_min": 3,
             },
         )
+    accepted = envelope(
+        "settings:update",
+        {
+            "section": "memory",
+            "misremembering_enabled": True,
+            "memory_lifecycle_governance_enabled": False,
+        },
+    )
+    assert accepted.payload["misremembering_enabled"] is True
+    assert accepted.payload["memory_lifecycle_governance_enabled"] is False
     with pytest.raises(ValidationError):
         envelope(
             "settings:update",
             {
                 "section": "memory",
-                "misremembering_enabled": True,
+                "vector_store": "sqlite",
             },
         )
     with pytest.raises(ValidationError):

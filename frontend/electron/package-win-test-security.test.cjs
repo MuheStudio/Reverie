@@ -22,7 +22,7 @@ const { createSeedConfig } = require('../script/seed-config.cjs');
 test('release and test packages share a valid current settings seed', () => {
   const config = createSeedConfig();
   assert.equal(config.llm.provider, 'ollama');
-  assert.equal(config.memory.short_term_forget_probability, 0.005);
+  assert.equal(config.memory.short_term_forget_probability, 0.05);
   for (const field of [
     'misremember_probability',
     'long_term_misremember_probability',
@@ -115,6 +115,22 @@ test('production payload audit rejects a reintroduced virtual environment', () =
   assert.equal(assertProductionPayload(root), true);
   fs.mkdirSync(path.join(root, 'venv'));
   assert.throws(() => assertProductionPayload(root), /forbidden|virtual environment/i);
+});
+
+test('release installer defaults to Program Files and asks about the desktop shortcut', () => {
+  assert.equal(installerConfig.nsis.oneClick, false);
+  assert.equal(installerConfig.nsis.perMachine, true);
+  assert.equal(installerConfig.nsis.allowToChangeInstallationDirectory, true);
+  assert.equal(installerConfig.nsis.createDesktopShortcut, false);
+  assert.equal(installerConfig.nsis.selectPerMachineByDefault, true);
+  assert.equal(installerConfig.nsis.createStartMenuShortcut, true);
+  assert.match(String(installerConfig.nsis.include), /nsis[\\/]installer\.nsh$/);
+  const nsis = fs.readFileSync(path.join(__dirname, '..', 'nsis', 'installer.nsh'), 'utf8');
+  assert.match(nsis, /!macro customPageAfterChangeDir/);
+  assert.match(nsis, /!macro customInstall/);
+  assert.match(nsis, /ReverieDesktopShortcutPage/);
+  assert.match(nsis, /SHORTCUT_NAME/);
+  assert.match(nsis, /WinShell::SetLnkAUMI/);
 });
 
 test('an unlicensed Live2D payload cannot pass the shared package gate', () => {

@@ -12,6 +12,11 @@
   overflow: hidden;
 }
 
+.defaultAvatar span {
+  font: 700 4rem/1 Georgia, 'Noto Serif SC', serif;
+  color: rgba(120, 67, 84, 0.28);
+}
+
 .defaultAvatar img {
   inline-size: min(100%, 39rem);
   block-size: 100%;

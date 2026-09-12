@@ -16,7 +16,7 @@ function createSeedConfig() {
       long_term_forget_days: 90,
       short_term_forget_days: 7,
       long_term_forget_probability: 0.05,
-      short_term_forget_probability: 0.005,
+      short_term_forget_probability: 0.05,
       forget_probability: 0.05,
       decay_lambda: 0.0077,
       recall_reinforcement_alpha: 0.12,

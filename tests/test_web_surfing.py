@@ -127,3 +127,66 @@ def test_xml_entity_declaration_is_rejected_even_after_long_prefix() -> None:
         assert "DTD/entity" in str(exc)
     else:
         raise AssertionError("DTD payload was accepted")
+
+
+def test_trafilatura_extraction_is_serialized_by_global_lock() -> None:
+    """P1-4: trafilatura 2.x is not thread-safe (adbar/trafilatura#925 — a
+    concurrent extract() can SIGSEGV the lxml C layer). Every extraction must
+    go through one module-level lock so the web surfing loop can never crash
+    the chat process."""
+    from src.web import evidence
+
+    assert hasattr(evidence, "_TRAFILATURA_LOCK")
+    import threading as _threading
+
+    assert callable(getattr(evidence._TRAFILATURA_LOCK, "acquire", None))
+    assert callable(getattr(evidence._TRAFILATURA_LOCK, "release", None))
+
+    # The extraction call in fetch_page_text must hold the lock while calling
+    # trafilatura.extract. Verify by patching trafilatura.extract in-process:
+    # two threads racing must never overlap (concurrent access counter stays 0).
+    import threading
+    import time
+
+    import trafilatura  # may be absent in minimal env; skip if so
+    original_extract = trafilatura.extract
+    concurrent = 0
+    max_concurrent = 0
+    guard = threading.Lock()
+
+    def wrapped(*args, **kwargs):
+        nonlocal concurrent, max_concurrent
+        with guard:
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+        time.sleep(0.01)
+        try:
+            return original_extract(*args, **kwargs)
+        finally:
+            with guard:
+                concurrent -= 1
+
+    trafilatura.extract = wrapped
+    evidence._TRAFILATURA_LOCK = threading.Lock()  # fresh lock per test
+    try:
+        html = "<html><body><p>Hello world paragraph for extraction.</p></body></html>"
+        errors: list[str] = []
+        barrier = threading.Barrier(4)
+
+        def worker() -> None:
+            try:
+                barrier.wait()
+                evidence._extract_body_with_lock(html)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, errors
+        assert max_concurrent == 1, f"extract() overlapped: {max_concurrent} concurrent"
+    finally:
+        trafilatura.extract = original_extract
+        del evidence._TRAFILATURA_LOCK

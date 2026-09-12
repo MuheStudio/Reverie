@@ -55,6 +55,8 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   assert.deepEqual(
     Object.keys(api).sort(),
     [
+      'appState',
+      'avatar',
       'backup',
       'bridge',
       'character',
@@ -71,6 +73,8 @@ test('sandboxed preload exposes only the MVP authority without local require', a
       'providerConfig',
       'showNotification',
       'stickers',
+      'ttsRuntime',
+      'voicePack',
     ],
   );
   assert.deepEqual(Object.keys(api.stickers).sort(), ['pickImage']);
@@ -110,7 +114,19 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   assert.throws(() => api.focus.start(Number.NaN), /durationSeconds/);
   await api.focus.pause('session-id');
   assert.equal(invokes.at(-1)?.channel, 'focus:pause');
-  assert.deepEqual(Object.keys(api.pet).sort(), ['hide', 'isVisible', 'show', 'toggle']);
+  assert.deepEqual(Object.keys(api.pet).sort(), [
+    'cancelChat', 'hide', 'importSticker', 'isVisible', 'listStickers',
+    'onChatEvent', 'sendChat', 'sendSticker', 'show', 'toggle',
+  ]);
+  assert.deepEqual(Object.keys(api.avatar).sort(), [
+    'addMotion', 'beginImport', 'beginImportFolder', 'beginImportLive2DFile', 'commitImport', 'confirmPreview',
+    'discardImport', 'failPreview', 'importDropped', 'list', 'onChanged', 'remove',
+    'removeMotion', 'setActive', 'setMapping',
+  ]);
+  assert.deepEqual(Object.keys(api.voicePack).sort(), [
+    'beginImport', 'commitImport', 'importDropped', 'list', 'remove', 'setActive',
+  ]);
+  assert.deepEqual(Object.keys(api.ttsRuntime).sort(), ['cancel', 'start', 'status']);
   assert.deepEqual(Object.keys(api.download).sort(), [
     'downloadDirect',
     'downloadM3u8',
@@ -209,7 +225,6 @@ test('sandboxed preload exposes only the MVP authority without local require', a
   // through the secure IPC registrar (validated payloads, native dialogs).
   assert.deepEqual(Object.keys(api.backup).sort(), ['export', 'import']);
   for (const forbidden of [
-    'avatar',
     'companionPreferences',
     'files',
     'focusSound',

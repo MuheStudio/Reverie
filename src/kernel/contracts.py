@@ -29,6 +29,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("CHAT_STOP", "chat:stop"),
     ("CHAT_HISTORY", "chat:history"),
     ("CHAT_MEDIA", "chat:media"),
+    ("VIDEO_DOWNLOAD", "video:download"),
     ("BRIDGE_AUTH", "bridge:auth"),
     ("LOCAL_MODE_SET", "local_mode:set"),
     ("MEMORY_QUERY", "memory:query"),
@@ -37,13 +38,13 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("MEMORY_DELETE", "memory:delete"),
     ("MEMORY_SETTINGS_GET", "memory:settings:get"),
     ("MEMORY_STORE", "memory:store"),
+    ("MEMORY_REINFORCE", "memory:reinforce"),
     ("MEMORY_CANDIDATE_LIST", "memory:candidates:list"),
     ("MEMORY_CANDIDATE_CONFIRM", "memory:candidates:confirm"),
     ("MEMORY_CANDIDATE_REJECT", "memory:candidates:reject"),
     ("EMOTION_GET", "emotion:get"),
     ("PERSONA_GET", "persona:get"),
     ("PERSONA_IMPORT", "persona:import"),
-    ("PERSONA_LIST", "persona:list"),
     ("PERSONA_ACTIVATE", "persona:activate"),
     ("ARCHIVE_GET", "archive:get"),
     ("ARCHIVE_PUT", "archive:put"),
@@ -79,7 +80,6 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("STICKER_COLLECT", "sticker:collect"),
     ("STICKER_REACT", "sticker:react"),
     ("STICKER_IMPORT", "sticker:import"),
-    ("STICKER_SEND", "sticker:send"),
     ("ANTI_AI_STATUS", "anti_ai:status"),
     ("IMMERSION_NEARBY", "immersion:nearby"),
     ("IMMERSION_CLOSEUP", "immersion:closeup"),
@@ -93,6 +93,8 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("CHAT_RETRACT", "chat:retract"),
     ("CHAT_HISTORY_RESULT", "chat:history:result"),
     ("CHAT_MEDIA_RESULT", "chat:media:result"),
+    ("VIDEO_DOWNLOAD_RESULT", "video:download:result"),
+    ("VIDEO_DOWNLOAD_PROGRESS", "video:download:progress"),
     ("BRIDGE_AUTH_OK", "bridge:auth_ok"),
     ("BRIDGE_AUTH_ERROR", "bridge:auth_error"),
     ("LOCAL_MODE_STATE", "local_mode:state"),
@@ -141,9 +143,11 @@ MVP_COMMAND_NAMES = frozenset(
         "CHAT_REVEAL",
         "CHAT_HISTORY",
         "CHAT_MEDIA",
+        "VIDEO_DOWNLOAD",
         "MEMORY_QUERY",
         "MEMORY_LIST",
         "MEMORY_STORE",
+        "MEMORY_REINFORCE",
         "MEMORY_EDIT",
         "MEMORY_DELETE",
         "MEMORY_SETTINGS_GET",
@@ -208,6 +212,8 @@ MVP_EVENT_NAMES = frozenset(
         "CHAT_RETRACT",
         "CHAT_HISTORY_RESULT",
         "CHAT_MEDIA_RESULT",
+        "VIDEO_DOWNLOAD_RESULT",
+        "VIDEO_DOWNLOAD_PROGRESS",
         "EMOTION_UPDATE",
         "MEMORY_RESULT",
         "MEMORY_SETTINGS_RESULT",
@@ -284,6 +290,12 @@ class ChatSendPayload(_PayloadModel):
     # out of the bridge frame) or a compressed data URL from clipboard paste.
     image_path: str | None = Field(default=None, max_length=1_024)
     image_data_url: str | None = Field(default=None, max_length=350_000)
+    # Optional video attachment: the sha256 media id of a video already stored
+    # by the video:download pipeline. A video can be hundreds of MB, so it is
+    # never inlined as a data URL — it is downloaded, merged and stored
+    # server-side first, then referenced here by id (mirrors how images end up
+    # content-addressed, but without any re-encoding).
+    video_media_id: str | None = Field(default=None, max_length=128)
     sticker: "StickerAttachmentPayload | None" = None
 
     @field_validator("request_id")
@@ -323,6 +335,15 @@ class ChatSendPayload(_PayloadModel):
             raise ValueError("image_data_url must be a base64 image data URL")
         return value
 
+    @field_validator("video_media_id")
+    @classmethod
+    def validate_video_media_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not re.fullmatch(r"[A-Fa-f0-9]{64}", value):
+            raise ValueError("video_media_id must be a sha256 hex id")
+        return value
+
 
 class StickerAttachmentPayload(_PayloadModel):
     """Sticker object the renderer may attach to a chat:send turn."""
@@ -345,6 +366,43 @@ class ChatMediaPayload(_PayloadModel):
     def validate_media_id(cls, value: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", value):
             raise ValueError("media_id contains unsupported characters")
+        return value
+
+
+class VideoDownloadPayload(_PayloadModel):
+    """Download a video (HLS m3u8 or direct mp4/webm) and store it locally.
+
+    The feature is disclaimer-gated: the bridge refuses this command unless the
+    user has enabled ``video_download`` and acknowledged the liability
+    disclaimer. ``source_url`` is validated as a public http(s) URL by the
+    download kernel's SSRF gate; ``page_title`` is an optional label carried
+    only for the chat message caption.
+    """
+
+    source_url: str = Field(min_length=1, max_length=2_048)
+    request_id: str | None = Field(default=None, max_length=128)
+    conversation_id: str = Field(default="dream-room", min_length=1, max_length=160)
+    page_title: str | None = Field(default=None, max_length=400)
+
+    @field_validator("source_url")
+    @classmethod
+    def validate_source_url(cls, value: str) -> str:
+        if not re.fullmatch(r"https?://[^\s]{1,2040}", value):
+            raise ValueError("source_url must be an http(s) URL")
+        return value
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, value: str | None) -> str | None:
+        if value is not None and not _ID_PATTERN.fullmatch(value):
+            raise ValueError("request_id contains unsupported characters")
+        return value
+
+    @field_validator("conversation_id")
+    @classmethod
+    def validate_conversation_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", value):
+            raise ValueError("conversation_id contains unsupported characters")
         return value
 
 
@@ -461,6 +519,9 @@ class PersonaImportPayload(_PayloadModel):
         max_length=2_000_000,
     )
     filename: str = Field(default="character.json", min_length=1, max_length=256)
+    identity_change_confirmed: StrictBool | None = None
+    actor: Literal["owner", "local_admin"] | None = None
+    reason: str | None = Field(default=None, min_length=3, max_length=500)
 
 
 class PersonaActivatePayload(_PayloadModel):
@@ -602,6 +663,13 @@ class MemoryEditPayload(MemoryTargetPayload):
         return cleaned
 
 
+class MemoryReinforcePayload(MemoryTargetPayload):
+    """Manual weaken/strengthen/reactivate/pin adjustments from the memory UI."""
+
+    op: Literal["weaken", "strengthen", "reactivate", "pin", "unpin"]
+    amount: float | None = Field(default=None, gt=0.0, le=0.5)
+
+
 class MemoryCandidateListPayload(_PayloadModel):
     status: Literal["pending", "confirmed", "rejected", "all"] = "pending"
     limit: int = Field(default=100, ge=1, le=200)
@@ -731,18 +799,30 @@ class TTSSynthesizePayload(_PayloadModel):
 
 
 class SettingsUpdatePayload(_PayloadModel):
-    """The small settings surface that exists in the current MVP."""
+    """Live settings surface. Extra keys stay forbidden; the allow-list matches
+    ``handle_settings_update`` rather than the historical MVP subset."""
 
     section: Literal[
-        "onboarding", "memory", "chat", "personality", "features", "immersion", "tts", "ui"
+        "onboarding", "memory", "chat", "personality", "features",
+        "immersion", "tts", "ui", "persona_prompt_opts",
     ]
     completed: bool | None = None
+    onboarding_version: int | None = Field(default=None, ge=0, le=100)
+    onboarding_state: Literal[
+        "not_started", "in_progress", "committing", "complete"
+    ] | None = None
+    onboarding_last_step: Literal[
+        "welcome", "mode", "profile", "deepseek", "optional-media",
+        "features", "rooms", "cards", "location", "pet", "finish",
+    ] | None = None
+    experience_mode: Literal["full", "core"] | None = None
     mode: Literal["mvp", "dream"] | None = None
 
     tts_enabled: bool | None = None
-    tts_provider: Literal["gemini", "openai"] | None = None
+    tts_provider: Literal["gemini", "openai", "gpt-sovits"] | None = None
     tts_voice: str | None = Field(default=None, max_length=64)
     tts_model: str | None = Field(default=None, max_length=128)
+    tts_base_url: str | None = Field(default=None, max_length=128)
 
     retention_days: Literal[365, 730, 1095] | None = None
     forgetting_enabled: bool | None = None
@@ -755,6 +835,23 @@ class SettingsUpdatePayload(_PayloadModel):
     decay_lambda: float | None = Field(default=None, ge=0.0001, le=0.10)
     recall_reinforcement_alpha: float | None = Field(default=None, ge=0.0, le=0.50)
     minimum_retrieval_retention: float | None = Field(default=None, ge=0.0, le=0.95)
+    embedding_model: str | None = Field(default=None, min_length=1, max_length=200)
+    vector_quantization: Literal["float32", "int8"] | None = None
+    vector_partitioning_enabled: bool | None = None
+    memory_lifecycle_governance_enabled: bool | None = None
+    memory_long_budget_chars: int | None = Field(default=None, ge=50_000, le=2_000_000)
+    misremembering_enabled: bool | None = None
+    long_term_misremembering_enabled: bool | None = None
+    short_term_misremembering_enabled: bool | None = None
+    misremember_probability: float | None = Field(default=None, ge=0.01, le=0.10)
+    long_term_misremember_probability: float | None = Field(default=None, ge=0.01, le=0.10)
+    short_term_misremember_probability: float | None = Field(default=None, ge=0.01, le=0.10)
+    autonomous_memory_enabled: bool | None = None
+    autonomous_memory_llm_enabled: bool | None = None
+    self_growth_enabled: bool | None = None
+    self_growth_from_web_enabled: bool | None = None
+    self_growth_from_memory_enabled: bool | None = None
+    self_growth_interval_days: int | None = Field(default=None, ge=30, le=365)
 
     reply_delay_min: float | None = Field(default=None, ge=1.0, le=60.0)
     reply_delay_max: float | None = Field(default=None, ge=1.0, le=60.0)
@@ -766,6 +863,51 @@ class SettingsUpdatePayload(_PayloadModel):
     personality_flaws_enabled: bool | None = None
     personality_flaws_disclaimer_acknowledged: bool | None = None
     user_selected_flaws: str | None = Field(default=None, max_length=400)
+    emotion_system_enabled: bool | None = None
+    emotion_carryover_days: int | None = Field(default=None, ge=1, le=7)
+    emotion_inertia_factor: float | None = Field(default=None, ge=0.01, le=0.60)
+    world_life_enabled: bool | None = None
+    timeline_enabled: bool | None = None
+    timeline_visuals_enabled: bool | None = None
+    group_social_enabled: bool | None = None
+    group_social_permanent_memory_enabled: bool | None = None
+    group_social_api_replies_enabled: bool | None = None
+    group_social_comment_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    group_social_backchannel_probability: float | None = Field(default=None, ge=0.0, le=0.5)
+    group_social_max_api_calls_per_action: int | None = Field(default=None, ge=0, le=3)
+    proactive_event_stories_enabled: bool | None = None
+    web_surfing_enabled: bool | None = None
+    web_disclaimer_acknowledged: bool | None = None
+    web_native_search_enabled: bool | None = None
+    surf_keyless_search_enabled: bool | None = None
+    web_allowed_topics: list[str] | None = Field(default=None, max_length=32)
+    web_search_windows: list[str] | None = Field(default=None, max_length=24)
+    web_refresh_interval_minutes: int | None = Field(default=None, ge=30, le=1440)
+    keepsake_collection_enabled: bool | None = None
+    keepsake_recall_probability: float | None = Field(default=None, ge=0.01, le=0.30)
+    ambient_presence_enabled: bool | None = None
+    ambient_book_pages_per_hour: float | None = Field(default=None, ge=0.1, le=12.0)
+    ambient_trace_interval_minutes: int | None = Field(default=None, ge=30, le=1440)
+    ambient_offline_replay_max_days: int | None = Field(default=None, ge=1, le=90)
+    ambient_sticky_notes_enabled: bool | None = None
+    thought_of_you_enabled: bool | None = None
+    thought_share_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    thought_min_delay_minutes: int | None = Field(default=None, ge=30, le=4320)
+    thought_max_delay_minutes: int | None = Field(default=None, ge=60, le=10080)
+    thought_share_start_hour: int | None = Field(default=None, ge=0, le=23)
+    thought_share_end_hour: int | None = Field(default=None, ge=1, le=24)
+    diary_key_easter_egg_enabled: bool | None = None
+    diary_key_intimacy_threshold: int | None = Field(default=None, ge=100, le=10000)
+    diary_key_happy_days: int | None = Field(default=None, ge=3, le=30)
+    diary_key_private_emotion_threshold: float | None = Field(default=None, ge=40.0, le=95.0)
+    user_phrase_alignment_enabled: bool | None = None
+    user_phrase_alignment_probability: float | None = Field(default=None, ge=0.0, le=0.20)
+    user_phrase_min_count: int | None = Field(default=None, ge=2, le=20)
+    local_care_reflex_probability: float | None = Field(default=None, ge=0.0, le=1.0)
+    api_budget_tracking_enabled: bool | None = None
+    api_background_budget_enforced: bool | None = None
+    api_background_daily_request_budget: int | None = Field(default=None, ge=1, le=10000)
+    api_background_daily_token_budget: int | None = Field(default=None, ge=1000, le=10_000_000)
 
     proactive_chat_enabled: bool | None = None
     proactive_notifications_enabled: bool | None = None
@@ -774,15 +916,63 @@ class SettingsUpdatePayload(_PayloadModel):
     proactive_wake_min_minutes: int | None = Field(default=None, ge=2, le=60)
     proactive_wake_max_minutes: int | None = Field(default=None, ge=2, le=60)
 
+    diary_enabled: bool | None = None
+    diary_privacy_enabled: bool | None = None
+    diary_peek_enabled: bool | None = None
+    late_night_enabled: bool | None = None
+    late_night_message_enabled: bool | None = None
+    late_night_probability: float | None = Field(default=None, ge=0.01, le=0.30)
+    video_download_enabled: bool | None = None
+    video_download_disclaimer_acknowledged: bool | None = None
+    video_max_size_mb: int | None = Field(default=None, ge=1, le=4096)
+    video_max_duration_seconds: int | None = Field(default=None, ge=1, le=21600)
+    video_total_quota_mb: int | None = Field(default=None, ge=1, le=51200)
+
+    use_imported_system_prompt: bool | None = None
+    use_imported_post_history_instructions: bool | None = None
+
     immersion_location_enabled: bool | None = None
     immersion_closeups_enabled: bool | None = None
     immersion_smart_home_enabled: bool | None = None
     immersion_location_radius_m: int | None = Field(default=None, ge=300, le=5000)
 
+    @field_validator("web_search_windows", mode="before")
+    @classmethod
+    def _split_web_search_windows(cls, value: object) -> object:
+        if isinstance(value, str):
+            parts = value.replace("，", ",").replace("、", ",").split(",")
+            return [item.strip() for item in parts if item.strip()]
+        return value
+
+    @field_validator("web_allowed_topics", mode="before")
+    @classmethod
+    def _split_web_allowed_topics(cls, value: object) -> object:
+        if isinstance(value, str):
+            parts = value.replace("，", "、").replace(",", "、").split("、")
+            return [item.strip() for item in parts if item.strip()]
+        return value
+
+    @field_validator("embedding_model")
+    @classmethod
+    def _embedding_model_is_printable(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if not cleaned or any(ord(char) < 32 for char in cleaned):
+            raise ValueError("embedding_model is invalid")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_section_fields(self) -> "SettingsUpdatePayload":
         allowed = {
-            "onboarding": {"section", "completed"},
+            "onboarding": {
+                "section",
+                "completed",
+                "onboarding_version",
+                "onboarding_state",
+                "onboarding_last_step",
+                "experience_mode",
+            },
             "memory": {
                 "section",
                 "retention_days",
@@ -796,6 +986,23 @@ class SettingsUpdatePayload(_PayloadModel):
                 "decay_lambda",
                 "recall_reinforcement_alpha",
                 "minimum_retrieval_retention",
+                "embedding_model",
+                "vector_quantization",
+                "vector_partitioning_enabled",
+                "memory_lifecycle_governance_enabled",
+                "memory_long_budget_chars",
+                "misremembering_enabled",
+                "long_term_misremembering_enabled",
+                "short_term_misremembering_enabled",
+                "misremember_probability",
+                "long_term_misremember_probability",
+                "short_term_misremember_probability",
+                "autonomous_memory_enabled",
+                "autonomous_memory_llm_enabled",
+                "self_growth_enabled",
+                "self_growth_from_web_enabled",
+                "self_growth_from_memory_enabled",
+                "self_growth_interval_days",
             },
             "chat": {
                 "section",
@@ -811,6 +1018,57 @@ class SettingsUpdatePayload(_PayloadModel):
                 "personality_flaws_enabled",
                 "personality_flaws_disclaimer_acknowledged",
                 "user_selected_flaws",
+                "emotion_system_enabled",
+                "emotion_carryover_days",
+                "emotion_inertia_factor",
+                "world_life_enabled",
+                "timeline_enabled",
+                "timeline_visuals_enabled",
+                "group_social_enabled",
+                "group_social_permanent_memory_enabled",
+                "group_social_api_replies_enabled",
+                "group_social_comment_probability",
+                "group_social_backchannel_probability",
+                "group_social_max_api_calls_per_action",
+                "proactive_chat_enabled",
+                "proactive_notifications_enabled",
+                "proactive_event_stories_enabled",
+                "proactive_daily_limit",
+                "proactive_min_interval_minutes",
+                "proactive_wake_min_minutes",
+                "proactive_wake_max_minutes",
+                "web_surfing_enabled",
+                "web_disclaimer_acknowledged",
+                "web_native_search_enabled",
+                "surf_keyless_search_enabled",
+                "web_allowed_topics",
+                "web_search_windows",
+                "web_refresh_interval_minutes",
+                "keepsake_collection_enabled",
+                "keepsake_recall_probability",
+                "ambient_presence_enabled",
+                "ambient_book_pages_per_hour",
+                "ambient_trace_interval_minutes",
+                "ambient_offline_replay_max_days",
+                "ambient_sticky_notes_enabled",
+                "thought_of_you_enabled",
+                "thought_share_probability",
+                "thought_min_delay_minutes",
+                "thought_max_delay_minutes",
+                "thought_share_start_hour",
+                "thought_share_end_hour",
+                "diary_key_easter_egg_enabled",
+                "diary_key_intimacy_threshold",
+                "diary_key_happy_days",
+                "diary_key_private_emotion_threshold",
+                "user_phrase_alignment_enabled",
+                "user_phrase_alignment_probability",
+                "user_phrase_min_count",
+                "local_care_reflex_probability",
+                "api_budget_tracking_enabled",
+                "api_background_budget_enforced",
+                "api_background_daily_request_budget",
+                "api_background_daily_token_budget",
             },
             "features": {
                 "section",
@@ -820,6 +1078,22 @@ class SettingsUpdatePayload(_PayloadModel):
                 "proactive_min_interval_minutes",
                 "proactive_wake_min_minutes",
                 "proactive_wake_max_minutes",
+                "diary_enabled",
+                "diary_privacy_enabled",
+                "diary_peek_enabled",
+                "late_night_enabled",
+                "late_night_message_enabled",
+                "late_night_probability",
+                "video_download_enabled",
+                "video_download_disclaimer_acknowledged",
+                "video_max_size_mb",
+                "video_max_duration_seconds",
+                "video_total_quota_mb",
+            },
+            "persona_prompt_opts": {
+                "section",
+                "use_imported_system_prompt",
+                "use_imported_post_history_instructions",
             },
             "immersion": {
                 "section",
@@ -838,6 +1112,7 @@ class SettingsUpdatePayload(_PayloadModel):
                 "tts_provider",
                 "tts_voice",
                 "tts_model",
+                "tts_base_url",
             },
         }[self.section]
         unexpected = self.model_fields_set - allowed
@@ -846,8 +1121,32 @@ class SettingsUpdatePayload(_PayloadModel):
                 f"settings section {self.section} does not accept: "
                 + ", ".join(sorted(unexpected))
             )
-        if self.section == "onboarding" and self.completed is None:
-            raise ValueError("onboarding settings require completed")
+        if self.section == "onboarding":
+            if not self.model_fields_set.intersection({
+                "completed",
+                "onboarding_version",
+                "onboarding_state",
+                "onboarding_last_step",
+                "experience_mode",
+            }):
+                raise ValueError("onboarding settings require at least one state field")
+            if self.completed is False and self.onboarding_state == "complete":
+                raise ValueError("completed=false conflicts with complete state")
+            if self.completed is True and self.onboarding_state == "not_started":
+                raise ValueError("completed=true conflicts with not_started state")
+            finishing = self.onboarding_state == "complete" or (
+                self.completed is True and self.onboarding_state is None
+            )
+            if finishing:
+                if self.onboarding_version not in {None, 2, 3}:
+                    raise ValueError("completed onboarding requires version 2 or 3")
+                if self.onboarding_last_step not in {None, "finish"}:
+                    raise ValueError("completed onboarding requires finish step")
+            elif self.completed is True:
+                if self.onboarding_version not in {None, 2, 3}:
+                    raise ValueError("active onboarding requires version 2 or 3")
+            if self.onboarding_state in {"in_progress", "committing"} and self.onboarding_version not in {2, 3}:
+                raise ValueError("active onboarding requires version 2 or 3")
         if (
             self.proactive_wake_min_minutes is not None
             and self.proactive_wake_max_minutes is not None
@@ -894,7 +1193,16 @@ class UserProfileData(_PayloadModel):
 
 
 class UserProfileUpdatePayload(_PayloadModel):
-    profile: UserProfileData
+    profile: UserProfileData | None = None
+    restore_default: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def validate_restore_or_profile(self) -> "UserProfileUpdatePayload":
+        if self.restore_default is True:
+            return self
+        if self.profile is None:
+            raise ValueError("user profile update requires a profile")
+        return self
 
 
 COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
@@ -904,9 +1212,11 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "chat:reveal": ChatTargetPayload,
     "chat:history": ChatHistoryPayload,
     "chat:media": ChatMediaPayload,
+    "video:download": VideoDownloadPayload,
     "memory:query": MemoryQueryPayload,
     "memory:list": MemoryListPayload,
     "memory:store": MemoryStorePayload,
+    "memory:reinforce": MemoryReinforcePayload,
     "memory:edit": MemoryEditPayload,
     "memory:delete": MemoryTargetPayload,
     "memory:settings:get": EmptyPayload,
@@ -959,6 +1269,7 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
 
 MUTATING_COMMAND_NAMES = frozenset(
     {
+        "video:download",
         "memory:candidates:confirm",
         "memory:candidates:reject",
         "memory:store",

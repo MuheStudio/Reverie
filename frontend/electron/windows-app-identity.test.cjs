@@ -6,9 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const {
+  DEVELOPMENT_APP_USER_MODEL_ID,
   FORMAL_APP_USER_MODEL_ID,
   TEST_BUILD_MARKER,
   readDistributionMetadata,
+  resolveAppUserModelId,
   shouldSetFormalAppUserModelId,
 } = require('./windows-app-identity.cjs');
 
@@ -30,15 +32,22 @@ const testMetadata = {
 
 test('formal Windows identity remains stable for installed and development builds', () => {
   assert.equal(FORMAL_APP_USER_MODEL_ID, 'studio.muhe.reverie');
+  assert.equal(DEVELOPMENT_APP_USER_MODEL_ID, 'studio.muhe.reverie.dev');
   assert.equal(shouldSetFormalAppUserModelId({
     platform: 'win32', isPackaged: true, resourcesPath: makePackage(),
   }), true);
   assert.equal(shouldSetFormalAppUserModelId({
     platform: 'win32', isPackaged: false, resourcesPath: makePackage(testMetadata),
-  }), true);
+  }), false);
   assert.equal(shouldSetFormalAppUserModelId({
     platform: 'linux', isPackaged: true, resourcesPath: makePackage(),
   }), false);
+  assert.equal(resolveAppUserModelId({
+    platform: 'win32', isPackaged: true, resourcesPath: makePackage(),
+  }), FORMAL_APP_USER_MODEL_ID);
+  assert.equal(resolveAppUserModelId({
+    platform: 'win32', isPackaged: false, resourcesPath: makePackage(),
+  }), DEVELOPMENT_APP_USER_MODEL_ID);
 });
 
 test('validated portable test marker suppresses the formal installed identity', () => {

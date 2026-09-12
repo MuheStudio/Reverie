@@ -62,6 +62,7 @@ declare global {
     };
     requiresRightsConfirmation: boolean;
     requiresWarningAcceptance: boolean;
+    modelRuntimeVersion?: number | null;
   }
 
   interface AvatarImportConfirmation {
@@ -181,6 +182,16 @@ declare global {
     electronAPI?: {
       platform?: string;
       getAppVersion?: () => Promise<string>;
+      appState?: {
+        getUiSnapshot: () => Promise<{
+          onboarding_completed: boolean;
+          onboarding_version: number;
+          onboarding_state: string;
+          onboarding_last_step: string;
+          experience_mode: 'full' | 'core';
+          mode: 'mvp' | 'dream';
+        }>;
+      };
       getPathForFile?: (file: File) => string;
       onAppLifecycle?: (
         callback: (event: { state: string; at: string }) => void,
@@ -278,6 +289,37 @@ declare global {
         show: () => Promise<boolean>;
         hide: () => Promise<boolean>;
         isVisible: () => Promise<boolean>;
+        onChatEvent: (callback: (event: unknown) => void) => () => void;
+        sendChat: (text: string) => Promise<{ accepted: boolean; requestId: string }>;
+        cancelChat: () => Promise<{ cancelled: boolean }>;
+        listStickers: () => Promise<{ items: unknown[] }>;
+        importSticker: () => Promise<{ canceled: boolean; item?: unknown }>;
+        sendSticker: (id: string) => Promise<{ accepted: boolean; requestId: string }>;
+      };
+      voicePack?: {
+        list: () => Promise<{
+          available: boolean;
+          records: Array<Record<string, unknown>>;
+          corrupt: Array<{ id: string; reason: string }>;
+        }>;
+        beginImport: () => Promise<Record<string, unknown> | null>;
+        importDropped: (file: File) => Promise<Record<string, unknown> | null>;
+        commitImport: (
+          previewId: string,
+          confirmation: { rightsAttested: boolean; runtimeFamily: 'gpt-sovits'; runtimeVersion: 'v2' },
+        ) => Promise<Record<string, unknown>>;
+        setActive: (id: string | null) => Promise<{ activeId: string | null }>;
+        remove: (id: string) => Promise<{ removed: boolean }>;
+      };
+      ttsRuntime?: {
+        status: () => Promise<{
+          available: boolean;
+          state: string;
+          reason: string;
+          recipeVersion: string | null;
+        }>;
+        start: () => Promise<unknown>;
+        cancel: () => Promise<{ cancelled: boolean; state: string }>;
       };
       // DreamRoom / legacy surface (kept for the switchable her-room view)
       showNotification?: (
@@ -299,6 +341,9 @@ declare global {
         saveJson?: (name: string, payload: unknown) => Promise<{ ok: boolean }>;
         selectAudio?: () => Promise<{ name: string; dataUrl: string } | null>;
         selectVideo?: () => Promise<{ name: string; dataUrl: string } | null>;
+        saveBytes?: (name: string, bytes: Uint8Array) => Promise<{ ok: boolean }>;
+        readFileBytes?: (path: string) => Promise<{ ok: boolean; bytes?: ArrayBuffer } | null>;
+        pickImage?: () => Promise<{ canceled: boolean; filePath?: string }>;
       };
       backup?: {
         export: () => Promise<{ ok: boolean; canceled: boolean; fileName?: string }>;
@@ -326,6 +371,8 @@ declare global {
         onChanged: (callback: (value: AvatarListResult) => void) => () => void;
         beginImport: () => Promise<AvatarImportCandidate | null>;
         beginImportFolder: () => Promise<AvatarImportCandidate | null>;
+        beginImportLive2DFile: () => Promise<AvatarImportCandidate | null>;
+        importDropped: (file: File) => Promise<AvatarImportCandidate | null>;
         confirmPreview: (
           importId: string,
           report: {

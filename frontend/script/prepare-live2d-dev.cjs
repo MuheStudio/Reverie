@@ -2,8 +2,8 @@
 
 /**
  * Dev-only helper: stage the Live2D Cubism Core into the gitignored
- * .runtime-cache so `pnpm electron` can render the bundled Yumi character
- * in development mode.
+ * .runtime-cache so `pnpm electron` can render a locally imported Live2D
+ * model in development mode.
  *
  * The Cubism Core (Live2DCubismCore.js) is Live2D Inc. software. It is not
  * committed to the GPLv3 source tree; it only lands in the local dev cache.
@@ -38,7 +38,7 @@ function main() {
   fs.mkdirSync(targetDir, { recursive: true });
   fs.copyFileSync(source, target);
   console.log(`Live2D Cubism Core staged for dev: ${target} (${stat.size} bytes)`);
-  console.log('Run "pnpm electron" with the bundled Yumi character.');
+  console.log('Run "pnpm electron" after importing a Live2D model.');
 }
 
 main();

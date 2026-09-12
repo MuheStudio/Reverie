@@ -46,6 +46,17 @@ const SCHEMES = Object.freeze([
     },
   },
   {
+    scheme: 'reverie-video',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      bypassCSP: false,
+    },
+  },
+  {
     scheme: 'reverie-live2d-core',
     privileges: {
       standard: true,

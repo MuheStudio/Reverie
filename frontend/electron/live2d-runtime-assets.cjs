@@ -162,6 +162,39 @@ function stageLive2DRuntimeAssets(options = {}) {
   return manifest;
 }
 
+function stageLive2DCoreOnlyTestRuntime(options = {}) {
+  const resourceRoot = path.resolve(String(options.resourceRoot || ''));
+  if (!resourceRoot) throw new Error('Live2D resource root is required');
+  const mode = options.mode === 'public' ? 'public' : 'internal-test';
+  fs.mkdirSync(resourceRoot, { recursive: true });
+  const { resolved: coreSource } = regularFile(options.coreSource, 'Live2D Cubism Core');
+  validateCubismCore(coreSource);
+  const coreTarget = path.join(resourceRoot, CORE_FILENAME);
+  assertInside(resourceRoot, coreTarget, 'Live2D Core destination');
+  if (fs.existsSync(coreTarget)) fs.rmSync(coreTarget, { force: true });
+  fs.copyFileSync(coreSource, coreTarget, fs.constants.COPYFILE_EXCL);
+  const manifest = {
+    schema: RUNTIME_ASSET_SCHEMA,
+    mode,
+    renderer: {
+      embedded: true,
+      engine: 'pixi-live2d-display/cubism4',
+    },
+    core: {
+      path: CORE_FILENAME,
+      bytes: fs.statSync(coreTarget).size,
+      sha256: sha256File(coreTarget),
+    },
+    character: null,
+  };
+  fs.writeFileSync(
+    path.join(resourceRoot, RUNTIME_ASSET_MANIFEST),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    'utf8',
+  );
+  return manifest;
+}
+
 function readRuntimeAssetsManifest(resourceRootValue) {
   const resourceRoot = path.resolve(String(resourceRootValue || ''));
   const manifestPath = path.join(resourceRoot, RUNTIME_ASSET_MANIFEST);
@@ -174,8 +207,10 @@ function readRuntimeAssetsManifest(resourceRootValue) {
     || value.renderer?.embedded !== true
     || value.renderer?.engine !== 'pixi-live2d-display/cubism4'
     || value.core?.path !== CORE_FILENAME
-    || value.character?.directory !== CHARACTER_DIRECTORY
-    || typeof value.character?.entry !== 'string'
+    || (value.character !== null && (
+      value.character?.directory !== CHARACTER_DIRECTORY
+      || typeof value.character?.entry !== 'string'
+    ))
   ) {
     throw new Error('Live2D runtime asset manifest has an invalid schema');
   }
@@ -186,6 +221,16 @@ function readRuntimeAssetsManifest(resourceRootValue) {
   validateCubismCore(corePath);
   if (core.stat.size !== value.core.bytes || sha256File(corePath) !== value.core.sha256) {
     throw new Error('Live2D Cubism Core hash does not match the runtime manifest');
+  }
+
+  if (value.character === null) {
+    if (value.mode !== 'internal-test' && value.mode !== 'public') {
+      throw new Error('Core-only Live2D runtime is allowed only in internal-test or public builds');
+    }
+    if (fs.existsSync(path.join(resourceRoot, CHARACTER_DIRECTORY))) {
+      throw new Error('Core-only Live2D runtime unexpectedly contains a character directory');
+    }
+    return value;
   }
 
   const characterRoot = path.join(resourceRoot, value.character.directory);
@@ -214,5 +259,6 @@ module.exports = {
   RUNTIME_ASSET_SCHEMA,
   readRuntimeAssetsManifest,
   sha256File,
+  stageLive2DCoreOnlyTestRuntime,
   stageLive2DRuntimeAssets,
 };

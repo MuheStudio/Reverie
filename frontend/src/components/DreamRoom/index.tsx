@@ -63,12 +63,12 @@ import {
   type RoomPanelId,
 } from './roomState';
 import { loadReverieChatDraft, saveReverieChatDraft } from '@/lib/reverieChatStorage';
+import { speakWithBrowserVoice } from '@/lib/browserSpeech';
 import { useTTSPlayer, type TTSAudioPart } from '@/hooks/useTTSPlayer';
 import GlassCommandPalette, { type CommandPaletteItem } from '@/components/ui/glass/GlassCommandPalette';
 import { GlassToastStack, useGlassToasts } from '@/components/ui/glass/GlassToast';
 import RoomScene from './RoomScene';
 import CompanionDock, { type DockTab } from './CompanionDock';
-import FirstRunGuide from './FirstRunGuide';
 import { type CharacterActivity } from './avatarContracts';
 import { deriveCharacterActivity } from './characterActivity';
 import styles from './index.module.scss';
@@ -104,6 +104,7 @@ const ImmersionSettingsPanel = React.lazy(() => import('./ArchivePanels').then(
 const UserProfilePanel = React.lazy(() => import('./ArchivePanels').then(
   (module) => ({ default: module.UserProfilePanel }),
 ));
+const VoicePackManagerPanel = React.lazy(() => import('@/components/settings/VoicePackManagerPanel'));
 
 type PanelMeta = {
   title: string;
@@ -235,6 +236,11 @@ const PANEL_META: Record<RoomPanelId, PanelMeta> = {
     title: '用户档案',
     subtitle: '维护“我”的长期资料与情感记忆。',
     icon: UserRound,
+  },
+  voicePack: {
+    title: '语音包',
+    subtitle: '导入 GPT-SoVITS v2 四件套，保存在本机。',
+    icon: Music,
   },
   settings: {
     title: '设置',
@@ -398,7 +404,7 @@ export function PhoneChatPanel({
   onClose: () => void;
 }) {
   const draftSessionId = ws.personaScope?.persona_id
-    ? `${ws.personaScope.persona_id}:dream-room`
+    ? ws.personaScope.persona_id
     : '';
   const [input, setInput] = useState('');
   const [showStickers, setShowStickers] = useState(false);
@@ -575,7 +581,7 @@ export function PhoneChatPanel({
               saveReverieChatDraft(draft, draftSessionId);
             }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') sendMessage();
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) sendMessage();
             }}
             placeholder={connected ? '小声说点什么...' : '离线草稿会保存在本地'}
           />
@@ -1008,7 +1014,7 @@ function TimelinePanel({ posts }: { posts: TimelinePost[] }) {
       <div className={styles.emptyPanel}>
         <Smartphone size={28} />
         <strong>屏幕暂时暗着</strong>
-        <span>连接恢复后会优先刷新动态；离线时不会白屏，只保留本地安全快照。</span>
+        <span>朋友圈动态将在后续版本随完整社交能力上线；当前版本暂无动态数据源。</span>
       </div>
     );
   }
@@ -1319,7 +1325,9 @@ function SettingsHubPanel({
     { id: 'immersionSettings', title: '真实与沉浸感', subtitle: '定位、购物、特写、智能家居', icon: MapPin },
     { id: 'userProfile', title: '用户档案', subtitle: '“我”的长期资料与情感记忆', icon: UserRound },
     { id: 'archive', title: '档案', subtitle: '角色卡、世界书、多角色', icon: LibraryBig },
+    { id: 'worldBook', title: '世界书管理', subtitle: '导入/导出 SillyTavern 世界书', icon: BookOpen },
     { id: 'backup', title: '备份', subtitle: '导入或导出 JSON 备份', icon: HardDriveDownload },
+    { id: 'voicePack', title: '语音包', subtitle: 'GPT-SoVITS v2 四件套', icon: Music },
   ];
 
   return (
@@ -1828,7 +1836,6 @@ export default function DreamRoom() {
   const [phoneAttention, setPhoneAttention] = useState(false);
   const previousTimelineRevision = useRef('');
   const timelineTrackingReady = useRef(false);
-  const [onboardingDone, setOnboardingDone] = useState(false);
 
   useEffect(() => {
     console.info('[DreamRoom] route hit', {
@@ -1839,7 +1846,6 @@ export default function DreamRoom() {
   }, []);
 
   const connected = ws.connState === 'connected';
-  const onboardingCompleted = ws.settingsSnapshot.ui?.onboarding_completed;
   const mood = useMemo(
     () => deriveRoomAtmosphere(ws.emotions, connected),
     [connected, ws.emotions],
@@ -1891,6 +1897,14 @@ export default function DreamRoom() {
         }
         const sequence = speechRequestSeqRef.current + 1;
         speechRequestSeqRef.current = sequence;
+        const speakWithBrowserFallback = () => {
+          // Luna-ts two-rung ladder: cloud TTS unconfigured or failed →
+          // Windows built-in browser voice, never a silent drop and never a
+          // chat-flow block. The tts-toggle remains the explicit mute.
+          void speakWithBrowserVoice(replyText).then((spoken) => {
+            if (!spoken) console.warn('[tts] 浏览器语音不可用，本条回复保持纯文字。');
+          });
+        };
         void ws.request<{ parts?: TTSAudioPart[] }>(
           WSMsgType.TTS_SYNTHESIZE,
           { text: replyText, voice: ttsVoice || undefined },
@@ -1898,13 +1912,16 @@ export default function DreamRoom() {
         ).then((result) => {
           if (sequence !== speechRequestSeqRef.current) return; // stale reply
           const parts = Array.isArray(result?.parts) ? result.parts : [];
-          if (!parts.length) return;
+          if (!parts.length) {
+            speakWithBrowserFallback();
+            return;
+          }
           speechPartRef.current = parts;
           void playSpeech(parts, {
             onAmplitude: setMouthLevel,
             onEnd: () => setMouthLevel(0),
           });
-        }).catch(() => { /* TTS failure is non-fatal for chat delivery */ });
+        }).catch(() => { speakWithBrowserFallback(); });
       }),
     ];
     return () => {
@@ -1912,10 +1929,6 @@ export default function DreamRoom() {
       speechChunkRef.current = '';
     };
   }, [ttsEnabled, ttsVoice, ws, playSpeech, stopSpeech]);
-
-  useEffect(() => {
-    if (onboardingCompleted === true) setOnboardingDone(true);
-  }, [onboardingCompleted]);
 
   useEffect(() => {
     if (!connected) {
@@ -2164,14 +2177,13 @@ export default function DreamRoom() {
           {activePanel === 'immersionSettings' && <ImmersionSettingsPanel ws={ws} />}
           {activePanel === 'userProfile' && <UserProfilePanel ws={ws} />}
           {activePanel === 'archive' && <ArchiveManagerPanel ws={ws} />}
+          {activePanel === 'worldBook' && <ArchiveManagerPanel ws={ws} initialTab="worldBook" />}
           {activePanel === 'backup' && <BackupPanel ws={ws} />}
+          {activePanel === 'voicePack' && <VoicePackManagerPanel />}
           </React.Suspense>
         </RoomDrawer>
       )}
 
-      {connected && onboardingCompleted === false && !onboardingDone && (
-        <FirstRunGuide ws={ws} onComplete={() => setOnboardingDone(true)} />
-      )}
       <GlassCommandPalette
         items={paletteItems}
         open={paletteOpen}

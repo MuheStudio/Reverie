@@ -230,7 +230,7 @@ class MemorySettings(_ValidatedSettingsModel):
     long_term_forget_days: int = Field(default=90, ge=60, le=365)
     short_term_forget_days: int = Field(default=7, ge=1, le=59)
     long_term_forget_probability: float = Field(default=0.05, ge=0.01, le=0.10)
-    short_term_forget_probability: float = Field(default=0.005, ge=0.001, le=0.01)
+    short_term_forget_probability: float = Field(default=0.05, ge=0.01, le=0.10)
     # Legacy fallback kept for older config files.
     forget_probability: float = Field(default=0.05, ge=0.01, le=0.10)
     # Retrieval decay. Defaults to a 90-day half-life before layer/salience scaling.
@@ -244,6 +244,10 @@ class MemorySettings(_ValidatedSettingsModel):
     short_term_misremembering_enabled: bool = Field(default=True)
     long_term_misremember_probability: float = Field(default=0.05, ge=0.01, le=0.10)
     short_term_misremember_probability: float = Field(default=0.05, ge=0.01, le=0.10)
+    # Lifecycle governance (P0): 驻留/查询分离 + 预算压力阀 + 引用反馈闭环。
+    # 默认开；用户可在设置中关闭并保存。旧配置没有该键时走此默认值。
+    memory_lifecycle_governance_enabled: bool = Field(default=True)
+    memory_long_budget_chars: int = Field(default=250_000, ge=50_000, le=2_000_000)
 
     @field_validator("retention_days")
     @classmethod
@@ -309,6 +313,16 @@ class FeatureSettings(_ValidatedSettingsModel):
 
     web_surfing_enabled: bool = Field(default=False)
     web_disclaimer_acknowledged: bool = Field(default=False)
+    web_native_search_enabled: bool = Field(default=False)
+    surf_keyless_search_enabled: bool = Field(default=False)
+    # Video download (cat-catch-inspired sniff/HLS pipeline; disclaimer-gated, default off).
+    # Mirrors the web_surfing_enabled + web_disclaimer_acknowledged pairing: the feature
+    # stays locked until the user reads the liability disclaimer and acknowledges it.
+    video_download_enabled: bool = Field(default=False)
+    video_download_disclaimer_acknowledged: bool = Field(default=False)
+    video_max_size_mb: int = Field(default=500, ge=1, le=4096)
+    video_max_duration_seconds: int = Field(default=1800, ge=1, le=21600)
+    video_total_quota_mb: int = Field(default=4096, ge=1, le=51200)
     web_allowed_topics: list[str] = Field(default_factory=lambda: [
         "热门梗",
         "新番/动漫资讯",
@@ -320,7 +334,7 @@ class FeatureSettings(_ValidatedSettingsModel):
     diary_enabled: bool = Field(default=False)
     diary_privacy_enabled: bool = Field(default=True)
     diary_peek_enabled: bool = Field(default=True)
-    timeline_enabled: bool = Field(default=False)
+    timeline_enabled: bool = Field(default=True)
     proactive_chat_enabled: bool = Field(default=False)
     proactive_notifications_enabled: bool = Field(default=False)
     proactive_event_stories_enabled: bool = Field(default=False)
@@ -369,6 +383,11 @@ class FeatureSettings(_ValidatedSettingsModel):
     api_background_budget_enforced: bool = Field(default=True)
     api_background_daily_request_budget: int = Field(default=60, ge=1, le=10000)
     api_background_daily_token_budget: int = Field(default=30000, ge=1000, le=10000000)
+    # Loud per-request tripwire ("the bill was the only alarm" lesson): when a
+    # single LLM request's estimated or measured prompt tokens reach this
+    # value the adapter shouts in the log. 0 disables the sentinel. This is
+    # an alarm, not a budget — it never blocks the request.
+    api_cost_sentinel_tokens: int = Field(default=60000, ge=0, le=10000000)
     timeline_visuals_enabled: bool = Field(default=False)
     group_social_enabled: bool = Field(default=True)
     group_social_permanent_memory_enabled: bool = Field(default=True)
@@ -394,6 +413,8 @@ class FeatureSettings(_ValidatedSettingsModel):
             raise ValueError("thought_min_delay_minutes cannot exceed thought_max_delay_minutes")
         if self.proactive_wake_min_minutes > self.proactive_wake_max_minutes:
             raise ValueError("proactive_wake_min_minutes cannot exceed proactive_wake_max_minutes")
+        if not self.video_download_disclaimer_acknowledged and self.video_download_enabled:
+            object.__setattr__(self, "video_download_enabled", False)
         return self
 
 
@@ -408,16 +429,38 @@ class TTSSettings(_ValidatedSettingsModel):
 
     Like LLMSettings, the API key is never persisted to config.json; it is
     resolved from the environment at runtime via :func:`environment_api_key`.
+    Local GPT-SoVITS needs no key: the user runs official ``api_v2.py``.
     """
 
-    provider: Literal["gemini", "openai"] = Field(default="gemini")
+    provider: Literal["gemini", "openai", "gpt-sovits"] = Field(default="gpt-sovits")
     model: str = Field(default="")
     voice: str = Field(default="")
-    enabled: bool = Field(default=False)
+    enabled: bool = Field(default=True)
+    base_url: str = Field(default="http://127.0.0.1:9880", max_length=128)
+
+    @field_validator("base_url")
+    @classmethod
+    def _loopback_tts_url(cls, value: str) -> str:
+        candidate = str(value or "").strip().rstrip("/") or "http://127.0.0.1:9880"
+        parsed = urlsplit(candidate)
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        if (
+            parsed.scheme != "http"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or hostname not in {"127.0.0.1", "localhost", "::1"}
+        ):
+            raise ValueError("GPT-SoVITS 必须绑定本机回环 http 地址")
+        port = parsed.port or 9880
+        host = "127.0.0.1" if hostname in {"127.0.0.1", "localhost"} else "[::1]"
+        return f"http://{host}:{port}"
 
     @property
     def resolved_api_key(self) -> str:
-        """Current environment credential for the selected provider (never persisted)."""
+        """Current environment credential for the selected hosted provider."""
         env_key = TTS_PROVIDER_ENV_KEYS.get(self.provider)
         if not env_key:
             return ""
@@ -429,7 +472,36 @@ class UISettings(_ValidatedSettingsModel):
 
     onboarding_completed: bool = Field(default=False)
     onboarding_completed_at_utc: str = Field(default="", max_length=64)
+    onboarding_version: int = Field(default=0, ge=0, le=100)
+    onboarding_state: Literal[
+        "not_started", "in_progress", "committing", "complete"
+    ] = Field(default="not_started")
+    onboarding_last_step: str = Field(default="", max_length=64)
+    experience_mode: Literal["full", "core"] = Field(default="full")
     mode: Literal["mvp", "dream"] = Field(default="mvp")
+
+    @model_validator(mode="after")
+    def _validate_onboarding_tuple(self) -> "UISettings":
+        known_steps = {
+            "", "welcome", "mode", "profile", "deepseek", "optional-media",
+            "features", "rooms", "cards", "location", "pet", "finish",
+        }
+        if self.onboarding_last_step not in known_steps:
+            raise ValueError("onboarding_last_step is unknown")
+        if self.onboarding_completed:
+            # A completed user may replay the wizard; the flag only drops via
+            # an explicit completed=false, so in-progress browsing is legal.
+            if self.onboarding_state == "not_started":
+                raise ValueError("completed onboarding must not be not_started")
+            if self.onboarding_version < 2:
+                raise ValueError("completed onboarding requires version 2+")
+            if self.onboarding_state == "complete" and self.onboarding_last_step != "finish":
+                raise ValueError("completed onboarding requires the finish step")
+        elif self.onboarding_state == "complete":
+            raise ValueError("complete onboarding state requires completed=true")
+        if self.onboarding_state in {"in_progress", "committing"} and self.onboarding_version not in {2, 3}:
+            raise ValueError("active onboarding requires version 2 or 3")
+        return self
 
 
 class _Settings(_ValidatedSettingsModel):
@@ -520,6 +592,13 @@ def _migrate_legacy_memory_settings(data: object) -> None:
     """Clamp pre-2.1 confusion rates into the current valid range."""
     if not isinstance(data, dict):
         return
+    ui = data.get("ui")
+    if isinstance(ui, dict) and ui.get("onboarding_completed") is True:
+        # Pre-v2 installs had only one completion boolean. Preserve those users
+        # as completed rather than forcing the new wizard after an upgrade.
+        ui.setdefault("onboarding_version", 2)
+        ui.setdefault("onboarding_state", "complete")
+        ui.setdefault("onboarding_last_step", "finish")
     memory = data.get("memory")
     if not isinstance(memory, dict):
         return
@@ -527,6 +606,8 @@ def _migrate_legacy_memory_settings(data: object) -> None:
         "misremember_probability",
         "long_term_misremember_probability",
         "short_term_misremember_probability",
+        "short_term_forget_probability",
+        "long_term_forget_probability",
     ):
         if key not in memory:
             continue

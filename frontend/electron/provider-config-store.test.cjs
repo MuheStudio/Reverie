@@ -165,3 +165,28 @@ test('provider metadata accepts every supported provider and rejects unknown/top
     imageGen: { provider: 'custom', baseUrl: 'https://images.example.com', model: 'image' },
   }), /non-MVP section/);
 });
+
+test('provider metadata rejects private, link-local and metadata SSRF targets but keeps loopback', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-ssrf-'));
+  const store = new ProviderConfigStore({ storageDir: root });
+  const refused = [
+    'http://169.254.169.254/latest/meta-data/',
+    'http://10.0.0.5/v1',
+    'http://172.16.1.1/v1',
+    'http://192.168.1.10/v1',
+    'http://[::1]:11434/v1', // IPv6 loopback is allowed, but explicit v4 metadata is not
+    'http://0.0.0.0/v1',
+    'http://100.64.0.1/v1',
+  ];
+  for (const baseUrl of refused) {
+    assert.throws(() => store.set({
+      llm: { provider: 'custom', baseUrl, model: 'model' },
+    }), /public or loopback/i);
+  }
+  // Loopback must stay accepted for Ollama-style local providers.
+  for (const baseUrl of ['http://localhost:11434/v1', 'http://127.0.0.1:11434/v1']) {
+    assert.deepEqual(store.set({
+      llm: { provider: 'ollama', baseUrl, model: 'model' },
+    }).llm.baseUrl, baseUrl.replace(/\/$/, ''));
+  }
+});

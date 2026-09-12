@@ -414,7 +414,7 @@ def test_persona_switch_blocks_every_old_runtime_state_operation() -> None:
             ws_bridge.MsgType.LOCAL_MODE_SET,
             ws_bridge.MsgType.AI_USAGE_REVOKE,
             ws_bridge.MsgType.PERSONA_GET,
-            ws_bridge.MsgType.PERSONA_LIST,
+            ws_bridge.MsgType.PERSONA_IMPORT,
         ):
             assert not ws_bridge.persona_restart_blocks(safe_type), safe_type
     finally:
@@ -918,6 +918,11 @@ def test_bridge_archive_is_authoritative_persona_scoped_and_conflict_safe(
             "personality": "",
             "speakingStyle": "",
             "firstMessage": "",
+            "alternateGreetings": [],
+            "importedSystemPrompt": "",
+            "importedPostHistoryInstructions": "",
+            "useImportedSystemPrompt": False,
+            "useImportedPostHistoryInstructions": False,
             "tags": [],
             "createdAt": "2026-07-25T00:00:00+00:00",
             "updatedAt": "2026-07-25T00:00:00+00:00",
@@ -1065,18 +1070,167 @@ def test_onboarding_completion_is_authoritative_and_durable(monkeypatch, tmp_pat
 
     before = asyncio.run(ws_bridge.handle_settings_get({}, DummyWebSocket()))
     assert before["ui"]["onboarding_completed"] is False
+    assert before["ui"]["onboarding_state"] == "not_started"
 
     result = asyncio.run(ws_bridge.handle_settings_update(
-        {"section": "onboarding", "completed": True},
+        {
+            "section": "onboarding",
+            "completed": True,
+            "onboarding_version": 2,
+            "onboarding_last_step": "finish",
+            "experience_mode": "full",
+        },
         DummyWebSocket(),
     ))
     assert result["ok"] is True
     assert result["ui"]["onboarding_completed"] is True
     assert result["ui"]["onboarding_completed_at_utc"]
+    assert result["ui"]["onboarding_version"] == 2
+    assert result["ui"]["onboarding_state"] == "complete"
+    assert result["ui"]["onboarding_last_step"] == "finish"
+    assert result["ui"]["experience_mode"] == "full"
 
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert persisted["ui"]["onboarding_completed"] is True
     assert persisted["ui"]["onboarding_completed_at_utc"]
+    assert persisted["ui"]["onboarding_version"] == 2
+    assert persisted["ui"]["onboarding_state"] == "complete"
+
+
+def test_legacy_completed_onboarding_migrates_to_current_tuple(monkeypatch, tmp_path) -> None:
+    import src.config.settings as config_module
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"ui": {"onboarding_completed": True}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "_settings", None)
+    settings = config_module.load_settings()
+    assert settings.ui.onboarding_completed is True
+    assert settings.ui.onboarding_version == 2
+    assert settings.ui.onboarding_state == "complete"
+    assert settings.ui.onboarding_last_step == "finish"
+
+
+def test_rerun_progress_keeps_the_completed_flag(monkeypatch, tmp_path) -> None:
+    """Late in-progress writes from a previous wizard must not reopen a
+    completed install. Replay requires an explicit completed=false."""
+    import src.config.settings as config_module
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"ui": {"onboarding_completed": True}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "_settings", None)
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", config_module.load_settings())
+
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {
+            "section": "onboarding",
+            "onboarding_version": 2,
+            "onboarding_state": "in_progress",
+            "onboarding_last_step": "welcome",
+            "experience_mode": "core",
+        },
+        DummyWebSocket(),
+    ))
+    assert result["ok"] is True, result
+    assert result["ui"]["onboarding_completed"] is True
+    assert result["ui"]["onboarding_state"] == "complete"
+    assert result.get("ignored") == "onboarding_progress"
+    assert ws_bridge.bridge_state.settings.ui.onboarding_completed is True
+    assert ws_bridge.bridge_state.settings.ui.onboarding_state == "complete"
+
+
+def test_explicit_completed_false_resets_onboarding(monkeypatch, tmp_path) -> None:
+    import src.config.settings as config_module
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"ui": {"onboarding_completed": True}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_path)
+    monkeypatch.setattr(config_module, "_settings", None)
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", config_module.load_settings())
+
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {"section": "onboarding", "completed": False},
+        DummyWebSocket(),
+    ))
+    assert result["ok"] is True, result
+    assert result["ui"]["onboarding_completed"] is False
+    assert result["ui"]["onboarding_state"] == "not_started"
+    assert result["ui"]["onboarding_completed_at_utc"] == ""
+
+
+def test_complete_state_without_finish_stays_rejected(monkeypatch) -> None:
+    from src.config.settings import _Settings
+
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", _Settings())
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {
+            "section": "onboarding",
+            "onboarding_version": 2,
+            "onboarding_state": "complete",
+            "onboarding_last_step": "welcome",
+        },
+        DummyWebSocket(),
+    ))
+    assert result["ok"] is False
+    assert "finish" in result["error"]
+
+
+def test_onboarding_payload_accepts_rerun_progress_but_rejects_incomplete_finish():
+    from pydantic import ValidationError
+
+    from src.kernel.contracts import SettingsUpdatePayload
+
+    payload = SettingsUpdatePayload(
+        section="onboarding",
+        onboarding_version=2,
+        onboarding_state="in_progress",
+        onboarding_last_step="welcome",
+        experience_mode="core",
+    )
+    assert payload.onboarding_state == "in_progress"
+    with pytest.raises(ValidationError):
+        SettingsUpdatePayload(
+            section="onboarding",
+            onboarding_version=2,
+            onboarding_state="complete",
+            onboarding_last_step="welcome",
+        )
+    with pytest.raises(ValidationError):
+        SettingsUpdatePayload(
+            section="onboarding",
+            completed=True,
+            onboarding_state="not_started",
+        )
+
+
+def test_failed_tts_save_leaves_live_settings_unchanged(monkeypatch) -> None:
+    from src.config.settings import _Settings
+
+    settings = _Settings()
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
+
+    def fail_save(_settings) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr("src.config.settings.save_settings", fail_save)
+    result = asyncio.run(ws_bridge.handle_settings_update(
+        {"section": "tts", "tts_enabled": True, "tts_provider": "openai"},
+        DummyWebSocket(),
+    ))
+    assert result["ok"] is False
+    assert ws_bridge.bridge_state.settings is settings
+    assert settings.tts.enabled is True
+    assert settings.tts.provider == "gpt-sovits"
 
 
 def test_immersion_settings_default_off_and_persist_atomically(monkeypatch, tmp_path) -> None:
@@ -1177,11 +1331,11 @@ def test_tts_list_reports_providers_and_selection(monkeypatch) -> None:
 
     result = asyncio.run(ws_bridge.handle_tts_list({}, DummyWebSocket()))
     keys = {provider["key"] for provider in result["providers"]}
-    assert {"gemini", "openai"} <= keys
-    assert result["active"] == "gemini"
+    assert {"gemini", "openai", "gpt-sovits"} <= keys
+    assert result["active"] == "gpt-sovits"
     assert result["enabled"] is True
     assert result["voice"] == "Kore"
-    assert result["configured"] is False
+    assert result["configured"] is True
 
 
 def test_tts_synthesize_fails_closed_when_disabled_or_unconfigured(monkeypatch) -> None:
@@ -1194,6 +1348,7 @@ def test_tts_synthesize_fails_closed_when_disabled_or_unconfigured(monkeypatch) 
     monkeypatch.setattr(ws_bridge.bridge_state, "settings", settings)
     monkeypatch.setattr(ws_bridge.bridge_state, "runtime_unavailable", ())
 
+    settings.tts.enabled = False
     disabled = asyncio.run(ws_bridge.handle_tts_synthesize(
         {"text": "你好"},
         DummyWebSocket(),
@@ -1201,11 +1356,19 @@ def test_tts_synthesize_fails_closed_when_disabled_or_unconfigured(monkeypatch) 
     assert disabled["code"] == "tts_disabled"
 
     settings.tts.enabled = True
+    settings.tts.provider = "gemini"
     unconfigured = asyncio.run(ws_bridge.handle_tts_synthesize(
         {"text": "你好"},
         DummyWebSocket(),
     ))
     assert unconfigured["code"] == "tts_not_configured"
+
+    settings.tts.provider = "gpt-sovits"
+    missing_pack = asyncio.run(ws_bridge.handle_tts_synthesize(
+        {"text": "你好"},
+        DummyWebSocket(),
+    ))
+    assert missing_pack["code"] == "tts_unavailable"
 
     empty = asyncio.run(ws_bridge.handle_tts_synthesize(
         {"text": "   "},

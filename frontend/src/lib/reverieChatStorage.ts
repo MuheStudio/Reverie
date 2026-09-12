@@ -113,6 +113,14 @@ export function removeReverieChatDraft(sessionId: string): void {
   removeDraftAt(LEGACY_CHAT_DRAFT_KEY);
 }
 
+export function clearReverieChatDraft(sessionId: string): void {
+  // Session-scoped clear for secondary chat surfaces (e.g. the pet window):
+  // unlike removeReverieChatDraft it must never touch the legacy single-slot
+  // key, which may still hold another surface's pre-migration draft.
+  if (!validSessionId(sessionId)) return;
+  removeDraftAt(draftKey(sessionId));
+}
+
 export function consumeFallbackDraft(sessionId: string): void {
   // Migration-only removal: drops the fallback slot without touching the
   // legacy key, whose draft may still belong to another persona that has not

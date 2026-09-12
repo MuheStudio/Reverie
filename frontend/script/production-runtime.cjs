@@ -17,18 +17,11 @@ const PYTHON_RUNTIME = Object.freeze({
 
 const OMITTED_SOURCE_MODULES = Object.freeze([
   'affairs',
-  'ambient',
   'anime_service',
-  'archive',
-  'backup',
   'interest',
-  'keepsakes',
-  'lorebook',
-  'social',
   'tests',
   'timeline',
   'ui',
-  'web',
   'work_manager',
 ]);
 
@@ -41,7 +34,6 @@ const FORBIDDEN_RUNTIME_NAMES = Object.freeze([
   '__tests__',
   'anime_service',
   'lancedb',
-  'lorebook',
   'playwright',
   'pytest',
   'sentence_transformers',
@@ -391,6 +383,26 @@ function copyProductionPythonSource(sourceRoot, destination, stagingRoot) {
   visit(sourceRoot, destination);
 }
 
+function compileProductionPythonSource(sourceRoot, projectRoot) {
+  // ast.parse is not enough: Python 3.12 rejects a late `global` after assignment
+  // at compile time. The packaged embed is 3.12, so this gate must use compile().
+  const buildPython = resolveBuildPython(projectRoot);
+  const script = [
+    'import pathlib, sys',
+    'root = pathlib.Path(sys.argv[1])',
+    'failed = []',
+    'for path in root.rglob("*.py"):',
+    '    source = path.read_text(encoding="utf-8")',
+    '    try:',
+    '        compile(source, str(path), "exec")',
+    '    except SyntaxError as error:',
+    '        failed.append(f"{path}:{error.lineno}: {error.msg}")',
+    'if failed:',
+    '    raise SystemExit("Python 3.12 rejected packaged source:\\n" + "\\n".join(failed[:20]))',
+  ].join('\n');
+  run(buildPython, ['-c', script, sourceRoot], { cwd: projectRoot, capture: true });
+}
+
 function walkFiles(root, visitor) {
   if (!fs.existsSync(root)) return;
   const visit = (current) => {
@@ -482,6 +494,7 @@ module.exports = {
   OMITTED_SOURCE_MODULES,
   PYTHON_RUNTIME,
   assertProductionPayload,
+  compileProductionPythonSource,
   copyProductionPythonSource,
   directorySize,
   ensureVerifiedPythonArchive,

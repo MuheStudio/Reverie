@@ -7,6 +7,7 @@ import {
   Camera,
   Check,
   Download,
+  RefreshCw,
   Eye,
   FileJson,
   Heart,
@@ -56,11 +57,13 @@ import {
   createDefaultWorldBook,
   createWorldBookExport,
   clearLegacyArchiveAfterMigration,
+  isFactoryPersonaScope,
   loadLegacyArchiveForMigration,
   parseBackupImport,
   parseSillyTavernPngPayload,
   parseWorldBookImportText,
   normalizeArchive,
+  restoreFactoryCharacterPreset,
   type ReverieArchive,
   type ReverieCharacterCard,
   type ReverieWorldBook,
@@ -70,6 +73,12 @@ import {
   coarseSystemLocationMemoryPayload,
   requestWindowsBrowserLocation,
 } from '@/lib/windowsGeolocation';
+import {
+  cardPngExportFilename,
+  embedCardIntoPng,
+  exportAsSTv2Json,
+  exportWorldBookAsST,
+} from '@/lib/reverieExportST';
 import styles from './index.module.scss';
 
 const REQUESTED_PROVIDER_ORDER: LLMProvider[] = [
@@ -140,6 +149,8 @@ interface MemoryForgetSettings {
   short_term_misremembering_enabled: boolean;
   long_term_misremember_probability: number;
   short_term_misremember_probability: number;
+  memory_lifecycle_governance_enabled: boolean;
+  memory_long_budget_chars: number;
   self_growth_enabled: boolean;
   self_growth_from_web_enabled: boolean;
   self_growth_from_memory_enabled: boolean;
@@ -164,6 +175,7 @@ type MemoryBoolFlag =
   | 'autonomous_memory_llm_enabled'
   | 'misremembering_enabled'
   | 'long_term_misremembering_enabled'
+  | 'memory_lifecycle_governance_enabled'
   | 'short_term_misremembering_enabled'
   | 'self_growth_enabled'
   | 'self_growth_from_web_enabled'
@@ -193,6 +205,8 @@ interface PersonalityFeatureSettings {
   proactive_min_interval_minutes: number;
   web_surfing_enabled: boolean;
   web_disclaimer_acknowledged: boolean;
+  web_native_search_enabled: boolean;
+  surf_keyless_search_enabled: boolean;
   web_allowed_topics: string[];
   web_search_windows: string;
   web_refresh_interval_minutes: number;
@@ -250,6 +264,8 @@ type PersonalityBoolFlag =
   | 'proactive_event_stories_enabled'
   | 'web_surfing_enabled'
   | 'web_disclaimer_acknowledged'
+  | 'web_native_search_enabled'
+  | 'surf_keyless_search_enabled'
   | 'keepsake_collection_enabled'
   | 'ambient_presence_enabled'
   | 'ambient_sticky_notes_enabled'
@@ -326,6 +342,8 @@ const DEFAULT_MEMORY_SETTINGS: MemoryForgetSettings = {
   decay_lambda: 0.0077,
   recall_reinforcement_alpha: 0.12,
   minimum_retrieval_retention: 0.05,
+  memory_lifecycle_governance_enabled: true,
+  memory_long_budget_chars: 250000,
   autonomous_memory_enabled: true,
   autonomous_memory_llm_enabled: false,
   misremembering_enabled: false,
@@ -357,7 +375,7 @@ const DEFAULT_PERSONALITY_SETTINGS: PersonalityFeatureSettings = {
   emotion_system_enabled: true,
   emotion_carryover_days: 3,
   emotion_inertia_factor: 0.15,
-  timeline_enabled: false,
+    timeline_enabled: true,
   world_life_enabled: true,
   timeline_visuals_enabled: false,
   group_social_enabled: true,
@@ -373,6 +391,8 @@ const DEFAULT_PERSONALITY_SETTINGS: PersonalityFeatureSettings = {
   proactive_min_interval_minutes: 120,
   web_surfing_enabled: false,
   web_disclaimer_acknowledged: false,
+  web_native_search_enabled: false,
+  surf_keyless_search_enabled: false,
   web_allowed_topics: ['热门梗', '新番/动漫资讯', '二次元内容', '游戏更新'],
   web_search_windows: '20:00-23:00',
   web_refresh_interval_minutes: 180,
@@ -460,6 +480,56 @@ async function downloadJson(filename: string, payload: unknown): Promise<boolean
 
 function joinList(value?: string[]): string {
   return value?.join('\u3001') ?? '';
+}
+
+async function loadManagedPng(url: string): Promise<Uint8Array | null> {
+  if (!url || !url.startsWith('/')) return null;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const buffer = await response.arrayBuffer();
+    return new Uint8Array(buffer);
+  } catch {
+    return null;
+  }
+}
+
+async function readRawFile(path: string): Promise<ArrayBuffer | null> {
+  if (window.electronAPI?.files?.readFileBytes) {
+    try {
+      const result = await window.electronAPI.files.readFileBytes(path);
+      if (result && result.ok && result.bytes) return result.bytes;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const response = await fetch(`file://${path}`);
+    if (!response.ok) return null;
+    return await response.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+async function saveBinaryFile(filename: string, bytes: Uint8Array): Promise<boolean> {
+  const safeName = filename.endsWith('.png') ? filename : `${filename}.png`;
+  if (window.electronAPI?.files?.saveBytes) {
+    try {
+      const result = await window.electronAPI.files.saveBytes(safeName, bytes);
+      return result.ok === true;
+    } catch {
+      return false;
+    }
+  }
+  const blob = new Blob([bytes.slice().buffer], { type: 'image/png' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = safeName;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  return true;
 }
 
 function splitList(value: string): string[] {
@@ -581,7 +651,7 @@ function normalizeWebTopics(value: unknown): string[] {
   return filtered.length ? filtered : DEFAULT_PERSONALITY_SETTINGS.web_allowed_topics;
 }
 
-function normalizeWebWindows(value: unknown): string {
+function webWindowsList(value: unknown): string[] {
   const raw = Array.isArray(value) ? value.join(',') : safeString(value);
   const windows = raw
     .replace(/，/g, ',')
@@ -589,7 +659,11 @@ function normalizeWebWindows(value: unknown): string {
     .split(',')
     .map((item) => item.trim())
     .filter((item) => /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(item));
-  return windows.length ? windows.join(',') : DEFAULT_PERSONALITY_SETTINGS.web_search_windows;
+  return windows.length ? windows : DEFAULT_PERSONALITY_SETTINGS.web_search_windows.split(',');
+}
+
+function normalizeWebWindows(value: unknown): string {
+  return webWindowsList(value).join(',');
 }
 
 function normalizeForgetProbability(value: unknown, fallback: number): number {
@@ -684,6 +758,15 @@ function normalizeMemorySettings(value: unknown): MemoryForgetSettings {
       0,
       0.95,
       DEFAULT_MEMORY_SETTINGS.minimum_retrieval_retention,
+    ),
+    memory_lifecycle_governance_enabled: typeof source.memory_lifecycle_governance_enabled === 'boolean'
+      ? source.memory_lifecycle_governance_enabled
+      : DEFAULT_MEMORY_SETTINGS.memory_lifecycle_governance_enabled,
+    memory_long_budget_chars: normalizeBoundedNumber(
+      source.memory_long_budget_chars,
+      50_000,
+      2_000_000,
+      DEFAULT_MEMORY_SETTINGS.memory_long_budget_chars,
     ),
     autonomous_memory_enabled: typeof source.autonomous_memory_enabled === 'boolean'
       ? source.autonomous_memory_enabled
@@ -809,6 +892,8 @@ function normalizePersonalitySettings(value: unknown): PersonalityFeatureSetting
     proactive_min_interval_minutes: normalizeProactiveInterval(source.proactive_min_interval_minutes),
     web_surfing_enabled: boolValue('web_surfing_enabled'),
     web_disclaimer_acknowledged: boolValue('web_disclaimer_acknowledged'),
+    web_native_search_enabled: boolValue('web_native_search_enabled'),
+    surf_keyless_search_enabled: boolValue('surf_keyless_search_enabled'),
     web_allowed_topics: normalizeWebTopics(source.web_allowed_topics),
     web_search_windows: normalizeWebWindows(source.web_search_windows),
     web_refresh_interval_minutes: normalizeWebRefreshMinutes(source.web_refresh_interval_minutes),
@@ -960,14 +1045,37 @@ function userProfilePayload(profile: EditableUserProfile): Record<string, unknow
   };
 }
 
+function splitKeywords(value: string): string[] {
+  return value
+    .split(/[、，,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function toInt(value: string, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
 function emptyEntry(): WorldBookEntry {
   return {
     id: `entry_${Date.now()}`,
-    key: '',
+    keywords: [],
+    secondaryKeywords: [],
+    selectiveLogic: 'and_any',
     comment: '',
     content: '',
     alwaysActive: false,
     enabled: true,
+    position: 'before_char',
+    insertionOrder: 100,
+    priority: 0,
+    caseSensitive: false,
+    scanDepth: null,
+    tokenBudget: null,
+    useRegex: false,
+    depth: 0,
+    role: 'system',
   };
 }
 
@@ -1644,6 +1752,31 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
   const shortTermMisrememberPercent = Math.round(settings.short_term_misremember_probability * 100);
   const longTermMisrememberAvailable = settings.long_term_forget_days >= 90;
   const shortTermMisrememberAvailable = settings.short_term_forget_days >= 5;
+  const [memories, setMemories] = useState<Array<Record<string, unknown>>>([]);
+  const [libraryStatus, setLibraryStatus] = useState('');
+
+  useEffect(() => {
+    const unsubscribe = ws.subscribe(WSMsgType.MEMORY_RESULT, (payload: unknown) => {
+      if (!isRecord(payload)) return;
+      if (Array.isArray(payload.memories)) {
+        setMemories(payload.memories.filter(isRecord) as Array<Record<string, unknown>>);
+        setLibraryStatus(`共 ${payload.memories.length} 条确认记忆`);
+        return;
+      }
+      if (typeof payload.op === 'string') {
+        if (payload.ok) {
+          setLibraryStatus('已更新记忆强度，正在刷新列表…');
+          ws.send(WSMsgType.MEMORY_LIST, { limit: 100 });
+        } else {
+          setLibraryStatus(safeString(payload.error) || '操作未生效');
+        }
+      }
+    });
+    if (ws.connState === 'connected') ws.send(WSMsgType.MEMORY_LIST, { limit: 100 });
+    return () => {
+      unsubscribe();
+    };
+  }, [ws.connState, ws.send, ws.subscribe]);
 
   useEffect(() => {
     const unsubscribe = ws.subscribe(WSMsgType.MEMORY_SETTINGS_RESULT, (payload: unknown) => {
@@ -1676,9 +1809,20 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
   const save = () => {
     const payload = normalizeMemorySettings(settings);
     setSettings(payload);
+    const {
+      vector_store: _vectorStore,
+      vector_partition_strategy: _partitionStrategy,
+      embedding_model_version: _embeddingVersion,
+      embedding_backend: _embeddingBackend,
+      embedding_dimensions: _embeddingDimensions,
+      reembedding_state: _reembeddingState,
+      reembedding_indexed: _reembeddingIndexed,
+      reembedding_pending: _reembeddingPending,
+      ...writable
+    } = payload;
     const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
       section: 'memory',
-      ...payload,
+      ...writable,
     });
     if (sent) {
       setStatus('已保存');
@@ -1686,6 +1830,25 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
     } else {
       setStatus('后端未连接，当前设置尚未写入运行时');
     }
+  };
+
+  const reinforceMemory = (id: string, op: 'weaken' | 'strengthen' | 'reactivate' | 'pin' | 'unpin') => {
+    const sent = ws.send(WSMsgType.MEMORY_REINFORCE, { memory_id: id, op });
+    if (!sent) {
+      setLibraryStatus('后端未连接，操作未发送。');
+      return;
+    }
+    setLibraryStatus(
+      op === 'weaken'
+        ? '正在弱化这条记忆…'
+        : op === 'strengthen'
+          ? '正在强化这条记忆…'
+          : op === 'reactivate'
+            ? '正在重新激活这条记忆…'
+            : op === 'pin'
+              ? '正在固定这条记忆…'
+              : '正在取消固定…',
+    );
   };
 
   return (
@@ -1697,6 +1860,16 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           <small>{settings.vector_store} · {settings.embedding_model}</small>
         </div>
       </div>
+
+      <label className={styles.checkRow}>
+        <input
+          type="checkbox"
+          checked={settings.memory_lifecycle_governance_enabled}
+          onChange={(event) => setFlag('memory_lifecycle_governance_enabled', event.target.checked)}
+        />
+        <Brain size={15} />
+        <span>记忆生命周期治理（实验）：分离"难想起"与"搜索排名"、长期记忆预算压力阀、按真实使用信号自动强化。关闭时一切按原有逻辑运行；保存后生效。</span>
+      </label>
 
       <div className={styles.formGrid}>
         <label className={styles.fieldGroup}>
@@ -1955,6 +2128,50 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           </span>
         )}
       </div>
+
+      <div className={styles.managementHero}>
+        <Brain size={24} />
+        <div>
+          <strong>记忆库</strong>
+          <small>强化让她记得更牢，弱化让她更难想起，重新激活用来挽回快被遗忘的往事；日常遗忘仍由上方的衰减规则自动进行。</small>
+        </div>
+      </div>
+      {memories.length ? (
+        <ul className={styles.memoryLibrary}>
+          {memories.map((memory) => {
+            const id = safeString(memory.id);
+            const text = safeString(memory.text);
+            if (!id || !text) return null;
+            const pinned = memory.pinned === true;
+            const protectedTier = memory.protection_tier === 1;
+            return (
+              <li key={id} className={styles.memoryLibraryRow}>
+                <div>
+                  <p>{text.slice(0, 160)}</p>
+                  <small>
+                    {safeString(memory.source_type) || '未知来源'}
+                    {' · '}
+                    {safeString(memory.lifecycle_state) || '活跃'}
+                    {protectedTier ? ' · 保护档（身份/生日/纪念日/承诺）' : ''}
+                    {pinned ? ' · 已固定' : ''}
+                  </small>
+                </div>
+                <div className={styles.memoryLibraryActions}>
+                  <button type="button" onClick={() => reinforceMemory(id, 'strengthen')}>强化</button>
+                  <button type="button" onClick={() => reinforceMemory(id, 'weaken')}>弱化</button>
+                  <button type="button" onClick={() => reinforceMemory(id, 'reactivate')}>重新激活</button>
+                  <button type="button" onClick={() => reinforceMemory(id, pinned ? 'unpin' : 'pin')}>
+                    {pinned ? '取消固定' : '固定'}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className={styles.statusNote}>还没有可管理的确认记忆。</p>
+      )}
+      {libraryStatus && <p className={styles.statusNote} role="status">{libraryStatus}</p>}
     </div>
   );
 }
@@ -2147,6 +2364,7 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
     const sent = ws.send(WSMsgType.SETTINGS_UPDATE, {
       section: 'personality',
       ...payload,
+      web_search_windows: webWindowsList(payload.web_search_windows),
     });
     setStatus(sent ? '已提交保存' : '后端未连接，本次更改未保存');
   };
@@ -2333,10 +2551,16 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
 
         <h3 className={styles.settingsSectionTitle}>朋友圈与角色社交</h3>
 
+        <p className={styles.timelineUnavailable}>
+          朋友圈动态将在后续版本随完整社交能力一起上线；当前版本暂不可用，
+          以下开关已保留以记录你的偏好。
+        </p>
+
         <label className={styles.checkRow}>
           <input
             type="checkbox"
             checked={settings.timeline_enabled}
+            disabled
             onChange={(event) => setFlag('timeline_enabled', event.target.checked)}
           />
           <span>启用朋友圈动态</span>
@@ -2345,7 +2569,7 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
           <input
             type="checkbox"
             checked={settings.world_life_enabled}
-            disabled={!settings.timeline_enabled}
+            disabled
             onChange={(event) => setFlag('world_life_enabled', event.target.checked)}
           />
           <span>动态引用她的生活、兴趣和社交圈</span>
@@ -2354,7 +2578,7 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
           <input
             type="checkbox"
             checked={settings.timeline_visuals_enabled}
-            disabled={!settings.timeline_enabled}
+            disabled
             onChange={(event) => setFlag('timeline_visuals_enabled', event.target.checked)}
           />
           <span>允许朋友圈记录连续视觉素材</span>
@@ -2601,6 +2825,24 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
           />
           <Wifi size={15} />
           <span>启用网络冲浪系统</span>
+        </label>
+        <label className={styles.checkRow}>
+          <input
+            type="checkbox"
+            checked={settings.web_native_search_enabled}
+            onChange={(event) => setFlag('web_native_search_enabled', event.target.checked)}
+          />
+          <Wifi size={15} />
+          <span>允许她使用 AI 服务自带的联网搜索（无需搜索 API；服务不支持时自动忽略；政治/社会热点类始终禁止）</span>
+        </label>
+        <label className={styles.checkRow}>
+          <input
+            type="checkbox"
+            checked={settings.surf_keyless_search_enabled}
+            onChange={(event) => setFlag('surf_keyless_search_enabled', event.target.checked)}
+          />
+          <Wifi size={15} />
+          <span>允许她使用本地免 Key 搜索（无需任何 API 密钥的公共搜索源，含逐字摘录与来源引用；仅查询安全话题词，不发送你的任何私人信息；政治/社会热点类始终禁止）</span>
         </label>
         <label className={styles.checkRow}>
           <input
@@ -3394,6 +3636,16 @@ export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }
           <Save size={15} />
           保存档案
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            const sent = ws.send(WSMsgType.USER_PROFILE_UPDATE, { restore_default: true });
+            setStatus(sent ? '已请求恢复出厂用户档案「星野白夜」' : '后端未连接，本次未恢复');
+          }}
+        >
+          <RefreshCw size={15} />
+          恢复出厂星野白夜
+        </button>
         {status && (
           <span className={styles.statusNote}>
             <Check size={14} />
@@ -3429,7 +3681,7 @@ export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }
   );
 }
 
-export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof useReverieWS>; initialTab?: 'characters' | 'worldBook' }) {
   const [archive, setArchive] = useState(() => createDefaultArchive());
   const [selectedCharacterId, setSelectedCharacterId] = useState(archive.characters[0]?.id ?? '');
   const [selectedWorldBookId, setSelectedWorldBookId] = useState(archive.worldBooks[0]?.id ?? '');
@@ -3443,6 +3695,14 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
   const archiveRequest = ws.request;
   const selectedCharacter = archive.characters.find((item) => item.id === selectedCharacterId) ?? archive.characters[0];
   const selectedWorldBook = archive.worldBooks.find((item) => item.id === selectedWorldBookId) ?? archive.worldBooks[0];
+  const worldBookSectionRef = useRef<HTMLElement>(null);
+
+  // When opened via the dedicated "世界书管理" sidebar entry, scroll to the world book section
+  useEffect(() => {
+    if (initialTab === 'worldBook' && worldBookSectionRef.current) {
+      worldBookSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [initialTab]);
 
   const flushArchiveWrites = useCallback(async () => {
     if (archiveWriteRunningRef.current || !archiveReadyRef.current) return;
@@ -3506,6 +3766,26 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
     void flushArchiveWrites();
   };
 
+  const refreshArchiveFromBackend = useCallback(async () => {
+    const personaId = safeString(ws.personaScope?.persona_id);
+    if (ws.connState !== 'connected' || !personaId) return;
+    try {
+      const response = await archiveRequest<Record<string, unknown>>(
+        WSMsgType.ARCHIVE_GET,
+        {},
+        { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 12_000 },
+      );
+      if (response.ok !== true || response.exists !== true) return;
+      const authoritative = normalizeArchive(response.archive);
+      archiveRevisionRef.current = Number(response.revision) || archiveRevisionRef.current;
+      archiveReadyRef.current = true;
+      setArchive(authoritative);
+      setSelectedWorldBookId(authoritative.worldBooks[0]?.id ?? '');
+    } catch {
+      // 角色卡本身已经导入成功；世界书面板刷新失败不阻塞主流程。
+    }
+  }, [archiveRequest, ws.connState, ws.personaScope?.persona_id]);
+
   useEffect(() => {
     const personaId = safeString(ws.personaScope?.persona_id);
     if (ws.connState !== 'connected' || !personaId) {
@@ -3526,7 +3806,10 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
         if (response.ok !== true) throw new Error(safeString(response.error) || '档案模块不可用');
         if (response.exists !== true) {
           const legacy = loadLegacyArchiveForMigration();
-          const seed = legacy ?? createDefaultArchive();
+          const factoryPersona = isFactoryPersonaScope(ws.personaScope);
+          const seed = legacy ?? (factoryPersona
+            ? createDefaultArchive()
+            : { characters: [], activeCharacterIds: [], worldBooks: [] });
           response = await archiveRequest<Record<string, unknown>>(
             WSMsgType.ARCHIVE_MIGRATE,
             { archive: seed, expected_revision: 0 },
@@ -3568,6 +3851,21 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
     persist(upsertCharacter(archive, { ...selectedCharacter, [field]: value, updatedAt: new Date().toISOString() }));
   };
 
+  const setImportedPromptOpts = (kind: 'system' | 'post_history', enabled: boolean) => {
+    if (!selectedCharacter) return;
+    const patch = kind === 'system'
+      ? { useImportedSystemPrompt: enabled }
+      : { useImportedPostHistoryInstructions: enabled };
+    persist(upsertCharacter(archive, { ...selectedCharacter, ...patch, updatedAt: new Date().toISOString() }));
+    if (ws.connState === 'connected') {
+      ws.send(WSMsgType.SETTINGS_UPDATE, {
+        section: 'persona_prompt_opts',
+        use_imported_system_prompt: kind === 'system' ? enabled : selectedCharacter.useImportedSystemPrompt === true,
+        use_imported_post_history_instructions: kind === 'post_history' ? enabled : selectedCharacter.useImportedPostHistoryInstructions === true,
+      });
+    }
+  };
+
   const addCharacter = () => {
     const timestamp = new Date().toISOString();
     const card: ReverieCharacterCard = {
@@ -3604,9 +3902,15 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
     persist({
       ...archive,
       characters,
-      activeCharacterIds: activeCharacterIds.length ? activeCharacterIds : [characters[0].id],
+      activeCharacterIds: activeCharacterIds.length ? activeCharacterIds : (characters[0] ? [characters[0].id] : []),
     });
-    setSelectedCharacterId(characters[0].id);
+    setSelectedCharacterId(characters[0]?.id ?? '');
+  };
+
+  const restoreFactoryCharacter = () => {
+    persist(restoreFactoryCharacterPreset(archive));
+    setSelectedCharacterId('hoshino-yumetsuki');
+    setCharacterImportStatus('已恢复出厂角色卡「星野幻月」。若要让她重新开口，请再点「设为当前角色」。');
   };
 
   const toggleActiveCharacter = (id: string) => {
@@ -3633,58 +3937,54 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
       const raw = isPng
         ? JSON.stringify(parseSillyTavernPngPayload(await file.arrayBuffer()))
         : await readTextFile(file);
-      if (!raw || raw === 'null') throw new Error('没有找到可读取的角色卡 JSON');
+      if (!raw || raw === 'null') {
+        throw new Error(isPng
+          ? '这是一张普通图，没有角色卡数据。请使用官网原文件或 JSON，不要用微信/论坛压缩过的图。'
+          : '没有找到可读取的角色卡 JSON');
+      }
+      const confirmed = window.confirm(
+        '导入成功后会立刻把她换成这张角色卡，记忆和日记会按新身份分开保存。'
+        + ' 旧的星野幻月仍可从预设恢复。Live2D 形象不会随卡更换，需在「形象与语音」里另行导入。\n\n确认导入并切换吗？',
+      );
+      if (!confirmed) {
+        setCharacterImportStatus('已取消导入，当前身份未改变。');
+        return;
+      }
       const response = await requestPersonaResult(
         ws,
         WSMsgType.PERSONA_IMPORT,
-        { json: raw, filename: file.name },
+        {
+          json: raw,
+          filename: file.name,
+          identity_change_confirmed: true,
+          actor: 'owner',
+          reason: 'user imported a live character card',
+        },
       );
       if (response.ok !== true || !isRecord(response.persona)) {
         throw new Error(safeString(response.error) || '角色卡核验失败');
       }
-      const persona = response.persona;
-      const identity = isRecord(persona.identity) ? persona.identity : {};
-      const speakingStyle = isRecord(persona.speaking_style) ? persona.speaking_style : {};
-      const ageUnknown = identity.age_unknown === true;
-      const timestamp = new Date().toISOString();
-      const card: ReverieCharacterCard = {
-        id: safeString(response.card_id) || `char_${Date.now()}`,
-        name: safeString(persona.name) || '未命名角色',
-        alternateName: '',
-        age: ageUnknown ? '' : safeString(persona.age),
-        birthday: safeString(persona.birthday),
-        role: 'SillyTavern 本地导入',
-        identity: safeString(identity.description),
-        schedule: '',
-        likesDiary: true,
-        values: Array.isArray(persona.values) ? persona.values.map(safeString).filter(Boolean).join('、') : '',
-        catchphrases: Array.isArray(speakingStyle.catchphrases)
-          ? speakingStyle.catchphrases.map(safeString).filter(Boolean)
-          : [],
-        neverSay: Array.isArray(speakingStyle.never_say)
-          ? speakingStyle.never_say.map(safeString).filter(Boolean)
-          : [],
-        portraitUrl: '',
-        description: safeString(persona.backstory) || safeString(identity.description),
-        personality: Array.isArray(persona.personality_traits)
-          ? persona.personality_traits.map(safeString).filter(Boolean).join('、')
-          : '',
-        speakingStyle: safeString(speakingStyle.tone),
-        firstMessage: safeString(response.first_message),
-        tags: ['SillyTavern', safeString(response.source_format)].filter(Boolean),
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      };
-      persist(upsertCharacter(archive, card));
-      setSelectedCharacterId(card.id);
+      await refreshArchiveFromBackend();
+      setSelectedCharacterId(safeString(response.card_id));
       setCharacterCreatorNote(safeString(response.creator_notes).slice(0, 4000));
       const ignored = Array.isArray(response.ignored_fields)
         ? response.ignored_fields.map(safeString).filter(Boolean)
         : [];
+      const worldBookImported = response.world_book_imported === true;
+      const worldBookCount = Number(response.world_book_entry_count) || 0;
+      const worldBookNote = worldBookImported
+        ? `；已导入角色卡附带的世界书（${worldBookCount} 条设定）`
+        : '';
+      const activated = response.activated === true && response.restart_required !== true;
+      const activationNote = activated
+        ? '；已切换为当前角色，可直接聊天'
+        : (response.restart_required === true
+          ? '；角色卡已保存，但运行时未能热切换，请完全退出后再打开'
+          : '');
       setCharacterImportStatus(
         ignored.length
-          ? `已安全导入；已隔离 ${ignored.join('、')}`
-          : '已安全导入本地角色档案',
+          ? `已安全导入；已隔离 ${ignored.join('、')}${worldBookNote}${activationNote}`
+          : `已安全导入本地角色档案${worldBookNote}${activationNote}`,
       );
     } catch (error) {
       setCharacterCreatorNote('');
@@ -3716,9 +4016,8 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
       return;
     }
     const confirmed = window.confirm(
-      `确认把“${selectedCharacter.name}”设为新的核心身份吗？\n\n`
-      + '这会取消尚未完成的旧角色请求；完全退出并重新打开 Reverie 后生效。'
-      + ' 核心身份将切换，旧角色不会被静默覆盖。',
+      `确认把“${selectedCharacter.name}”设为当前角色吗？\n\n`
+      + '记忆和日记会按新身份分开保存；旧角色不会被覆盖，可从预设恢复。',
     );
     if (!confirmed) return;
     try {
@@ -3744,7 +4043,11 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
         }
         throw new Error(safeString(response.error) || '启用失败');
       }
-      setCharacterImportStatus('已设为主角色，完全退出并重新打开 Reverie 后生效');
+      setCharacterImportStatus(
+        response.restart_required === true
+          ? '已写入新身份，但运行时未能热切换；请完全退出后再打开。'
+          : '已切换为当前角色，可直接聊天。Live2D 形象需在「形象与语音」里另行设置。',
+      );
     } catch (error) {
       setCharacterImportStatus(error instanceof Error ? error.message : '启用失败');
     }
@@ -3752,7 +4055,58 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
 
   const saveWorldBookField = (field: keyof ReverieWorldBook, value: string) => {
     if (!selectedWorldBook) return;
-    persist(upsertWorldBook(archive, { ...selectedWorldBook, [field]: value, updatedAt: new Date().toISOString() }));
+    let nextValue: string | number | boolean = value;
+    if (field === 'scanDepth' || field === 'tokenBudget') {
+      nextValue = /^\d+$/.test(value.trim()) ? Number(value.trim()) : 0;
+    } else if (field === 'recursiveScanning') {
+      nextValue = value === 'true';
+    }
+    persist(upsertWorldBook(archive, { ...selectedWorldBook, [field]: nextValue, updatedAt: new Date().toISOString() }));
+  };
+
+  const exportCharacterToST = () => {
+    if (!selectedCharacter) return;
+    const card = exportAsSTv2Json(selectedCharacter, selectedWorldBook);
+    void downloadJson(`${selectedCharacter.name}-SillyTavern角色卡.json`, card);
+  };
+
+  const exportWorldBookToST = () => {
+    if (!selectedWorldBook) return;
+    void downloadJson(`${selectedWorldBook.name}-SillyTavern世界书.json`, exportWorldBookAsST(selectedWorldBook));
+  };
+
+  const exportCharacterToSTPng = async () => {
+    if (!selectedCharacter) return;
+    const card = exportAsSTv2Json(selectedCharacter, selectedWorldBook);
+    let basePng: Uint8Array | null = null;
+    if (selectedCharacter.portraitUrl) {
+      try {
+        const candidate = await loadManagedPng(selectedCharacter.portraitUrl);
+        if (candidate) basePng = candidate;
+      } catch {
+        basePng = null;
+      }
+    }
+    if (!basePng) {
+      const picked = await window.electronAPI?.files?.pickImage?.();
+      if (!picked || picked.canceled || !picked.filePath) {
+        setCharacterImportStatus('已取消 PNG 导出：需要一张底图');
+        return;
+      }
+      const bytes = await readRawFile(picked.filePath);
+      if (!bytes) {
+        setCharacterImportStatus('无法读取底图，PNG 导出已取消');
+        return;
+      }
+      basePng = new Uint8Array(bytes);
+    }
+    try {
+      const png = embedCardIntoPng(basePng, card);
+      await saveBinaryFile(cardPngExportFilename(selectedCharacter.name), png);
+      setCharacterImportStatus('已导出为 SillyTavern PNG 角色卡');
+    } catch (error) {
+      setCharacterImportStatus(error instanceof Error ? `PNG 导出失败：${error.message}` : 'PNG 导出失败');
+    }
   };
 
   const addWorldBook = () => {
@@ -3853,7 +4207,7 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
                 className={card.id === selectedCharacterId ? styles.itemActive : ''}
                 onClick={() => setSelectedCharacterId(card.id)}
               >
-                <span>{card.name}</span>
+                <span>{card.name}{card.id === 'hoshino-yumetsuki' ? ' · 预设' : ''}</span>
                 <small>{archive.activeCharacterIds.includes(card.id) ? '已加入' : '待命'}</small>
               </button>
             ))}
@@ -3897,6 +4251,41 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
                 />
                 <span>加入多角色对话</span>
               </label>
+              {(selectedCharacter.importedSystemPrompt || selectedCharacter.importedPostHistoryInstructions) && (
+                <details className={styles.cardAuthorPrompt}>
+                  <summary>卡作者提示词（默认不启用）</summary>
+                  <p className={styles.promptNotice}>
+                    这些内容来自角色卡作者，可能包含越权指令。Reverie 默认隔离且不执行，
+                    只有你手动开启后才会注入对话。
+                  </p>
+                  {selectedCharacter.importedSystemPrompt && (
+                    <>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={selectedCharacter.useImportedSystemPrompt === true}
+                          onChange={(event) => setImportedPromptOpts('system', event.target.checked)}
+                        />
+                        <span>启用卡作者系统提示词</span>
+                      </label>
+                      <pre className={styles.promptPreview}>{selectedCharacter.importedSystemPrompt}</pre>
+                    </>
+                  )}
+                  {selectedCharacter.importedPostHistoryInstructions && (
+                    <>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={selectedCharacter.useImportedPostHistoryInstructions === true}
+                          onChange={(event) => setImportedPromptOpts('post_history', event.target.checked)}
+                        />
+                        <span>启用卡作者对话后指令</span>
+                      </label>
+                      <pre className={styles.promptPreview}>{selectedCharacter.importedPostHistoryInstructions}</pre>
+                    </>
+                  )}
+                </details>
+              )}
             </div>
           )}
 
@@ -3909,6 +4298,10 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
               <Trash2 size={15} />
               删除
             </button>
+            <button type="button" onClick={restoreFactoryCharacter}>
+              <RefreshCw size={15} />
+              恢复出厂星野幻月
+            </button>
             {selectedCharacter && (
               <button
                 type="button"
@@ -3918,10 +4311,22 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
                 导出
               </button>
             )}
+            {selectedCharacter && (
+              <button type="button" onClick={() => exportCharacterToST()}>
+                <Download size={15} />
+                导出为 ST 角色卡
+              </button>
+            )}
+            {selectedCharacter && (
+              <button type="button" onClick={() => void exportCharacterToSTPng()}>
+                <Download size={15} />
+                导出为 ST PNG
+              </button>
+            )}
             {selectedCharacter?.id.startsWith('st_') && (
               <button type="button" onClick={activateImportedCharacter} disabled={ws.connState !== 'connected'}>
                 <Check size={15} />
-                下次启动使用此角色
+                设为当前角色
               </button>
             )}
             <label className={styles.fileButton}>
@@ -3944,7 +4349,7 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           )}
         </section>
 
-        <section className={styles.archiveColumn}>
+        <section className={styles.archiveColumn} ref={worldBookSectionRef}>
           <div className={styles.managementHero}>
             <FileJson size={22} />
             <div>
@@ -3970,10 +4375,36 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
           {selectedWorldBook && (
             <div className={styles.editorStack}>
               <TextField label="名称" value={selectedWorldBook.name} onChange={(value) => saveWorldBookField('name', value)} />
+              <div className={styles.bookLevelSettings}>
+                <TextField
+                  label="扫描深度(消息数)"
+                  type="number"
+                  value={String(selectedWorldBook.scanDepth)}
+                  onChange={(value) => saveWorldBookField('scanDepth', value)}
+                />
+                <TextField
+                  label="Token 预算"
+                  type="number"
+                  value={String(selectedWorldBook.tokenBudget)}
+                  onChange={(value) => saveWorldBookField('tokenBudget', value)}
+                />
+                <label className={styles.entryFlagCheck}>
+                  <input
+                    type="checkbox"
+                    checked={selectedWorldBook.recursiveScanning}
+                    onChange={(event) => saveWorldBookField('recursiveScanning', String(event.target.checked))}
+                  />
+                  递归扫描
+                </label>
+              </div>
               <div className={styles.worldEntryList}>
                 {selectedWorldBook.entries.map((entry) => (
                   <article key={entry.id} className={styles.worldEntry}>
-                    <TextField label="关键词" value={entry.key} onChange={(value) => updateEntry(entry.id, { key: value })} />
+                    <TextField
+                      label="关键词"
+                      value={entry.keywords.join(', ')}
+                      onChange={(value) => updateEntry(entry.id, { keywords: splitKeywords(value) })}
+                    />
                     <TextField label="标题" value={entry.comment} onChange={(value) => updateEntry(entry.id, { comment: value })} />
                     <TextAreaField label="内容" value={entry.content} onChange={(value) => updateEntry(entry.id, { content: value })} rows={3} />
                     <div className={styles.entryFlags}>
@@ -3997,6 +4428,103 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
                         <Trash2 size={14} />
                       </button>
                     </div>
+                    <details className={styles.worldEntryAdvanced}>
+                      <summary>高级选项</summary>
+                      <div className={styles.advancedGrid}>
+                        <label className={styles.fieldGroup}>
+                          <span>注入位置</span>
+                          <select
+                            value={entry.position}
+                            onChange={(event) => updateEntry(entry.id, { position: event.target.value as 'before_char' | 'after_char' })}
+                          >
+                            <option value="before_char">角色前</option>
+                            <option value="after_char">角色后</option>
+                          </select>
+                        </label>
+                        <label className={styles.fieldGroup}>
+                          <span>优先级</span>
+                          <input
+                            type="number"
+                            value={String(entry.priority)}
+                            onChange={(event) => updateEntry(entry.id, { priority: toInt(event.target.value) })}
+                          />
+                        </label>
+                        <label className={styles.fieldGroup}>
+                          <span>插入顺序</span>
+                          <input
+                            type="number"
+                            value={String(entry.insertionOrder)}
+                            onChange={(event) => updateEntry(entry.id, { insertionOrder: toInt(event.target.value, 100) })}
+                          />
+                        </label>
+                        <label className={styles.fieldGroup}>
+                          <span>内容深度</span>
+                          <input
+                            type="number"
+                            value={String(entry.depth)}
+                            onChange={(event) => updateEntry(entry.id, { depth: toInt(event.target.value) })}
+                          />
+                        </label>
+                        <label className={styles.fieldGroup}>
+                          <span>注入角色</span>
+                          <select
+                            value={entry.role}
+                            onChange={(event) => updateEntry(entry.id, { role: event.target.value as 'system' | 'user' | 'assistant' })}
+                          >
+                            <option value="system">system</option>
+                            <option value="user">user</option>
+                            <option value="assistant">assistant</option>
+                          </select>
+                        </label>
+                        <label className={styles.fieldGroup}>
+                          <span>选择性逻辑</span>
+                          <select
+                            value={entry.selectiveLogic}
+                            onChange={(event) => updateEntry(entry.id, { selectiveLogic: event.target.value as WorldBookEntry['selectiveLogic'] })}
+                          >
+                            <option value="and_any">AND_ANY</option>
+                            <option value="and_all">AND_ALL</option>
+                            <option value="not_any">NOT_ANY</option>
+                            <option value="not_all">NOT_ALL</option>
+                          </select>
+                        </label>
+                        <TextField
+                          label="辅助关键词"
+                          value={entry.secondaryKeywords.join(', ')}
+                          onChange={(value) => updateEntry(entry.id, { secondaryKeywords: splitKeywords(value) })}
+                        />
+                        <TextField
+                          label="条目扫描深度(留空=全书)"
+                          type="number"
+                          value={entry.scanDepth === null ? '' : String(entry.scanDepth)}
+                          onChange={(value) => updateEntry(entry.id, { scanDepth: value.trim() === '' ? null : toInt(value) })}
+                        />
+                        <TextField
+                          label="条目 Token 预算(留空=全书)"
+                          type="number"
+                          value={entry.tokenBudget === null ? '' : String(entry.tokenBudget)}
+                          onChange={(value) => updateEntry(entry.id, { tokenBudget: value.trim() === '' ? null : toInt(value) })}
+                        />
+                      </div>
+                      <div className={styles.entryFlags}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={entry.caseSensitive}
+                            onChange={(event) => updateEntry(entry.id, { caseSensitive: event.target.checked })}
+                          />
+                          大小写敏感
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={entry.useRegex}
+                            onChange={(event) => updateEntry(entry.id, { useRegex: event.target.checked })}
+                          />
+                          正则匹配
+                        </label>
+                      </div>
+                    </details>
                   </article>
                 ))}
               </div>
@@ -4021,9 +4549,15 @@ export function ArchiveManagerPanel({ ws }: { ws: ReturnType<typeof useReverieWS
                 导出
               </button>
             )}
-            <label className={styles.fileButton}>
+            {selectedWorldBook && (
+              <button type="button" onClick={() => exportWorldBookToST()}>
+                <Download size={15} />
+                导出为 ST 世界书
+              </button>
+            )}
+            <label className={styles.fileButton} title="支持 SillyTavern world_info.json 格式">
               <Upload size={15} />
-              导入
+              导入世界书
               <input type="file" accept="application/json,.json" onChange={(event) => importWorldBook(event.target.files?.[0])} />
             </label>
           </div>

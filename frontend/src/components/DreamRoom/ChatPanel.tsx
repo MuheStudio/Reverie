@@ -12,7 +12,9 @@ import {
   type ChatImageAttachment,
 } from '@/lib/chatImage';
 import { ChatImage } from '@/components/chat/ChatImage';
+import { ChatVideo, isVideoMime } from '@/components/chat/ChatVideo';
 import { loadReverieChatDraft, saveReverieChatDraft } from '@/lib/reverieChatStorage';
+import { greetingOptionsFromPersona } from '@/lib/greetings';
 import styles from './ChatPanel.module.scss';
 
 type ReverieWS = ReturnType<typeof useReverieWS>;
@@ -60,13 +62,18 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
   const [sendError, setSendError] = useState('');
   const [announcement, setAnnouncement] = useState('');
   const [pendingImage, setPendingImage] = useState<ChatImageAttachment | null>(null);
+  const [greetingIndex, setGreetingIndex] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const previousTerminals = useRef(new Set<string>());
   const connected = ws.connState === 'connected';
   const draftSessionId = ws.personaScope?.persona_id
-    ? `${ws.personaScope.persona_id}:dream-room`
+    ? ws.personaScope.persona_id
     : '';
+  const greetingOptions = useMemo(() => greetingOptionsFromPersona(ws.persona), [ws.persona]);
+  const safeGreetingIndex = greetingOptions.length
+    ? Math.min(greetingIndex, greetingOptions.length - 1)
+    : 0;
   const requests = useMemo(() => pendingRequests(ws.chatRequestStates), [ws.chatRequestStates]);
   const deliveryLabel = useCallback(
     (state: ChatRequestState['state']) => t(`dream.state.${state}`),
@@ -178,11 +185,39 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
       </header>
 
       <div className={styles.messages} role="log" aria-label={t('dream.chatHistory')}>
-        {!ws.chatMessages.length && (
+        {!ws.chatMessages.length && !greetingOptions.length && (
           <div className={styles.empty}>
             <Sparkles size={22} />
             <p>{t('dream.emptyChat')}</p>
             <small>{t('dream.emptyChatDetail')}</small>
+          </div>
+        )}
+        {!ws.chatMessages.length && greetingOptions.length > 0 && (
+          <div className={styles.messageGroup}>
+            <article className={styles.bubble} data-role="assistant" data-source="assistant" data-greeting="true">
+              {greetingOptions[safeGreetingIndex] && <p>{greetingOptions[safeGreetingIndex]}</p>}
+              {greetingOptions.length > 1 && (
+                <div className={styles.greetingSwiper}>
+                  <button
+                    type="button"
+                    aria-label={t('dream.previousGreeting')}
+                    disabled={safeGreetingIndex === 0}
+                    onClick={() => setGreetingIndex((current) => Math.max(0, current - 1))}
+                  >
+                    ‹
+                  </button>
+                  <small>{safeGreetingIndex + 1} / {greetingOptions.length}</small>
+                  <button
+                    type="button"
+                    aria-label={t('dream.nextGreeting')}
+                    disabled={safeGreetingIndex === greetingOptions.length - 1}
+                    onClick={() => setGreetingIndex((current) => Math.min(greetingOptions.length - 1, current + 1))}
+                  >
+                    ›
+                  </button>
+                </div>
+              )}
+            </article>
           </div>
         )}
         {ws.chatMessages.map((message, index) => (
@@ -198,12 +233,19 @@ export default function ChatPanel({ ws, personaName }: ChatPanelProps) {
             >
               {message.role === 'user' && (message.attachmentPreview || message.media?.length) && (
                 <span className={styles.messageImage}>
-                  <ChatImage
-                    mediaId={message.media?.[0]?.media_id || ''}
-                    previewUrl={message.attachmentPreview}
-                    fetcher={ws.fetchChatMedia}
-                    alt={t('dream.imageMessage')}
-                  />
+                  {isVideoMime(message.media?.[0]?.mime) ? (
+                    <ChatVideo
+                      mediaId={message.media?.[0]?.media_id || ''}
+                      mime={message.media?.[0]?.mime}
+                    />
+                  ) : (
+                    <ChatImage
+                      mediaId={message.media?.[0]?.media_id || ''}
+                      previewUrl={message.attachmentPreview}
+                      fetcher={ws.fetchChatMedia}
+                      alt={t('dream.imageMessage')}
+                    />
+                  )}
                 </span>
               )}
               {message.sticker?.image_data_url && (

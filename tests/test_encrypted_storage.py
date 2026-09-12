@@ -13,6 +13,7 @@ from src.relationship.tracker import RelationshipTracker
 from src.memory.catalog import MemoryCatalog
 from src.memory.sqlite_vec_index import SQLiteVecIndex
 from src.user import UserManager
+from src.storage import encrypted_sqlite
 from src.storage.encrypted_sqlite import (
     SQLITE_HEADER,
     EncryptedStorageError,
@@ -94,6 +95,41 @@ def test_plaintext_database_is_exported_to_sqlcipher_without_losing_rows(
     connection.close()
     assert not list(tmp_path.glob(".*migration*"))
     assert not list(tmp_path.glob(".*migrating*"))
+
+
+def test_leftover_delete_journal_opens_verify_read_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database = tmp_path / "kernel.sqlite3"
+    key = os.urandom(32)
+    install_storage_key(key)
+    connection = connect_database(database)
+    connection.execute("CREATE TABLE facts(value TEXT NOT NULL)")
+    connection.execute("INSERT INTO facts VALUES ('sealed')")
+    connection.commit()
+    connection.close()
+    journal = Path(f"{database}-journal")
+    journal.write_bytes(b"\x00" * 512)
+    assert encrypted_sqlite._has_write_sidecar(database) is True
+
+    opened: dict[str, bool] = {}
+    original = encrypted_sqlite._open_encrypted
+
+    def wrapped(*args, **kwargs):
+        opened["read_only"] = bool(kwargs.get("read_only"))
+        # Drop the synthetic sidecar before the real open so garbage bytes
+        # cannot poison SQLCipher recovery; the assertion is the open mode.
+        journal.unlink(missing_ok=True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(encrypted_sqlite, "_open_encrypted", wrapped)
+    encrypted_sqlite._verify_encrypted_database(database, key)
+    assert opened.get("read_only") is False
+
+    connection = connect_database(database, read_only=True)
+    assert connection.execute("SELECT value FROM facts").fetchone()[0] == "sealed"
+    connection.close()
 
 
 def test_wrong_key_never_recreates_or_overwrites_encrypted_database(tmp_path: Path) -> None:

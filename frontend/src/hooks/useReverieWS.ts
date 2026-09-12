@@ -27,6 +27,7 @@ import {
 } from '@/lib/electronBridgeSocket';
 import { normalizeStickerTags, toStickerAttachmentPayload } from '@/lib/stickerPayload';
 import { toChatImagePayload, type ChatImageAttachment } from '@/lib/chatImage';
+import { reconnectDelayMs } from '@/utils/reconnectTiming';
 export {
   PROTOCOL_VERSION,
   WSMsgType,
@@ -43,7 +44,6 @@ export const WS_RESPONSE_ALIASES: Record<string, string[]> = {
   [WSMsgType.PERSONA_DATA]: ['persona_get_result'],
   [WSMsgType.PERSONA_IMPORT_RESULT]: [
     'persona_import_result',
-    'persona_list_result',
     'persona_activate_result',
   ],
   [WSMsgType.RELATIONSHIP_DATA]: ['relationship_get_result'],
@@ -162,6 +162,10 @@ export interface AuthoritativeSettingsSnapshot {
   ui?: {
     onboarding_completed?: boolean;
     onboarding_completed_at_utc?: string;
+    onboarding_version?: number;
+    onboarding_state?: 'not_started' | 'in_progress' | 'committing' | 'complete';
+    onboarding_last_step?: string;
+    experience_mode?: 'full' | 'core';
   };
   llm?: {
     provider?: string;
@@ -1067,7 +1071,9 @@ export function useReverieWS(wsUrl?: string) {
         updateConnState('unavailable');
         return;
       }
-      const delay = Math.min(1000 * (2 ** consecutiveFailureRef.current), 30_000);
+      // Equal jitter: base/2 + random(base/2) spreads a post-restart
+      // reconnect storm across ticks instead of stampeding in lockstep.
+      const delay = reconnectDelayMs(consecutiveFailureRef.current);
       reconnectTimer.current = setTimeout(() => void connect(), delay);
     };
 
@@ -1202,7 +1208,7 @@ export function useReverieWS(wsUrl?: string) {
     text: string,
     sticker?: StickerItem,
     suppliedRequestId?: string,
-    attachment?: ChatImageAttachment,
+    attachment?: ChatImageAttachment & { videoMediaId?: string },
   ): string | null => {
     const requestId = suppliedRequestId || newRequestId();
     const sentAtUtc = nowUtc();
@@ -1217,6 +1223,7 @@ export function useReverieWS(wsUrl?: string) {
       sent_at_utc: sentAtUtc,
       ...(wireSticker ? { sticker: wireSticker } : {}),
       ...toChatImagePayload(attachment),
+      ...(attachment?.videoMediaId ? { video_media_id: attachment.videoMediaId } : {}),
     };
     return send(WSMsgType.CHAT_SEND, payload) ? requestId : null;
   }, [send]);
@@ -1462,6 +1469,9 @@ export function useReverieWS(wsUrl?: string) {
         llm: isRecord(payload.llm)
           ? payload.llm as AuthoritativeSettingsSnapshot['llm']
           : undefined,
+        tts: isRecord(payload.tts)
+          ? payload.tts as AuthoritativeSettingsSnapshot['tts']
+          : undefined,
       });
     });
     subscribeResult(WSMsgType.SETTINGS_UPDATE_RESULT, (payload: unknown) => {
@@ -1473,6 +1483,7 @@ export function useReverieWS(wsUrl?: string) {
         ...(isRecord(payload.features) ? { features: payload.features } : {}),
         ...(isRecord(payload.ui) ? { ui: payload.ui as AuthoritativeSettingsSnapshot['ui'] } : {}),
         ...(isRecord(payload.llm) ? { llm: payload.llm as AuthoritativeSettingsSnapshot['llm'] } : {}),
+        ...(isRecord(payload.tts) ? { tts: payload.tts as AuthoritativeSettingsSnapshot['tts'] } : {}),
       }));
     });
     unsubs.push(subscribe(WSMsgType.RUNTIME_ACTIVITY, (payload: unknown) => {

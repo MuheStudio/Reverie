@@ -4,6 +4,13 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// ⚠️ Electron safeStorage sync APIs (encryptString/decryptString) are slated
+// for removal in a future major (electron/electron#53662, semver/major). On
+// Electron 42 they remain fully supported, so migration to
+// encryptStringAsync/decryptStringAsync is deferred until the next Electron
+// upgrade — at which point ALL call sites in this file and storage-key-vault.cjs
+// must move together (async return shapes differ: DecryptStringAsyncReturnValue
+// {data} vs Buffer). See P2-3 in 对抗式审查与修复计划-2026-09-09.md.
 const VAULT_SCHEMA = 'reverie.credential-vault.v3';
 const LEGACY_VAULT_SCHEMAS = new Set([
   'reverie.credential-vault.v1',

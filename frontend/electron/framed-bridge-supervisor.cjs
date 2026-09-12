@@ -223,6 +223,7 @@ class FramedBridgeSupervisor extends EventEmitter {
       if (!frame.frame || typeof frame.frame !== 'object' || Array.isArray(frame.frame)) {
         throw new Error('Invalid business event frame');
       }
+      this._adoptPersonaProof(frame.frame);
       this.emit('message', frame.frame);
       return;
     }
@@ -234,6 +235,30 @@ class FramedBridgeSupervisor extends EventEmitter {
       throw new Error(String(frame.error || frame.code || 'Bridge protocol failure'));
     }
     throw new Error('Unsupported framed bridge message');
+  }
+
+  _adoptPersonaProof(frame) {
+    if (!this.ready || !frame || typeof frame !== 'object' || Array.isArray(frame)) return;
+    const type = String(frame.type || '');
+    if (type !== 'persona:data' && type !== 'persona:import:result') return;
+    const payload = frame.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+    const personaId = typeof payload.persona_id === 'string' ? payload.persona_id : '';
+    const personaEpoch = Number(payload.persona_epoch);
+    const personaFingerprint = typeof payload.persona_fingerprint === 'string'
+      ? payload.persona_fingerprint.toLowerCase()
+      : '';
+    if (!personaId || !Number.isInteger(personaEpoch) || personaEpoch < 1 || !/^[a-f0-9]{64}$/.test(personaFingerprint)) {
+      return;
+    }
+    this.ready = Object.freeze({
+      ...this.ready,
+      personaId,
+      personaEpoch,
+      personaFingerprint,
+      personaRestartRequired: payload.restart_required === true,
+      modelEpoch: Number.isInteger(payload.model_epoch) ? payload.model_epoch : this.ready.modelEpoch,
+    });
   }
 
   _handleControlResult(frame) {

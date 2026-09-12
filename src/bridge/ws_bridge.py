@@ -80,6 +80,7 @@ class BridgeState:
         self.phrase_alignment = None # UserPhraseAlignment
         self.kernel_store = None      # KernelStore: canonical identity/chat/event ledger
         self.archive_store = None     # Optional persona-scoped archive/world-book store
+        self.lorebook_mgr = None      # Optional world book matcher (chat prompt injection)
         self.module_registry = None   # Failure isolation and user-visible module health
         self.game_state_store = None  # Optional persona-scoped mini-game state
         self.persona_epoch = 0       # Incremented only by privileged activation.
@@ -116,9 +117,11 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MEMORY_QUERY: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_LIST: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_EDIT: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_REINFORCE: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_DELETE: MsgType.MEMORY_RESULT,
     MsgType.CHAT_HISTORY: MsgType.CHAT_HISTORY_RESULT,
     MsgType.CHAT_MEDIA: MsgType.CHAT_MEDIA_RESULT,
+    MsgType.VIDEO_DOWNLOAD: MsgType.VIDEO_DOWNLOAD_RESULT,
     MsgType.MEMORY_SETTINGS_GET: MsgType.MEMORY_SETTINGS_RESULT,
     MsgType.MEMORY_STORE: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_CANDIDATE_LIST: MsgType.MEMORY_CANDIDATE_RESULT,
@@ -127,7 +130,6 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.EMOTION_GET: MsgType.EMOTION_UPDATE,
     MsgType.PERSONA_GET: MsgType.PERSONA_DATA,
     MsgType.PERSONA_IMPORT: MsgType.PERSONA_IMPORT_RESULT,
-    MsgType.PERSONA_LIST: MsgType.PERSONA_IMPORT_RESULT,
     MsgType.PERSONA_ACTIVATE: MsgType.PERSONA_IMPORT_RESULT,
     MsgType.ARCHIVE_GET: MsgType.ARCHIVE_RESULT,
     MsgType.ARCHIVE_PUT: MsgType.ARCHIVE_RESULT,
@@ -185,7 +187,6 @@ _POST_PERSONA_SWITCH_ALLOWED = frozenset({
     MsgType.AI_USAGE_REVOKE,
     MsgType.PERSONA_GET,
     MsgType.PERSONA_IMPORT,
-    MsgType.PERSONA_LIST,
     MsgType.API_BUDGET_GET,
     MsgType.ARCHIVE_GET,
     MsgType.ARCHIVE_PUT,
@@ -215,7 +216,6 @@ _DEGRADED_KERNEL_ALLOWED = frozenset({
     MsgType.AI_USAGE_REVOKE,
     MsgType.PERSONA_GET,
     MsgType.PERSONA_IMPORT,
-    MsgType.PERSONA_LIST,
     MsgType.PERSONA_ACTIVATE,
     MsgType.ARCHIVE_GET,
     MsgType.ARCHIVE_PUT,
@@ -731,6 +731,20 @@ async def _emit_chat_event(client_id: str, msg_type: str, payload: dict[str, Any
     return delivered
 
 
+def _reply_start_planner(user_message: str):
+    """Clause 39/41: let presence decide when a reply may start."""
+    scheduler = getattr(getattr(bridge_state, "session", None), "scheduler", None)
+    if scheduler is None or not hasattr(scheduler, "plan_reply_start"):
+        return None
+    emotion = getattr(bridge_state, "emotion", None)
+    emotions = dict(getattr(emotion, "values", {}) or {}) if emotion is not None else {}
+    try:
+        return scheduler.plan_reply_start(str(user_message or ""), emotions=emotions)
+    except Exception:
+        logger.exception("Reply start planning failed; replying normally")
+        return None
+
+
 def _get_chat_coordinator():
     global _chat_coordinator
     if _chat_coordinator is None:
@@ -742,6 +756,8 @@ def _get_chat_coordinator():
             emit=_emit_chat_event,
             scope_is_current=_chat_scope_is_current,
             kernel_store=bridge_state.kernel_store,
+            reply_start_planner=_reply_start_planner,
+            presence_provider=_scheduler_status_payload,
         )
     return _chat_coordinator
 
@@ -921,6 +937,24 @@ async def handle_chat_send(payload: dict, ws: WebSocketServerProtocol) -> dict |
         request_payload["media_id"] = str(image_media.get("media_id") or "")
         request_payload["media_mime"] = str(image_media.get("mime") or "image/jpeg")
         request_payload["media_bytes"] = int(image_media.get("bytes") or 0)
+
+    # Video attachment: a video already stored by the video:download pipeline,
+    # referenced by its sha256 media id. Unlike images it is NOT passed to the
+    # provider (image_path stays empty) — it is a chat artifact only. We stamp
+    # the durable media_path + video mime so history renders a <video> bubble.
+    video_media_id = str(request_payload.pop("video_media_id", "") or "")
+    if video_media_id and not image_media:
+        from src.chat.video_media import ChatVideoError, video_info
+
+        try:
+            info = video_info(video_media_id)
+        except ChatVideoError as exc:
+            logger.warning("Chat video attachment rejected: %s", exc)
+            return {"error": f"视频处理失败：{exc}", "scope": "chat"}
+        request_payload["media_id"] = str(info.get("media_id") or "")
+        request_payload["media_mime"] = str(info.get("mime") or "video/mp4")
+        request_payload["media_bytes"] = int(info.get("bytes") or 0)
+        request_payload["media_path"] = str(info.get("path") or "")
     if sticker and bridge_state.stickers is not None:
         # Sending a sticker is preference evidence — record it best-effort.
         try:
@@ -974,6 +1008,145 @@ async def handle_chat_media(payload: dict, ws: WebSocketServerProtocol) -> dict:
     except ChatMediaError as exc:
         return {"error": str(exc), "media_id": media_id}
     return {"media_id": media_id, "mime": "image/jpeg", "data_url": data_url}
+
+
+async def _run_video_download(
+    ws: WebSocketServerProtocol,
+    source_url: str,
+    request_id: str,
+    page_title: str,
+) -> None:
+    """Download → merge → store a video, streaming progress to the renderer.
+
+    Runs as a detached task so a multi-minute download never blocks the bridge
+    message loop. Every network fetch inside the pipeline passes the four gates
+    (consent checked first against live settings, then offline + SSRF per
+    request, then the running size/duration/quota caps). On success it emits a
+    VIDEO_DOWNLOAD_RESULT carrying the stored ``media_id``; the renderer then
+    sends a normal chat:send referencing that id.
+    """
+    import asyncio as _asyncio
+
+    from src.chat.video_media import ChatVideoError, current_store_bytes, store_from_file
+    from src.video_download import VideoDownloadDenied, download_video
+
+    loop = _asyncio.get_running_loop()
+
+    features = getattr(bridge_state.settings, "features", None) if bridge_state.settings else None
+    if features is None:
+        await send_to_frontend(
+            ws,
+            MsgType.VIDEO_DOWNLOAD_RESULT,
+            {"ok": False, "error": "settings not initialized", "request_id": request_id},
+            request_id=request_id,
+        )
+        return
+
+    last_emit = 0.0
+
+    async def _progress(done: int, total: int) -> None:
+        await send_to_frontend(
+            ws,
+            MsgType.VIDEO_DOWNLOAD_PROGRESS,
+            {
+                "request_id": request_id,
+                "completed": int(done),
+                "total": int(total),
+            },
+            request_id=request_id,
+        )
+
+    def _on_progress(done: int, total: int) -> None:
+        nonlocal last_emit
+        now = loop.time()
+        # Throttle progress to at most ~5/sec to avoid flooding the bridge.
+        if now - last_emit < 0.2 and done != total:
+            return
+        last_emit = now
+        loop.call_soon(lambda: _asyncio.ensure_future(_progress(done, total)))
+
+    temp_path = ""
+    try:
+        result = await download_video(
+            source_url,
+            features,
+            existing_bytes=current_store_bytes(),
+            on_progress=_on_progress,
+        )
+        temp_path = result.path
+        record = store_from_file(
+            temp_path,
+            features=features,
+            duration_seconds=result.duration_seconds,
+        )
+        await send_to_frontend(
+            ws,
+            MsgType.VIDEO_DOWNLOAD_RESULT,
+            {
+                "ok": True,
+                "request_id": request_id,
+                "media_id": str(record.get("media_id") or ""),
+                "mime": str(record.get("mime") or ""),
+                "bytes": int(record.get("bytes") or 0),
+                "duration_seconds": result.duration_seconds,
+                "page_title": page_title,
+            },
+            request_id=request_id,
+        )
+    except (VideoDownloadDenied, ChatVideoError) as exc:
+        await send_to_frontend(
+            ws,
+            MsgType.VIDEO_DOWNLOAD_RESULT,
+            {"ok": False, "error": str(exc), "request_id": request_id},
+            request_id=request_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
+        logger.exception("Video download failed")
+        await send_to_frontend(
+            ws,
+            MsgType.VIDEO_DOWNLOAD_RESULT,
+            {"ok": False, "error": f"下载失败：{exc}", "request_id": request_id},
+            request_id=request_id,
+        )
+    finally:
+        # The stored copy is content-addressed; the temp download is disposable.
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+@register_handler(MsgType.VIDEO_DOWNLOAD)
+async def handle_video_download(payload: dict, ws: WebSocketServerProtocol) -> dict | None:
+    """Start a disclaimer-gated video download; progress + result stream back.
+
+    The compliance gate is enforced twice: the fail-closed settings invariant
+    means ``video_download_enabled`` can only be true with an acknowledged
+    disclaimer, and the pipeline re-checks consent before any fetch. A disabled
+    feature is refused here immediately so no task is spawned.
+    """
+    context = _client_contexts.get(ws)
+    if not context or not context.authenticated:
+        return {"error": "bridge authentication required"}
+
+    features = getattr(bridge_state.settings, "features", None) if bridge_state.settings else None
+    enabled = bool(getattr(features, "video_download_enabled", False))
+    acknowledged = bool(getattr(features, "video_download_disclaimer_acknowledged", False))
+    if not (enabled and acknowledged):
+        return {
+            "ok": False,
+            "error": "视频下载未开启或未同意免责声明",
+            "request_id": str((payload or {}).get("request_id") or ""),
+        }
+
+    source_url = str((payload or {}).get("source_url") or "")
+    request_id = str((payload or {}).get("request_id") or "")
+    page_title = str((payload or {}).get("page_title") or "")
+    # Detach the download so this handler returns immediately; results arrive
+    # as VIDEO_DOWNLOAD_PROGRESS / VIDEO_DOWNLOAD_RESULT events.
+    asyncio.ensure_future(_run_video_download(ws, source_url, request_id, page_title))
+    return None
 
 
 @register_handler(MsgType.CHAT_STOP)
@@ -1163,6 +1336,39 @@ async def handle_memory_edit(
         str(payload.get("text") or ""),
     )
     return {"ok": True, **result}
+
+
+@register_handler(MsgType.MEMORY_REINFORCE)
+async def handle_memory_reinforce(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    """Manually weaken, strengthen, or reactivate one confirmed memory."""
+    _require_memory_controller(ws)
+    if not bridge_state.memory:
+        return {"ok": False, "error": "Memory system is not initialized"}
+    memory_id = str(payload.get("memory_id") or "")
+    op = str(payload.get("op") or "")
+    raw_amount = payload.get("amount")
+    amount = float(raw_amount) if isinstance(raw_amount, (int, float)) else None
+    try:
+        if op == "weaken":
+            changed = bridge_state.memory.weaken_memory(
+                memory_id, amount=0.1 if amount is None else amount)
+        elif op == "strengthen":
+            changed = bridge_state.memory.strengthen_memory(
+                memory_id, amount=0.1 if amount is None else amount)
+        elif op == "reactivate":
+            changed = bridge_state.memory.reactivate_memory(
+                memory_id, amount=0.15 if amount is None else amount)
+        elif op == "pin":
+            pin_result = bridge_state.memory.pin_memory(memory_id)
+            return {"ok": bool(pin_result.get("ok")), "op": op, "memory_id": memory_id,
+                    **({"error": pin_result["error"]} if pin_result.get("error") else {})}
+        elif op == "unpin":
+            changed = bridge_state.memory.unpin_memory(memory_id)
+        else:
+            return {"ok": False, "error": f"Unsupported memory reinforce op: {op}"}
+    except (ValueError, TypeError) as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": bool(changed), "op": op, "memory_id": memory_id}
 
 
 @register_handler(MsgType.MEMORY_DELETE)
@@ -1361,7 +1567,7 @@ async def handle_persona_get(_payload: dict, _ws: WebSocketServerProtocol) -> di
 
 
 @register_handler(MsgType.PERSONA_IMPORT)
-async def handle_persona_import(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+async def handle_persona_import(payload: dict, ws: WebSocketServerProtocol) -> dict:
     """Strictly validate and persist an untrusted SillyTavern JSON card."""
     from src.config.settings import PERSONA_DIR
     from src.persona.sillytavern_import import (
@@ -1377,12 +1583,57 @@ async def handle_persona_import(payload: dict, _ws: WebSocketServerProtocol) -> 
     try:
         report = parse_sillytavern_json(raw, filename=filename)
         result = save_imported_persona(report, PERSONA_DIR, activate=False)
+        activate_now = payload.get("identity_change_confirmed") is True
+        activation: dict[str, Any] = {}
+        if activate_now:
+            activation = await _commit_live_persona(
+                ws,
+                {
+                    "profile_id": report.card_id,
+                    "confirmed_profile_id": report.card_id,
+                    "identity_change_confirmed": True,
+                    "actor": payload.get("actor") or "owner",
+                    "reason": str(payload.get("reason") or "imported character card became live identity"),
+                    "expected_persona_id": payload.get("expected_persona_id"),
+                    "expected_persona_epoch": payload.get("expected_persona_epoch"),
+                    "expected_persona_fingerprint": payload.get("expected_persona_fingerprint"),
+                },
+            )
+            if activation.get("ok") is not True:
+                return {
+                    "ok": True,
+                    **result,
+                    "persona": report.persona.to_dict(),
+                    "first_message": report.metadata.get("first_message", ""),
+                    "creator_notes": report.metadata.get("creator_notes", ""),
+                    "imported_system_prompt": report.metadata.get("imported_system_prompt", ""),
+                    "imported_post_history_instructions": report.metadata.get("imported_post_history_instructions", ""),
+                    "injection_warning": report.metadata.get("injection_warning", False),
+                    "world_book_imported": False,
+                    "world_book_entry_count": len(report.character_book),
+                    "activated": False,
+                    "activation": activation,
+                    "world_book_warning": "角色卡已保存，但未能切换为当前身份",
+                }
+        world_book, world_book_warning = _attach_imported_world_book(report)
+        card_warning = _persist_imported_character_card(report)
+        _apply_imported_prompt_opts_from_archive()
+        archive_warning = ", ".join(item for item in (world_book_warning, card_warning) if item)
         return {
             "ok": True,
             **result,
             "persona": report.persona.to_dict(),
             "first_message": report.metadata.get("first_message", ""),
             "creator_notes": report.metadata.get("creator_notes", ""),
+            "imported_system_prompt": report.metadata.get("imported_system_prompt", ""),
+            "imported_post_history_instructions": report.metadata.get("imported_post_history_instructions", ""),
+            "injection_warning": report.metadata.get("injection_warning", False),
+            "world_book_imported": world_book,
+            "world_book_entry_count": len(report.character_book),
+            "activated": activation.get("ok") is True,
+            "restart_required": bool(activation.get("restart_required")),
+            **({"activation": activation} if activation else {}),
+            **({"world_book_warning": archive_warning} if archive_warning else {}),
         }
     except CharacterCardImportError as exc:
         return {"ok": False, "error": str(exc), "code": exc.code}
@@ -1391,21 +1642,245 @@ async def handle_persona_import(payload: dict, _ws: WebSocketServerProtocol) -> 
         return {"ok": False, "error": "角色卡导入失败，未写入任何档案", "code": "internal_error"}
 
 
-@register_handler(MsgType.PERSONA_LIST)
-async def handle_persona_list(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
+def _refresh_lorebook_from_archive() -> None:
+    """Reload the active world book matcher from the persona archive.
+
+    Called after an import writes a new world book so the chat prompt picks it
+    up immediately. Best-effort: any failure leaves the previous entries in
+    place and never affects the already-committed import response.
+    """
+    mgr = getattr(bridge_state, "lorebook_mgr", None)
+    store = getattr(bridge_state, "archive_store", None)
+    if mgr is None or store is None:
+        return
+    try:
+        current = store.get(_active_persona_id())
+    except Exception as exc:
+        logger.warning("Lorebook refresh skipped: %s", exc)
+        return
+    existing = current.get("archive") if current.get("exists") else None
+    # Rebuild from the canonical store: drop any prior in-memory entries.
+    mgr.global_lorebook.entries.clear()
+    mgr.chat_lorebooks.clear()
+    try:
+        for book in (existing or {}).get("worldBooks", []):
+            mgr.load_world_book(book)
+    except Exception as exc:
+        logger.warning("Lorebook load after import failed: %s", exc)
+
+
+def _attach_imported_world_book(
+    report,
+) -> tuple[bool, str]:
+    """Persist an imported character_book as a persona-scoped Reverie world book.
+
+    The write is best-effort and idempotent: a same-name book is never
+    duplicated, and a stale archive revision must never overwrite a newer one.
+    Failure here never rolls back the already-committed persona import.
+    """
+    entries = report.character_book
+    if not entries:
+        return False, ""
+    store = bridge_state.archive_store
+    if store is None:
+        return False, "档案模块未连接，卡内世界书未写入"
+    persona_id = _active_persona_id()
+    try:
+        current = store.get(persona_id)
+    except Exception as exc:
+        logger.exception("Archive read failed during persona import")
+        return False, "档案读取失败，卡内世界书未写入"
+
+    existing_archive = current.get("archive") if current.get("exists") else None
+    books = list((existing_archive or {}).get("worldBooks", []))
+    book_name = f"{report.persona.name}的世界书"
+    if any(str(book.get("name") or "") == book_name for book in books):
+        return True, f"已存在同名世界书《{book_name}》，未重复导入"
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    raw_book = report.metadata.get("character_book_meta") if isinstance(report.metadata, dict) else {}
+    if not isinstance(raw_book, dict):
+        raw_book = {}
+    scan_depth = raw_book.get("scan_depth", 50)
+    token_budget = raw_book.get("token_budget", 500)
+    try:
+        scan_depth = max(1, min(200, int(scan_depth)))
+    except (TypeError, ValueError):
+        scan_depth = 50
+    try:
+        token_budget = max(50, min(4000, int(token_budget)))
+    except (TypeError, ValueError):
+        token_budget = 500
+    books.append({
+        "id": f"world_wb_{now[:19].replace('-', '').replace(':', '')}",
+        "name": book_name,
+        "entries": entries,
+        "createdAt": now,
+        "updatedAt": now,
+        "scanDepth": scan_depth,
+        "tokenBudget": token_budget,
+        "recursiveScanning": raw_book.get("recursive_scanning") is True,
+    })
+    merged = {
+        "characters": (existing_archive or {}).get("characters", []),
+        "activeCharacterIds": (existing_archive or {}).get("activeCharacterIds", []),
+        "worldBooks": books,
+    }
+    try:
+        store.put(
+            persona_id,
+            merged,
+            expected_revision=int(current.get("revision") or 0),
+        )
+    except Exception as exc:
+        logger.warning("World-book attach skipped: %s", exc)
+        return False, "档案版本已变化，卡内世界书未写入，角色卡本身已导入"
+    _refresh_lorebook_from_archive()
+    return True, ""
+
+
+def _imported_character_card_record(report) -> dict[str, Any]:
+    """Archive-card shape for a freshly imported SillyTavern persona."""
+    from datetime import datetime, timezone
+
+    persona = report.persona
+    identity = persona.identity if isinstance(persona.identity, dict) else {}
+    speaking = persona.speaking_style if isinstance(persona.speaking_style, dict) else {}
+    timestamp = datetime.now(timezone.utc).isoformat()
+    age_unknown = identity.get("age_unknown") is True
+    return {
+        "id": str(report.card_id),
+        "name": str(persona.name or "未命名角色"),
+        "alternateName": "",
+        "age": "" if age_unknown else str(getattr(persona, "age", "") or ""),
+        "birthday": str(getattr(persona, "birthday", "") or ""),
+        "role": "SillyTavern 本地导入",
+        "identity": str(identity.get("description") or ""),
+        "schedule": "",
+        "likesDiary": True,
+        "values": "、".join(str(item) for item in (persona.values or []) if str(item).strip()),
+        "catchphrases": [
+            str(item) for item in (speaking.get("catchphrases") or []) if str(item).strip()
+        ],
+        "neverSay": [
+            str(item) for item in (speaking.get("never_say") or []) if str(item).strip()
+        ],
+        "portraitUrl": "",
+        "description": str(getattr(persona, "backstory", "") or identity.get("description") or "导入角色"),
+        "personality": "、".join(
+            str(item) for item in (persona.personality_traits or []) if str(item).strip()
+        ),
+        "speakingStyle": str(speaking.get("tone") or ""),
+        "firstMessage": str(report.metadata.get("first_message") or ""),
+        "alternateGreetings": [
+            str(item) for item in (identity.get("alternate_greetings") or []) if str(item).strip()
+        ][:50],
+        "importedSystemPrompt": str(report.metadata.get("imported_system_prompt") or ""),
+        "importedPostHistoryInstructions": str(
+            report.metadata.get("imported_post_history_instructions") or ""
+        ),
+        "useImportedSystemPrompt": False,
+        "useImportedPostHistoryInstructions": False,
+        "tags": ["SillyTavern", str(report.source_format or "")],
+        "createdAt": timestamp,
+        "updatedAt": timestamp,
+    }
+
+
+def _persist_imported_character_card(report) -> str:
+    """Write the imported card onto the *active* persona archive row."""
+    store = bridge_state.archive_store
+    if store is None:
+        return "档案模块未连接，角色卡未写入当前身份档案"
+    persona_id = _active_persona_id()
+    try:
+        current = store.get(persona_id)
+    except Exception:
+        logger.exception("Archive read failed while persisting imported character")
+        return "档案读取失败，角色卡未写入当前身份档案"
+    existing = current.get("archive") if current.get("exists") else None
+    characters = list((existing or {}).get("characters") or [])
+    card = _imported_character_card_record(report)
+    characters = [item for item in characters if str(item.get("id") or "") != card["id"]]
+    characters.insert(0, card)
+    merged = {
+        "characters": characters,
+        "activeCharacterIds": [card["id"]],
+        "worldBooks": list((existing or {}).get("worldBooks") or []),
+    }
+    try:
+        store.put(
+            persona_id,
+            merged,
+            expected_revision=int(current.get("revision") or 0),
+        )
+    except Exception as exc:
+        logger.warning("Imported character persist skipped: %s", exc)
+        return "档案版本已变化，角色卡未写入当前身份档案"
+    return ""
+
+
+def _apply_imported_prompt_opts_from_archive() -> None:
+    """Reload quarantined prompt opt-in flags from the active archive card."""
+    session = getattr(bridge_state, "session", None)
+    store = getattr(bridge_state, "archive_store", None)
+    if session is None or store is None:
+        return
+    try:
+        current = store.get(_active_persona_id())
+    except Exception:
+        logger.exception("Imported prompt opts reload failed")
+        return
+    archive = current.get("archive") if current.get("exists") else None
+    if not isinstance(archive, dict):
+        session.imported_prompt_opts = {
+            "use_imported_system_prompt": False,
+            "use_imported_post_history_instructions": False,
+        }
+        return
+    active_ids = [str(item) for item in (archive.get("activeCharacterIds") or []) if str(item)]
+    cards = [card for card in (archive.get("characters") or []) if isinstance(card, dict)]
+    selected = next((card for card in cards if str(card.get("id") or "") in active_ids), None)
+    if selected is None and cards:
+        selected = cards[0]
+    session.imported_prompt_opts = {
+        "use_imported_system_prompt": bool(selected and selected.get("useImportedSystemPrompt") is True),
+        "use_imported_post_history_instructions": bool(
+            selected and selected.get("useImportedPostHistoryInstructions") is True
+        ),
+    }
+
+
+def _persona_payload() -> dict[str, Any]:
+    scope = _active_persona_scope()
+    persona = bridge_state.persona
+    return {
+        "persona": persona.to_dict() if persona is not None else None,
+        **scope,
+        "restart_required": bool(bridge_state.persona_restart_required),
+        "model_epoch": int(getattr(bridge_state, "model_epoch", 0) or 0),
+    }
+
+
+async def _publish_live_persona(ws: WebSocketServerProtocol | None) -> dict[str, Any]:
+    payload = _persona_payload()
+    context = _client_contexts.get(ws) if ws is not None else None
+    if context is not None:
+        context.persona_id = str(payload.get("persona_id") or context.persona_id)
+    try:
+        await broadcast(MsgType.PERSONA_DATA, payload)
+    except Exception:
+        logger.exception("Live persona broadcast failed")
+    return payload
+
+
+async def _commit_live_persona(ws: WebSocketServerProtocol, payload: dict) -> dict:
+    """Commit a confirmed identity switch and remount the live runtime."""
+
     from src.config.settings import PERSONA_DIR
-    from src.persona.sillytavern_import import list_imported_personas
-
-    return {"ok": True, **list_imported_personas(PERSONA_DIR)}
-
-
-
-
-@register_handler(MsgType.PERSONA_ACTIVATE)
-async def handle_persona_activate(payload: dict, ws: WebSocketServerProtocol) -> dict:
-    """Commit an explicitly confirmed identity switch before changing epoch."""
-
-    from src.config.settings import PERSONA_DIR
+    from src.mvp_runtime import get_active_desktop_runtime
     from src.persona.identity import (
         GLOBAL_PERSONA_EPOCH,
         PersonaIdentityViolation,
@@ -1500,8 +1975,6 @@ async def handle_persona_activate(payload: dict, ws: WebSocketServerProtocol) ->
                     expected_fingerprint=candidate_fingerprint,
                 ),
             )
-            # Epoch invalidation happens before stopping/draining.  A provider
-            # task that ignores cancellation still cannot queue its old result.
             bridge_state.persona_epoch = token.epoch
             bridge_state.model_epoch = int(bridge_state.model_epoch or 0) + 1
             bridge_state.persona_restart_required = True
@@ -1520,6 +1993,35 @@ async def handle_persona_activate(payload: dict, ws: WebSocketServerProtocol) ->
                     work_manager.stop()
                 except Exception:
                     logger.exception("Identity changed but background work shutdown degraded")
+            cancellation_warning = ""
+            try:
+                await _get_chat_coordinator().cancel_all(reason="persona_changed")
+            except Exception as exc:
+                logger.exception("Identity changed but pending chat cancellation failed")
+                cancellation_warning = f"pending chat cancellation degraded: {type(exc).__name__}"
+            remount_warning = ""
+            runtime = get_active_desktop_runtime()
+            if runtime is None:
+                remount_warning = "runtime graph is not available for in-process remount"
+            else:
+                try:
+                    await runtime.remount_persona(candidate)
+                    bridge_state.persona_restart_required = False
+                except Exception:
+                    logger.exception("Live persona remount failed")
+                    remount_warning = "remount_failed"
+            live = await _publish_live_persona(ws)
+            warning = ", ".join(item for item in (cancellation_warning, remount_warning, result.get("warning", "")) if item)
+            return {
+                **result,
+                "ok": True,
+                "persona_id": live.get("persona_id") or token.persona_id,
+                "persona_epoch": live.get("persona_epoch") or token.epoch,
+                "persona_fingerprint": live.get("persona_fingerprint") or token.fingerprint,
+                "restart_required": bool(bridge_state.persona_restart_required),
+                "activated": True,
+                **({"warning": warning} if warning else {}),
+            }
     except CharacterCardImportError as exc:
         return {"ok": False, "error": str(exc), "code": exc.code}
     except (PermissionError, PersonaIdentityViolation, ValueError) as exc:
@@ -1528,24 +2030,11 @@ async def handle_persona_activate(payload: dict, ws: WebSocketServerProtocol) ->
         logger.exception("Privileged persona activation failed")
         return {"ok": False, "error": "Persona activation failed", "code": "internal_error"}
 
-    # The identity token changes synchronously before the event loop can emit
-    # an old reply.  New chat is then blocked until every runtime subsystem is
-    # reconstructed around the new persona on process restart.
-    cancellation_warning = ""
-    try:
-        await _get_chat_coordinator().cancel_all(reason="persona_changed")
-    except Exception as exc:
-        logger.exception("Identity changed but pending chat cancellation failed")
-        cancellation_warning = f"pending chat cancellation degraded: {type(exc).__name__}"
-    return {
-        **result,
-        "ok": True,
-        "persona_id": token.persona_id,
-        "persona_epoch": token.epoch,
-        "persona_fingerprint": token.fingerprint,
-        "restart_required": True,
-        **({"warning": cancellation_warning} if cancellation_warning else {}),
-    }
+
+@register_handler(MsgType.PERSONA_ACTIVATE)
+async def handle_persona_activate(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    """Commit an explicitly confirmed identity switch and remount live chat."""
+    return await _commit_live_persona(ws, payload)
 
 
 @register_handler(MsgType.RELATIONSHIP_GET)
@@ -1604,12 +2093,20 @@ async def handle_tts_list(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
         for provider in registered_providers()
     ]
     active = settings.provider if settings else None
+    configured = bool(
+        settings
+        and (
+            settings.provider == "gpt-sovits"
+            or settings.resolved_api_key
+        )
+    )
     return {
         "providers": providers,
         "active": active,
         "enabled": bool(settings and settings.enabled),
         "voice": settings.voice if settings else "",
-        "configured": bool(settings and settings.resolved_api_key),
+        "configured": configured,
+        "base_url": settings.base_url if settings else "",
     }
 
 
@@ -1628,7 +2125,8 @@ async def handle_tts_synthesize(payload: dict, _ws: WebSocketServerProtocol) -> 
     tts_settings = bridge_state.settings.tts
     if not tts_settings.enabled:
         return {"error": "语音合成未启用", "code": "tts_disabled"}
-    if not tts_settings.resolved_api_key:
+    local_provider = tts_settings.provider == "gpt-sovits"
+    if not local_provider and not tts_settings.resolved_api_key:
         return {"error": "所选语音提供方未配置 API 密钥", "code": "tts_not_configured"}
     voice = str(payload.get("voice") or tts_settings.voice or "").strip()
     settings = {
@@ -1637,6 +2135,7 @@ async def handle_tts_synthesize(payload: dict, _ws: WebSocketServerProtocol) -> 
         "model": tts_settings.model,
         "voice": voice,
         "timeout": 60.0,
+        "base_url": tts_settings.base_url,
     }
     try:
         synthesize = build_selected(settings)
@@ -1858,10 +2357,13 @@ async def handle_user_profile_update(payload: dict, _ws: WebSocketServerProtocol
     if not bridge_state.user_mgr:
         return {"profile": None, "emotional_memories": [], "error": "用户档案系统未初始化"}
     try:
-        profile_payload = payload.get("profile", payload)
-        if not isinstance(profile_payload, dict):
-            return {"profile": bridge_state.user_mgr.profile.to_dict(), "error": "用户档案格式无效"}
-        profile = bridge_state.user_mgr.update_profile(profile_payload)
+        if payload.get("restore_default") is True:
+            profile = bridge_state.user_mgr.restore_default_profile()
+        else:
+            profile_payload = payload.get("profile", payload)
+            if not isinstance(profile_payload, dict):
+                return {"profile": bridge_state.user_mgr.profile.to_dict(), "error": "用户档案格式无效"}
+            profile = bridge_state.user_mgr.update_profile(profile_payload)
         if bridge_state.memory and hasattr(bridge_state.memory, "sync_user_profile"):
             bridge_state.memory.sync_user_profile(bridge_state.user_mgr)
         return {
@@ -2110,6 +2612,7 @@ async def _commit_archive(
         {"section": "archive_social", "characters": active_cards},
         ws,
     )
+    _apply_imported_prompt_opts_from_archive()
     return {
         "ok": True,
         **result,
@@ -2580,7 +3083,8 @@ async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> d
         "ui": settings.ui.model_dump(),
         "tts": {
             **settings.tts.model_dump(),
-            "configured": bool(settings.tts.resolved_api_key),
+            "configured": bool(settings.tts.resolved_api_key)
+            or settings.tts.provider == "gpt-sovits",
         },
         "llm": _provider_settings_snapshot(),
     }
@@ -2590,6 +3094,18 @@ async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> d
 async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> dict:
     """更新设置（API Key、Lorebook 等）。"""
     section = payload.get("section", "")
+    if section == "persona_prompt_opts":
+        # 卡作者提示词运行时开关：默认关闭，用户显式开启后才注入。
+        # 状态保存在内存中的 session 槽；archive card 是持久事实源。
+        opts = {
+            "use_imported_system_prompt": payload.get("use_imported_system_prompt") is True,
+            "use_imported_post_history_instructions": (
+                payload.get("use_imported_post_history_instructions") is True
+            ),
+        }
+        if bridge_state.session is not None:
+            bridge_state.session.imported_prompt_opts = opts
+        return {"ok": True, **opts}
     if section == "lorebook":
         # 保存世界书到文件
         # Retired before V4. Accepting this legacy write would recreate a second
@@ -2626,14 +3142,57 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 "diary_peek_enabled",
                 "late_night_enabled",
                 "late_night_message_enabled",
+                "proactive_chat_enabled",
+                "proactive_notifications_enabled",
             }
             for key in bool_fields:
                 if key in payload:
                     setattr(features, key, as_bool(payload[key]))
+            # Acknowledge first so validate_assignment does not force the feature
+            # back off when both flags arrive in one payload.
+            if "video_download_disclaimer_acknowledged" in payload:
+                features.video_download_disclaimer_acknowledged = as_bool(
+                    payload["video_download_disclaimer_acknowledged"]
+                )
+            if "video_download_enabled" in payload:
+                features.video_download_enabled = as_bool(payload["video_download_enabled"])
 
             if "late_night_probability" in payload:
                 value = float(payload["late_night_probability"])
                 features.late_night_probability = min(0.30, max(0.01, value))
+
+            if "video_max_size_mb" in payload:
+                features.video_max_size_mb = min(4096, max(1, int(payload["video_max_size_mb"])))
+            if "video_max_duration_seconds" in payload:
+                features.video_max_duration_seconds = min(21600, max(1, int(payload["video_max_duration_seconds"])))
+            if "video_total_quota_mb" in payload:
+                features.video_total_quota_mb = min(51200, max(1, int(payload["video_total_quota_mb"])))
+            if "proactive_daily_limit" in payload:
+                features.proactive_daily_limit = min(12, max(1, int(payload["proactive_daily_limit"])))
+            if "proactive_min_interval_minutes" in payload:
+                features.proactive_min_interval_minutes = min(
+                    1440, max(15, int(payload["proactive_min_interval_minutes"]))
+                )
+            if "proactive_wake_min_minutes" in payload or "proactive_wake_max_minutes" in payload:
+                wake_min = min(60, max(2, int(payload.get(
+                    "proactive_wake_min_minutes", features.proactive_wake_min_minutes
+                ))))
+                wake_max = min(60, max(2, int(payload.get(
+                    "proactive_wake_max_minutes", features.proactive_wake_max_minutes
+                ))))
+                if wake_min > wake_max:
+                    raise ValueError("proactive wake minimum cannot exceed maximum")
+                features = features.model_copy(update={
+                    "proactive_wake_min_minutes": wake_min,
+                    "proactive_wake_max_minutes": wake_max,
+                })
+                bridge_state.settings.features = features
+            # Fail-closed compliance invariant: video download cannot be enabled unless the
+            # user has acknowledged the liability disclaimer. Any attempt to enable without an
+            # acknowledged disclaimer is forced back off; revoking the acknowledgement disables
+            # the feature in the same update.
+            if not features.video_download_disclaimer_acknowledged:
+                features.video_download_enabled = False
 
             if bridge_state.diary:
                 bridge_state.diary.privacy_enabled = features.diary_privacy_enabled
@@ -2644,6 +3203,16 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 bridge_state.proactive.late_night_probability = features.late_night_probability
                 if hasattr(bridge_state.proactive, "manage_status"):
                     bridge_state.proactive.manage_status = not features.diary_enabled
+                bridge_state.proactive.daily_limit = features.proactive_daily_limit
+                bridge_state.proactive.min_interval_minutes = features.proactive_min_interval_minutes
+                if hasattr(bridge_state.proactive, "wake_min_minutes"):
+                    bridge_state.proactive.wake_min_minutes = features.proactive_wake_min_minutes
+                    bridge_state.proactive.wake_max_minutes = features.proactive_wake_max_minutes
+                if hasattr(bridge_state.proactive, "start") and hasattr(bridge_state.proactive, "stop"):
+                    if features.proactive_chat_enabled and not bridge_state.proactive.running:
+                        bridge_state.proactive.start()
+                    elif not features.proactive_chat_enabled and bridge_state.proactive.running:
+                        bridge_state.proactive.stop()
 
             if bridge_state.work_manager:
                 bridge_state.work_manager.apply_settings(features)
@@ -2665,24 +3234,29 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
 
             if not bridge_state.settings:
                 return {"ok": False, "error": "Settings are not initialized"}
-            tts = bridge_state.settings.tts
+            candidate = bridge_state.settings.model_copy(deep=True)
+            tts = candidate.tts
             if "tts_enabled" in payload:
                 tts.enabled = bool(payload["tts_enabled"])
             if "tts_provider" in payload:
                 provider = str(payload["tts_provider"])
-                if provider not in {"gemini", "openai"}:
+                if provider not in {"gemini", "openai", "gpt-sovits"}:
                     return {"ok": False, "error": f"unknown TTS provider: {provider}"}
                 tts.provider = provider
             if "tts_voice" in payload:
                 tts.voice = str(payload["tts_voice"])[:64]
             if "tts_model" in payload:
                 tts.model = str(payload["tts_model"])[:128]
-            save_settings(bridge_state.settings)
+            if "tts_base_url" in payload:
+                tts.base_url = str(payload["tts_base_url"])
+            save_settings(candidate)
+            bridge_state.settings = candidate
             return {
                 "ok": True,
                 "tts": {
-                    **bridge_state.settings.tts.model_dump(),
-                    "configured": bool(bridge_state.settings.tts.resolved_api_key),
+                    **candidate.tts.model_dump(),
+                    "configured": bool(candidate.tts.resolved_api_key)
+                    or candidate.tts.provider == "gpt-sovits",
                 },
             }
         except Exception as exc:
@@ -2694,17 +3268,60 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
 
             if not bridge_state.settings:
                 return {"ok": False, "error": "Settings are not initialized"}
-            completed = payload.get("completed")
-            if not isinstance(completed, bool):
-                return {"ok": False, "error": "completed must be a boolean"}
-            bridge_state.settings.ui.onboarding_completed = completed
-            bridge_state.settings.ui.onboarding_completed_at_utc = (
-                datetime.now(timezone.utc).isoformat() if completed else ""
-            )
-            save_settings(bridge_state.settings)
+            candidate = bridge_state.settings.model_copy(deep=True)
+            ui_data = candidate.ui.model_dump()
+            if "completed" in payload:
+                completed = payload.get("completed")
+                if not isinstance(completed, bool):
+                    return {"ok": False, "error": "completed must be a boolean"}
+                ui_data["onboarding_completed"] = completed
+                if completed:
+                    if not ui_data["onboarding_completed_at_utc"]:
+                        ui_data["onboarding_completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+                    # Legacy clients sent only completed=true. Upgrade that
+                    # command atomically to the current canonical tuple. An
+                    # explicit onboarding_state in the payload still wins below.
+                    ui_data["onboarding_version"] = max(int(ui_data.get("onboarding_version") or 0), 3)
+                    ui_data["onboarding_last_step"] = "finish"
+                    ui_data["onboarding_state"] = "complete"
+                else:
+                    ui_data["onboarding_completed_at_utc"] = ""
+                    ui_data["onboarding_state"] = "not_started"
+            already_complete = ui_data.get("onboarding_completed") is True
+            progress_state = str(payload.get("onboarding_state") or "")
+            # A late in-progress write from a previous wizard instance must not
+            # reopen a completed install. Replay requires completed=false.
+            if already_complete and "completed" not in payload and progress_state in {
+                "in_progress",
+                "committing",
+                "not_started",
+            }:
+                return {
+                    "ok": True,
+                    "ui": candidate.ui.model_dump(),
+                    "ignored": "onboarding_progress",
+                }
+            if "onboarding_version" in payload:
+                ui_data["onboarding_version"] = int(payload["onboarding_version"])
+            if "onboarding_state" in payload:
+                ui_data["onboarding_state"] = str(payload["onboarding_state"])
+            if "onboarding_last_step" in payload:
+                ui_data["onboarding_last_step"] = str(payload["onboarding_last_step"])
+            if "experience_mode" in payload:
+                ui_data["experience_mode"] = str(payload["experience_mode"])
+            if ui_data["onboarding_state"] == "complete":
+                if int(ui_data.get("onboarding_version") or 0) < 2 or ui_data["onboarding_last_step"] != "finish":
+                    return {"ok": False, "error": "complete onboarding requires version 2+ at finish"}
+                ui_data["onboarding_completed"] = True
+                if not ui_data["onboarding_completed_at_utc"]:
+                    ui_data["onboarding_completed_at_utc"] = datetime.now(timezone.utc).isoformat()
+            from src.config.settings import UISettings
+            candidate.ui = UISettings(**ui_data)
+            save_settings(candidate)
+            bridge_state.settings = candidate
             return {
                 "ok": True,
-                "ui": bridge_state.settings.ui.model_dump(),
+                "ui": candidate.ui.model_dump(),
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -2771,6 +3388,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 "short_term_forgetting_enabled", "misremembering_enabled",
                 "long_term_misremembering_enabled", "short_term_misremembering_enabled",
                 "vector_partitioning_enabled",
+                "memory_lifecycle_governance_enabled",
             }
             for key in bool_fields:
                 if key in payload:
@@ -2785,7 +3403,11 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 )
             if "short_term_forget_probability" in payload:
                 memory_settings.short_term_forget_probability = clamp_float(
-                    payload["short_term_forget_probability"], 0.001, 0.01
+                    payload["short_term_forget_probability"], 0.01, 0.10
+                )
+            if "memory_long_budget_chars" in payload:
+                memory_settings.memory_long_budget_chars = clamp_int(
+                    payload["memory_long_budget_chars"], 50_000, 2_000_000
                 )
             for key in (
                 "misremember_probability", "long_term_misremember_probability",
@@ -2918,6 +3540,8 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 "proactive_event_stories_enabled",
                 "web_surfing_enabled",
                 "web_disclaimer_acknowledged",
+                "web_native_search_enabled",
+                "surf_keyless_search_enabled",
                 "keepsake_collection_enabled",
                 "ambient_presence_enabled",
                 "ambient_sticky_notes_enabled",
@@ -3068,6 +3692,22 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     enabled=features.keepsake_collection_enabled,
                     recall_probability=features.keepsake_recall_probability,
                 )
+            try:
+                from src.config.usage_policy import UsagePolicyDenied, get_usage_policy
+
+                policy = getattr(bridge_state.adapter, "usage_policy", None) or get_usage_policy()
+                grant = bridge_state.settings.ai_usage.web_access
+                if features.web_surfing_enabled and features.web_disclaimer_acknowledged:
+                    if not policy.allowed("web_access"):
+                        try:
+                            policy.grant("web_access")
+                        except UsagePolicyDenied as exc:
+                            logger.warning("Web-access grant deferred: %s", exc)
+                elif grant.enabled:
+                    policy.revoke("web_access")
+            except Exception:
+                logger.exception("Web-access consent update failed; surfing flags were still saved")
+
             if features.web_surfing_enabled and bridge_state.web_surfing is None:
                 from src.web import WebSurfingManager
 
@@ -3077,6 +3717,8 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     allowed_topics=features.web_allowed_topics,
                     refresh_interval_minutes=features.web_refresh_interval_minutes,
                     search_windows=features.web_search_windows,
+                    keyless_search_enabled=features.surf_keyless_search_enabled,
+                    surfing_consent=True,
                 )
             if bridge_state.web_surfing:
                 from src.web import SAFE_TOPICS
@@ -3087,6 +3729,10 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 ] or bridge_state.web_surfing.allowed_topics
                 bridge_state.web_surfing.refresh_interval_minutes = features.web_refresh_interval_minutes
                 bridge_state.web_surfing.search_windows = list(features.web_search_windows)
+                bridge_state.web_surfing.keyless_search_enabled = features.surf_keyless_search_enabled
+                bridge_state.web_surfing.surfing_consent = bool(
+                    features.web_surfing_enabled and features.web_disclaimer_acknowledged
+                )
                 if bridge_state.session:
                     bridge_state.session.web = (
                         bridge_state.web_surfing

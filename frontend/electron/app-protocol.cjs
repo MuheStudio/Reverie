@@ -16,7 +16,7 @@ const PRODUCTION_CSP = [
   "img-src 'self' data: blob: reverie-avatar: reverie-sticker:",
   "font-src 'self' data:",
   "connect-src 'self' reverie-avatar: reverie-focus:",
-  "media-src 'self' blob: reverie-avatar: reverie-focus:",
+  "media-src 'self' blob: reverie-avatar: reverie-focus: reverie-video:",
   "worker-src 'self' blob:",
   "form-action 'none'",
 ].join('; ');

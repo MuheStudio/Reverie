@@ -333,6 +333,40 @@ function handshakeSupervisor(child) {
   return { supervisor, ready };
 }
 
+test('persona:data events refresh the host-owned persona proof', async () => {
+  const child = fakeChild();
+  const { supervisor, ready } = handshakeSupervisor(child);
+  await ready;
+  const sent = [];
+  const input = new FrameDecoder((value) => sent.push(value));
+  child.stdin.on('data', (chunk) => input.push(chunk));
+  const nextFingerprint = 'b'.repeat(64);
+  child.stdout.write(encodeFrame({
+    kind: 'event',
+    frame: {
+      type: 'persona:data',
+      payload: {
+        persona_id: 'st_imported',
+        persona_epoch: 2,
+        persona_fingerprint: nextFingerprint,
+        restart_required: false,
+        model_epoch: 3,
+      },
+    },
+  }));
+  supervisor.sendBusinessFrame({
+    type: 'chat:history',
+    payload: { conversation_id: 'dream-room' },
+    request_id: 'rpc_chat_history_01',
+  });
+  const command = sent.at(-1);
+  assert.deepEqual(command.envelope.persona, {
+    persona_id: 'st_imported',
+    epoch: 2,
+    fingerprint: nextFingerprint,
+  });
+});
+
 test('bridge death mid-write surfaces as an exit event, not an uncaught stdin error', async () => {
   const child = fakeChild();
   const { supervisor, ready } = handshakeSupervisor(child);

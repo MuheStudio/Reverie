@@ -1,9 +1,15 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import MvpRoom from '@/components/MvpRoom';
+import OnboardingWizard from '@/components/Onboarding/OnboardingWizard';
 import { useMvpBridge } from '@/hooks/useMvpBridge';
 import { initI18n } from '@/i18';
-import { decideBootMode, resolveStoredRoomMode, type RoomMode } from '@/lib/startupMode';
+import {
+  decideBootMode,
+  isOnboardingComplete,
+  resolveStoredRoomMode,
+  type RoomMode,
+} from '@/lib/startupMode';
 
 import './common.scss';
 import './styles/reverie-theme.css';
@@ -61,8 +67,8 @@ class RootErrorBoundary extends React.Component<
 }
 
 // DreamRoom is the full "her room" experience. It is loaded lazily so the
-// compact MvpRoom shell stays fast to boot; settings.ui.mode only drives
-// in-session navigation — startup always lands on MvpRoom.
+// compact MvpRoom shell stays fast to boot. Incomplete onboarding always
+// lands on MvpRoom; a leftover ui.mode=dream cannot skip the wizard.
 const DreamRoom = lazy(() => import('@/components/DreamRoom'));
 const PetStage = lazy(() => import('@/components/PetStage/PetStage'));
 
@@ -105,26 +111,66 @@ function AppShell() {
   const [modeKnown, setModeKnown] = useState(false);
   const [bootTimedOut, setBootTimedOut] = useState(false);
   const bootSyncedRef = useRef(false);
+  const intendedModeRef = useRef<RoomMode | null>(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [electronUi, setElectronUi] = useState<Record<string, unknown> | null>(null);
+  const [electronUiKnown, setElectronUiKnown] = useState(false);
+  const pythonUi = isRecord(bridge.settings.ui) ? bridge.settings.ui : null;
+  const uiSettings = pythonUi || electronUi;
+  const hostReady = bridge.connection === 'connected';
+  const onboardingCompleted = onboardingDismissed || isOnboardingComplete(uiSettings);
 
   useEffect(() => {
-    if (!bridge.settings || !isRecord(bridge.settings.ui)) return;
-    const stored = resolveStoredRoomMode(bridge.settings.ui.mode);
+    let cancelled = false;
+    const reader = window.electronAPI?.appState?.getUiSnapshot;
+    if (!reader) {
+      setElectronUiKnown(true);
+      return undefined;
+    }
+    const failSafe = window.setTimeout(() => {
+      if (!cancelled) setElectronUiKnown(true);
+    }, 800);
+    void reader()
+      .then((snapshot) => {
+        if (!cancelled && isRecord(snapshot)) setElectronUi(snapshot);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        window.clearTimeout(failSafe);
+        if (!cancelled) setElectronUiKnown(true);
+      });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(failSafe);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!electronUiKnown && !pythonUi) return;
+    const stored = resolveStoredRoomMode(uiSettings?.mode);
+    const complete = onboardingDismissed || isOnboardingComplete(uiSettings);
     if (!bootSyncedRef.current) {
-      // First snapshot ends the splash only — startup always lands MvpRoom.
+      // First snapshot ends the splash. Incomplete onboarding always opens
+      // MvpRoom so a leftover dream mode cannot hide the wizard. Electron can
+      // read this from config.json even while Python is still starting.
       bootSyncedRef.current = true;
-      const boot = decideBootMode(stored);
+      const boot = decideBootMode(stored, complete);
       setMode(boot.mode);
       setModeKnown(true);
-      if (boot.normalizeStored) {
-        // ui.mode is in-session navigation state; write the stale 'dream'
-        // back so later reconnect snapshots match the visible room.
-        bridge.updateSettings({ section: 'ui', mode: 'mvp' });
-      }
       return;
     }
-    // In-session navigation: every later snapshot is followed verbatim.
+    if (!complete && !onboardingDismissed) {
+      setMode('mvp');
+      return;
+    }
+    if (intendedModeRef.current) {
+      const intended = intendedModeRef.current;
+      intendedModeRef.current = null;
+      setMode(intended);
+      return;
+    }
     setMode(stored);
-  }, [bridge.settings]);
+  }, [electronUiKnown, onboardingDismissed, pythonUi, uiSettings]);
 
   // Once the settings handshake is done, warm the DreamRoom chunk so entering
   // her room in-session is effectively instant.
@@ -136,7 +182,7 @@ function AppShell() {
   }, [modeKnown]);
 
   // Murphy fallback: if the host never answers, never strand the user on the
-  // splash — open MvpRoom with a connection hint after 3s.
+  // splash. The wizard overlays the splash as soon as the bridge authenticates.
   useEffect(() => {
     if (modeKnown) return;
     const timer = window.setTimeout(() => setBootTimedOut(true), 3000);
@@ -158,30 +204,59 @@ function AppShell() {
     });
   }, [mode]);
 
+  const wizard = electronUiKnown && !onboardingCompleted ? (
+    <OnboardingWizard
+      key="reverie-onboarding"
+      initialUi={uiSettings}
+      initialProfile={isRecord(bridge.userProfile) ? bridge.userProfile : null}
+      hostReady={hostReady}
+      updateSettings={bridge.updateSettings}
+      completeOnboarding={bridge.completeOnboarding}
+      importCharacterCard={bridge.importCharacterCard}
+      importWorldBook={bridge.importWorldBook}
+      onCompleted={(result) => {
+        setOnboardingDismissed(true);
+        const next: RoomMode = result?.experienceMode === 'core' ? 'mvp' : 'dream';
+        intendedModeRef.current = next;
+        setMode(next);
+      }}
+    />
+  ) : null;
+
+  const room = mode === 'dream' ? (
+    <Suspense fallback={(
+      <main style={{
+        minHeight: '100vh',
+        display: 'grid',
+        placeItems: 'center',
+        background: '#141727',
+        color: '#f0f1f5',
+        fontFamily: 'sans-serif',
+      }}>
+        <span>正在布置她的房间…</span>
+      </main>
+    )}>
+      <DreamRoom />
+    </Suspense>
+  ) : (
+    <MvpRoom />
+  );
+
   // Before the Python host reports in, show a lightweight splash — never the
-  // full MvpRoom, so a stored dream mode cannot flash-switch the room later.
-  if (!modeKnown && !bootTimedOut) return <BootSplash />;
-  if (mode === 'dream') {
+  // full room, so a stored dream mode cannot flash-switch later. The wizard
+  // still mounts over the splash so a first-run user is not stranded on
+  // "正在来到她的世界".
+  if (!modeKnown && !bootTimedOut) {
     return (
-      <Suspense fallback={(
-        <main style={{
-          minHeight: '100vh',
-          display: 'grid',
-          placeItems: 'center',
-          background: '#141727',
-          color: '#f0f1f5',
-          fontFamily: 'sans-serif',
-        }}>
-          <span>正在布置她的房间…</span>
-        </main>
-      )}>
-        <DreamRoom />
-      </Suspense>
+      <>
+        <BootSplash />
+        {wizard}
+      </>
     );
   }
   return (
     <>
-      {bootTimedOut && !modeKnown && (
+      {bootTimedOut && !hostReady && (
         <div
           role="status"
           style={{
@@ -195,10 +270,11 @@ function AppShell() {
             background: 'rgba(20, 23, 39, 0.92)',
           }}
         >
-          连接她的世界有点慢……已先为你打开简洁主界面。
+          本地服务还在启动。新手引导可以先导入 Live2D；聊天要等服务恢复。
         </div>
       )}
-      <MvpRoom />
+      {room}
+      {wizard}
     </>
   );
 }

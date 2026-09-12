@@ -886,6 +886,23 @@ button:disabled {
   line-height: 1.5;
 }
 
+// Bounded scroll box for the video-download liability disclaimer. Capping the
+// height forces the text into a scrollable region so the "read to the bottom"
+// gate is meaningful; the JS measurement guard still unlocks it when the text
+// happens to fit without a scrollbar (e.g. very tall viewports).
+.videoDisclaimer {
+  max-height: 96px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.02);
+  color: #665b68;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .divider {
   height: 1px;
   margin: 4px 0;

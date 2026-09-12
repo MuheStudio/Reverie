@@ -9,12 +9,13 @@ from src.tts import build_selected, registered_providers, resolve_selected, spli
 
 def test_provider_registry_registers_hosted_backends() -> None:
     keys = {provider.key for provider in registered_providers()}
-    assert {"gemini", "openai"} <= keys
+    assert {"gemini", "openai", "gpt-sovits"} <= keys
 
 
 def test_resolve_selected_by_provider() -> None:
     assert resolve_selected({"provider": "gemini"}).key == "gemini"
     assert resolve_selected({"provider": "openai"}).key == "openai"
+    assert resolve_selected({"provider": "gpt-sovits"}).key == "gpt-sovits"
     assert resolve_selected({"provider": "unknown"}) is None
     assert resolve_selected({}) is None
 

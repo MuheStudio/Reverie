@@ -56,6 +56,7 @@ export type RoomPanelId =
   | 'personalitySettings'
   | 'immersionSettings'
   | 'userProfile'
+  | 'voicePack'
   | 'settings'
   | 'status';
 

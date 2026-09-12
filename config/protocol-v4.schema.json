@@ -470,6 +470,19 @@
             "minLength": 1,
             "title": "Text",
             "type": "string"
+          },
+          "video_media_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Video Media Id"
           }
         },
         "required": [
@@ -958,6 +971,49 @@
         "title": "MemoryQueryPayload",
         "type": "object"
       },
+      "memory:reinforce": {
+        "additionalProperties": false,
+        "description": "Manual weaken/strengthen/reactivate/pin adjustments from the memory UI.",
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 0.5,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Amount"
+          },
+          "memory_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Memory Id",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "weaken",
+              "strengthen",
+              "reactivate",
+              "pin",
+              "unpin"
+            ],
+            "title": "Op",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id",
+          "op"
+        ],
+        "title": "MemoryReinforcePayload",
+        "type": "object"
+      },
       "memory:settings:get": {
         "additionalProperties": false,
         "properties": {},
@@ -1151,6 +1207,22 @@
         "additionalProperties": false,
         "description": "Untrusted SillyTavern JSON card; the importer re-validates size/depth.\n\nThe wire field is ``json``; the attribute is ``json_text`` (serialized\nback as ``json`` via the alias) to avoid shadowing pydantic's historical\n``json`` helper attribute.",
         "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "enum": [
+                  "owner",
+                  "local_admin"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Actor"
+          },
           "filename": {
             "default": "character.json",
             "maxLength": 256,
@@ -1158,11 +1230,37 @@
             "title": "Filename",
             "type": "string"
           },
+          "identity_change_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Identity Change Confirmed"
+          },
           "json": {
             "maxLength": 2000000,
             "minLength": 1,
             "title": "Json",
             "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
           }
         },
         "required": [
@@ -1185,7 +1283,7 @@
       },
       "settings:update": {
         "additionalProperties": false,
-        "description": "The small settings surface that exists in the current MVP.",
+        "description": "Live settings surface. Extra keys stay forbidden; the allow-list matches\n``handle_settings_update`` rather than the historical MVP subset.",
         "properties": {
           "allow_environment_description": {
             "anyOf": [
@@ -1198,6 +1296,148 @@
             ],
             "default": null,
             "title": "Allow Environment Description"
+          },
+          "ambient_book_pages_per_hour": {
+            "anyOf": [
+              {
+                "maximum": 12.0,
+                "minimum": 0.1,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ambient Book Pages Per Hour"
+          },
+          "ambient_offline_replay_max_days": {
+            "anyOf": [
+              {
+                "maximum": 90,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ambient Offline Replay Max Days"
+          },
+          "ambient_presence_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ambient Presence Enabled"
+          },
+          "ambient_sticky_notes_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ambient Sticky Notes Enabled"
+          },
+          "ambient_trace_interval_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440,
+                "minimum": 30,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ambient Trace Interval Minutes"
+          },
+          "api_background_budget_enforced": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Background Budget Enforced"
+          },
+          "api_background_daily_request_budget": {
+            "anyOf": [
+              {
+                "maximum": 10000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Background Daily Request Budget"
+          },
+          "api_background_daily_token_budget": {
+            "anyOf": [
+              {
+                "maximum": 10000000,
+                "minimum": 1000,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Background Daily Token Budget"
+          },
+          "api_budget_tracking_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Budget Tracking Enabled"
+          },
+          "autonomous_memory_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Autonomous Memory Enabled"
+          },
+          "autonomous_memory_llm_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Autonomous Memory Llm Enabled"
           },
           "completed": {
             "anyOf": [
@@ -1225,6 +1465,166 @@
             "default": null,
             "title": "Decay Lambda"
           },
+          "diary_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Enabled"
+          },
+          "diary_key_easter_egg_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Key Easter Egg Enabled"
+          },
+          "diary_key_happy_days": {
+            "anyOf": [
+              {
+                "maximum": 30,
+                "minimum": 3,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Key Happy Days"
+          },
+          "diary_key_intimacy_threshold": {
+            "anyOf": [
+              {
+                "maximum": 10000,
+                "minimum": 100,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Key Intimacy Threshold"
+          },
+          "diary_key_private_emotion_threshold": {
+            "anyOf": [
+              {
+                "maximum": 95.0,
+                "minimum": 40.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Key Private Emotion Threshold"
+          },
+          "diary_peek_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Peek Enabled"
+          },
+          "diary_privacy_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Diary Privacy Enabled"
+          },
+          "embedding_model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Embedding Model"
+          },
+          "emotion_carryover_days": {
+            "anyOf": [
+              {
+                "maximum": 7,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emotion Carryover Days"
+          },
+          "emotion_inertia_factor": {
+            "anyOf": [
+              {
+                "maximum": 0.6,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emotion Inertia Factor"
+          },
+          "emotion_system_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Emotion System Enabled"
+          },
+          "experience_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full",
+                  "core"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Experience Mode"
+          },
           "forgetting_enabled": {
             "anyOf": [
               {
@@ -1236,6 +1636,84 @@
             ],
             "default": null,
             "title": "Forgetting Enabled"
+          },
+          "group_social_api_replies_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Group Social Api Replies Enabled"
+          },
+          "group_social_backchannel_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.5,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Group Social Backchannel Probability"
+          },
+          "group_social_comment_probability": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Group Social Comment Probability"
+          },
+          "group_social_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Group Social Enabled"
+          },
+          "group_social_max_api_calls_per_action": {
+            "anyOf": [
+              {
+                "maximum": 3,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Group Social Max Api Calls Per Action"
+          },
+          "group_social_permanent_memory_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Group Social Permanent Memory Enabled"
           },
           "immersion_closeups_enabled": {
             "anyOf": [
@@ -1287,6 +1765,84 @@
             "default": null,
             "title": "Immersion Smart Home Enabled"
           },
+          "keepsake_collection_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Keepsake Collection Enabled"
+          },
+          "keepsake_recall_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.3,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Keepsake Recall Probability"
+          },
+          "late_night_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Late Night Enabled"
+          },
+          "late_night_message_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Late Night Message Enabled"
+          },
+          "late_night_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.3,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Late Night Probability"
+          },
+          "local_care_reflex_probability": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Local Care Reflex Probability"
+          },
           "long_term_forget_days": {
             "anyOf": [
               {
@@ -1327,6 +1883,58 @@
             "default": null,
             "title": "Long Term Forgetting Enabled"
           },
+          "long_term_misremember_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.1,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Long Term Misremember Probability"
+          },
+          "long_term_misremembering_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Long Term Misremembering Enabled"
+          },
+          "memory_lifecycle_governance_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Lifecycle Governance Enabled"
+          },
+          "memory_long_budget_chars": {
+            "anyOf": [
+              {
+                "maximum": 2000000,
+                "minimum": 50000,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Long Budget Chars"
+          },
           "minimum_retrieval_retention": {
             "anyOf": [
               {
@@ -1340,6 +1948,32 @@
             ],
             "default": null,
             "title": "Minimum Retrieval Retention"
+          },
+          "misremember_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.1,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Misremember Probability"
+          },
+          "misremembering_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Misremembering Enabled"
           },
           "mode": {
             "anyOf": [
@@ -1356,6 +1990,63 @@
             ],
             "default": null,
             "title": "Mode"
+          },
+          "onboarding_last_step": {
+            "anyOf": [
+              {
+                "enum": [
+                  "welcome",
+                  "mode",
+                  "profile",
+                  "deepseek",
+                  "optional-media",
+                  "features",
+                  "rooms",
+                  "cards",
+                  "location",
+                  "pet",
+                  "finish"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Onboarding Last Step"
+          },
+          "onboarding_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "not_started",
+                  "in_progress",
+                  "committing",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Onboarding State"
+          },
+          "onboarding_version": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Onboarding Version"
           },
           "personality_flaws_disclaimer_acknowledged": {
             "anyOf": [
@@ -1406,6 +2097,18 @@
             ],
             "default": null,
             "title": "Proactive Daily Limit"
+          },
+          "proactive_event_stories_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proactive Event Stories Enabled"
           },
           "proactive_min_interval_minutes": {
             "anyOf": [
@@ -1529,10 +2232,61 @@
               "features",
               "immersion",
               "tts",
-              "ui"
+              "ui",
+              "persona_prompt_opts"
             ],
             "title": "Section",
             "type": "string"
+          },
+          "self_growth_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Self Growth Enabled"
+          },
+          "self_growth_from_memory_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Self Growth From Memory Enabled"
+          },
+          "self_growth_from_web_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Self Growth From Web Enabled"
+          },
+          "self_growth_interval_days": {
+            "anyOf": [
+              {
+                "maximum": 365,
+                "minimum": 30,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Self Growth Interval Days"
           },
           "short_term_forget_days": {
             "anyOf": [
@@ -1574,6 +2328,32 @@
             "default": null,
             "title": "Short Term Forgetting Enabled"
           },
+          "short_term_misremember_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.1,
+                "minimum": 0.01,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Short Term Misremember Probability"
+          },
+          "short_term_misremembering_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Short Term Misremembering Enabled"
+          },
           "split_messages": {
             "anyOf": [
               {
@@ -1603,6 +2383,137 @@
             ],
             "default": null,
             "title": "Status"
+          },
+          "surf_keyless_search_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Surf Keyless Search Enabled"
+          },
+          "thought_max_delay_minutes": {
+            "anyOf": [
+              {
+                "maximum": 10080,
+                "minimum": 60,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thought Max Delay Minutes"
+          },
+          "thought_min_delay_minutes": {
+            "anyOf": [
+              {
+                "maximum": 4320,
+                "minimum": 30,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thought Min Delay Minutes"
+          },
+          "thought_of_you_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thought Of You Enabled"
+          },
+          "thought_share_end_hour": {
+            "anyOf": [
+              {
+                "maximum": 24,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thought Share End Hour"
+          },
+          "thought_share_probability": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thought Share Probability"
+          },
+          "thought_share_start_hour": {
+            "anyOf": [
+              {
+                "maximum": 23,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thought Share Start Hour"
+          },
+          "timeline_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeline Enabled"
+          },
+          "timeline_visuals_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeline Visuals Enabled"
+          },
+          "tts_base_url": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tts Base Url"
           },
           "tts_enabled": {
             "anyOf": [
@@ -1634,7 +2545,8 @@
               {
                 "enum": [
                   "gemini",
-                  "openai"
+                  "openai",
+                  "gpt-sovits"
                 ],
                 "type": "string"
               },
@@ -1670,6 +2582,70 @@
             "default": null,
             "title": "Typing Indicator"
           },
+          "use_imported_post_history_instructions": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Use Imported Post History Instructions"
+          },
+          "use_imported_system_prompt": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Use Imported System Prompt"
+          },
+          "user_phrase_alignment_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Phrase Alignment Enabled"
+          },
+          "user_phrase_alignment_probability": {
+            "anyOf": [
+              {
+                "maximum": 0.2,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Phrase Alignment Probability"
+          },
+          "user_phrase_min_count": {
+            "anyOf": [
+              {
+                "maximum": 20,
+                "minimum": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Phrase Min Count"
+          },
           "user_selected_flaws": {
             "anyOf": [
               {
@@ -1682,6 +2658,194 @@
             ],
             "default": null,
             "title": "User Selected Flaws"
+          },
+          "vector_partitioning_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Vector Partitioning Enabled"
+          },
+          "vector_quantization": {
+            "anyOf": [
+              {
+                "enum": [
+                  "float32",
+                  "int8"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Vector Quantization"
+          },
+          "video_download_disclaimer_acknowledged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Video Download Disclaimer Acknowledged"
+          },
+          "video_download_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Video Download Enabled"
+          },
+          "video_max_duration_seconds": {
+            "anyOf": [
+              {
+                "maximum": 21600,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Video Max Duration Seconds"
+          },
+          "video_max_size_mb": {
+            "anyOf": [
+              {
+                "maximum": 4096,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Video Max Size Mb"
+          },
+          "video_total_quota_mb": {
+            "anyOf": [
+              {
+                "maximum": 51200,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Video Total Quota Mb"
+          },
+          "web_allowed_topics": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Allowed Topics"
+          },
+          "web_disclaimer_acknowledged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Disclaimer Acknowledged"
+          },
+          "web_native_search_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Native Search Enabled"
+          },
+          "web_refresh_interval_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440,
+                "minimum": 30,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Refresh Interval Minutes"
+          },
+          "web_search_windows": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 24,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Search Windows"
+          },
+          "web_surfing_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Web Surfing Enabled"
+          },
+          "world_life_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "World Life Enabled"
           }
         },
         "required": [
@@ -1954,13 +3118,80 @@
         "additionalProperties": false,
         "properties": {
           "profile": {
-            "$ref": "#/$defs/UserProfileData"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UserProfileData"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "restore_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Restore Default"
+          }
+        },
+        "title": "UserProfileUpdatePayload",
+        "type": "object"
+      },
+      "video:download": {
+        "additionalProperties": false,
+        "description": "Download a video (HLS m3u8 or direct mp4/webm) and store it locally.\n\nThe feature is disclaimer-gated: the bridge refuses this command unless the\nuser has enabled ``video_download`` and acknowledged the liability\ndisclaimer. ``source_url`` is validated as a public http(s) URL by the\ndownload kernel's SSRF gate; ``page_title`` is an optional label carried\nonly for the chat message caption.",
+        "properties": {
+          "conversation_id": {
+            "default": "dream-room",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "page_title": {
+            "anyOf": [
+              {
+                "maxLength": 400,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Page Title"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "source_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Source Url",
+            "type": "string"
           }
         },
         "required": [
-          "profile"
+          "source_url"
         ],
-        "title": "UserProfileUpdatePayload",
+        "title": "VideoDownloadPayload",
         "type": "object"
       }
     },

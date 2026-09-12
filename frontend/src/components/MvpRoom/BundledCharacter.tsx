@@ -100,13 +100,17 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
   }, [canRender, emotions, record?.id]);
 
   return (
-    <section className={styles.character} aria-label="内置陪伴角色">
+    <section
+      className={styles.character}
+      aria-label="内置陪伴角色"
+      data-avatar-status={state === 'mounted' ? 'ready' : state}
+    >
       {canRender ? (
         <div
           className={styles.live2dInteraction}
           role="button"
           tabIndex={0}
-          aria-label="Hoshino Yumetsuki Live2D 角色；点击挥手"
+          aria-label={`${record?.name || 'Live2D'} 角色；点击挥手`}
           onClick={() => requestMotion('wave')}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
@@ -140,9 +144,9 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
           />
         </div>
       ) : (
-        <div className={styles.characterPlaceholder} role="img" aria-label="角色素材待授权">
+        <div className={styles.characterPlaceholder} role="img" aria-label="尚未导入 Live2D 形象">
           <span>R</span>
-          <small>CHARACTER ASSET PENDING LICENSE</small>
+          <small>请导入 Live2D；角色卡不换皮</small>
         </div>
       )}
       <div className={styles.characterCaption}>

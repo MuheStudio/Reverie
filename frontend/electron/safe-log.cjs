@@ -71,9 +71,16 @@ class SafeLogger {
       warn: console.warn.bind(console),
       error: console.error.bind(console),
     };
-    console.log = (...args) => { originals.log(...args); this.write('INFO', args); };
-    console.warn = (...args) => { originals.warn(...args); this.write('WARN', args); };
-    console.error = (...args) => { originals.error(...args); this.write('ERROR', args); };
+    // The terminal-side write must never be fatal: a closed parent terminal
+    // raises EPIPE here, and this wrapper is the last barrier between a dead
+    // stdout and an uncaught exception in the main process. The durable copy
+    // below already has its own try/catch.
+    const emit = (original, args) => {
+      try { original(...args); } catch {}
+    };
+    console.log = (...args) => { emit(originals.log, args); this.write('INFO', args); };
+    console.warn = (...args) => { emit(originals.warn, args); this.write('WARN', args); };
+    console.error = (...args) => { emit(originals.error, args); this.write('ERROR', args); };
     return () => Object.assign(console, originals);
   }
 }

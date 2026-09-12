@@ -2,12 +2,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
-const { stageLive2DRuntimeAssets } = require('../electron/live2d-runtime-assets.cjs');
-const { createTextureTransformer } = require('./live2d-build-assets.cjs');
+const { stageLive2DCoreOnlyTestRuntime } = require('../electron/live2d-runtime-assets.cjs');
 const { createSeedConfig } = require('./seed-config.cjs');
 const { verifyPackagedWindowsIcons } = require('./windows-icon-verification.cjs');
 const {
   assertProductionPayload,
+  compileProductionPythonSource,
   copyProductionPythonSource,
   preparePythonRuntime,
   writeProductionInventory,
@@ -194,15 +194,10 @@ function stageLive2DTestAssets() {
   const coreSource = process.env.REVERIE_LIVE2D_CORE_PATH
     ? path.resolve(process.env.REVERIE_LIVE2D_CORE_PATH)
     : '';
-  const modelSource = process.env.REVERIE_YUMI_SOURCE
-    ? path.resolve(process.env.REVERIE_YUMI_SOURCE)
-    : path.resolve(repoRoot, '皮套-yumi');
-  return stageLive2DRuntimeAssets({
+  return stageLive2DCoreOnlyTestRuntime({
     coreSource,
-    modelSource,
     resourceRoot: resourcesDir,
     mode: live2dBuildEnabled ? 'public' : 'internal-test',
-    transformCharacter: createTextureTransformer({ projectRoot, frontendRoot }),
   });
 }
 
@@ -269,6 +264,7 @@ async function main() {
     path.join(resourcesDir, 'src'),
     resourcesDir,
   );
+  compileProductionPythonSource(path.join(resourcesDir, 'src'), projectRoot);
   const runtime = preparePythonRuntime({
     projectRoot,
     frontendRoot,

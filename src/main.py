@@ -374,7 +374,11 @@ async def main():
     # API cost limits are owner/application scoped, not persona scoped; an
     # identity switch must never reset or bypass the global usage ledger.
     api_budget = ApiBudgetTracker(settings.features)
-    adapter = LLMAdapter(settings.llm, budget_tracker=api_budget)
+    adapter = LLMAdapter(
+        settings.llm,
+        budget_tracker=api_budget,
+        cost_sentinel_tokens=settings.features.api_cost_sentinel_tokens,
+    )
     memory = MemoryManager(
         persona,
         settings.memory,
@@ -428,6 +432,7 @@ async def main():
                 allowed_topics=settings.features.web_allowed_topics,
                 refresh_interval_minutes=settings.features.web_refresh_interval_minutes,
                 search_windows=settings.features.web_search_windows,
+                keyless_search_enabled=settings.features.surf_keyless_search_enabled,
             )
         except Exception:
             logger.exception("Web capability failed during startup; continuing without it")
@@ -553,6 +558,8 @@ async def main():
         thought_engine=thought_engine,
         social_universe=social_universe,
         hypa_compressor=hypa_compressor,
+        # 卡作者提示词默认关闭；由用户在 DreamRoom 档案编辑器中手动开启。
+        imported_prompt_opts={},
     )
 
     # ── Diary: character's private journal
@@ -720,6 +727,7 @@ async def main():
         world_clock=world_clock,
         ambient_presence=ambient_presence,
         state_scope=work_manager_state,
+        emotion=emotion,
     )
     if (
         settings.features.diary_enabled

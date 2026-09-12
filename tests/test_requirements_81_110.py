@@ -167,12 +167,17 @@ def test_world_clock_uses_exact_2026_calendar_and_does_not_guess(tmp_path) -> No
 
     holiday = clock.day_context(datetime(2026, 9, 25, 9, 0))
     workday = clock.day_context(datetime(2026, 10, 10, 9, 0))
-    unknown = clock.day_context(datetime(2027, 10, 1, 9, 0))
+    statutory = clock.day_context(datetime(2027, 10, 1, 9, 0))
+    unknown = clock.day_context(datetime(2031, 10, 1, 9, 0))
 
     assert holiday.weekday == "星期五"
     assert holiday.holiday == "中秋节"
     assert holiday.is_day_off is True
     assert workday.adjusted_workday == "国庆节调休上班"
+    # 2027 起为法定节日表：当天已覆盖，但官方调休安排未公布。
+    assert statutory.calendar_covered is True
+    assert statutory.arrangement_pending is True
+    assert statutory.holiday == "国庆节"
     assert unknown.calendar_covered is False
     assert unknown.holiday == ""
 
@@ -279,7 +284,38 @@ def test_provider_timeout_is_a_technical_error_and_never_character_speech(tmp_pa
     with pytest.raises(ProviderCallFailed) as raised:
         asyncio.run(session.send_message("在吗"))
 
+    # Clause-110 appendix: the provider failure summary itself reaches the
+    # user (timeout seconds included), still with no retry and no
+    # persona-voiced wrapper.
     assert "不会自动重试" in str(raised.value)
+    assert "超时" in str(raised.value)
+    assert "30 秒" in str(raised.value)
+    assert session._history == []
+
+
+def test_provider_error_summary_carries_code_and_status(tmp_path) -> None:
+    from src.api.adapter import ProviderRequestError
+
+    class RateLimitedAdapter:
+        async def chat(self, _messages: list[dict], **_kwargs) -> FakeResponse:
+            raise ProviderRequestError(
+                "PROVIDER_RATE_LIMITED",
+                retryable=False,
+                outcome_unknown=True,
+                status_code=429,
+            )
+
+    session = _session(tmp_path, RateLimitedAdapter())
+    session.reflex = ReflexSystem(tmp_path / "reflex.sqlite3", persona=default_persona())
+
+    with pytest.raises(ProviderCallFailed) as raised:
+        asyncio.run(session.send_message("在吗"))
+
+    text = str(raised.value)
+    assert "不会自动重试" in text
+    assert "PROVIDER_RATE_LIMITED" in text
+    assert "HTTP 429" in text
+    assert "限流" in text
     assert session._history == []
 
 

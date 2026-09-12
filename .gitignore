@@ -25,6 +25,8 @@ env/
 # OS
 Thumbs.db
 .DS_Store
+# Windows reserved device name collisions (e.g. `cmd > nul` junk files).
+nul
 
 # JavaScript package managers and build output
 node_modules/

@@ -78,8 +78,9 @@ def test_generated_typescript_is_current():
         ROOT / "frontend" / "src" / "contracts" / "protocolV4.generated.ts"
     ).read_text(encoding="utf-8")
     assert generated == typescript()
-    assert "STICKER_SEND" in generated
     assert "LOCAL_MODE_SET" in generated
+    assert "STICKER_SEND" not in generated
+    assert "PERSONA_LIST" not in generated
 
 
 def test_generated_electron_command_allowlist_is_current():

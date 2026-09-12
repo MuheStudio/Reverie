@@ -8,6 +8,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import httpx
 from openai import AsyncOpenAI
@@ -16,13 +17,34 @@ from openai.types.chat import ChatCompletionMessageParam
 from ..config.settings import LLMSettings, SUPPORTED_PROVIDER_NAMES, load_settings
 from ..config.usage_policy import UsagePolicy, get_usage_policy
 from ..local_mode import LocalModeGate, get_local_mode_gate
+from .budget import ApiBudgetTracker
 from .network_policy import assert_provider_destination
 
 if TYPE_CHECKING:
     from ollama import AsyncClient as OllamaClient
-    from .budget import ApiBudgetTracker
 
 logger = logging.getLogger("reverie.api")
+
+
+def native_search_tools_for_base_url(base_url: object) -> list[dict[str, Any]] | None:
+    """Provider-native web-search request hints, matched by hostname.
+
+    Hostname suffix matching is deliberate: an unknown endpoint must never
+    receive a tool payload it does not understand (one 400 would break every
+    chat), so unsupported providers get prompt-level permission only.
+    """
+    try:
+        host = (urlparse(str(base_url)).hostname or "").lower()
+    except Exception:
+        return None
+    if not host:
+        return None
+    if host == "api.z.ai" or host.endswith(".z.ai") or host.endswith("bigmodel.cn"):
+        return [{"type": "web_search", "web_search": {"enable": True}}]
+    if host.endswith("moonshot.cn") or host.endswith("moonshot.ai"):
+        return [{"type": "builtin_function", "function": {"name": "$web_search"}}]
+    return None
+
 
 _RESERVED_CUSTOM_HEADERS = {
     "authorization",
@@ -338,6 +360,7 @@ class LLMAdapter:
         usage_policy: UsagePolicy | None = None,
         custom_headers: dict[str, str] | None = None,
         resolve_settings: bool = True,
+        cost_sentinel_tokens: int = 60_000,
     ) -> None:
         self.settings = (settings or load_settings().llm).model_copy(deep=True)
         if self.settings.provider not in SUPPORTED_PROVIDER_NAMES:
@@ -355,6 +378,10 @@ class LLMAdapter:
         self.local_mode_gate = local_mode_gate or get_local_mode_gate()
         self.usage_policy = usage_policy or get_usage_policy()
         self.custom_headers = dict(custom_headers or {})
+        # A single anomalous request is the anomaly signal, not the summed
+        # day. The sentinel only shouts; budgeting and consent stay the
+        # enforcement layers.
+        self.cost_sentinel_tokens = max(0, int(cost_sentinel_tokens))
 
     def reset_client(self) -> None:
         """Drop cached provider clients after runtime settings change."""
@@ -404,6 +431,7 @@ class LLMAdapter:
         purpose: str = "unclassified",
         background: bool = False,
         disable_reasoning: bool = False,
+        enable_native_search: bool = False,
     ) -> ChatResponse:
         """Send a conversation and get the assistant's reply."""
         # Consent is checked before local-mode checks, budget writes, provider
@@ -423,6 +451,14 @@ class LLMAdapter:
                 str(self.settings.base_url),
             )
             requested_max = max_tokens or self.settings.max_tokens
+            estimated_tokens = ApiBudgetTracker.estimate_tokens(messages, requested_max)
+            self._warn_if_expensive_request(
+                estimated_tokens,
+                purpose=purpose,
+                provider=str(provider),
+                model=selected_model,
+                message_count=len(messages),
+            )
             call_id: str | None = None
             if self.budget_tracker is not None:
                 from .budget import ApiBudgetExceeded
@@ -433,7 +469,7 @@ class LLMAdapter:
                         model=selected_model,
                         purpose=purpose,
                         background=background,
-                        estimated_tokens=self.budget_tracker.estimate_tokens(messages, requested_max),
+                        estimated_tokens=estimated_tokens,
                     )
                 except ApiBudgetExceeded:
                     raise
@@ -456,6 +492,7 @@ class LLMAdapter:
                         max_tokens,
                         selected_model,
                         disable_reasoning=True,
+                        enable_native_search=enable_native_search,
                     )
                 else:
                     response = await self._openai_chat(
@@ -463,6 +500,7 @@ class LLMAdapter:
                         temperature,
                         max_tokens,
                         selected_model,
+                        enable_native_search=enable_native_search,
                     )
                 if not isinstance(response.content, str) or not response.content.strip():
                     raise ProviderRequestError(
@@ -485,12 +523,51 @@ class LLMAdapter:
                     self.budget_tracker.complete(call_id, response.usage)
                 except Exception:
                     logger.exception("API usage could not be written to budget ledger")
+                measured_prompt = (
+                    response.usage.get("prompt_tokens", 0)
+                    if isinstance(response.usage, dict)
+                    else 0
+                )
+                self._warn_if_measured_prompt(measured_prompt, purpose=purpose)
             # A response generated under revoked consent is accounted for but
             # never returned to a caller that could persist or display it.
             self.usage_policy.validate(usage_lease)
             return response
         finally:
             self.usage_policy.finish(usage_lease)
+
+    def _warn_if_expensive_request(
+        self,
+        estimated_tokens: int,
+        *,
+        purpose: str,
+        provider: str,
+        model: str,
+        message_count: int,
+    ) -> None:
+        if self.cost_sentinel_tokens <= 0 or estimated_tokens < self.cost_sentinel_tokens:
+            return
+        logger.warning(
+            "[cost] ⚠️ 单次 LLM 请求估算 input token %d（阈值 %d）— purpose=%s provider=%s "
+            "model=%s messages=%d。上下文可能正在失控：请检查历史/记忆/图片注入。",
+            estimated_tokens,
+            self.cost_sentinel_tokens,
+            purpose,
+            provider,
+            model,
+            message_count,
+        )
+
+    def _warn_if_measured_prompt(self, prompt_tokens: int, *, purpose: str) -> None:
+        if self.cost_sentinel_tokens <= 0 or prompt_tokens < self.cost_sentinel_tokens:
+            return
+        logger.warning(
+            "[cost] ⚠️ 供应商实测 prompt token %d（阈值 %d）— purpose=%s。"
+            "若反复出现，请检查会话尾部裁剪与图片附件。",
+            prompt_tokens,
+            self.cost_sentinel_tokens,
+            purpose,
+        )
 
     def budget_snapshot(self) -> dict[str, Any] | None:
         return self.budget_tracker.snapshot() if self.budget_tracker is not None else None
@@ -503,6 +580,7 @@ class LLMAdapter:
         model: str | None = None,
         *,
         disable_reasoning: bool = False,
+        enable_native_search: bool = False,
     ) -> ChatResponse:
         client = self._get_openai_client()
         request: dict[str, Any] = {
@@ -513,6 +591,10 @@ class LLMAdapter:
         }
         if disable_reasoning:
             request["extra_body"] = {"thinking": {"type": "disabled"}}
+        if enable_native_search:
+            native_tools = native_search_tools_for_base_url(self.settings.base_url)
+            if native_tools:
+                request["tools"] = native_tools
         completion = await client.chat.completions.create(
             **request,
         )

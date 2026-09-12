@@ -18,7 +18,6 @@ import {
   type CharacterActivity,
 } from './avatarContracts';
 import { useAvatarLibrary } from './useAvatarLibrary';
-import defaultYumiPreview from '@/assets/dreamroom/yumi-default-transparent.png';
 import styles from './CharacterStage.module.scss';
 
 const AvatarStage = lazy(() => import('./AvatarStage'));
@@ -54,9 +53,8 @@ export default function CharacterStage({
 }: CharacterStageProps) {
   const { t } = useTranslation();
   const avatars = useAvatarLibrary();
-  // The avatar library write surface is not wired in this build; the bundled
-  // yumi record installed by the main process keeps the her-room stage live
-  // through the same audited character channel MvpRoom uses.
+  // Character cards change persona text only. Live2D is the one user-imported
+  // model shared by MVP, DreamRoom, and the desktop pet.
   const [bundled, setBundled] = useState<{ record: AvatarRecord | null; runtime?: AvatarRuntime }>({ record: null });
   useEffect(() => {
     let disposed = false;
@@ -215,9 +213,9 @@ export default function CharacterStage({
               className={styles.defaultAvatar}
               data-character-activity={previewAction || activity}
               role="img"
-              aria-label={t('dream.defaultYumiPreview')}
+              aria-label={t('dream.avatarPendingPreview')}
             >
-              <img src={defaultYumiPreview} alt="" />
+              <span>R</span>
               <small>{t('dream.previewLoading')}</small>
             </div>
           )}>
@@ -236,10 +234,10 @@ export default function CharacterStage({
             className={styles.defaultAvatar}
             data-character-activity={previewAction || activity}
             role="img"
-            aria-label={t('dream.defaultYumiPreview')}
+            aria-label={t('dream.avatarPendingPreview')}
           >
-            <img src={defaultYumiPreview} alt="" />
-            <small>{t('dream.defaultYumiStatic')}</small>
+            <span>R</span>
+            <small>{t('dream.avatarPendingStatic')}</small>
           </div>
         )
       )}
@@ -425,7 +423,7 @@ export default function CharacterStage({
                   <div className={styles.previewStage}>
                     <Suspense fallback={(
                       <div className={styles.defaultAvatar}>
-                        <img src={defaultYumiPreview} alt="" />
+                        <span>R</span>
                         <small>{t('dream.previewLoading')}</small>
                       </div>
                     )}>
@@ -522,6 +520,15 @@ export default function CharacterStage({
                 >
                   <ImagePlus size={18} />
                   {t('dream.importLive2dFolder')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.importButton}
+                  disabled={!avatars.available || avatars.busy}
+                  onClick={() => void avatars.beginImportLive2DFile()}
+                >
+                  <ImagePlus size={18} />
+                  {t('dream.importLive2dFile')}
                 </button>
               </div>
             )}

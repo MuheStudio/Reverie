@@ -83,7 +83,9 @@ def _character(value: Any) -> dict[str, Any]:
         "id", "name", "alternateName", "age", "birthday", "role", "identity",
         "schedule", "likesDiary", "values", "catchphrases", "neverSay",
         "portraitUrl", "description", "personality", "speakingStyle",
-        "firstMessage", "tags", "createdAt", "updatedAt",
+        "firstMessage", "alternateGreetings", "importedSystemPrompt",
+        "importedPostHistoryInstructions", "useImportedSystemPrompt",
+        "useImportedPostHistoryInstructions", "tags", "createdAt", "updatedAt",
     }
     if set(value) - allowed:
         raise ValueError("character contains unsupported fields")
@@ -111,34 +113,114 @@ def _character(value: Any) -> dict[str, Any]:
         "firstMessage": _text(
             value.get("firstMessage", ""), label="firstMessage", maximum=20_000
         ),
+        "alternateGreetings": _string_list(
+            value.get("alternateGreetings", []),
+            label="alternateGreetings",
+            limit=50,
+        ),
+        "importedSystemPrompt": _text(
+            value.get("importedSystemPrompt", ""),
+            label="importedSystemPrompt",
+            maximum=8_000,
+        ),
+        "importedPostHistoryInstructions": _text(
+            value.get("importedPostHistoryInstructions", ""),
+            label="importedPostHistoryInstructions",
+            maximum=8_000,
+        ),
+        "useImportedSystemPrompt": value.get("useImportedSystemPrompt") is True,
+        "useImportedPostHistoryInstructions": value.get("useImportedPostHistoryInstructions") is True,
         "tags": _string_list(value.get("tags", []), label="tags"),
         "createdAt": _text(value.get("createdAt", _now()), label="createdAt", maximum=64),
         "updatedAt": _text(value.get("updatedAt", _now()), label="updatedAt", maximum=64),
     }
 
 
+_SELECTIVE_LOGIC_VALUES = frozenset({"and_any", "and_all", "not_any", "not_all"})
+_LORE_INJECTION_ROLES = frozenset({"system", "user", "assistant"})
+
+
+def _split_keywords(value: Any) -> list[str]:
+    """Accept an array or a legacy comma-separated keyword string."""
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in re.split(r"[、，,]", value) if item.strip()]
+    return []
+
+
 def _world_entry(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or _DANGEROUS_KEYS.intersection(value):
         raise ValueError("world-book entry must be an object")
-    allowed = {"id", "key", "comment", "content", "alwaysActive", "enabled"}
+    allowed = {
+        "id", "keywords", "secondaryKeywords", "selectiveLogic", "position",
+        "insertionOrder", "priority", "caseSensitive", "comment", "content",
+        "alwaysActive", "enabled", "key", "scanDepth", "tokenBudget",
+        "useRegex", "depth", "role",
+    }
     if set(value) - allowed:
         raise ValueError("world-book entry contains unsupported fields")
+    keywords = _split_keywords(value.get("keywords", value.get("key", "")))
+    if len(keywords) > 200:
+        raise ValueError("world-book keywords exceed the safe limit")
+    secondary = _split_keywords(value.get("secondaryKeywords", []))
+    if len(secondary) > 200:
+        raise ValueError("world-book secondary keywords exceed the safe limit")
+    selective_logic = value.get("selectiveLogic", "and_any")
+    if selective_logic not in _SELECTIVE_LOGIC_VALUES:
+        raise ValueError("world-book selectiveLogic is invalid")
+    position = value.get("position", "before_char")
+    if position not in {"before_char", "after_char"}:
+        raise ValueError("world-book position is invalid")
+    role = value.get("role", "system")
+    if role not in _LORE_INJECTION_ROLES:
+        raise ValueError("world-book role is invalid")
     return {
         "id": _identifier(value.get("id"), label="world-book entry id"),
-        "key": _text(value.get("key", ""), label="world-book key", maximum=5_000),
+        "keywords": keywords,
+        "secondaryKeywords": secondary,
+        "selectiveLogic": selective_logic,
+        "position": position,
+        "insertionOrder": _non_negative_int(value.get("insertionOrder", 100), default=100),
+        "priority": _non_negative_int(value.get("priority", 0), default=0),
+        "caseSensitive": value.get("caseSensitive") is True,
         "comment": _text(value.get("comment", ""), label="world-book comment", maximum=5_000),
         "content": _text(
             value.get("content"), label="world-book content", maximum=100_000, required=True
         ),
         "alwaysActive": value.get("alwaysActive") is True,
         "enabled": value.get("enabled") is not False,
+        "scanDepth": _nullable_non_negative_int(value.get("scanDepth"), default=None),
+        "tokenBudget": _nullable_non_negative_int(value.get("tokenBudget"), default=None),
+        "useRegex": value.get("useRegex") is True,
+        "depth": _non_negative_int(value.get("depth", 0), default=0),
+        "role": role,
     }
+
+
+def _nullable_non_negative_int(value: Any, *, default: int | None) -> int | None:
+    if value is None or value == "":
+        return default
+    return _non_negative_int(value, default=default if default is not None else 0)
+
+
+def _non_negative_int(value: Any, *, default: int) -> int:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return result if result >= 0 else default
 
 
 def _world_book(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or _DANGEROUS_KEYS.intersection(value):
         raise ValueError("world book must be an object")
-    allowed = {"id", "name", "entries", "createdAt", "updatedAt"}
+    allowed = {
+        "id", "name", "entries", "createdAt", "updatedAt",
+        "scanDepth", "tokenBudget", "recursiveScanning",
+    }
     if set(value) - allowed:
         raise ValueError("world book contains unsupported fields")
     entries = value.get("entries", [])
@@ -150,6 +232,9 @@ def _world_book(value: Any) -> dict[str, Any]:
         "entries": [_world_entry(item) for item in entries],
         "createdAt": _text(value.get("createdAt", _now()), label="createdAt", maximum=64),
         "updatedAt": _text(value.get("updatedAt", _now()), label="updatedAt", maximum=64),
+        "scanDepth": _non_negative_int(value.get("scanDepth", 50), default=50),
+        "tokenBudget": _non_negative_int(value.get("tokenBudget", 500), default=500),
+        "recursiveScanning": value.get("recursiveScanning") is True,
     }
 
 

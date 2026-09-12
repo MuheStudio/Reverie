@@ -878,6 +878,7 @@ class ReverieTUI(App):
                     allowed_topics=features.web_allowed_topics,
                     refresh_interval_minutes=features.web_refresh_interval_minutes,
                     search_windows=features.web_search_windows,
+                    keyless_search_enabled=getattr(features, "surf_keyless_search_enabled", False),
                 )
             except Exception:
                 logger.exception("Failed to initialize WebSurfingManager after enabling web surfing")

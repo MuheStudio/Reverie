@@ -2431,6 +2431,65 @@
   line-height: 1.45;
 }
 
+.memoryLibrary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.memoryLibraryRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 252, 244, 0.72);
+}
+
+.memoryLibraryRow p {
+  margin: 0;
+  color: #3f2d35;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.memoryLibraryRow small {
+  color: #806154;
+  font-size: 11px;
+}
+
+.memoryLibraryActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.memoryLibraryActions button {
+  padding: 5px 10px;
+  border: 1px solid rgba(111, 75, 92, 0.35);
+  border-radius: 999px;
+  background: transparent;
+  color: #6f4b5c;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.memoryLibraryActions button:hover {
+  background: rgba(111, 75, 92, 0.12);
+}
+
+.memoryLibraryActions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .modelHint {
   color: #806154;
   font-size: 12px;
@@ -2690,6 +2749,17 @@
   letter-spacing: 0;
 }
 
+.timelineUnavailable {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  border-left: 3px solid rgba(140, 100, 120, 0.35);
+  padding: 6px 10px;
+  background: rgba(140, 100, 120, 0.07);
+  color: #7a5a6a;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
 .topicChoiceGrid {
   display: grid;
   grid-column: 1 / -1;
@@ -2938,6 +3008,76 @@
   border-radius: 18px;
   padding: 12px;
   background: rgba(255, 252, 244, 0.72);
+}
+
+.bookLevelSettings {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.entryFlagCheck {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #7a5c4f;
+}
+
+.worldEntryAdvanced {
+  border-top: 1px dashed rgba(115, 78, 59, 0.18);
+  padding-top: 8px;
+  font-size: 12.5px;
+  color: #7a5c4f;
+}
+
+.worldEntryAdvanced summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.advancedGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  background: rgba(115, 78, 59, 0.05);
+  border-radius: 12px;
+}
+
+.cardAuthorPrompt {
+  border: 1px dashed rgba(196, 108, 82, 0.5);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(255, 241, 212, 0.6);
+  font-size: 12.5px;
+  color: #6f4b5c;
+}
+
+.cardAuthorPrompt summary {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+
+.promptNotice {
+  margin: 8px 0;
+  color: #a1503f;
+  line-height: 1.5;
+}
+
+.promptPreview {
+  margin: 8px 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 252, 244, 0.85);
+  color: #4a3a33;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 .entryFlags {

@@ -38,6 +38,54 @@ _ADJUSTED_WORKDAYS_2026 = {
     "2026-10-10": "国庆节调休上班",
 }
 
+# 2027-2030: only the statutory festival days are marked (《全国年节及纪念日
+# 放假办法》2024年修订 + 农历/节气推算).  The official annual arrangement
+# (连休与调休) is a government decision published each autumn — until it is,
+# the clock stays fail-closed about 调休 instead of guessing.
+_STATUTORY_HOLIDAY_RANGES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "2027": (
+        ("元旦", "2027-01-01", "2027-01-01"),
+        ("春节", "2027-02-05", "2027-02-08"),
+        ("清明节", "2027-04-05", "2027-04-05"),
+        ("劳动节", "2027-05-01", "2027-05-02"),
+        ("端午节", "2027-06-09", "2027-06-09"),
+        ("中秋节", "2027-09-15", "2027-09-15"),
+        ("国庆节", "2027-10-01", "2027-10-03"),
+    ),
+    "2028": (
+        ("元旦", "2028-01-01", "2028-01-01"),
+        ("春节", "2028-01-25", "2028-01-28"),
+        ("清明节", "2028-04-04", "2028-04-04"),
+        ("劳动节", "2028-05-01", "2028-05-02"),
+        ("端午节", "2028-05-28", "2028-05-28"),
+        ("国庆节", "2028-10-01", "2028-10-03"),
+        # 中秋与国庆同年重叠：后写者胜出，重叠日显示更具体的节日名。
+        ("中秋节", "2028-10-03", "2028-10-03"),
+    ),
+    "2029": (
+        ("元旦", "2029-01-01", "2029-01-01"),
+        ("春节", "2029-02-12", "2029-02-15"),
+        ("清明节", "2029-04-04", "2029-04-04"),
+        ("劳动节", "2029-05-01", "2029-05-02"),
+        ("端午节", "2029-06-16", "2029-06-16"),
+        ("中秋节", "2029-09-22", "2029-09-22"),
+        ("国庆节", "2029-10-01", "2029-10-03"),
+    ),
+    "2030": (
+        ("元旦", "2030-01-01", "2030-01-01"),
+        ("春节", "2030-02-02", "2030-02-05"),
+        ("清明节", "2030-04-05", "2030-04-05"),
+        ("劳动节", "2030-05-01", "2030-05-02"),
+        ("端午节", "2030-06-05", "2030-06-05"),
+        ("中秋节", "2030-09-12", "2030-09-12"),
+        ("国庆节", "2030-10-01", "2030-10-03"),
+    ),
+}
+_STATUTORY_ARRANGEMENT_SOURCE = (
+    "法定节日当天依据《全国年节及纪念日放假办法》（2024年修订）与农历/节气推算；"
+    "当年官方连休与调休安排公布前不猜测。"
+)
+
 
 @dataclass(frozen=True)
 class CalendarEvent:
@@ -58,6 +106,7 @@ class DayContext:
     is_day_off: bool = False
     adjusted_workday: str = ""
     calendar_covered: bool = False
+    arrangement_pending: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -107,6 +156,7 @@ class WorldClock:
         year_data = self._calendar.get("years", {}).get(str(now.year), {})
         holidays = year_data.get("holidays", {}) if isinstance(year_data, dict) else {}
         workdays = year_data.get("adjusted_workdays", {}) if isinstance(year_data, dict) else {}
+        arrangement = year_data.get("arrangement_status", "official") if isinstance(year_data, dict) else ""
         return DayContext(
             date=key,
             time=now.strftime("%H:%M"),
@@ -116,6 +166,7 @@ class WorldClock:
             is_day_off=key in holidays,
             adjusted_workday=str(workdays.get(key, "")),
             calendar_covered=bool(year_data),
+            arrangement_pending=isinstance(arrangement, str) and arrangement == "statutory_only",
         )
 
     def build_prompt_context(self, value: datetime | None = None) -> str:
@@ -128,6 +179,8 @@ class WorldClock:
             lines.append(f"今天是{day.holiday}假期")
         if day.adjusted_workday:
             lines.append(f"今天是{day.adjusted_workday}，不是普通周末")
+        if day.arrangement_pending:
+            lines.append("当年官方连休与调休安排尚未公布：以上仅法定节日当天，具体放假调休不得猜测")
         if not day.calendar_covered:
             lines.append("当前年份没有本地权威节假日表，不得猜测法定放假安排")
         return "\n".join(lines)
@@ -213,7 +266,18 @@ class WorldClock:
         try:
             payload = read_json_object(self.calendar_path)
             if payload and isinstance(payload.get("years"), dict):
-                return _sanitize_calendar_payload(payload)
+                calendar = _sanitize_calendar_payload(payload)
+                # Existing installs predate later seed years: merge any seed
+                # year the local file lacks instead of never offering it.
+                missing = {
+                    year: data
+                    for year, data in _seed_calendar_payload()["years"].items()
+                    if year not in calendar["years"]
+                }
+                if missing:
+                    calendar["years"].update(missing)
+                    atomic_write_json(self.calendar_path, calendar)
+                return calendar
         except Exception:
             logger.exception("Failed to load local holiday calendar")
         payload = _seed_calendar_payload()
@@ -233,25 +297,39 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
-def _seed_calendar_payload() -> dict[str, Any]:
+def _holiday_map(ranges: tuple[tuple[str, str, str], ...]) -> dict[str, str]:
     holidays: dict[str, str] = {}
-    for label, start_text, end_text in _HOLIDAY_RANGES_2026:
+    for label, start_text, end_text in ranges:
         current = date.fromisoformat(start_text)
         end = date.fromisoformat(end_text)
         while current <= end:
             holidays[current.isoformat()] = label
             current += timedelta(days=1)
+    return holidays
+
+
+def _seed_calendar_payload() -> dict[str, Any]:
+    years: dict[str, Any] = {
+        "2026": {
+            "jurisdiction": "CN",
+            "source": OFFICIAL_2026_SOURCE,
+            "holidays": _holiday_map(_HOLIDAY_RANGES_2026),
+            "adjusted_workdays": dict(_ADJUSTED_WORKDAYS_2026),
+            "arrangement_status": "official",
+        }
+    }
+    for year, ranges in _STATUTORY_HOLIDAY_RANGES.items():
+        years[year] = {
+            "jurisdiction": "CN",
+            "source": _STATUTORY_ARRANGEMENT_SOURCE,
+            "holidays": _holiday_map(ranges),
+            "adjusted_workdays": {},
+            "arrangement_status": "statutory_only",
+        }
     return {
         "schema": "reverie.local_calendar.v1",
         "cloud_status": "开发中",
-        "years": {
-            "2026": {
-                "jurisdiction": "CN",
-                "source": OFFICIAL_2026_SOURCE,
-                "holidays": holidays,
-                "adjusted_workdays": dict(_ADJUSTED_WORKDAYS_2026),
-            }
-        },
+        "years": years,
     }
 
 
@@ -285,6 +363,11 @@ def _sanitize_calendar_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "source": str(raw_data.get("source", ""))[:500],
             "holidays": holidays,
             "adjusted_workdays": workdays,
+            "arrangement_status": (
+                "statutory_only"
+                if str(raw_data.get("arrangement_status", "")) == "statutory_only"
+                else "official"
+            ),
         }
     if not years:
         raise ValueError("节假日数据不包含有效年份")

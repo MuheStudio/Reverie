@@ -174,6 +174,15 @@ def _retype_negations(text: str) -> tuple[str, ...]:
     return tuple(match.group(0).lower() for match in re.finditer(pattern, text, re.IGNORECASE))
 
 
+_DEFERRED_REPLY_LABELS = {
+    "sleepy_reply": "她睡得迷糊，翻了个身——稍等她一下",
+    "sleep_until_wake": "她睡着了，醒来后会回你",
+    "busy_deferred": "她在忙手头的事，稍后会回你",
+    "away_deferred": "她外出了，回来后会回你",
+    "online_wobble": "她看见了",
+}
+
+
 class ChatDeliveryCoordinator:
     """Generate once, cache before delivery, and isolate every request."""
 
@@ -191,6 +200,8 @@ class ChatDeliveryCoordinator:
         clock: Callable[[], float] = time.time,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        reply_start_planner: Callable[[str], Any] | None = None,
+        presence_provider: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
         self.store = store
         self.get_session = get_session
@@ -205,9 +216,16 @@ class ChatDeliveryCoordinator:
         self.clock = clock
         self.monotonic = monotonic
         self.sleep = sleep
+        self.reply_start_planner = reply_start_planner
+        self.presence_provider = presence_provider
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self.reveal_events: dict[str, asyncio.Event] = {}
         self.anchors: dict[str, tuple[float, float]] = {}
+        self._typing_requests: set[str] = set()
+        # Planned reply-start times in THIS coordinator's clock domain. The
+        # store's due_at is clamped to the real wall clock, so tests (and any
+        # injected clock) must read the plan from here, not from the item.
+        self._planned_due: dict[str, float] = {}
 
     def _track(self, request_id: str, task: asyncio.Task[None]) -> None:
         previous = self.tasks.get(request_id)
@@ -219,6 +237,7 @@ class ChatDeliveryCoordinator:
             if self.tasks.get(request_id) is done:
                 self.tasks.pop(request_id, None)
             self.anchors.pop(request_id, None)
+            self._planned_due.pop(request_id, None)
 
         task.add_done_callback(cleanup)
 
@@ -291,13 +310,17 @@ class ChatDeliveryCoordinator:
         if kernel_command is not None:
             self.kernel_store.begin_command(kernel_command)
         image_path = str(payload.get("image_path") or "")
+        # A video attachment records its own durable path separately: it must
+        # never be fed to the provider as an image (image_path stays empty for
+        # video), but the media store still needs the on-disk path and mime.
+        media_path = str(payload.get("media_path") or "") or image_path
         media = None
         if payload.get("media_id"):
             media = {
                 "media_id": str(payload.get("media_id") or ""),
                 "request_id": request_id,
                 "conversation_id": conversation_id,
-                "media_path": image_path,
+                "media_path": media_path,
                 "mime": str(payload.get("media_mime") or "image/jpeg"),
                 "bytes": int(payload.get("media_bytes") or 0),
             }
@@ -352,9 +375,86 @@ class ChatDeliveryCoordinator:
             client_id=client_id,
             except_request_id=request_id,
         )
+        plan = self._plan_reply_start(text)
+        if plan is not None:
+            due = self.clock() + float(plan.start_delay)
+            self._planned_due[request_id] = due
+            self.store.set_state(
+                request_id,
+                "queued",
+                deferred_reply=True,
+                due_at=due,
+                deliver_at_utc=epoch_to_utc(due),
+            )
+            item = self.store.get_item(request_id) or item
+            label = _DEFERRED_REPLY_LABELS.get(
+                str(getattr(plan, "reason", "")), "她看见了，稍后回复",
+            )
+            await self._emit_state(item, label=label)
+            self._spawn(request_id)
+            return self._state_payload(item)
         await self._emit_state(item, label="她看见了")
         self._spawn(request_id)
         return self._state_payload(item)
+
+    def _plan_reply_start(self, text: str) -> Any | None:
+        """Clause 39/41: presence gates when a reply may start.
+
+        Urgent contexts always bypass the gate — a sleeping person can still
+        be woken by an emergency. Any planner fault fails open so a broken
+        scheduler can never swallow replies.
+        """
+        if self.reply_start_planner is None:
+            return None
+        if is_urgent_context(text):
+            return None
+        try:
+            return self.reply_start_planner(str(text))
+        except Exception:
+            logger.exception("Reply start planning failed; replying immediately")
+            return None
+
+    async def _wait_for_due(self, request_id: str) -> None:
+        """Hold a queued request until its planned reply-start time.
+
+        Only applies to requests the reply-start gate actually deferred
+        (durable ``deferred_reply`` marker). Short slices re-read the item so
+        wall-clock jumps (system sleep/hibernate), user cancels, and scope
+        changes are honoured without a long uninterruptible sleep. The
+        planned time lives in this coordinator's clock domain; the persisted
+        item due_at is the restart fallback (real wall-clock domain).
+        """
+        while True:
+            item = self.store.get_item(request_id)
+            if not item or item.get("state") != "queued" or item.get("cancelled"):
+                return
+            if not item.get("deferred_reply"):
+                return
+            planned = self._planned_due.get(request_id)
+            due = float(planned if planned is not None else item.get("due_at") or 0.0)
+            remaining = due - self.clock()
+            if remaining <= 0:
+                return
+            await self.sleep(min(remaining, 30.0))
+
+    async def _emit_typing(self, item: dict[str, Any], *, typing: bool) -> bool:
+        payload = self._scope_payload(item)
+        payload.update(
+            {
+                "typing": bool(typing),
+                "status": "typing" if typing else "idle",
+                "state": str(item.get("state") or ""),
+            }
+        )
+        presence = None
+        if self.presence_provider is not None:
+            try:
+                presence = self.presence_provider()
+            except Exception:
+                logger.exception("Presence payload failed; typing frame sent without it")
+        if isinstance(presence, dict):
+            payload["presence"] = presence
+        return await self.emit(str(item.get("client_id") or ""), "chat:typing", payload)
 
     async def _cancel_superseded_turns(
         self,
@@ -494,6 +594,10 @@ class ChatDeliveryCoordinator:
             if not item or item.get("state") not in ACTIVE_STATES:
                 return
             if item.get("state") == "queued":
+                await self._wait_for_due(request_id)
+                item = self.store.get_item(request_id)
+                if not item or item.get("state") != "queued":
+                    return
                 await self._generate(request_id)
                 item = self.store.get_item(request_id)
                 if not item or item.get("state") != "ready_waiting":
@@ -525,6 +629,16 @@ class ChatDeliveryCoordinator:
                     except Exception:
                         logger.exception("Could not persist failed kernel command")
                 await self._emit_state(self.store.get_item(request_id) or item)
+        finally:
+            # The typing indicator must never outlive its request, whatever
+            # the exit path (done, failure, cancel, scope change, disconnect).
+            if request_id in self._typing_requests:
+                self._typing_requests.discard(request_id)
+                try:
+                    current = self.store.get_item(request_id) or {}
+                    await self._emit_typing(current or {"client_id": ""}, typing=False)
+                except Exception:
+                    logger.exception("Could not emit typing-off for %s", request_id)
 
     async def _generate(self, request_id: str) -> None:
         item = self.store.get_item(request_id)
@@ -547,6 +661,8 @@ class ChatDeliveryCoordinator:
         if self.kernel_store is not None:
             self.kernel_store.mark_provider_dispatched(request_id)
         item = self.store.get_item(request_id) or item
+        self._typing_requests.add(request_id)
+        await self._emit_typing(item, typing=True)
         if not await self._emit_state(item, label="她看见了，正在想怎么说"):
             # Generation may continue without a renderer; the result will be
             # cached, but no bubble is emitted to another arbitrary window.

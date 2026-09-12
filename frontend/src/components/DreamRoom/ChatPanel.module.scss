@@ -124,6 +124,38 @@
   object-fit: contain;
 }
 
+.greetingSwiper {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-block-start: 0.4rem;
+}
+
+.greetingSwiper button {
+  display: grid;
+  place-items: center;
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  border: 1px solid var(--rv-line-soft);
+  border-radius: 999px;
+  background: var(--rv-paper);
+  color: var(--rv-accent);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.greetingSwiper button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.greetingSwiper small {
+  margin-block-start: 0;
+  font-size: 0.66rem;
+}
+
 .requestState {
   display: flex;
   min-block-size: 44px;

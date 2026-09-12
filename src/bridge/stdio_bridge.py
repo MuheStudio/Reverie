@@ -225,13 +225,20 @@ async def start_stdio_bridge() -> None:
     ws_bridge._controller_ws = controller  # noqa: SLF001
 
     parent_task = asyncio.create_task(ws_bridge._parent_watch_loop(shutdown_event))  # noqa: SLF001
-    if ws_bridge.bridge_state.session is not None:
-        await ws_bridge._get_chat_coordinator().resume(  # noqa: SLF001
-            client_id=context.client_id,
-            conversation_id=context.conversation_id,
-            persona_id=context.persona_id,
-        )
+    activity_task = asyncio.create_task(ws_bridge._runtime_activity_loop())  # noqa: SLF001
+    proactive_task = asyncio.create_task(ws_bridge._proactive_broadcast_loop())  # noqa: SLF001
     try:
+        await ws_bridge.send_to_frontend(
+            controller,
+            ws_bridge.MsgType.RUNTIME_ACTIVITY,
+            ws_bridge._runtime_activity_payload(),  # noqa: SLF001
+        )
+        if ws_bridge.bridge_state.session is not None:
+            await ws_bridge._get_chat_coordinator().resume(  # noqa: SLF001
+                client_id=context.client_id,
+                conversation_id=context.conversation_id,
+                persona_id=context.persona_id,
+            )
         while not shutdown_event.is_set():
             try:
                 message = await asyncio.to_thread(read_frame, sys.stdin.buffer)
@@ -372,8 +379,12 @@ async def start_stdio_bridge() -> None:
         controller.closed = True
         shutdown_event.set()
         parent_task.cancel()
+        activity_task.cancel()
+        proactive_task.cancel()
         await asyncio.gather(
             parent_task,
+            activity_task,
+            proactive_task,
             return_exceptions=True,
         )
         ws_bridge._connections.discard(controller)  # noqa: SLF001

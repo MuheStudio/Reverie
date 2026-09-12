@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const FORMAL_APP_USER_MODEL_ID = 'studio.muhe.reverie';
+const DEVELOPMENT_APP_USER_MODEL_ID = 'studio.muhe.reverie.dev';
 const TEST_BUILD_MARKER = 'TEST-BUILD-DO-NOT-RELEASE.json';
 
 function readDistributionMetadata(resourcesPath) {
@@ -23,13 +24,22 @@ function readDistributionMetadata(resourcesPath) {
 }
 
 function shouldSetFormalAppUserModelId({ platform, isPackaged, resourcesPath }) {
-  if (platform !== 'win32') return false;
-  return !isPackaged || readDistributionMetadata(resourcesPath) === null;
+  if (platform !== 'win32' || !isPackaged) return false;
+  return readDistributionMetadata(resourcesPath) === null;
+}
+
+function resolveAppUserModelId({ platform, isPackaged, resourcesPath }) {
+  if (platform !== 'win32') return null;
+  if (!isPackaged) return DEVELOPMENT_APP_USER_MODEL_ID;
+  if (readDistributionMetadata(resourcesPath) !== null) return null;
+  return FORMAL_APP_USER_MODEL_ID;
 }
 
 module.exports = {
+  DEVELOPMENT_APP_USER_MODEL_ID,
   FORMAL_APP_USER_MODEL_ID,
   TEST_BUILD_MARKER,
   readDistributionMetadata,
+  resolveAppUserModelId,
   shouldSetFormalAppUserModelId,
 };
