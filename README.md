@@ -2,15 +2,13 @@
 
 > **任何人都可以拥有自己的数字人格伴侣，但没有人能把社区贡献据为己有然后关门收费。**
 >
-> — 沐禾工作室 / Muhe Studio · GNU GPLv3
+> — 沐禾工作室 / Muhe Studio
 
-Reverie 是本地优先的 AI 数字人格伴侣。她不是一轮一轮的聊天机器人：她有记忆、情绪、作息、日记、朋友圈和主动找你的理由。目标是安装器双击就能用，数据留在自己的电脑上。
+Reverie 是本地优先的 AI 数字人格伴侣。TA不是一轮一轮的聊天机器人：她有记忆、情绪、作息、日记、朋友圈和主动找你的理由。
 
-当前公开版本是 **Windows 0.5.5**（工作台内部称 0.6 构建）。Live2D **不随包装模型**：安装器只带 Cubism Core；形象由用户在新手引导里自己导入 `*.model3.json` 文件夹 / zip。
+当前公开版本是 **Windows 0.5.5**。Live2D **不随包装模型**：安装器只带 Cubism Core；形象由用户在新手引导里自己导入 `*.model3.json` 文件夹 / zip。
 
-## 她应该是什么样
-
-来自《Reverie计划清单》里的核心与功能清单，而不是营销口号：
+## Reverie中的伴侣应该是什么样
 
 - 像人一样说话：回复有短有长，不会秒回，会分段发，有口癖，偶尔会打错字或撤回
 - 记得你：跨会话长期记忆；会遗忘、会记错，但姓名/生日等身份锚点受保护
@@ -20,17 +18,17 @@ Reverie 是本地优先的 AI 数字人格伴侣。她不是一轮一轮的聊�
 - 本地优先：记忆、日记、密钥、聊天都在本机；云备份接口标「开发中」，不是使用前提
 - 开箱即用：普通用户不需要安装 Python / Node / FFmpeg / Conda
 
-禁止她主动声称自己是人工智能。只有用户直接追问身份时，才给一句诚实的短披露，且绝不声称自己是真人。
+TA不会主动声称自己是人工智能。只有用户直接追问身份时，才给一句诚实的短披露。
 
 ## 现在已经能做什么（Windows 0.5.5）
 
-对照计划清单的实现，而不是「代码里有函数」：
+对照计划清单的实现：
 
 | 能力 | 用户能看到的结果 |
 |---|---|
 | 新手引导 | 第一次启动出现；Live2D / 角色卡 / 世界书 / API 密钥可在引导里完成 |
-| Live2D | 用户导入模型；全应用共用一套形象；换角色卡只换人设，不换皮 |
-| 聊天 | MVP 房间 + 她的房间 + 桌宠；草稿会留；错误原文可见，可复制 |
+| Live2D | 用户导入模型；全应用共用一套形象；换角色卡只换人设，不换形象 |
+| 聊天 | MVP 房间 + TA的房间 + 桌宠；草稿会留；错误原文可见，可复制 |
 | 角色卡 / 世界书 | 导入 SillyTavern PNG/JSON 角色卡与独立 `world_info.json`；可导出 |
 | 记忆 | SQLite 为真相源；检索会参考实体共现和时序意图；治理开关可关可存 |
 | 视频 | 免责声明默认关；同意后可贴公开 mp4/m3u8，聊天里出现一条可点播视频 |
@@ -50,9 +48,9 @@ Apache-2.0 上游的通知合并在 [`NOTICE`](NOTICE)。第三方许可证原�
 
 ## 借鉴致谢：代码 vs 思路
 
-Reverie 是衍生作品。下表是对用户、对原作者都该看清的边界：**「借鉴了代码」** 表示运行时里有该项目的源码、移植或 vendored 副本；**「借鉴了思路」** 表示只读公开规格 / 论文 / 架构，Reverie 侧是洁室重写，没有拷他们的源文件。
+Reverie 是[hoshinohatsuka](https://github.com/hoshinohatsuka)的第一个大项目。所以借鉴了许多优质开源项目。下表是对用户、对原作者都该看清的边界：**「借鉴了代码」** 表示运行时里有该项目的源码、移植或 vendored 副本；**「借鉴了思路」** 表示只读公开规格 / 论文 / 架构，Reverie 侧是洁室重写，没有拷他们的源文件。
 
-### 借鉴了代码（运行时含其源码或直接移植）
+### 借鉴了代码
 
 | 项目 | 许可证 | Reverie 里实际落了什么 |
 |---|---|---|
@@ -72,24 +70,34 @@ N.E.K.O（Apache-2.0）在 NOTICE 中按协议保留了原 NOTICE 全文。若�
 | [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) | Apache-2.0 | 五维记忆、主动陪伴、本地人格伴侣的产品形状 |
 | [Project AIRI](https://github.com/moeru-ai/airi) | MIT | VRM/Live2D 作为可见形象、多 LLM 提供商、语音管道的产品形状 |
 | [OpenRoom / VibeApps](https://github.com/MiniMax-AI/OpenRoom) | MIT | 桌面房间、日记/音乐等「她也有自己的应用」的骨架思路 |
-| Luna-ts | MIT（Cubism Core 除外） | 头部中心、按距离缩放的鼠标视线；Cubism Core 本身是 Live2D Inc. 专有文件，不进 git |
-| [SillyTavern](https://github.com/SillyTavern/SillyTavern) | AGPL-3.0 | **只**兼容公开的 Character Card V2 / 世界书 JSON 形状。不拷 `.js`，不做站内 chub 登录爬虫 |
+| [Luna](https://github.com/Alan-Yu-2077/Luna) | MIT（Cubism Core 除外） | 头部中心、按距离缩放的鼠标视线；Cubism Core 本身是 Live2D Inc. 专有文件，不进 git |
+| [SillyTavern](https://github.com/SillyTavern/SillyTavern) | AGPL-3.0 | **只**参考并兼容公开的 Character Card V2 / 世界书 JSON 。不拷 `.js`，不使用源代码。|
 | [Character Card V2](https://github.com/malfoyslastname/character-card-spec-v2) / [V3 草案](https://github.com/kwaroran/character-card-spec-v3) | 开放规格 | `chara` / `ccv3` PNG 块、`character_book.entries` 字段名 |
 | [ALTM](https://github.com/cuiyuestar/Autonomous-Long-Term-Memory-System) | Apache-2.0 | 驻留/查询分、预算压力、引用反馈、证据链、折叠 worker |
 | [Mem0](https://github.com/mem0ai/mem0) | Apache-2.0 | 轻量实体共现、检索时解冲突 |
 | [Letta / MemGPT](https://github.com/letta-ai/letta) | Apache-2.0 | 分层记忆、空闲期离线整理 |
 | HippoRAG / A-MEM / Generative Agents / LongMemEval | 论文 | 联想检索、原子笔记、recency+importance+relevance、评测口径 |
-| [Kazumi](https://github.com/Predidit/Kazumi) | GPL-3.0 | 一起追番 / 规则引擎的产品方向（完整追番栈未作为本版卖点） |
-| [NachoBot](https://github.com/NachoBot/NachoBot) | GPLv3 | 多平台适配的远期方向；其 AGPL 插件子树已排除 |
+| [Kazumi](https://github.com/Predidit/Kazumi) | GPL-3.0 | 一起追番 / 规则引擎的产品方向（完整追番栈未作为本版卖点，请等待后续更新） |
+| [NachoBot]((https://github.com/Big-Sh0t114/NachoBot)) | GPLv3 | 多平台适配的远期方向；其 AGPL 插件子树已排除 |
 | [foxgirls.club](https://github.com/foxgirlsorg/foxgirls.club) | MIT | 随机二次元图的情绪价值 |
 | liquidglass-oss | MIT | 玻璃拟态 CSS 观感 |
 | wigolo | AGPL-3.0 | **仅**联网搜索架构灵感；代码零并入 |
 
-**Live2D Inc. Cubism Core** 不是开源项目。公开安装器只分发你持有出版许可的 `Live2DCubismCore.js`，不附带任何 `.moc3` / 纹理 / 动作。用户导入的模型版权归模型作者。
+目前Reverie向上兼容酒馆（[SillyTavern](https://github.com/SillyTavern/SillyTavern)）的角色卡与世界书，此为核心聊天功能，可正常运行，为了保证开箱即用，Reverie内置了星野幻月角色（是[hoshinohatsuka](https://github.com/hoshinohatsuka)的OC）。
 
-**不会并入：** SillyTavern 源码、NachoBot 的 AGPL 插件、wigolo 源码、任何商业 DRM 破解、把 yumi 模型打进安装器。
+但实际上上述某些功能并未真正能正常运行，因为时至今日，Reverie仍然是半成品。请等待后续更新。
 
-## 从源码运行（开发）
+**一句话：Reverie是吃百家饭长大的**
+
+**Live2D Inc. Cubism Core** 不是开源项目。公开安装器只分发持有出版许可的 `Live2DCubismCore.js`，不附带任何 `.moc3` / 纹理 / 动作。用户导入的模型版权归模型作者。
+
+**不会并入：** 任何商业 DRM 破解。
+
+## 用户：安装发行版
+
+双击安装 [`Reverie0.5.5-Setup-0.5.5-x64.exe`](https://github.com/Muhe-Studio/Reverie/releases)。默认装到 `C:\Program Files\Reverie`。第一次打开走新手引导：填 API、导入你自己的 Live2D、可选导入角色卡/世界书。卸载或重装不应抹掉 `%APPDATA%` 里已有的记忆和日记。
+
+## 从源码运行（开发者）
 
 需要 Python 3.12、Node.js 18+、pnpm、Git。不要把用户数据写到别人的 `测试\` 目录。
 
@@ -128,9 +136,6 @@ pnpm package:win
 
 细节见 [`frontend/WINDOWS-PACKAGING.md`](frontend/WINDOWS-PACKAGING.md)。
 
-## 普通用户：安装发行版
-
-双击安装 [`Reverie0.5.5-Setup-0.5.5-x64.exe`](https://github.com/Muhe-Studio/Reverie/releases)。默认装到 `C:\Program Files\Reverie`。第一次打开走新手引导：填 API、导入你自己的 Live2D、可选导入角色卡/世界书。卸载或重装不应抹掉 `%APPDATA%` 里已有的记忆和日记。
 
 ## 项目结构
 
@@ -143,6 +148,9 @@ Reverie-Windows/
 ├── tests/                pytest
 └── config/               protocol-v4 契约
 ```
+## 致谢
+
+[Darkline](https://github.com/muyuzy123-pixel) ：提供精神支持及帮助制作Live 2D模型。
 
 ---
 
