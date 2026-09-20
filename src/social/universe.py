@@ -81,7 +81,6 @@ class SocialUniverse:
         if self._state_scope is not None:
             self._state_scope.require_current()
         connection = connect_database(self.path, timeout=30.0, isolation_level=None)
-        connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")

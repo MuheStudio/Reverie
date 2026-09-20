@@ -59,28 +59,32 @@ test('runtime asset verification fails closed after Core or model tampering', ()
   assert.throws(() => readRuntimeAssetsManifest(resources), /hash/i);
 });
 
-test('staging rejects symlinks and missing model manifests', (t) => {
+test('staging rejects symlinks and missing model manifests', () => {
   const { root, resources, core, model } = fixture();
-  fs.unlinkSync(path.join(model, 'avatar.model3.json'));
+  const modelPath = path.join(model, 'avatar.model3.json');
+  const modelContents = fs.readFileSync(modelPath);
+  fs.unlinkSync(modelPath);
   assert.throws(() => stageLive2DRuntimeAssets({
     coreSource: core,
     modelSource: model,
     resourceRoot: resources,
     mode: 'internal-test',
   }), /model3/i);
+  assert.deepEqual(fs.readdirSync(resources), []);
 
-  if (process.platform !== 'win32') {
-    const link = path.join(root, 'linked-model');
-    fs.symlinkSync(model, link, 'dir');
-    assert.throws(() => stageLive2DRuntimeAssets({
-      coreSource: core,
-      modelSource: link,
-      resourceRoot: resources,
-      mode: 'internal-test',
-    }), /symlink/i);
-  } else {
-    t.diagnostic('Windows symlink creation is privilege-dependent; recursive lstat is covered by implementation');
-  }
+  // Restore a valid model so the second rejection proves the link boundary,
+  // independently of the preceding missing-manifest check.
+  fs.writeFileSync(modelPath, modelContents);
+  const link = path.join(root, 'linked-model');
+  fs.symlinkSync(model, link, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(fs.lstatSync(link).isSymbolicLink(), true);
+  assert.throws(() => stageLive2DRuntimeAssets({
+    coreSource: core,
+    modelSource: link,
+    resourceRoot: resources,
+    mode: 'internal-test',
+  }), /character source must be a real directory/i);
+  assert.deepEqual(fs.readdirSync(resources), []);
 });
 
 test('staging rejects a non-Core JavaScript file even when it is non-empty', () => {

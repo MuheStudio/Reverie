@@ -48,6 +48,7 @@ export type RoomPanelId =
   | PhoneAppPanelId
   | 'ai'
   | 'archive'
+  | 'worldBook'
   | 'backup'
   | 'antiAiSettings'
   | 'chatSettings'

@@ -7,10 +7,8 @@ const path = require('node:path');
 const test = require('node:test');
 const { VoicePackManager, MANIFEST_SCHEMA } = require('./voice-pack-manager.cjs');
 
-const REAL_PACK = path.resolve(__dirname, '..', '..', '..', '..', 'TTS-Neuro');
-
 function temporaryRoot(name) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), `reverie-voice-pack-${name}-`));
+  return fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), `reverie-voice-pack-${name}-`));
 }
 
 function pcmWav(seconds = 1, sampleRate = 8000) {
@@ -41,6 +39,27 @@ function fixture(name) {
   return root;
 }
 
+function wrappedMetadataFixture() {
+  const root = temporaryRoot('wrapped-metadata');
+  const wrapper = path.join(root, 'Neuro-V2-VoicePack');
+  fs.mkdirSync(wrapper);
+  // Checkpoints are deliberately opaque: importing a pack must never
+  // deserialize or execute model files. The WAV and transcript are valid.
+  fs.writeFileSync(path.join(wrapper, 'Neuro-e24.ckpt'), 'synthetic-gpt-checkpoint');
+  fs.writeFileSync(path.join(wrapper, 'Neuro-v2.pth'), 'synthetic-sovits-checkpoint');
+  fs.writeFileSync(path.join(wrapper, 'reference.wav'), pcmWav());
+  fs.writeFileSync(path.join(wrapper, 'reference.txt'), 'A synthetic local reference transcript.\n');
+  for (const directory of [root, wrapper]) {
+    fs.writeFileSync(path.join(directory, '.DS_Store'), 'macOS directory metadata');
+    fs.writeFileSync(path.join(directory, '._Neuro-e24.ckpt'), 'macOS AppleDouble metadata');
+    const metadata = path.join(directory, '__MACOSX', 'nested');
+    fs.mkdirSync(metadata, { recursive: true });
+    fs.writeFileSync(path.join(metadata, 'ignored.ckpt'), 'not a duplicate model');
+    fs.writeFileSync(path.join(metadata, 'ignored.ps1'), 'metadata subtree must not be imported');
+  }
+  return root;
+}
+
 function manager(name) {
   return new VoicePackManager({ storageDir: path.join(temporaryRoot(name), 'app-data') });
 }
@@ -51,26 +70,35 @@ const confirmation = Object.freeze({
   runtimeVersion: 'v2',
 });
 
-test('imports the local TTS-Neuro pack while ignoring exact macOS metadata subtrees', { timeout: 120000 }, () => {
-  assert.equal(fs.existsSync(REAL_PACK), true, `Expected local fixture at ${REAL_PACK}`);
-  const packs = manager('real');
-  const preview = packs.preview(REAL_PACK);
+test('imports a wrapped synthetic voice pack while ignoring exact macOS metadata subtrees', () => {
+  const source = wrappedMetadataFixture();
+  const packs = manager('wrapped');
+  const preview = packs.preview(source);
   assert.equal(preview.wrapperDirectory, 'Neuro-V2-VoicePack');
   assert.deepEqual(new Set(preview.files.map((file) => file.role)), new Set([
     'gptCheckpoint', 'sovitsCheckpoint', 'referenceAudio', 'transcript',
   ]));
   assert.equal(preview.files.some((file) => file.originalName.startsWith('._')), false);
+  assert.equal(preview.files.length, 4);
 
   const imported = packs.commit(preview, confirmation);
   assert.match(imported.id, /^[0-9a-f-]{36}$/i);
   assert.equal(fs.existsSync(path.join(imported.recordPath, `${MANIFEST_SCHEMA}.json`)), true);
   assert.equal(fs.existsSync(path.join(imported.recordPath, 'payload', 'Neuro-e24.ckpt')), true);
+  assert.deepEqual(fs.readdirSync(path.join(imported.recordPath, 'payload')).sort(), [
+    'Neuro-e24.ckpt', 'Neuro-v2.pth', 'reference.txt', 'reference.wav',
+  ].sort());
   assert.equal(imported.rightsAttestation.scope, 'local-use import');
   assert.equal(JSON.stringify(imported).toLowerCase().includes('redistribut'), false);
   packs.setActive(imported.id);
   assert.equal(packs.list().records.find((pack) => pack.id === imported.id).active, true);
   assert.equal(packs.remove(imported.id), true);
   assert.equal(packs.list().records.length, 0);
+
+  const lookalike = path.join(source, '__MACOSX-extra');
+  fs.mkdirSync(lookalike);
+  fs.writeFileSync(path.join(lookalike, 'install.ps1'), 'must not be ignored');
+  assert.throws(() => packs.preview(source), /executable or script/i);
 });
 
 test('rejects duplicate checkpoint assets', () => {

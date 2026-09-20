@@ -28,11 +28,14 @@ function license(overrides = {}) {
 
 test('Live2D license is bound to app, platform, contract, and validity interval', () => {
   const now = Date.parse('2026-01-01T00:00:00.000Z');
-  assert.equal(validateLive2DLicense(license(), { now, platform: 'win32' }).contractId, 'contract-1234');
-  assert.throws(() => validateLive2DLicense(license({ applicationId: 'evil.app' }), { now }), /applicationId/i);
-  assert.throws(() => validateLive2DLicense(license({ platforms: ['darwin'] }), { now }), /win32/i);
+  const options = { now, platform: 'win32' };
+  assert.equal(validateLive2DLicense(license(), options).contractId, 'contract-1234');
+  assert.throws(() => validateLive2DLicense(license({ applicationId: 'evil.app' }), options), /applicationId/i);
+  assert.throws(() => validateLive2DLicense(license({ platforms: ['darwin'] }), options), /win32/i);
+  assert.equal(validateLive2DLicense(license({ platforms: ['darwin'] }), { now, platform: 'darwin' }).contractId, 'contract-1234');
+  assert.throws(() => validateLive2DLicense(license(), { now, platform: 'darwin' }), /darwin/i);
   assert.throws(
-    () => validateLive2DLicense(license({ expiresAt: '2025-12-31T00:00:00Z' }), { now }),
+    () => validateLive2DLicense(license({ expiresAt: '2025-12-31T00:00:00Z' }), options),
     /currently valid/i,
   );
 });

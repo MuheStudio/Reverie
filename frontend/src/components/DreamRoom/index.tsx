@@ -202,6 +202,11 @@ const PANEL_META: Record<RoomPanelId, PanelMeta> = {
     subtitle: '创建、导入、导出 .json 档案，并选择多角色对话成员。',
     icon: LibraryBig,
   },
+  worldBook: {
+    title: '世界书管理',
+    subtitle: '导入、管理和导出 SillyTavern 世界书。',
+    icon: BookOpen,
+  },
   backup: {
     title: '备份',
     subtitle: '导出或导入 Reverie JSON 备份。',

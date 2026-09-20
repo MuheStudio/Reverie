@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+// macOS /var aliases /private/var; fixtures must satisfy the real-directory contract.
+const temporaryDirectory = fs.realpathSync(os.tmpdir());
 const { CredentialVault } = require('./credential-vault.cjs');
 
 function fakeSafeStorage(available = true) {
@@ -18,7 +20,7 @@ function fakeSafeStorage(available = true) {
 }
 
 test('credential vault stores only OS-encrypted bytes and exposes status without plaintext', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const status = vault.set('llm', {
     apiKey: 'sk-canary-never-plaintext',
@@ -41,7 +43,7 @@ test('credential vault stores only OS-encrypted bytes and exposes status without
 });
 
 test('Amap BYOK is encrypted and status never exposes plaintext', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-amap-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-amap-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const status = vault.set('amap', { apiKey: 'amap-owner-canary' });
 
@@ -56,7 +58,7 @@ test('Amap BYOK is encrypted and status never exposes plaintext', () => {
 });
 
 test('Google Places BYOK is isolated and bound to its fixed endpoint', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-google-places-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-google-places-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const binding = 'a'.repeat(64);
   vault.set('amap', { apiKey: 'amap-only' });
@@ -77,7 +79,7 @@ test('Google Places BYOK is isolated and bound to its fixed endpoint', () => {
 });
 
 test('credential vault has no plaintext fallback when OS encryption is unavailable', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage(false) });
   assert.equal(vault.status().available, false);
   assert.throws(
@@ -88,7 +90,7 @@ test('credential vault has no plaintext fallback when OS encryption is unavailab
 });
 
 test('explicit session-only credentials work without OS encryption and never touch disk', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage(false) });
   const status = vault.setSession('llm', { apiKey: 'session-secret' });
 
@@ -100,7 +102,7 @@ test('explicit session-only credentials work without OS encryption and never tou
 });
 
 test('a committed persistent credential replaces any stale session overlay', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const binding = 'f'.repeat(64);
   vault.setSession('llm', { apiKey: 'old-session-key' }, { binding });
@@ -114,7 +116,7 @@ test('a committed persistent credential replaces any stale session overlay', () 
 });
 
 test('credential replacement does not retain invisible fields from the old record', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   vault.set('llm', {
     apiKey: 'old-key',
@@ -127,7 +129,7 @@ test('credential replacement does not retain invisible fields from the old recor
 });
 
 test('startup restores the deterministic backup after interruption before promote', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();
   const vault = new CredentialVault({ storageDir: root, safeStorage });
   vault.set('llm', { apiKey: 'last-known-good' });
@@ -143,7 +145,7 @@ test('startup restores the deterministic backup after interruption before promot
 });
 
 test('startup prefers a valid primary and removes a stale deterministic backup', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();
   const vault = new CredentialVault({ storageDir: root, safeStorage });
   vault.set('llm', { apiKey: 'old' });
@@ -158,7 +160,7 @@ test('startup prefers a valid primary and removes a stale deterministic backup',
 });
 
 test('startup keeps the valid backup when the primary has only a recognized schema', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();
   const vault = new CredentialVault({ storageDir: root, safeStorage });
   vault.set('llm', { apiKey: 'recover-me' });
@@ -175,7 +177,7 @@ test('startup keeps the valid backup when the primary has only a recognized sche
 });
 
 test('failed durable clear preserves the session credential', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();
   const vault = new CredentialVault({ storageDir: root, safeStorage });
   vault.setSession('llm', { apiKey: 'session-key' });
@@ -186,7 +188,7 @@ test('failed durable clear preserves the session credential', () => {
 });
 
 test('Windows encryption failure preserves an existing credential and returns a stable code', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();
   const vault = new CredentialVault({ storageDir: root, safeStorage });
   vault.set('llm', { apiKey: 'old-secret' });
@@ -206,7 +208,7 @@ test('Windows encryption failure preserves an existing credential and returns a 
 });
 
 test('ciphertext read-back mismatch is rejected before replacing the old vault', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const safeStorage = fakeSafeStorage();
   const vault = new CredentialVault({ storageDir: root, safeStorage });
   vault.set('llm', { apiKey: 'old-secret' });
@@ -222,7 +224,7 @@ test('ciphertext read-back mismatch is rejected before replacing the old vault',
 });
 
 test('credential vault fails closed on corrupt ciphertext and never silently replaces it', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   fs.mkdirSync(root, { recursive: true });
   const target = path.join(root, 'credentials.vault');
   fs.writeFileSync(target, 'not-a-valid-cipher');
@@ -239,7 +241,7 @@ test('credential vault fails closed on corrupt ciphertext and never silently rep
 });
 
 test('credential vault rejects symlinks, oversized secrets, and header injection', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   assert.throws(() => vault.set('llm', { apiKey: `x\r\nInjected: yes` }), /invalid/);
   assert.throws(() => vault.set('llm', {
@@ -255,7 +257,7 @@ test('credential vault rejects symlinks, oversized secrets, and header injection
 });
 
 test('provider-bound credentials never cross an endpoint boundary', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-binding-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-binding-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const deepseekBinding = 'a'.repeat(64);
   const openaiBinding = 'b'.repeat(64);
@@ -273,7 +275,7 @@ test('provider-bound credentials never cross an endpoint boundary', () => {
 });
 
 test('legacy unbound vaults remain readable but fail closed when an endpoint binding is required', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-legacy-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-legacy-'));
   const safeStorage = fakeSafeStorage();
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(
@@ -293,7 +295,7 @@ test('legacy unbound vaults remain readable but fail closed when an endpoint bin
 });
 
 test('provider commit rollback restores the sole MVP credential scope', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-vault-rollback-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-vault-rollback-'));
   const vault = new CredentialVault({ storageDir: root, safeStorage: fakeSafeStorage() });
   const oldBinding = 'd'.repeat(64);
   const newBinding = 'e'.repeat(64);
