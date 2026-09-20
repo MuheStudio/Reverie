@@ -11,6 +11,7 @@ for (const stdio of [process.stdout, process.stderr]) {
     throw error;
   });
 }
+const startupStartedAt = process.hrtime.bigint();
 
 const {
   app,
@@ -18,6 +19,7 @@ const {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   Notification,
   powerMonitor,
   protocol,
@@ -35,6 +37,8 @@ const { Worker } = require('worker_threads');
 const { installAppProtocol } = require('./app-protocol.cjs');
 const { BridgeHostProxy } = require('./bridge-host-proxy.cjs');
 const { FramedBridgeSupervisor } = require('./framed-bridge-supervisor.cjs');
+const { resolveMacDevelopmentPython } = require('./python-command.cjs');
+const { createPackagedPythonEnvironment, resolveMacPackagedPython } = require('./packaged-python.cjs');
 const { CredentialVault } = require('./credential-vault.cjs');
 const { StorageKeyVault } = require('./storage-key-vault.cjs');
 const {
@@ -72,7 +76,7 @@ const {
 } = require('./runtime-security.cjs');
 const { SafeLogger } = require('./safe-log.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
-const { resolveTestUserDataOverride } = require('./test-user-data.cjs');
+const { MAC_TEST_PRODUCT_NAME, validateMacTestBuild, resolveTestUserDataOverride } = require('./test-user-data.cjs');
 const {
   resolveAppUserModelId,
 } = require('./windows-app-identity.cjs');
@@ -127,6 +131,16 @@ const FRONTEND_DEV_URL = 'http://localhost:5173';
 const IS_DEV = !app.isPackaged;
 const BRIDGE_RESTART_MAX_MS = 30_000;
 
+function logStartupStage(stage, startedAt = null, details = {}) {
+  const now = process.hrtime.bigint();
+  console.log('[Electron] Startup stage', {
+    stage,
+    elapsedMs: Math.round(Number(now - startupStartedAt) / 1e6),
+    ...(startedAt ? { durationMs: Math.round(Number(now - startedAt) / 1e6) } : {}),
+    ...details,
+  });
+}
+
 registerDesktopSchemes(protocol);
 
 const appUserModelId = resolveAppUserModelId({
@@ -142,10 +156,25 @@ if (IS_DEV && process.env.REVERIE_USER_DATA_DIR) {
   fs.mkdirSync(override, { recursive: true });
   app.setPath('userData', override);
 }
+if (!IS_DEV && process.platform === 'darwin') {
+  const identity = validateMacTestBuild(path.resolve(process.resourcesPath, '..', '..'), { required: false });
+  if (identity) {
+    app.setName(MAC_TEST_PRODUCT_NAME);
+    if (!process.env.REVERIE_TEST_USER_DATA_DIR) {
+      const isolatedDefault = path.join(app.getPath('appData'), MAC_TEST_PRODUCT_NAME);
+      fs.mkdirSync(path.join(isolatedDefault, 'session'), { recursive: true, mode: 0o700 });
+      app.setPath('userData', isolatedDefault);
+      app.setPath('sessionData', path.join(isolatedDefault, 'session'));
+    }
+  }
+}
 if (!IS_DEV && process.env.REVERIE_TEST_USER_DATA_DIR) {
-  const packageRoot = path.resolve(__dirname, '..', '..', '..');
+  const packageRoot = process.platform === 'darwin'
+    ? path.resolve(process.resourcesPath, '..', '..')
+    : path.resolve(__dirname, '..', '..', '..');
   const override = resolveTestUserDataOverride({
     isPackaged: app.isPackaged,
+    platform: process.platform,
     packageRoot,
     requestedPath: process.env.REVERIE_TEST_USER_DATA_DIR,
   });
@@ -154,6 +183,27 @@ if (!IS_DEV && process.env.REVERIE_TEST_USER_DATA_DIR) {
   fs.mkdirSync(sessionData, { recursive: true });
   app.setPath('userData', override);
   app.setPath('sessionData', sessionData);
+}
+if (!IS_DEV && process.platform === 'darwin') {
+  const userData = app.getPath('userData');
+  const directories = {
+    sessionData: path.join(userData, 'session'),
+    cache: path.join(userData, 'runtime', 'cache'),
+    crashDumps: path.join(userData, 'crash-dumps'),
+    logs: path.join(userData, 'logs'),
+  };
+  for (const [name, directory] of Object.entries(directories)) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    app.setPath(name, directory);
+  }
+  for (const name of ['tmp', 'data', 'state']) {
+    fs.mkdirSync(path.join(userData, 'runtime', name), { recursive: true, mode: 0o700 });
+  }
+  const privateEnvironment = createPackagedPythonEnvironment(process.resourcesPath, process.env, userData);
+  for (const name of ['TMPDIR', 'TMP', 'TEMP', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME']) {
+    process.env[name] = privateEnvironment[name];
+  }
+  app.commandLine.appendSwitch('disk-cache-dir', directories.cache);
 }
 
 const packagedIndex = path.join(__dirname, '..', 'dist', 'index.html');
@@ -275,6 +325,12 @@ function probeLive2DRuntime() {
 
 function getPythonCommand() {
   if (!IS_DEV) {
+    if (process.platform === 'darwin') {
+      return resolveMacPackagedPython(getRuntimeRoot(), {
+        userDataPath: app.getPath('userData'),
+        onDiagnostic: ({ elapsedMs, ...details }) => logStartupStage('python-probe', null, { ...details, probeElapsedMs: elapsedMs }),
+      });
+    }
     const bundled = path.join(
       getRuntimeRoot(),
       'python',
@@ -282,6 +338,9 @@ function getPythonCommand() {
     );
     if (isRegularUnlinkedFile(bundled)) return bundled;
     throw new Error('Verified bundled Python runtime is missing');
+  }
+  if (process.platform === 'darwin') {
+    return resolveMacDevelopmentPython(getRuntimeRoot());
   }
   const developmentRuntime = path.join(
     getRuntimeRoot(),
@@ -690,19 +749,30 @@ function setupLogging() {
 function spawnBridgeChild(context) {
   const dataDir = prepareWritableDataDir();
   const command = getPythonCommand();
-  const storageKey = storageKeyVault.getOrCreateKey();
+  const keyStartedAt = process.hrtime.bigint();
+  let storageKey;
+  try { storageKey = storageKeyVault.getOrCreateKey(); } catch (error) {
+    logStartupStage('bridge-key-vault-failed', keyStartedAt, { code: error?.code || 'REVERIE_STORAGE_KEY_UNAVAILABLE' });
+    throw error;
+  }
+  logStartupStage('bridge-key-vault-ready', keyStartedAt, {
+    encryption: process.platform === 'darwin' ? 'electron-safeStorage-keychain' : 'electron-safeStorage',
+  });
+  const isolatedPython = !IS_DEV && process.platform === 'darwin';
   const args = [
+    ...(isolatedPython ? ['-I', '-B', '-u', '-X', 'utf8'] : []),
     path.join(getRuntimeRoot(), 'src', 'main.py'),
     '--stdio-bridge',
   ];
   logger?.addSecret(context.secret);
   let child;
   try {
+    const spawnStartedAt = process.hrtime.bigint();
     child = spawn(command, args, {
       cwd: getRuntimeRoot(),
       windowsHide: true,
       env: {
-        ...process.env,
+        ...(isolatedPython ? createPackagedPythonEnvironment(getRuntimeRoot(), process.env, app.getPath('userData')) : process.env),
         PYTHONIOENCODING: 'utf-8',
         PYTHONUNBUFFERED: '1',
         PYTHONDONTWRITEBYTECODE: '1',
@@ -721,6 +791,7 @@ function spawnBridgeChild(context) {
       },
       stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     });
+    logStartupStage('python-spawned', spawnStartedAt, { pid: child.pid || null, transport: 'stdio-framed', protocolVersion: 4 });
     const bootstrap = child.stdio[3];
     if (!bootstrap) throw new Error('Database key bootstrap pipe was not created');
     let cleared = false;
@@ -758,6 +829,7 @@ function scheduleBridgeRestart(reason) {
 
 function startBridge() {
   if (isQuitting || bridge?.child) return;
+  const bridgeStartedAt = Date.now();
   let promise;
   try {
     promise = bridge.start({ localMode: networkGate.snapshot() });
@@ -768,6 +840,7 @@ function startBridge() {
   promise.then(async () => {
     backendRestartAttempts = 0;
     await bridgeHostProxy.connect();
+    logStartupStage('v4-authenticated', null, { generation: bridge.generation, protocolVersion: 4 });
     try {
       await enqueueProviderMutation(async () => {
         await recoverProviderTransaction();
@@ -778,6 +851,7 @@ function startBridge() {
       broadcastCredentialStatus({ runtimeApplied: false });
     }
     broadcast('bridge:changed', { ready: true, generation: bridge.generation });
+    console.log(`[Electron] Local backend authenticated: protocol v4 (${Date.now() - bridgeStartedAt}ms)`);
   }).catch(async (error) => {
     try {
       await bridge.stopAndWait('SIGKILL');
@@ -991,15 +1065,20 @@ function createRuntimeModules() {
   storageKeyVault = new StorageKeyVault({
     storageDir: path.join(runtimeDir, 'storage-key'),
     safeStorage,
+    ...(process.platform === 'darwin' ? { existingDataDir: prepareWritableDataDir() } : {}),
   });
-  // Fail before opening a renderer if DPAPI is unavailable or the existing
-  // protected key cannot be decrypted for this Windows user. A corrupt vault
-  // offers one explicit, user-confirmed reset instead of a boot loop.
+  // The OS-protected key must be usable before opening a renderer. macOS
+  // failures always stop startup and preserve the existing key and databases.
+  // Windows retains its existing explicit user-confirmed recovery path.
   let storageProbe;
+  const keyVaultStartedAt = process.hrtime.bigint();
+  const encryption = process.platform === 'darwin' ? 'electron-safeStorage-keychain' : 'electron-safeStorage';
+  logStartupStage('key-vault-start', null, { encryption, appName: app.getName() });
   try {
     storageProbe = storageKeyVault.getOrCreateKey();
   } catch (error) {
-    if (String(error?.code || '') !== 'REVERIE_STORAGE_KEY_CORRUPT'
+    logStartupStage('key-vault-failed', keyVaultStartedAt, { encryption, code: error?.code || 'REVERIE_STORAGE_KEY_UNAVAILABLE' });
+    if (process.platform === 'darwin' || String(error?.code || '') !== 'REVERIE_STORAGE_KEY_CORRUPT'
       || !offerStorageKeyReset()) {
       throw error;
     }
@@ -1008,13 +1087,19 @@ function createRuntimeModules() {
     storageProbe = storageKeyVault.getOrCreateKey();
   }
   storageProbe.fill(0);
+  logStartupStage('key-vault-ready', keyVaultStartedAt, { encryption, appName: app.getName() });
   providerConfigStore = new ProviderConfigStore({
     storageDir: path.join(runtimeDir, 'provider-config'),
   });
   providerTransactionJournal = new ProviderTransactionJournal({
     storageDir: path.join(runtimeDir, 'provider-transaction'),
   });
-  bridge = new FramedBridgeSupervisor({ spawnChild: spawnBridgeChild });
+  bridge = new FramedBridgeSupervisor({
+    spawnChild: spawnBridgeChild,
+    // Development dependencies can load slowly on macOS storage. Keep the
+    // process alive long enough to finish; all V4 authority checks still apply.
+    ...(IS_DEV && process.platform === 'darwin' ? { readyTimeoutMs: 120_000 } : {}),
+  });
   bridgeHostProxy = new BridgeHostProxy({ supervisor: bridge, broadcast });
   bridgeHostProxy.on('disconnect', (error) => {
     if (isQuitting) return;
@@ -2714,7 +2799,26 @@ function registerIpcHandlers() {
 
 function createTray() {
   if (tray) return;
-  tray = new Tray(getWindowIconPath());
+  let icon = getWindowIconPath();
+  if (process.platform === 'darwin') {
+    // AppKit cannot load ICO directly. Reuse its approved embedded PNG frame
+    // rather than introducing another logo or modifying the Windows resource.
+    const ico = fs.readFileSync(icon);
+    let png;
+    for (let index = 0; index < ico.readUInt16LE(4); index += 1) {
+      const entry = 6 + index * 16;
+      if (ico[entry] !== 32 || ico[entry + 1] !== 32) continue;
+      const length = ico.readUInt32LE(entry + 8);
+      const offset = ico.readUInt32LE(entry + 12);
+      png = ico.subarray(offset, offset + length);
+      break;
+    }
+    if (!png) throw new Error('Approved tray icon has no 32px PNG frame');
+    icon = nativeImage.createFromBuffer(png);
+    if (icon.isEmpty()) throw new Error('Approved tray PNG could not be decoded');
+    icon = icon.resize({ width: 18, height: 18 });
+  }
+  tray = new Tray(icon);
   tray.setToolTip('Reverie');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Reverie', click: showMainWindow },
@@ -2738,7 +2842,11 @@ function createTray() {
 }
 
 function installWindowDiagnostics(windowRef) {
+  const rendererStartedAt = process.hrtime.bigint();
   windowRef.once('ready-to-show', () => windowRef.show());
+  windowRef.webContents.once('did-finish-load', () => {
+    logStartupStage('renderer-loaded', rendererStartedAt, { renderer: IS_DEV ? 'development' : 'reverie-app' });
+  });
   windowRef.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame) return;
     console.error('[Electron] Renderer load failed', { code, description, url });
@@ -2985,6 +3093,7 @@ const hasSingleInstanceLock = acquireSingleInstance(app, showMainWindow, {
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     setupLogging();
+    logStartupStage('main-ready', null, { isPackaged: app.isPackaged, platform: process.platform, architecture: process.arch });
     createRuntimeModules();
     if (!IS_DEV) {
       unregisterAppProtocol = installAppProtocol(protocol, path.dirname(packagedIndex));

@@ -141,7 +141,7 @@ async function main() {
       return response.ok;
     }, 'Vite');
     electron = spawn(
-      path.join(frontendRoot, 'node_modules', 'electron', 'dist', 'electron.exe'),
+      require('electron'),
       [`--remote-debugging-port=${debuggingPort}`, '.'],
       {
         cwd: frontendRoot,
