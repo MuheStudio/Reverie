@@ -1,0 +1,12 @@
+{
+  "schema": "reverie.macos-dmg-toolchain.v1",
+  "electronBuilder": "26.15.6",
+  "dmgBuilder": {
+    "version": "1.2.5",
+    "build": "75c8a6c",
+    "arch": "arm64",
+    "filename": "dmgbuild-bundle-arm64-75c8a6c.tar.gz",
+    "url": "https://github.com/electron-userland/electron-builder-binaries/releases/download/dmg-builder%401.2.5/dmgbuild-bundle-arm64-75c8a6c.tar.gz",
+    "sha256": "793404d0c96687e27d5ee40a668d498c92e36a64d6c2906df511031adb33cbeb"
+  }
+}

@@ -99,6 +99,18 @@ N.E.K.O（Apache-2.0）在 NOTICE 中按协议保留了原 NOTICE 全文。若�
 
 ## 二次开发
 
+macOS Apple Silicon 开发环境使用项目内固定工具链：先运行 `./script/setup-macos.sh`，
+再运行 `./script/check-macos.sh` 验收，使用 `./script/dev-macos.sh` 启动。
+详见 [macOS 开发环境说明](docs/MACOS-DEVELOPMENT.md)。该流程用于源码运行。
+
+独立 macOS arm64 核心测试应用使用 `./script/package-macos.sh` 构建，
+以 `./script/check-macos-package.sh` 验证；详见 [macOS 打包说明](docs/MACOS-PACKAGING.md)。
+当前产物采用本地测试签名，不是正式分发或公证安装包。
+
+已验收的应用可用 `./script/package-macos-dmg.sh` 封装为测试 DMG，
+再用 `./script/check-macos-dmg.sh` 验证镜像内启动及复制、推出镜像后的重启恢复。
+本轮结果见 [macOS 测试 DMG 验收摘要](docs/MACOS-ACCEPTANCE.md)。
+
 欢迎大家对本项目做贡献， Reverie 本身是纯 Vibe coding 出来的。
 
 若用 Vibe coding 方式为本项目做贡献，建议本地克隆仓库后安装并启用[hoshinohatsuka](https://github.com/hoshinohatsuka)开发的一个Skill，可让AI快速了解本项目并准备接手。即[项目接手.Skill](https://github.com/hoshinohatsuka/project-relay-Skill)。建议使用模式A。

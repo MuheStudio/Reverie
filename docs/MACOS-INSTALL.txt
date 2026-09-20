@@ -1,0 +1,37 @@
+Reverie macOS Test · Apple Silicon 本地测试版
+
+这是已构建的 macOS arm64 核心测试应用，应用名称为 Reverie macOS Test，
+标识为 com.muhe.reverie.macos.test。仅适用于 Apple Silicon Mac；
+最低系统声明为 macOS 14，实际测试系统范围请查看随构建交付的验收报告。
+
+安装与启动
+
+1. 将 Reverie macOS Test.app 拖到本窗口的 Applications 快捷方式。
+   如果已存在同名测试应用，请先退出它，并自行决定是否保留旧版本；
+   本镜像不会自动替换、更新或删除已有应用。
+2. 等待复制完成，推出此磁盘镜像。
+3. 从“应用程序”文件夹打开 Reverie macOS Test。
+4. 完成使用后，通过应用内退出或按 ⌘Q 正常退出，再次打开即可继续。
+
+独立运行
+
+应用内置 Python 3.12.14 arm64 和锁定运行依赖，使用构建后的前端资源。
+不需要安装 Python、Node、pnpm 或开发虚拟环境，不需要启动 Vite，
+也不会修改终端的全局 PATH。应用包保持只读，测试身份的设置、聊天、
+缓存和日志默认写入当前用户的 Application Support/Reverie macOS Test。
+
+签名与验收范围
+
+应用使用 ad-hoc 本地测试签名；DMG 本身未签名，且应用和 DMG 均未公证。
+这不是 Developer ID 正式分发包，也不承诺下载隔离后的 Gatekeeper 放行。
+如果系统阻止启动，请保留具体提示并反馈给构建者；不要删除 quarantine、
+关闭系统安全检查或据此判断应用已经通过正式分发验收。
+
+数据库强制使用 SQLCipher 加密，密钥通过 macOS 钥匙串保护。
+遇到密钥或数据库无法读取的提示时，请保留原数据和日志并反馈；
+不要删除密钥、重置数据库或把已有正式 Reverie 数据复制到测试目录。
+同一候选的本机验证不代表跨版本、跨签名或不同用户账户的钥匙串兼容性。
+
+本轮验收使用本地模拟模型，不接入收费模型。Live2D 模型、GPT-SoVITS、
+Intel/Universal、自动更新及完整平台 UI 验收不在本次核心测试范围。
+实际工具版本、候选摘要、运行结果及未验证项，以对应的构建和验收报告为准。

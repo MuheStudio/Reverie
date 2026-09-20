@@ -17,6 +17,8 @@
     "package:win:test": "node script/package-win-test.cjs",
     "package:win": "node script/package-win-installer.cjs",
     "package:mac:test": "node script/package-macos-test.cjs",
+    "package:mac:dmg": "node script/package-macos-dmg.cjs",
+    "smoke:dmg:mac": "node script/smoke-dmg-macos.cjs",
     "smoke:package:mac": "node script/smoke-packaged-macos.cjs",
     "smoke:package": "node script/smoke-packaged-bridge.cjs",
     "smoke:desktop": "node script/e2e-desktop-smoke.cjs",
