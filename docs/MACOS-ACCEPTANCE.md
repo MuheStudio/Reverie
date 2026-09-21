@@ -64,8 +64,28 @@
 
 初版错误框辅助工具仅识别旧应用包验收路径，已为新的隔离安装测试路径补充严格匹配和边界测试。最终成功轮使用修订后的工具重新完整验证。旧布局镜像另行留档，不作为本次最终产物。
 
-- Windows 发布配置和运行锁未改动；Windows 实机及 CI 尚未验证。指定 origin 分支获得写权限并推送后，按约定手动运行已有 Windows quality gate，再记录结果。
+- 后续 CI 修复未改动 Windows 安装器配置、运行锁或应用运行代码；Windows CI 已通过，详见下节。Windows 人工 UI 验收仍未完成。
 - 未验证 Developer ID、公证、下载隔离/Gatekeeper、跨版本或跨签名钥匙串访问。最低系统声明为 macOS 14，实机仅覆盖上述系统。
 - 未扩展 Intel/Universal、自动更新、Live2D 模型、GPT-SoVITS、付费模型、完整首次引导及平台 UI 覆盖。
 - 未下载 embedding 模型；核心候选仍记录可选 Live2D 资源缺失及语义检索不可用，并使用原有有界词法检索。这不代表完整语义检索验收通过，也不涉及明文存储回退。
 - 本轮仅本地构建和分支提交；不创建 PR、合并 main、创建/推送发布标签或发布 Release。
+
+## 分支推送与 Windows CI 复核
+
+2026-09-21 获得写权限后，已正常推送到 [origin/codex/Mac](https://github.com/MuheStudio/Reverie/tree/codex/Mac)，未强推。最终完整 [Windows quality gate](https://github.com/MuheStudio/Reverie/actions/runs/35550488514) 成功，受检代码提交为 `4e3a1e5091cc3d862a5e13beff78bb8cb9455e44`；随后仅补充本验收文档。
+
+| 检查 | Windows runner 实测结果 |
+|---|---|
+| Python 3.12.10 第一方测试 | 957 passed、1 项既有 xfail、1 条既有 warning；695.37 秒 |
+| Node 测试 | 363 passed、28 个 macOS/POSIX 等平台限定跳过、0 failed |
+| Vitest | 34 个文件、262 项通过 |
+| TypeScript / Vite | 类型检查和生产构建通过 |
+| Windows 应用目录构建 | 固定生产 Python 与运行依赖构建成功 |
+| 包内桥接冒烟 | V4 stdio 握手成功，4 个数据库确认加密，runtimeDegraded=false |
+| SPDX SBOM | 生成并作为本次 workflow artifact 上传，未附加到 Release |
+
+首次 CI 暴露了新增测试子进程在 Windows 默认编码下输出中文失败，以及 Reflex 首次写入的 40 秒超时。已显式使用 UTF-8；仅为 Windows Reflex 首次写入 184 条完整耐久化种子记录设置 120 秒测试预算，并增加 stderr 线程诊断。没有缩减数据或断言，也没有更改应用加密参数和生产握手时限。最终该测试实测 14.20 秒，首轮超时的具体阻塞点不能从旧日志确定。
+
+随后修复了既有 CI 的 pnpm 缓存顺序、显式构建解释器路径，以及包验证器把 `ambient.py`、`backup.py` 误当目录的问题；必需文件、禁止遗漏模块、错误类型与链接检查仍然执行。CI 自动触发规则未改。相关追加验证在 macOS 上为 403 项 Node 和 262 项 Vitest 通过；原始失败及成功日志保留在本机忽略目录。
+
+以上追加仅涉及测试、CI 和包验证器。原 macOS 应用及 DMG 没有重建或重签，DMG SHA-256 仍为 `39d39c0672e46b612a5048dd29c992e9dc14695227078d38aca5c6369769db60`。Windows CI 成功不等同于 Windows 人工 UI 或正式分发验收。
