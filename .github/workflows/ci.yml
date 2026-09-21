@@ -73,6 +73,7 @@ jobs:
         working-directory: frontend
         env:
           REVERIE_WINDOWS_OUT: ${{ runner.temp }}\reverie-package
+          REVERIE_BUILD_PYTHON: ${{ env.pythonLocation }}\python.exe
         run: pnpm package:win:test
 
       - name: Smoke-test packaged bridge

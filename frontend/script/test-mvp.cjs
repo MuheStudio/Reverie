@@ -44,6 +44,7 @@ const electronTests = [
   'safe-log.test.cjs',
   'single-instance.test.cjs',
   '../script/smoke-packaged-macos.test.cjs',
+  '../script/smoke-packaged-bridge.test.cjs',
   '../script/smoke-dmg-macos.test.cjs',
   'storage-key-vault.test.cjs',
   'test-user-data.test.cjs',

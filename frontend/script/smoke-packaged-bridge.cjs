@@ -60,23 +60,30 @@ function assertPackagedLayout(packageRoot) {
   }
   // These are core companion capabilities: they must
   // ship. Their absence once made packaged stickers/games silently inert.
-  for (const shipped of [
-    'diary', 'games', 'immersion', 'stickers',
-    'web', 'ambient', 'archive', 'lorebook', 'backup', 'social', 'keepsakes',
-  ]) {
-    if (OMITTED_SOURCE_MODULES.includes(shipped)) {
+  function assertCoreModule(filename, directory) {
+    const moduleName = directory ? filename : path.parse(filename).name;
+    if (OMITTED_SOURCE_MODULES.includes(moduleName)) {
       throw new Error(
-        `Core companion module '${shipped}' must not appear in OMITTED_SOURCE_MODULES`,
+        `Core companion module '${moduleName}' must not appear in OMITTED_SOURCE_MODULES`,
       );
     }
-    const target = path.join(resources, 'src', shipped);
-    if (!fs.existsSync(target)) {
+    const target = path.join(resources, 'src', filename);
+    let stat;
+    try {
+      stat = fs.lstatSync(target);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
       throw new Error(`Core companion module was not packaged: ${target}`);
     }
+    if (stat.isSymbolicLink() || !(directory ? stat.isDirectory() : stat.isFile())) {
+      throw new Error(`Core companion module has an invalid filesystem type: ${target}`);
+    }
   }
-  const notifications = path.join(resources, 'src', 'notifications.py');
-  if (!fs.existsSync(notifications)) {
-    throw new Error(`Core companion module was not packaged: ${notifications}`);
+  for (const shipped of [
+    'diary', 'games', 'immersion', 'stickers',
+    'web', 'archive', 'lorebook', 'social', 'keepsakes',
+  ]) {
+    assertCoreModule(shipped, true);
   }
   for (const omittedFile of ['work_manager.py']) {
     const target = path.join(resources, 'src', omittedFile);
@@ -84,11 +91,8 @@ function assertPackagedLayout(packageRoot) {
       throw new Error(`Non-MVP Python module was packaged: ${target}`);
     }
   }
-  for (const shippedFile of ['ambient.py', 'backup.py']) {
-    const target = path.join(resources, 'src', shippedFile);
-    if (!fs.existsSync(target)) {
-      throw new Error(`Core companion module was not packaged: ${target}`);
-    }
+  for (const shippedFile of ['ambient.py', 'backup.py', 'notifications.py']) {
+    assertCoreModule(shippedFile, false);
   }
   return { resources, python, entrypoint };
 }
