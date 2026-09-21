@@ -150,10 +150,18 @@ def test_feature_state_survives_real_encrypted_process_restart(tmp_path: Path, f
     environment.pop("PYTHONPATH", None)
     states = []
     for mode in ("write", "reopen"):
-        process = subprocess.run(
-            [sys.executable, "-I", "-B", str(Path(__file__).resolve()), feature, mode, str(database)],
-            input=key, capture_output=True, env=environment, timeout=40, check=False,
-        )
+        # Reflex seeds 184 phrases through the real FULL-synchronous,
+        # autocommit connection. Windows hosted disks need a separate bounded
+        # budget for those durable writes; encryption/transactions stay intact.
+        timeout = 120 if sys.platform == "win32" and feature == "reflex" and mode == "write" else 40
+        try:
+            process = subprocess.run(
+                [sys.executable, "-I", "-B", "-X", "utf8", str(Path(__file__).resolve()), feature, mode, str(database)],
+                input=key, capture_output=True, env=environment, timeout=timeout, check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            diagnostics = (exc.stderr or b"").decode("utf-8", errors="replace")
+            pytest.fail(f"Encrypted feature worker {feature}/{mode} exceeded {timeout}s:\n{diagnostics}", pytrace=False)
         assert process.returncode == 0, process.stderr.decode("utf-8", errors="replace")
         states.append(json.loads(process.stdout))
     assert states[0] == states[1]
@@ -167,6 +175,12 @@ def test_feature_state_survives_real_encrypted_process_restart(tmp_path: Path, f
 
 
 if __name__ == "__main__":
+    import faulthandler
+    import time
+
+    # Diagnose a slow or stuck worker without putting ordinary text into its
+    # JSON stdout or exposing the test key. This never changes app timeouts.
+    faulthandler.dump_traceback_later(30, repeat=True)
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.storage.encrypted_sqlite import install_storage_key
 
@@ -174,4 +188,11 @@ if __name__ == "__main__":
     # a command-line argument, environment value, or plaintext disk artifact.
     install_storage_key(sys.stdin.buffer.read(), require_encryption=True)
     feature, mode, filename = sys.argv[1:]
-    print(json.dumps(_exercise_feature(feature, mode == "write", Path(filename)), ensure_ascii=False))
+    started = time.monotonic()
+    print(f"[encrypted-feature] {feature}/{mode}: start", file=sys.stderr, flush=True)
+    try:
+        state = _exercise_feature(feature, mode == "write", Path(filename))
+        print(f"[encrypted-feature] {feature}/{mode}: completed in {time.monotonic() - started:.3f}s", file=sys.stderr, flush=True)
+        print(json.dumps(state, ensure_ascii=False))
+    finally:
+        faulthandler.cancel_dump_traceback_later()

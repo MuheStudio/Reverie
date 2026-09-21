@@ -36,20 +36,27 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
 
       - name: Run first-party Python tests
-        run: python -m pytest
+        run: python -m pytest --durations=20
 
       - name: Set up Node.js 24
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install pnpm
         shell: pwsh
         run: |
           corepack enable
           corepack prepare pnpm@11.7.0 --activate
+
+      # setup-node invokes pnpm to locate its store, so restore only after
+      # the pinned executable is available on the Windows runner.
+      - name: Restore pnpm cache
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install frontend dependencies
         working-directory: frontend
