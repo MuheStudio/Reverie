@@ -1,4 +1,5 @@
--r requirements-runtime.txt
+# Architecture tests exercise the legacy LanceDB compatibility imports.
+-r requirements-migration.txt
 pytest>=8.0.0
 PyYAML>=6.0.2
 hypothesis>=6.0.0
