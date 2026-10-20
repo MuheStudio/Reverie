@@ -15,4 +15,6 @@ allowBuilds:
   '@swc/core': true
   core-js: true
   electron: true
+  # Installer builds use NSIS rather than Squirrel.Windows.
+  electron-winstaller: false
   esbuild: true
