@@ -37,6 +37,12 @@ frontend/.vite/
 frontend/.vitest/
 *.tsbuildinfo
 
+# Keep the existing MIT-licensed Cubism 4 runtime mirror in clean clones.
+!frontend/vendor/pixi-live2d-display/dist/
+frontend/vendor/pixi-live2d-display/dist/*
+!frontend/vendor/pixi-live2d-display/dist/cubism4.es.js
+!frontend/vendor/pixi-live2d-display/dist/cubism4.js
+
 # Project data (user-generated, local only). The whole directory is local;
 # only keep placeholder files (.gitkeep) so empty directories survive clones.
 data/*

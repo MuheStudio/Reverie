@@ -7,8 +7,6 @@ const path = require('node:path');
 const test = require('node:test');
 const { VoicePackManager, MANIFEST_SCHEMA } = require('./voice-pack-manager.cjs');
 
-const REAL_PACK = path.resolve(__dirname, '..', '..', '..', '..', 'TTS-Neuro');
-
 function temporaryRoot(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `reverie-voice-pack-${name}-`));
 }
@@ -51,11 +49,22 @@ const confirmation = Object.freeze({
   runtimeVersion: 'v2',
 });
 
-test('imports the local TTS-Neuro pack while ignoring exact macOS metadata subtrees', { timeout: 120000 }, () => {
-  assert.equal(fs.existsSync(REAL_PACK), true, `Expected local fixture at ${REAL_PACK}`);
-  const packs = manager('real');
-  const preview = packs.preview(REAL_PACK);
+test('imports a wrapped voice pack while ignoring exact macOS metadata subtrees', { timeout: 120000 }, (context) => {
+  const source = temporaryRoot('wrapped');
+  context.after(() => fs.rmSync(source, { recursive: true, force: true }));
+  const wrapper = path.join(source, 'Neuro-V2-VoicePack');
+  fs.renameSync(fixture('wrapped-content'), wrapper);
+  fs.renameSync(path.join(wrapper, 'voice.ckpt'), path.join(wrapper, 'Neuro-e24.ckpt'));
+  const metadata = path.join(source, '__MACOSX', 'Neuro-V2-VoicePack');
+  fs.mkdirSync(metadata, { recursive: true });
+  fs.writeFileSync(path.join(metadata, '._Neuro-e24.ckpt'), 'macOS metadata');
+  fs.writeFileSync(path.join(source, '.DS_Store'), 'macOS metadata');
+  fs.writeFileSync(path.join(wrapper, '._reference.wav'), 'macOS metadata');
+
+  const packs = manager('wrapped-store');
+  const preview = packs.preview(source);
   assert.equal(preview.wrapperDirectory, 'Neuro-V2-VoicePack');
+  assert.equal(preview.files.length, 4);
   assert.deepEqual(new Set(preview.files.map((file) => file.role)), new Set([
     'gptCheckpoint', 'sovitsCheckpoint', 'referenceAudio', 'transcript',
   ]));

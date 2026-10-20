@@ -95,7 +95,7 @@ N.E.K.O（Apache-2.0）在 NOTICE 中按协议保留了原 NOTICE 全文。若�
 
 ## 用户：安装发行版
 
-双击安装 [`Reverie0.5.5-Setup-0.5.5-x64.exe`](https://github.com/Muhe-Studio/Reverie/releases)默认装到 `C:\Program Files\Reverie`。第一次打开走新手引导：填 API、导入你自己的 Live2D、可选导入角色卡/世界书。卸载或重装不应抹掉 `%APPDATA%` 里已有的记忆和日记。
+从 [Windows 0.5.5 发行版](https://github.com/MuheStudio/Reverie/releases/tag/Reverie-Windows) 下载 `Reverie.-Windows.-0.5.5.-.x64.exe`，双击安装。默认装到 `C:\Program Files\Reverie`。第一次打开走新手引导：填 API、导入你自己的 Live2D、可选导入角色卡/世界书。卸载或重装不应抹掉 `%APPDATA%` 里已有的记忆和日记。
 
 ## 二次开发
 
@@ -108,8 +108,8 @@ N.E.K.O（Apache-2.0）在 NOTICE 中按协议保留了原 NOTICE 全文。若�
 需要 Python 3.12、Node.js 18+、pnpm、Git。不要把用户数据写到别人的 `测试\` 目录。
 
 ```powershell
-git clone https://github.com/Muhe-Studio/Reverie.git
-cd Reverie/Reverie-project/Reverie-Windows   # 若仓库根就是本目录，则 cd 到仓库根
+git clone https://github.com/MuheStudio/Reverie.git
+cd Reverie
 
 python -m venv venv
 .\venv\Scripts\Activate.ps1
@@ -124,7 +124,7 @@ pnpm dev
 另开终端跑 Python 桥接（或使用 Electron 桌面入口 `pnpm electron:dev`）。测试：
 
 ```powershell
-# 在 Reverie-Windows 根
+# 在 Reverie 仓库根目录
 .\venv\Scripts\python.exe -m pytest tests -q
 cd frontend
 npx vitest run
@@ -146,7 +146,7 @@ pnpm package:win
 ## 项目结构
 
 ```
-Reverie-Windows/
+Reverie/
 ├── LICENSE / NOTICE / CREDITS.md / AGPL_EXCLUDED.md
 ├── LICENSES_CREDITS/     上游许可证原件
 ├── src/                  Python 本地服务（记忆、聊天、世界书、视频下载门）

@@ -15,8 +15,10 @@ const installerConfig = require('../electron-builder.config.cjs');
 const {
   PYTHON_RUNTIME,
   assertProductionPayload,
+  copyProductionPythonSource,
   shouldCopyProductionPythonSource,
 } = require('../script/production-runtime.cjs');
+const { assertPackagedLayout } = require('../script/smoke-packaged-bridge.cjs');
 const { createSeedConfig } = require('../script/seed-config.cjs');
 
 test('release and test packages share a valid current settings seed', () => {
@@ -115,6 +117,30 @@ test('production payload audit rejects a reintroduced virtual environment', () =
   assert.equal(assertProductionPayload(root), true);
   fs.mkdirSync(path.join(root, 'venv'));
   assert.throws(() => assertProductionPayload(root), /forbidden|virtual environment/i);
+});
+
+test('packaged layout accepts single-file companion modules and rejects missing ones', (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-package-layout-'));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const resources = path.join(root, 'resources');
+  fs.mkdirSync(path.join(resources, 'python'), { recursive: true });
+  fs.writeFileSync(path.join(resources, 'python', 'python.exe'), 'runtime');
+  copyProductionPythonSource(
+    path.resolve(__dirname, '..', '..', 'src'),
+    path.join(resources, 'src'),
+    resources,
+  );
+  assert.doesNotThrow(() => assertPackagedLayout(root));
+  for (const name of ['ambient.py', 'backup.py']) {
+    const target = path.join(resources, 'src', name);
+    const content = fs.readFileSync(target);
+    fs.unlinkSync(target);
+    assert.throws(() => assertPackagedLayout(root), (error) => (
+      error.message.includes('Core companion module was not packaged')
+      && error.message.includes(name)
+    ));
+    fs.writeFileSync(target, content);
+  }
 });
 
 test('release installer defaults to Program Files and asks about the desktop shortcut', () => {
