@@ -1,5 +1,6 @@
 -r requirements-runtime.txt
 pytest>=8.0.0
+PyYAML>=6.0.2
 hypothesis>=6.0.0
 playwright>=1.40.0
 pytest-playwright>=0.4.0
