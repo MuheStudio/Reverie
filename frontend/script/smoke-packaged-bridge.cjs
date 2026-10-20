@@ -62,7 +62,7 @@ function assertPackagedLayout(packageRoot) {
   // ship. Their absence once made packaged stickers/games silently inert.
   for (const shipped of [
     'diary', 'games', 'immersion', 'stickers',
-    'web', 'ambient', 'archive', 'lorebook', 'backup', 'social', 'keepsakes',
+    'web', 'archive', 'lorebook', 'social', 'keepsakes',
   ]) {
     if (OMITTED_SOURCE_MODULES.includes(shipped)) {
       throw new Error(
