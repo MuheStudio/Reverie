@@ -1,0 +1,103 @@
+{
+  "schema": "reverie.moonroom.supplementary-registration.v1",
+  "protocol": "companion-transactions-v1",
+  "registrationStatus": "fixed-before-first-supplementary-gui-run",
+  "authorizedScope": "Separate supplementary comparison, never a replacement for the failed fixed 30-second stress protocol",
+  "scenario": "Complete one navigation, drag, edit or resize before the next; continuous scrolling remains a fixed 30-second gesture; delayed chat overlaps a fixed task-switch sequence and an explicitly accounted backend wait",
+  "productReferences": {
+    "A": "23f7d9d39c33e36a41160120cdba5d5aee9b23b3",
+    "B": "cae2a2fdd20bc5e7526d9f12beb35ff49922a21b"
+  },
+  "originalStressStatus": {
+    "status": "failed-strict-calibration",
+    "report": ".tools/reports/qt-performance-perf-2026-10-08T05-50-19-962Z-2891/summary.json",
+    "nativeReportedPassed": true,
+    "outerStrictAccepted": false,
+    "activeWindowMs": 30000,
+    "endObservationToleranceMs": 100,
+    "inputOverrunToleranceMs": 0,
+    "failures": [
+      {"rows": 100, "phase": "reading-open-reverse-task-sequence", "durationMs": 31504, "lastInputCompletedMs": 29816},
+      {"rows": 100, "phase": "sustained-history-scroll", "lastInputPlannedMs": 29970, "lastInputActualMs": 30014, "lastInputCompletedMs": 30014},
+      {"rows": 300, "phase": "reading-open-reverse-task-sequence", "durationMs": 35064, "lastInputCompletedMs": 29830}
+    ],
+    "attributionLimits": "100-row scroll has an actual late input. Reading inputs finished within 30 seconds. The 300-row 5150.640ms presentation gap lies mainly before next beforeSynchronizing (5118.734ms); existing timestamps do not identify GPU work, driver waiting, timer origin or a particular function. The 100-row closure gap lacks boundary entry/exit timestamps to distinguish delayed tick entry from shutdown work.",
+    "retryPolicy": "No repeat-until-pass, added time, relaxed deadline or spliced passing history subsets"
+  },
+  "fixture": {
+    "historyRows": [9, 100, 300],
+    "window": [1380, 900],
+    "dpr": 2,
+    "graphics": "Existing Qt Quick basic OpenGL",
+    "effects": "Existing full-DPR shaders/material parameters and active authorized Native Live2D model; no quality reduction",
+    "safety": "Registered isolated encrypted data; one owned loopback mock child; original source, binary, signature, dependency and owned-process checks",
+    "resizeViewports": [[950, 760], [760, 650], [1180, 760], [1380, 900]]
+  },
+  "fixedWork": {
+    "navigationCycles": 26,
+    "dragCycles": 12,
+    "scrollWheelEvents": 300,
+    "scrollEventPeriodMs": 100,
+    "scrollGestureMs": 30000,
+    "scrollStopObservationToleranceMs": 100,
+    "scrollInputDeadlineMs": 30000,
+    "composerChanges": 180,
+    "resizeSteps": 160,
+    "replyRequests": 3,
+    "delayedReplyMockMs": 8000,
+    "delayedTaskHandoffEarliestAfterSendMs": 1500,
+    "whileWaitingTaskTransitions": 8,
+    "postReplyMemorySettingsReadingCycles": 12,
+    "transactionsByPhase": [156, 36, 1, 180, 160, 58],
+    "driverActionsByPhase": [182, 132, 300, 180, 160, 62],
+    "totalTransactions": 591,
+    "totalDriverActions": 1016,
+    "controlRelatedDispatches": 1013,
+    "nonInputCompletionObservations": 3,
+    "humanPauseMs": 150,
+    "actualFramesAfterSemanticReady": 3,
+    "minimumActiveIntervalsPerPhase": 300,
+    "transactionTimeoutMs": 15000,
+    "preDispatchGateTimeoutMs": 15000,
+    "activeTransactionTimeoutMs": 15000,
+    "scrollTransactionTimeoutMs": 45000,
+    "phaseTimeoutMs": 600000,
+    "historyTimeoutMs": 1800000,
+    "hostChildTimeoutMs": 1860000,
+    "deadlineScope": "Predispatch gate and active transaction have separate deadlines. Phase deadline includes every gate, active segment and pause; history deadline also includes setup and idle phases.",
+    "appendRepetitionsToPass": false
+  },
+  "accounting": {
+    "mainCadence": "Only full frameSwapped intervals contained within an active transaction segment; no trimming or artificial subdivision",
+    "boundaryCadence": "Retain entire entry/exit crossing intervals separately, including long intervals; same physical interval can have both tags",
+    "activeCpu": "Sum getrusage RUSAGE_SELF deltas over the same active segments",
+    "excludedFromActiveButReported": ["150ms human pauses", "predispatch readiness gates", "explicit backend completion waits", "continuous-scroll presentation tail"],
+    "alsoRequired": ["whole phase wall duration and CPU", "per-process native/Python/mock resources", "planned and actual dispatch/completion timestamps", "driver boundary timestamps", "actual delivered reply hashes", "sample overflow/drop counters"],
+    "metricLimits": "Presentation cadence is neither GPU time nor input-to-display latency. Whole cost and crossing intervals remain visible even if main cadence improves. Idle states cannot dilute active metrics."
+  },
+  "comparison": {
+    "calibrationSuites": 2,
+    "comparisonOrder": ["A", "B", "B", "A", "A", "B"],
+    "comparisonPairs": 3,
+    "primaryPhases": ["reading-open-reverse-task-sequence", "handle-drag-with-native-avatar-action", "sustained-history-scroll"],
+    "minimumImprovement": 0.1,
+    "minimumSameDirectionPairs": 2,
+    "acceptanceScope": "each-history-has-primary-gain",
+    "relativeNoise": "Maximum absolute pair difference divided by the smaller valid positive value across independent full A/A suites",
+    "rateNoise": "Maximum absolute pair difference across independent full A/A suites",
+    "relativeRegressionAllowance": 0.05,
+    "over50RateRegressionAllowance": 0.02,
+    "inputP95RegressionAllowanceMs": 16.7,
+    "boundaryRegressionPolicy": "Entry/exit crossing P95 and over50 ratio use the same relative/rate allowances, or the measured A/A noise when larger; a regression vetoes an accepted gain. Whole phase cost remains separately visible.",
+    "environmentPolicy": "Require AC power and low-power mode off; reject explicit recorded CPU or scheduler limits below 100. Preserve unknown/unmeasured thermal state without claiming identical chip temperature.",
+    "rejection": "Insufficient records, contract/source mismatch, environment anomaly, uncertain gain or quality regression cannot be silently omitted or repaired by changing this contract after the run",
+    "cpuConclusion": "CPU efficiency gains are recorded independently and never described as frame-rate gains",
+    "scopeLimit": "Even a passing supplementary comparison does not pass the original stress performance plan"
+  },
+  "visualAndFunctional": {
+    "separateRuns": true,
+    "recordingExcludedFromPerformance": true,
+    "unchangedPassedFunctionChecks": "Do not repeat the full previous acceptance merely because strict performance calibration failed",
+    "remaining": ["Matched A/B visual states and actual text", "Independent rapid-reversal stress recording", "Manual visual and physical IME/trackpad acceptance"]
+  }
+}

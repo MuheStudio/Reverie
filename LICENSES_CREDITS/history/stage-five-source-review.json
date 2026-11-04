@@ -1,0 +1,119 @@
+{
+  "schema": "reverie.stage-five-source-review.v1",
+  "recordedOn": "2026-10-06",
+  "baseline": "ca0368fbfc86f2cf741338cf82d8f963dac7568e",
+  "handoverSupportConfirmed": true,
+  "finalPermissiveMigrationGoalConfirmed": true,
+  "rootLicenseChanged": false,
+  "retentionExceptionsApproved": [],
+  "items": [
+    {
+      "id": "video-six-files",
+      "files": [
+        {
+          "path": "src/video_download/__init__.py",
+          "bytes": 1811,
+          "sha256": "3783dd5912e1032936584ca1242d4adb4a3481c9f94eae045c03a50df8355cc3",
+          "commits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/downloader.py",
+          "bytes": 9182,
+          "sha256": "73e3f97a795add46c04f72de9f71d638e4755f3432747a56765d04fc0fc2c92f",
+          "commits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/gates.py",
+          "bytes": 7498,
+          "sha256": "b545f1388065d30cf2b75cb6cde48883495af869a89fbfb1ee2a317496ff8a89",
+          "commits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/hls.py",
+          "bytes": 12469,
+          "sha256": "60a2b8509a56e5568628619c5e85c483db09a06c6f405fc207b43b5bd6413e8e",
+          "commits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/merge.py",
+          "bytes": 3413,
+          "sha256": "ce01c1bc44c077c811f451dd2cad06589598465cfcae5602524f0919fa43389d",
+          "commits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/pipeline.py",
+          "bytes": 6856,
+          "sha256": "9777604b73ba4c1657320cd3d748229bcafb7c2b106886c033d7cff47fdbf2ed",
+          "commits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        }
+      ],
+      "conclusion": "First-party-only runtime imports and original-implementation headers; imported baseline alone cannot establish pre-import authorship. No demonstrated third-party reuse found.",
+      "missing": "File-specific author/source statement or pre-import history",
+      "blocks": [
+        "S",
+        "L"
+      ],
+      "next": "Project owner coordinates one six-file statement; replace only identified third-party material."
+    },
+    {
+      "id": "tetris-version-notice",
+      "version": "1.2.18",
+      "fixedCommit": "4a227e31f974b6c517d4d174e0a569eda7f8f771",
+      "conclusion": "Retain ISC metadata and attribution. Existing fixed tarball has no license body; current bounded official raw-file lookup was unavailable (DisabledError), not a new 404 finding.",
+      "missing": "Version-matched permission/copyright text",
+      "blocks": [
+        "L",
+        "R"
+      ],
+      "next": "Obtain rights-holder/version archive material; if unavailable, owner decides a bounded replacement or release scope. No fabricated text."
+    },
+    {
+      "id": "contribution-coverage",
+      "conclusion": "Existing three Git labels and imported snapshots are retrieval keys, not three proven rights holders. New local first-party changes have explicit commits; earlier coverage remains open.",
+      "missing": "Original-author aliases and any real external contribution coverage by file",
+      "blocks": [
+        "L"
+      ],
+      "next": "Resolve specific coverage against contribution-history-metadata.json, without repeating handover approval."
+    },
+    {
+      "id": "business-and-ui",
+      "conclusion": "NEKO import/bridge, AIRI Live2D adapter and foxgirls service declare adaptation/vendor material. Luna/OpenRoom/liquidglass remain file-specific review items. New navigation does not certify retained adapters as independent.",
+      "missing": "Specified-business scope decisions and independent-replacement or explicit target-exception records; no exception inferred from permissive licenses",
+      "blocks": [
+        "S"
+      ],
+      "next": "Keep valid notices during current GPL iteration; prepare exact file scope for a separate replacement stage."
+    },
+    {
+      "id": "sdk-and-assets",
+      "conclusion": "Default macOS candidate excludes Cubism Core and restricted models. pixi vendor remains MIT with retained provenance. Model/voice/image/font rights are separate; real Core/model inputs are not yet supplied for stage five.",
+      "missing": "Fixed official Core with applicable terms accepted, authorized real model for local testing; distribution classification and asset rights for release",
+      "blocks": [
+        "Live2D-real-rendering",
+        "R"
+      ],
+      "next": "Use explicit locally supplied materials only in isolated dev validation; no runtime or restricted model in shared output.",
+      "materialAvailabilityConfirmedByUser": "2026-10-06: no existing Core/model materials for this round; real rendering remains not-run."
+    }
+  ],
+  "formalSwitchChecklist": [
+    "Final single host license selection",
+    "First-party/contribution coverage",
+    "Specified business replacements or explicit scope exceptions",
+    "Retained dependency and asset permission/notice coverage",
+    "Actual license/contribution/metadata/packaging changes and new artifact audit"
+  ]
+}

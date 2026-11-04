@@ -1,0 +1,64 @@
+{
+"schema": "reverie.full_local_backup.v3",
+"exported_at": "2026-10-13T00:00:00",
+"storage_policy": "local-first",
+"cloud_status": "开发中",
+"persona_identity": {
+  "persona_id": "builtin_hoshino_yumetsuki",
+  "fingerprint": "2b83b064b6ff4e0a41f8e8ff7ede53ca6537bc9dbc89b81a42122d17b8d926f4",
+  "identity_version": 1
+},
+"emotion": {
+  "values": {
+    "joy": 55.0,
+    "calm": 60.0
+  },
+  "enabled": true,
+  "last_updated": "2026-10-13T00:00:00"
+},
+"relationship": {
+  "intimacy": 120,
+  "interaction_count": 2,
+  "positive_interactions": 2,
+  "negative_interactions": 0,
+  "last_interaction_at": "2026-10-13T00:00:00",
+  "recent_fingerprints": [
+    "synthetic-compat"
+  ]
+},
+"user": {
+  "profile": {
+    "name": "合成用户",
+    "nickname": "小星",
+    "first_seen": "2026-10-13T00:00:00",
+    "last_seen": "2026-10-13T00:00:00",
+    "session_count": 2
+  },
+  "emotional_memories": []
+},
+"diary": {
+  "entries": [
+    {
+      "date": "2026-10-12",
+      "content": "合成日记：在月下观测台阅读。",
+      "mood": "peaceful",
+      "emotions": {},
+      "created_at": "2026-10-12T21:00:00"
+    }
+  ],
+  "missed": [
+    "2026-10-11"
+  ],
+  "external_highlights": {
+    "2026-10-13": [
+      "合成事件"
+    ]
+  },
+  "privacy_enabled": true,
+  "peek_enabled": false
+},
+"memory": [
+{"id":"compat-v3-memory-001","text":"合成资料：称呼小星，喜欢月下观测。","layer":"long_term","timestamp":1791849600.0,"importance":0.7},
+{"id":"compat-v3-memory-002","text":"合成约定：周五阅读，不是真实个人记录。","layer":"long_term","timestamp":1791849601.0,"importance":0.6}
+]
+}

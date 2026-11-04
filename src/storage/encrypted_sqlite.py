@@ -117,6 +117,21 @@ def _current_key() -> bytes | None:
         return bytes(_storage_key)
 
 
+def integrity_errors() -> tuple[type[Exception], ...]:
+    """IntegrityError classes of both drivers ``connect_database`` can return.
+
+    sqlcipher3 ships its own DB-API exception hierarchy, so a clause naming
+    only ``sqlite3.IntegrityError`` misses a constraint violation raised by an
+    encrypted connection.
+    """
+
+    try:
+        from sqlcipher3 import dbapi2 as sqlcipher
+    except ImportError:
+        return (standard_sqlite.IntegrityError,)
+    return (standard_sqlite.IntegrityError, sqlcipher.IntegrityError)
+
+
 def _sqlcipher_module():
     try:
         from sqlcipher3 import dbapi2 as sqlcipher

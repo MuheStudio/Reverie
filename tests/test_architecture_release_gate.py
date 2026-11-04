@@ -77,10 +77,10 @@ def test_retired_reference_projects_and_worldbook_file_are_not_runtime_dependenc
     # in OMITTED) and constructed by the composition root. The legacy flat
     # `lorebook.json` data file stays retired — world books live in the
     # persona-scoped archive store.
-    assert "'lorebook'" not in runtime
+    assert "'worldbook'" not in runtime
     composition = _text(ROOT / "src" / "mvp_runtime.py")
-    assert "from src.lorebook import LorebookManager" in composition
-    assert "lorebook_mgr=lorebook_mgr" in composition
+    assert "from src.worldbook.runtime import WorldbookRuntime" in composition
+    assert "worldbook_runtime=worldbook_runtime" in composition
 
 
 def test_framed_production_transport_requires_v4_commands() -> None:

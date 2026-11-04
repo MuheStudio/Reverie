@@ -377,87 +377,77 @@ class FailOnceDiary:
         return len(value.get("entries", []))
 
 
-def test_full_backup_rolls_back_partial_import_failure(tmp_path) -> None:
-    memory = StatefulMemory()
-    emotion = StatefulSection({"values": {"joy": 50}})
-    relationship = StatefulSection({"intimacy": 50})
-    user = StatefulUser()
-    diary = FailOnceDiary()
-    manager = LocalBackupManager(
-        memory=memory,
-        emotion=emotion,
-        relationship=relationship,
-        diary=diary,
-        user_manager=user,
-    )
-    payload = manager.export_payload()
-    payload["memory"] = [{"id": "new"}]
-    payload["emotion"] = {"values": {"joy": 99}}
-    payload["diary"] = {"fail": True}
-
-    with pytest.raises(ValueError, match="已恢复导入前状态"):
-        manager.import_payload(payload)
-
-    assert memory.rows == [{"id": "before"}]
-    assert emotion.value == {"values": {"joy": 50}}
-    assert diary.value == {"entries": [{"content": "before"}]}
+def _encrypted_restore_graph(tmp_path, monkeypatch):
+    import os
+    from src.storage import encrypted_sqlite
+    from tests.p1_restore_support import Graph
+    monkeypatch.setattr(encrypted_sqlite, "_storage_key", bytearray(os.urandom(32)))
+    monkeypatch.setattr(encrypted_sqlite, "_encryption_required", True)
+    return Graph(tmp_path)
 
 
-def _transactional_backup(tmp_path):
-    memory = StatefulMemory()
-    emotion = StatefulSection({"values": {"joy": 50}})
-    relationship = StatefulSection({"intimacy": 50})
-    user = StatefulUser()
-    diary = FailOnceDiary()
-    store = WorldStateStore(tmp_path / "world_state.sqlite3")
-    manager = LocalBackupManager(
-        memory=memory,
-        emotion=emotion,
-        relationship=relationship,
-        diary=diary,
-        user_manager=user,
-        state_store=store,
-    )
-    return manager, store, memory, emotion, diary
+def test_full_backup_rolls_back_partial_import_failure(tmp_path, monkeypatch) -> None:
+    from tests.p1_restore_support import Graph
+    graph = _encrypted_restore_graph(tmp_path / "before", monkeypatch)
+    source = Graph(tmp_path / "after")
+    try:
+        graph.seed("before"); source.seed("after")
+        original = graph.diary.replace_all
+        failures = [True]
+        def fail_once(data):
+            if failures:
+                failures.pop()
+                raise OSError("simulated diary failure")
+            return original(data)
+        monkeypatch.setattr(graph.diary, "replace_all", fail_once)
+        with pytest.raises(ValueError) as error:
+            graph.manager.import_payload(source.manager.export_payload())
+        assert error.value.code == "BACKUP_ROLLED_BACK"
+        graph.assert_fixture("before")
+        assert graph.journal.pending_restore() is None
+    finally:
+        source.close(); graph.close()
 
 
-def test_sqlite_restore_journal_completes_after_process_death(tmp_path) -> None:
-    manager, store, memory, emotion, diary = _transactional_backup(tmp_path)
-    before = manager._snapshot()
-    after = manager._snapshot()
-    after["memory"] = [{"id": "after"}]
-    after["emotion"] = {"values": {"joy": 91}}
-    after["diary"] = {"entries": [{"content": "after"}]}
+def test_sqlite_restore_journal_completes_after_process_death(tmp_path, monkeypatch) -> None:
+    from tests.p1_restore_support import Graph
+    graph = _encrypted_restore_graph(tmp_path / "before", monkeypatch)
+    source = Graph(tmp_path / "after")
+    try:
+        graph.seed("before"); source.seed("after")
+        before = graph.manager._snapshot(include_memory=False)
+        before["_memory_restore_marker"] = "fixture-before-marker"
+        after = source.manager._snapshot(include_memory=False)
+        after["_memory_restore_marker"] = "complete-after-marker"
+        graph.journal.prepare_restore(before, after, operation_id="complete-after-marker")
+        graph.memory.import_stream(source.memory.export_all(), replace=True, restore_marker="complete-after-marker")
+        assert graph.manager.recover_interrupted_restore() is True
+        graph.assert_fixture("after", target_marker="complete-after-marker")
+        assert graph.journal.pending_restore() is None
+        assert graph.journal.integrity_check()
+        assert graph.manager.recover_interrupted_restore() is False
+    finally:
+        source.close(); graph.close()
 
-    store.prepare_restore(before, after)
-    memory.import_all(after["memory"], replace=True)
-    assert store.pending_restore().phase == "applying"
 
-    recovered = manager.recover_interrupted_restore()
-
-    assert recovered is True
-    assert memory.rows == [{"id": "after"}]
-    assert emotion.value == {"values": {"joy": 91}}
-    assert diary.value == {"entries": [{"content": "after"}]}
-    assert store.pending_restore() is None
-    assert store.integrity_check() is True
-
-
-def test_sqlite_restore_journal_finishes_interrupted_rollback(tmp_path) -> None:
-    manager, store, memory, emotion, _diary = _transactional_backup(tmp_path)
-    before = manager._snapshot()
-    after = manager._snapshot()
-    after["memory"] = [{"id": "after"}]
-    after["emotion"] = {"values": {"joy": 99}}
-    store.prepare_restore(before, after)
-    memory.import_all(after["memory"], replace=True)
-    emotion.restore(after["emotion"])
-    store.mark_rolling_back()
-
-    assert manager.recover_interrupted_restore() is True
-    assert memory.rows == [{"id": "before"}]
-    assert emotion.value == {"values": {"joy": 50}}
-    assert store.pending_restore() is None
+def test_sqlite_restore_journal_finishes_interrupted_rollback(tmp_path, monkeypatch) -> None:
+    from tests.p1_restore_support import Graph
+    graph = _encrypted_restore_graph(tmp_path / "before", monkeypatch)
+    source = Graph(tmp_path / "after")
+    try:
+        graph.seed("before"); source.seed("after")
+        before = graph.manager._snapshot(include_memory=False)
+        before["_memory_restore_marker"] = "fixture-before-marker"
+        after = source.manager._snapshot(include_memory=False)
+        after["_memory_restore_marker"] = "rollback-after-marker"
+        intent = graph.journal.prepare_restore(before, after, operation_id="rollback-after-marker")
+        graph.manager._apply_nonmemory(after)
+        graph.journal.mark_rolling_back(intent.operation_id, intent.intent_version)
+        assert graph.manager.recover_interrupted_restore() is True
+        graph.assert_fixture("before")
+        assert graph.journal.pending_restore() is None
+    finally:
+        source.close(); graph.close()
 
 
 @pytest.mark.asyncio

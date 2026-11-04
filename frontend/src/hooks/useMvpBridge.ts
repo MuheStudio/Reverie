@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PROTOCOL_VERSION,
   type MVPCommandName,
@@ -14,6 +14,16 @@ import {
   mergeHistoryWithLiveProactive,
 } from '@/lib/proactiveMessages';
 import { parseSillyTavernPngPayload, parseWorldBookImportText } from '@/lib/reverieArchive';
+import {
+  acceptWorldbookArchiveResult, initialWorldbookDiagnostics, selectWorldbookPersona,
+} from '@/lib/worldbookDiagnostics';
+import {
+  coerceArchivePersonaProof, createArchiveOperationScope, sameArchivePersonaProof,
+  type ArchiveOperationToken, type ArchivePersonaProof,
+} from '@/lib/archiveOperationScope';
+
+import { coerceApiBudget, type WSRequestOptions } from './useReverieWS';
+import type { ArchiveClient } from '@/components/DreamRoom/archiveClient';
 
 const CONVERSATION_ID = 'dream-room';
 const MAX_CHAT_TEXT = 20_000;
@@ -37,6 +47,7 @@ const EVENT_NAMES = new Set([
   'sticker:data',
   'persona:data',
   'persona:import:result',
+  'summary:result',
   'archive:result',
   'relationship:data',
   'user:profile:result',
@@ -47,6 +58,7 @@ const EVENT_NAMES = new Set([
   'video:download:progress',
   'error',
   'heartbeat',
+  'api:budget:result',
 ]);
 
 const INITIAL_COMMANDS: ReadonlyArray<readonly [MVPCommandName, Record<string, unknown>]> = [
@@ -119,10 +131,11 @@ type Frame = {
 };
 
 type PendingResult = {
-  expectedType: string;
+  expectedType: string | readonly string[];
   resolve: (payload: Record<string, unknown>) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  quiet?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -219,7 +232,7 @@ function coerceConfirmedMemories(value: unknown): ConfirmedMemory[] {
   });
 }
 
-export function useMvpBridge() {
+export function useMvpBridge(enabled = true) {
   const socketRef = useRef<BridgeSocketLike | null>(null);
   const mountedRef = useRef(false);
   const authenticatedRef = useRef(false);
@@ -228,11 +241,22 @@ export function useMvpBridge() {
   const memoryRequestKindRef = useRef(new Map<string, 'list' | 'query' | 'edit' | 'delete' | 'store'>());
   const pendingResultsRef = useRef(new Map<string, PendingResult>());
   const [connection, setConnection] = useState<MvpConnectionState>('connecting');
+  const listeners = useRef(new Map<string, Set<(payload: unknown) => void>>());
+  const [apiBudget, setApiBudget] = useState(() => coerceApiBudget({}));
+  const [localMode, setLocalMode] = useState(true);
   const [messages, setMessages] = useState<MvpChatMessage[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [persona, setPersona] = useState<Record<string, unknown> | null>(null);
   const [personaId, setPersonaId] = useState<string | null>(null);
+  const [personaScope, setPersonaScope] = useState<ArchivePersonaProof | null>(null);
+  const worldbookPersonaRef = useRef<string | null>(null);
+  const archiveOperationScope = useRef(createArchiveOperationScope()).current;
+  const archivePersonaProofRef = useRef<ArchivePersonaProof | null>(null);
+  const [worldbookDiagnostics, setWorldbookDiagnostics] = useState(initialWorldbookDiagnostics);
+  const worldbookRefreshRef = useRef<() => void>(() => undefined);
+  const worldbookRefreshPendingRef = useRef(false);
+  const worldbookRefreshQueuedRef = useRef(false);
   const [relationship, setRelationship] = useState<Record<string, unknown>>({});
   const [emotions, setEmotions] = useState<Record<string, number>>({});
   const [settings, setSettings] = useState<Record<string, unknown>>({});
@@ -278,11 +302,12 @@ export function useMvpBridge() {
     const payload = isRecord(frame.payload) ? frame.payload : {};
     const correlatedId = stringValue(frame.request_id);
     const pending = pendingResultsRef.current.get(correlatedId);
-    if (pending && (frame.type === pending.expectedType || frame.type === 'error')) {
+    if (pending && ((Array.isArray(pending.expectedType) ? pending.expectedType.includes(frame.type) : frame.type === pending.expectedType) || frame.type === 'error')) {
       clearTimeout(pending.timer);
       pendingResultsRef.current.delete(correlatedId);
       if (frame.type === 'error') pending.reject(new Error('command rejected'));
       else pending.resolve(payload);
+      if (frame.type === 'error' && pending.quiet) return;
     }
     switch (frame.type) {
       case 'chat:history:result': {
@@ -320,6 +345,7 @@ export function useMvpBridge() {
         break;
       }
       case 'chat:done': {
+        worldbookRefreshRef.current();
         const completedRequest = stringValue(payload.request_id);
         setIsTyping(false);
         setActiveRequestId((current) => current === completedRequest || !completedRequest ? null : current);
@@ -355,6 +381,7 @@ export function useMvpBridge() {
         const state = stringValue(payload.state) || stringValue(payload.status);
         if (!id || !state) break;
         if (['done', 'cancelled', 'failed', 'failed_uncertain', 'error'].includes(state)) {
+          worldbookRefreshRef.current();
           setActiveRequestId((current) => current === id ? null : current);
           if (state === 'failed' || state === 'failed_uncertain') {
             const detail = stringValue(payload.error).trim();
@@ -373,6 +400,7 @@ export function useMvpBridge() {
         break;
       }
       case 'chat:error': {
+        worldbookRefreshRef.current();
         setIsTyping(false);
         setActiveRequestId(null);
         const detail = stringValue(payload.error).trim();
@@ -425,6 +453,7 @@ export function useMvpBridge() {
         setMessages((current) => appendUniqueProactive(current, incoming));
         break;
       }
+      case 'api:budget:result': setApiBudget(coerceApiBudget(payload)); break;
       case 'emotion:update':
         if (isRecord(payload.emotions)) {
           setEmotions(Object.fromEntries(Object.entries(payload.emotions).filter(
@@ -432,10 +461,28 @@ export function useMvpBridge() {
           )));
         }
         break;
-      case 'persona:data':
+      case 'persona:data': {
+        const previousProof = archivePersonaProofRef.current;
+        archivePersonaProofRef.current = coerceArchivePersonaProof(payload);
+        setPersonaScope(archivePersonaProofRef.current);
+        archiveOperationScope.select(archivePersonaProofRef.current, authenticatedRef.current);
+        if (previousProof && !sameArchivePersonaProof(previousProof, archivePersonaProofRef.current)) {
+          setMessages([]); setStreamingText(''); setActiveRequestId(null); setIsTyping(false);
+          setMemoryCandidates([]); setConfirmedMemories([]); setMemoryResults([]); setGroupState({});
+          sendOn(socket, 'chat:history', { conversation_id: CONVERSATION_ID, limit: 300 });
+          refreshConfirmedOn(socket); refreshCandidatesOn(socket);
+        }
         setPersona(isRecord(payload.persona) ? payload.persona : null);
         // persona_id lives at the top level of the payload (persona card + scope).
-        setPersonaId(stringValue(payload.persona_id) || null);
+        const nextPersonaId = stringValue(payload.persona_id) || null;
+        worldbookPersonaRef.current = nextPersonaId;
+        setPersonaId(nextPersonaId);
+        setWorldbookDiagnostics((current) => selectWorldbookPersona(current, nextPersonaId));
+        worldbookRefreshRef.current();
+        break;
+      }
+      case 'archive:result':
+        setWorldbookDiagnostics((current) => acceptWorldbookArchiveResult(current, worldbookPersonaRef.current, payload));
         break;
       case 'relationship:data':
         setRelationship(payload);
@@ -502,7 +549,7 @@ export function useMvpBridge() {
       default:
         break;
     }
-  }, [refreshCandidatesOn, refreshConfirmedOn]);
+  }, [archiveOperationScope, refreshCandidatesOn, refreshConfirmedOn]);
 
   const connect = useCallback(async () => {
     if (!mountedRef.current) return;
@@ -559,6 +606,9 @@ export function useMvpBridge() {
             throw new Error('invalid authentication');
           }
           authenticatedRef.current = true;
+          archivePersonaProofRef.current = coerceArchivePersonaProof(frame.payload);
+          setPersonaScope(archivePersonaProofRef.current);
+          archiveOperationScope.select(archivePersonaProofRef.current, true);
           setConnection('connected');
           setError('');
           for (const [command, payload] of INITIAL_COMMANDS) sendOn(socket, command, payload);
@@ -568,8 +618,12 @@ export function useMvpBridge() {
         // Room-only events (diary/timeline/runtime:activity/...) must not
         // tear down this connection. AppShell keeps this hook mounted while
         // DreamRoom is showing, so unknown declared events are ignored.
-        if (!EVENT_NAMES.has(frame.type)) return;
+        if (!EVENT_NAMES.has(frame.type) && !listeners.current.has(frame.type)
+          && !pendingResultsRef.current.has(stringValue(frame.request_id))) return;
         applyFrame(frame, socket);
+        for (const listener of listeners.current.get(frame.type) ?? []) {
+          try { listener(frame.payload); } catch { /* One view cannot close the shared session. */ }
+        }
       } catch {
         authenticatedRef.current = false;
         setConnection('unavailable');
@@ -586,6 +640,9 @@ export function useMvpBridge() {
       if (socketRef.current !== socket) return;
       socketRef.current = null;
       authenticatedRef.current = false;
+      archivePersonaProofRef.current = null;
+      setPersonaScope(null);
+      archiveOperationScope.select(null, false);
       for (const pending of pendingResultsRef.current.values()) {
         clearTimeout(pending.timer);
         pending.reject(new Error('bridge disconnected'));
@@ -605,13 +662,14 @@ export function useMvpBridge() {
       setConnection((current) => current === 'unavailable' ? current : 'disconnected');
       reconnectRef.current = setTimeout(() => connectRef.current(), RECONNECT_MS);
     };
-  }, [applyFrame, refreshConfirmedOn, sendOn]);
+  }, [applyFrame, archiveOperationScope, refreshConfirmedOn, sendOn]);
 
   useEffect(() => {
     connectRef.current = () => { void connect(); };
   }, [connect]);
 
   useEffect(() => {
+    if (!enabled) { setSettings({}); setConnection('disconnected'); return; }
     mountedRef.current = true;
     void connect();
     const unsubscribe = window.electronAPI?.bridge?.onChanged?.((state) => {
@@ -620,6 +678,10 @@ export function useMvpBridge() {
     });
     return () => {
       mountedRef.current = false;
+      authenticatedRef.current = false;
+      archivePersonaProofRef.current = null;
+      setPersonaScope(null);
+      archiveOperationScope.select(null, false);
       clearTimeout(reconnectRef.current);
       for (const pending of pendingResultsRef.current.values()) {
         clearTimeout(pending.timer);
@@ -630,26 +692,32 @@ export function useMvpBridge() {
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [connect]);
+  }, [connect, enabled]);
 
   const command = useCallback((
     name: MVPCommandName,
     payload: Record<string, unknown>,
     id = requestId(),
+    quiet = false,
+    archiveToken?: ArchiveOperationToken,
   ) => {
+    if (archiveToken && (!archiveOperationScope.isCurrent(archiveToken)
+      || !sameArchivePersonaProof(archiveToken.proof, archivePersonaProofRef.current))) return null;
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN || !authenticatedRef.current) {
-      setError('本地服务尚未连接。');
+      if (!quiet) setError('本地服务尚未连接。');
       return null;
     }
     try {
-      sendOn(socket, name, payload, id);
+      const proof = archiveToken?.proof;
+      sendOn(socket, name, proof ? { ...payload, expected_persona_id: proof.persona_id,
+        expected_persona_epoch: proof.persona_epoch, expected_persona_fingerprint: proof.persona_fingerprint } : payload, id);
       return id;
     } catch {
-      setError('命令未发送；请等待本地服务恢复。');
+      if (!quiet) setError('命令未发送；请等待本地服务恢复。');
       return null;
     }
-  }, [sendOn]);
+  }, [archiveOperationScope, sendOn]);
 
   const sendChat = useCallback((raw: string, attachment?: {
     path?: string;
@@ -704,21 +772,50 @@ export function useMvpBridge() {
   const requestResult = useCallback((
     name: MVPCommandName,
     payload: Record<string, unknown>,
-    expectedType: string,
+    expectedType: string | readonly string[],
     timeoutMs = 10_000,
+    quiet = false,
+    archiveToken?: ArchiveOperationToken,
   ) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    if (archiveToken && (!archiveOperationScope.isCurrent(archiveToken)
+      || !sameArchivePersonaProof(archiveToken.proof, archivePersonaProofRef.current))) {
+      reject(new Error('人格已变化，未发送旧档案操作。')); return;
+    }
     const id = requestId('commit');
     const timer = setTimeout(() => {
       pendingResultsRef.current.delete(id);
       reject(new Error('command acknowledgement timed out'));
     }, timeoutMs);
-    pendingResultsRef.current.set(id, { expectedType, resolve, reject, timer });
-    if (!command(name, payload, id)) {
+    pendingResultsRef.current.set(id, { expectedType, resolve, reject, timer, quiet });
+    if (!command(name, payload, id, quiet, archiveToken)) {
       clearTimeout(timer);
       pendingResultsRef.current.delete(id);
       reject(new Error('command was not sent'));
     }
-  }), [command]);
+  }), [archiveOperationScope, command]);
+
+  const awaitArchiveOperation = useCallback(async <T,>(token: ArchiveOperationToken, operation: () => Promise<T>): Promise<T> => {
+    const result = await archiveOperationScope.run(token, operation);
+    if (!result.current || !archiveOperationScope.isCurrent(token)) throw new Error('人格已变化，本次导入已取消。');
+    return result.value;
+  }, [archiveOperationScope]);
+
+  useEffect(() => {
+    worldbookRefreshRef.current = () => {
+      if (!worldbookPersonaRef.current || !authenticatedRef.current) return;
+      if (worldbookRefreshPendingRef.current) { worldbookRefreshQueuedRef.current = true; return; }
+      worldbookRefreshPendingRef.current = true;
+      // Diagnostic refresh is optional; an unavailable archive cannot turn a
+      // successfully delivered chat into a chat error.
+      void requestResult('archive:get', {}, 'archive:result', 12_000, true)
+        .catch(() => undefined)
+        .finally(() => {
+          worldbookRefreshPendingRef.current = false;
+          if (worldbookRefreshQueuedRef.current) { worldbookRefreshQueuedRef.current = false; worldbookRefreshRef.current(); }
+        });
+    };
+    return () => { worldbookRefreshRef.current = () => undefined; };
+  }, [requestResult]);
 
   const fetchChatMedia = useCallback(async (mediaId: string): Promise<string> => {
     const result = await requestResult('chat:media', { media_id: mediaId }, 'chat:media:result', 15_000);
@@ -836,13 +933,48 @@ export function useMvpBridge() {
     }
   }, [requestResult]);
 
+  const subscribe = useCallback((type: string, listener: (payload: unknown) => void) => {
+    const bucket = listeners.current.get(type) ?? new Set();
+    bucket.add(listener); listeners.current.set(type, bucket);
+    return () => { bucket.delete(listener); if (!bucket.size) listeners.current.delete(type); };
+  }, []);
+  const request = useCallback(async <T = unknown,>(type: string, payload: unknown, options: WSRequestOptions): Promise<T> => {
+    const token = archiveOperationScope.select(archivePersonaProofRef.current, authenticatedRef.current);
+    if (options.personaScope && !sameArchivePersonaProof(options.personaScope, token.proof)) throw new Error('人格已变化；旧操作未发送。');
+    const value = await requestResult(type as MVPCommandName, isRecord(payload) ? payload : {}, options.expectedType,
+      options.timeout, true, options.personaScope ? token : undefined);
+    if (options.personaScope && !archiveOperationScope.isCurrent(token)) throw new Error('人格已变化；旧结果已拒绝。');
+    return value as T;
+  }, [archiveOperationScope, requestResult]);
+  const send = useCallback((type: string, payload: unknown = {}) => Boolean(command(type as MVPCommandName, isRecord(payload) ? payload : {})), [command]);
+  const refreshApiBudget = useCallback(() => send('api:budget:get', {}), [send]);
+  const refreshDiary = useCallback(() => send('diary:request', {}), [send]);
+  const refreshTimeline = useCallback(() => send('timeline:request', {}), [send]);
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    const apply = (value: { enabled?: boolean }) => { if (alive) setLocalMode(value.enabled !== false); };
+    const api = window.electronAPI?.localMode;
+    const dispose = api?.onChanged(apply);
+    void api?.get().then(apply).catch(() => undefined);
+    return () => { alive = false; dispose?.(); };
+  }, [enabled]);
+  const archiveClient = useMemo<ArchiveClient>(() => ({
+    connState: connection, personaScope,
+    persona: persona as ArchiveClient['persona'], worldbookDiagnostics,
+    settingsSnapshot: settings as ArchiveClient['settingsSnapshot'], apiBudget, localMode,
+    request, send, subscribe, refreshApiBudget, refreshDiary, refreshTimeline,
+  }), [connection, persona, personaScope, worldbookDiagnostics, settings, apiBudget, localMode, request, send, subscribe, refreshApiBudget, refreshDiary, refreshTimeline]);
+
   return {
+    archiveClient,
     connection,
     messages,
     streamingText,
     activeRequestId,
     persona,
     personaId,
+    worldbookDiagnostics,
     relationship,
     emotions,
     settings,
@@ -950,10 +1082,12 @@ export function useMvpBridge() {
     reactToSticker: (id: string, liked: boolean) => command('sticker:react', { id, liked }),
     completeOnboarding,
     importCharacterCard: async (file: File) => {
+      const token = archiveOperationScope.select(archivePersonaProofRef.current, authenticatedRef.current);
+      if (!archiveOperationScope.isCurrent(token)) throw new Error('当前人格尚未就绪，请稍后再导入。');
       const isPng = file.type === 'image/png' || /\.png$/i.test(file.name);
-      const raw = isPng
+      const raw = await awaitArchiveOperation(token, async () => isPng
         ? JSON.stringify(parseSillyTavernPngPayload(await file.arrayBuffer()))
-        : await file.text();
+        : await file.text());
       if (!raw || raw === 'null') {
         throw new Error(isPng
           ? '这是一张普通图，没有角色卡数据。请使用官网原文件或 JSON。'
@@ -968,7 +1102,7 @@ export function useMvpBridge() {
         identity_change_confirmed: true,
         actor: 'owner',
         reason: 'onboarding imported a live character card',
-      }, 'persona:import:result', 30_000);
+      }, 'persona:import:result', 30_000, false, token);
       if (result.ok !== true) throw new Error(stringValue(result.error) || '角色卡导入失败');
       const activated = result.activated === true && result.restart_required !== true;
       return activated
@@ -976,20 +1110,24 @@ export function useMvpBridge() {
         : (stringValue(result.world_book_warning) || '角色卡已保存，但未能热切换为当前身份。');
     },
     importWorldBook: async (file: File) => {
-      const worldBook = parseWorldBookImportText(await file.text(), file.name.replace(/\.json$/i, '') || undefined);
+      const token = archiveOperationScope.select(archivePersonaProofRef.current, authenticatedRef.current);
+      if (!archiveOperationScope.isCurrent(token)) throw new Error('当前人格尚未就绪，请稍后再导入。');
+      const text = await awaitArchiveOperation(token, () => file.text());
+      const worldBook = parseWorldBookImportText(text, file.name.replace(/\.json$/i, '') || undefined);
       if (!worldBook) throw new Error('世界书 JSON 无法识别。请使用酒馆/Chub 导出的原文件。');
-      const current = await requestResult('archive:get', {}, 'archive:result', 15_000);
+      const current = await awaitArchiveOperation(token, () => requestResult('archive:get', {}, 'archive:result', 15_000, false, token));
+      if (current.ok !== true || current.persona_id !== token.proof?.persona_id) throw new Error('当前人格档案不可读，本次未导入。');
       const archive = isRecord(current.archive) ? current.archive : { characters: [], activeCharacterIds: [], worldBooks: [] };
       const books = Array.isArray(archive.worldBooks) ? archive.worldBooks.filter(isRecord) : [];
       const nextBooks = [...books.filter((book) => stringValue(book.id) !== worldBook.id), worldBook];
-      const put = await requestResult('archive:put', {
+      const put = await awaitArchiveOperation(token, () => requestResult('archive:put', {
         archive: {
           characters: Array.isArray(archive.characters) ? archive.characters : [],
           activeCharacterIds: Array.isArray(archive.activeCharacterIds) ? archive.activeCharacterIds : [],
           worldBooks: nextBooks,
         },
         expected_revision: Number(current.revision) || 0,
-      }, 'archive:result', 15_000);
+      }, 'archive:result', 15_000, false, token));
       if (put.ok !== true) throw new Error(stringValue(put.error) || '世界书未能写入档案');
       return `已导入世界书「${worldBook.name}」，共 ${worldBook.entries.length} 条设定。`;
     },

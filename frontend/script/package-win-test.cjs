@@ -4,6 +4,7 @@ const { spawnSync } = require('child_process');
 const { assertLive2DReleaseGate } = require('../electron/live2d-release-gate.cjs');
 const { stageLive2DCoreOnlyTestRuntime } = require('../electron/live2d-runtime-assets.cjs');
 const { createSeedConfig } = require('./seed-config.cjs');
+const { assertSourceMigrationSource, assertSourceMigrationStage } = require('./source-migration-policy.cjs');
 const { verifyPackagedWindowsIcons } = require('./windows-icon-verification.cjs');
 const {
   assertProductionPayload,
@@ -217,6 +218,7 @@ async function applyPortableExecutableMetadata(executable) {
 }
 
 async function main() {
+  const sourceMigration = { source: assertSourceMigrationSource(projectRoot), staged: null };
   const electronExe = require('electron');
   const electronDist = path.dirname(electronExe);
 
@@ -264,6 +266,7 @@ async function main() {
     path.join(resourcesDir, 'src'),
     resourcesDir,
   );
+  sourceMigration.staged = assertSourceMigrationStage({ projectRoot, resourceRoot: resourcesDir, appRoot: appDir });
   compileProductionPythonSource(path.join(resourcesDir, 'src'), projectRoot);
   const runtime = preparePythonRuntime({
     projectRoot,
@@ -304,6 +307,7 @@ async function main() {
     resourceRoot: resourcesDir,
     appRoot: appDir,
     runtime,
+    sourceMigration,
   });
   assertProductionPayload(resourcesDir, appDir);
   if (live2dBuildEnabled) {

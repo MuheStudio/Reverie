@@ -134,9 +134,11 @@ class RelationshipTracker:
         initial_intimacy: int = 0,
         state_path: Path | None = None,
         document_store: PrivateDocumentStore | None = None,
+        defer_startup_writes: bool = False,
     ) -> None:
         self.state_path = state_path
         self.document_store = document_store
+        self.defer_startup_writes = defer_startup_writes
         self.intimacy = max(0, initial_intimacy)
         self.interaction_count = 0
         self.positive_interactions = 0
@@ -343,7 +345,7 @@ class RelationshipTracker:
             if not isinstance(data, dict):
                 raise ValueError("relationship state root must be an object")
             self._apply_state(data)
-            if self.document_store is not None:
+            if self.document_store is not None and not self.defer_startup_writes:
                 self._save_state()
                 if (
                     self.document_store.read_private_document(

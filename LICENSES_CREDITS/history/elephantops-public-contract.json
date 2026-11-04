@@ -1,0 +1,4543 @@
+{
+  "schema": "reverie.xiangqi-public-contract.v1",
+  "version": "0.1.1",
+  "materials": "Public API behavior only; package algorithm and comments were not opened.",
+  "samples": [
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 0,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 1,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": true,
+      "blackInsufficient": true
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 0,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 1,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 0
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    },
+    {
+      "red": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "black": {
+        "cannon": 2,
+        "advisor": 2,
+        "elephant": 1
+      },
+      "redInsufficient": false,
+      "blackInsufficient": false
+    }
+  ]
+}

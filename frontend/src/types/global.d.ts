@@ -180,6 +180,22 @@ declare global {
 
   interface Window {
     electronAPI?: {
+      download?: {
+        sniffResources: () => Promise<Array<{ url: string; type: string; title: string; size?: number }>>;
+        sniffM3u8: (url: string) => Promise<{
+          segments: Array<{ url: string; duration: number; bandwidth: number; resolution: string; title: string }>;
+          totalDuration: number;
+          segmentCount: number;
+          isMaster: boolean;
+          /** Actual URL after validated redirects; use as downloadM3u8.baseUrl. */
+          sourceUrl?: string;
+        } | { error: string }>;
+        downloadM3u8: (input: { url: string; baseUrl?: string; m3u8Content: string }) => Promise<{ path: string; size: number; warning?: string }>;
+        downloadDirect: (input: { url: string; filename?: string }) => Promise<
+          { cancelled: true } | { path: string; size: number; state: 'completed'; cancelled: false; warning?: string }
+        >;
+        onProgress: (callback: (event: { current: number; total: number; percentage: number }) => void) => () => void;
+      };
       platform?: string;
       getAppVersion?: () => Promise<string>;
       appState?: {

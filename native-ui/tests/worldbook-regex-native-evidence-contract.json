@@ -1,0 +1,22 @@
+{
+  "schema": "reverie.regex-native-evidence-contract.v1",
+  "recordSchema": "reverie.regex-native-evidence.v1",
+  "manifestSchema": "reverie.regex-native-evidence-manifest.v1",
+  "maximumRecordBytes": 131072,
+  "cases": [
+    {
+      "caseId": "regex-primary-selected",
+      "filename": "regex-primary-selected.json",
+      "control": "worldbookRegexKeywords",
+      "viewport": "worldbook-regex-keywords-scroll",
+      "selectionRequired": true
+    },
+    {
+      "caseId": "regex-secondary-plain",
+      "filename": "regex-secondary-plain.json",
+      "control": "worldbookRegexSecondaryKeywords",
+      "viewport": "worldbook-regex-secondary-scroll",
+      "selectionRequired": false
+    }
+  ]
+}

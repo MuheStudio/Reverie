@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Metadata-only inventory before independent conversation summary replacement; no source archive or relicensing proof.",
+  "sourceTreeCommit": "59668ae8fef812423a8d07761b077103bb54aa8e",
+  "capturedOn": "2026-10-05",
+  "oldDirectory": "src/memory/hypa_v3.py",
+  "fileCount": 1,
+  "totalBytes": 14053,
+  "files": [
+    {
+      "path": "src/memory/hypa_v3.py",
+      "bytes": 14053,
+      "sha256": "ac383fc69a029c10babea3671a46ebb09c8cda2f2de75373af2a47465d299cb8"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -79,9 +80,10 @@ _CORE_NEVER_SAY = [
 class CharacterCardImportError(ValueError):
     """A safe, user-facing character card validation failure."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, partial_write: bool = False) -> None:
         super().__init__(message)
         self.code = code
+        self.partial_write = partial_write
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,19 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
     nickname = _clean_text(data.get("nickname", ""), MAX_NAME_CHARS)
     macro_name = nickname or name
 
+    # Screen the actual bounded text that will reach the persona or archive.
+    # The V3 nickname is untrusted too: {{char}} can introduce instructions
+    # which were absent in the source field before substitution.
+    description = _clean_text(_replace_macros(description, macro_name), MAX_PROFILE_CHARS)
+    personality_text = _clean_text(_replace_macros(personality_text, macro_name), 8_000)
+    scenario = _clean_text(_replace_macros(scenario, macro_name), 8_000)
+    first_message = _clean_text(_replace_macros(first_message, macro_name), MAX_GREETING_CHARS)
+    message_examples = _clean_text(_replace_macros(message_examples, macro_name), 8_000)
+    alternate_greetings = [
+        _clean_text(_replace_macros(item, macro_name), MAX_GREETING_CHARS)
+        for item in alternate_greetings
+    ]
+
     unsafe_core = _unsafe_instruction_flags(
         "\n".join((name, description, personality_text, scenario))
     )
@@ -227,9 +242,8 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
     alternate_greetings = safe_greetings
     ignored_fields.extend(f"{field_name}:unsafe" for field_name in unsafe_message_fields)
 
-    combined_profile = _replace_macros(
-        "\n\n".join(part for part in (description, personality_text, scenario) if part),
-        macro_name,
+    combined_profile = "\n\n".join(
+        part for part in (description, personality_text, scenario) if part
     )[:MAX_PROFILE_CHARS]
     age, birthday, age_unknown = _extract_age_and_birthday(combined_profile)
     gender, gender_unknown = _infer_gender(tags, combined_profile)
@@ -304,9 +318,9 @@ def parse_sillytavern_json(raw: bytes | str, *, filename: str = "character.json"
         "creator_notes": _clean_text(data.get("creator_notes", ""), 4_000),
         "nickname": nickname,
         "tags": tags,
-        "first_message": _replace_macros(first_message, macro_name),
-        "alternate_greetings": [_replace_macros(item, macro_name) for item in alternate_greetings],
-        "message_example": _replace_macros(message_examples, macro_name),
+        "first_message": first_message,
+        "alternate_greetings": alternate_greetings,
+        "message_example": message_examples,
         "remote_avatar_url": remote_avatar,
         "remote_assets_blocked": True,
         "imported_system_prompt": imported_system_prompt,
@@ -384,7 +398,12 @@ def save_imported_persona(
     *,
     activate: bool = False,
 ) -> dict[str, Any]:
-    """Atomically persist one normalized profile in Reverie's local persona store."""
+    """Persist a new immutable profile, with atomic writes for each file.
+
+    The registry is written last.  A later write can fail after a profile file
+    has committed; the typed error records that partial outcome without
+    pretending the whole operation is a multi-file transaction.
+    """
 
     if activate:
         raise CharacterCardImportError(
@@ -392,40 +411,61 @@ def save_imported_persona(
             "Import and identity activation must be separate privileged operations",
         )
     root = Path(persona_dir).resolve()
-    report.persona.seal_identity()
     imported_root = root / "imported"
     profile_dir = imported_root / report.card_id
-    profile_dir.mkdir(parents=True, exist_ok=True)
-
-    persona_path = profile_dir / "persona.json"
-    metadata_path = profile_dir / "import-report.json"
-    _atomic_json_write(persona_path, report.persona.to_dict())
-    _atomic_json_write(
-        metadata_path,
-        {
-            **report.public_summary(),
-            "metadata": report.metadata,
-        },
-    )
-
     registry_path = root / "registry.json"
     registry = _load_registry(registry_path)
     profiles = registry.setdefault("profiles", {})
-    profiles[report.card_id] = {
-        "id": report.card_id,
-        "name": report.persona.name,
-        "persona_path": str(persona_path.relative_to(root)).replace("\\", "/"),
-        "source_format": report.source_format,
-        "source_sha256": report.source_sha256,
-        "identity_fingerprint": report.persona.identity_envelope.fingerprint,
-        "persona_id": report.persona.identity_envelope.persona_id,
-        "identity_version": report.persona.identity_envelope.version,
-    }
-    _atomic_json_write(registry_path, registry)
+    if report.card_id in profiles:
+        raise CharacterCardImportError("already_imported", "这张角色卡已导入，本地身份档案未改写")
+    if profile_dir.exists() or profile_dir.is_symlink():
+        raise CharacterCardImportError(
+            "local_profile_conflict",
+            "这张角色卡已有未登记的本地文件，已保留且未覆盖；保存状态需要检查",
+            partial_write=True,
+        )
+    report.persona.seal_identity()
+
+    persona_path = profile_dir / "persona.json"
+    metadata_path = profile_dir / "import-report.json"
+    try:
+        # Exclusive creation also closes the same-ID directory race without
+        # opening or overwriting the first accepted identity.
+        profile_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise CharacterCardImportError(
+            "local_profile_conflict",
+            "这张角色卡的本地文件已存在，已保留且未覆盖；保存状态需要检查",
+            partial_write=True,
+        ) from exc
+    try:
+        _atomic_json_write(persona_path, report.persona.to_dict())
+        _atomic_json_write(
+            metadata_path,
+            {**report.public_summary(), "metadata": report.metadata},
+        )
+        profiles[report.card_id] = {
+            "id": report.card_id,
+            "name": report.persona.name,
+            "persona_path": str(persona_path.relative_to(root)).replace("\\", "/"),
+            "source_format": report.source_format,
+            "source_sha256": report.source_sha256,
+            "identity_fingerprint": report.persona.identity_envelope.fingerprint,
+            "persona_id": report.persona.identity_envelope.persona_id,
+            "identity_version": report.persona.identity_envelope.version,
+        }
+        _atomic_json_write(registry_path, registry)
+    except Exception as exc:
+        raise CharacterCardImportError(
+            "import_save_incomplete",
+            "角色卡保存未完成，已保留部分本地文件；未切换当前身份",
+            partial_write=True,
+        ) from exc
     return {
         **report.public_summary(),
         "saved": True,
         "activated": False,
+        "partial_write": False,
         "restart_required": False,
     }
 
@@ -566,20 +606,37 @@ def activate_imported_persona(
 
     require_authorized_identity_commit(persona)
 
+    active_path = root / "active.json"
+    try:
+        if active_path.exists():
+            active_path.unlink()
+            _sync_persona_directory(root)
+    except OSError as exc:
+        raise CharacterCardImportError(
+            "active_cache_clear_failed",
+            "Previous active persona cache could not be cleared safely",
+        ) from exc
+
     profile["identity_fingerprint"] = envelope.fingerprint
     profile["persona_id"] = envelope.persona_id
     profile["identity_version"] = envelope.version
     registry["active_id"] = str(profile_id)
     _atomic_json_write(registry_path, registry)
 
-    warning = ""
+    warnings: list[str] = []
     try:
-        _atomic_json_write(root / "active.json", persona.to_dict())
+        _sync_persona_directory(root)
+    except OSError as exc:
+        # os.replace already committed the authoritative pointer.  Keep the
+        # live epoch aligned with it even if directory durability degraded.
+        warnings.append(f"registry directory not synced: {type(exc).__name__}")
+    try:
+        _atomic_json_write(active_path, persona.to_dict())
     except OSError as exc:
         # The authoritative pointer already committed.  Reporting success is
         # intentional: retrying the privileged operation could create a second
         # epoch for the same durable identity.
-        warning = f"active persona cache not refreshed: {type(exc).__name__}"
+        warnings.append(f"active persona cache not refreshed: {type(exc).__name__}")
     return {
         "ok": True,
         "active_id": str(profile_id),
@@ -588,7 +645,7 @@ def activate_imported_persona(
         "identity_fingerprint": envelope.fingerprint,
         "identity_version": envelope.version,
         "restart_required": False,
-        **({"warning": warning} if warning else {}),
+        **({"warning": ", ".join(warnings)} if warnings else {}),
     }
 
 
@@ -721,6 +778,32 @@ def load_active_persona(persona_dir: Path) -> Persona | None:
     if active_path.exists():
         cached = _load_persona_file(active_path, code="active_cache_corrupt")
         if not hmac.compare_digest(cached.identity_envelope.fingerprint, expected):
+            cached_envelope = cached.identity_envelope
+            # Compare only the records left by the existing authoritative
+            # loader.  Do not load or upgrade another profile to bless a cache.
+            registered_cache = persona is not None and any(
+                str(registered_id) != active_id
+                and isinstance(record, dict)
+                and record.get("identity_fingerprint") == cached_envelope.fingerprint
+                and record.get("persona_id") == cached_envelope.persona_id
+                for registered_id, record in registry.get("profiles", {}).items()
+            )
+            if registered_cache:
+                refresh_warning = ""
+                try:
+                    _atomic_json_write(active_path, persona.to_dict())
+                except OSError as exc:
+                    refresh_warning = f"; cache not refreshed: {type(exc).__name__}"
+                logging.getLogger(__name__).warning(
+                    "Ignored stale active persona cache: current=%s fingerprint=%s "
+                    "cached=%s fingerprint=%s%s",
+                    persona.identity_envelope.persona_id,
+                    persona.identity_envelope.fingerprint[:16],
+                    cached_envelope.persona_id,
+                    cached_envelope.fingerprint[:16],
+                    refresh_warning,
+                )
+                return persona
             raise CharacterCardImportError(
                 "active_cache_conflict",
                 "Active persona cache conflicts with the authoritative sealed identity",
@@ -839,6 +922,15 @@ def _unsafe_instruction_flags(text: str) -> list[str]:
     return [name for name, pattern in _UNSAFE_PROFILE_PATTERNS if pattern.search(normalized)]
 
 
+def author_prompt_flags(text: str) -> list[str]:
+    """Unsafe-instruction categories in a quarantined card-author prompt.
+
+    Flagged text can never be switched on or sent; the import-time screen and
+    every later decision use the same patterns.
+    """
+    return _unsafe_instruction_flags(text)
+
+
 def _extract_character_book(
     data: dict[str, Any],
     macro_name: str,
@@ -872,6 +964,7 @@ def _extract_character_book(
             warnings.append("skipped_invalid")
             continue
         content = _clean_text(raw_entry.get("content", ""), MAX_WORLD_ENTRY_CONTENT)
+        content = _clean_text(_replace_macros(content, macro_name), MAX_WORLD_ENTRY_CONTENT)
         if not content:
             warnings.append("skipped_empty")
             continue
@@ -882,14 +975,22 @@ def _extract_character_book(
 
         def _keys(value: Any, limit: int = 100) -> list[str]:
             if isinstance(value, list):
-                return [
+                items = [
                     item.strip()
                     for item in (str(part) for part in value)
                     if item.strip()
                 ][:limit]
-            if isinstance(value, str):
-                return [part.strip() for part in re.split(r"[、，,]", value) if part.strip()][:limit]
-            return []
+            elif isinstance(value, str):
+                items = [part.strip() for part in re.split(r"[、，,]", value) if part.strip()][:limit]
+            else:
+                return []
+            return [_replace_macros(item, macro_name) for item in items]
+
+        keywords = _keys(raw_entry.get("keys", raw_entry.get("key")))
+        secondary_keywords = _keys(raw_entry.get("secondary_keys", raw_entry.get("keysecondary")))
+        if any(_unsafe_instruction_flags(item) for item in (*keywords, *secondary_keywords)):
+            warnings.append("entry_unsafe")
+            continue
 
         uid_value = raw_entry.get("id", raw_entry.get("uid"))
         uid = str(uid_value) if uid_value is not None else f"wb_{len(normalized) + 1}"
@@ -899,12 +1000,12 @@ def _extract_character_book(
         role = str(raw_entry.get("role") or "system").strip().lower()
         normalized.append({
             "id": uid[:160],
-            "keywords": _keys(raw_entry.get("keys", raw_entry.get("key"))),
-            "secondaryKeywords": _keys(raw_entry.get("secondary_keys", raw_entry.get("keysecondary"))),
+            "keywords": keywords,
+            "secondaryKeywords": secondary_keywords,
             # selective=true 的 AND 语义由独立的 secondaryKeywords + and_any 表达，
             # 与前端 WorldBookEntry 的 selectiveLogic 枚举保持一致。
             "selectiveLogic": "and_any",
-            "content": _replace_macros(content, macro_name),
+            "content": content,
             "enabled": raw_entry.get("enabled", True) is not False and raw_entry.get("disable") is not True,
             "alwaysActive": raw_entry.get("constant") is True,
             "position": position if position in {"before_char", "after_char"} else "before_char",
@@ -1048,6 +1149,16 @@ def _load_registry(path: Path) -> dict[str, Any]:
             "Local persona registry has an invalid structure",
         )
     return value
+
+
+def _sync_persona_directory(root: Path) -> None:
+    """Flush switching-path directory entries without changing other writers."""
+
+    descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _atomic_json_write(path: Path, value: Any) -> None:

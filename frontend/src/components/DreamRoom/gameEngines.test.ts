@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Chess } from 'chess.js';
 import GoBoard from '@sabaki/go-board';
-import { Xiangqi } from 'elephantops/xiangqi';
+import { initialXiangqi, xiangqiLegalMoves, xiangqiIsLegal } from './xiangqiEngine';
 import { Engine } from 'tetris-engine';
 import {
   chooseGomokuMove,
@@ -77,16 +77,12 @@ describe('playable mini-game engines', () => {
     expect(chess.isCheckmate()).toBe(true);
   });
 
-  it('uses elephantops legal destinations for xiangqi', () => {
-    const position = Xiangqi.default();
-    const destinations = position.allDests();
+  it('uses the independent Xiangqi engine for a playable default board', () => {
+    const position = initialXiangqi();
     expect(position.turn).toBe('red');
-    expect(destinations.size).toBeGreaterThan(0);
-    const first = [...destinations.entries()].find(([, dests]) => [...dests].length > 0);
-    expect(first).toBeTruthy();
-    const [from, dests] = first!;
-    const to = [...dests][0];
-    expect(position.isLegal({ from, to })).toBe(true);
+    const moves = xiangqiLegalMoves(position);
+    expect(moves.length).toBeGreaterThan(0);
+    expect(moves.every(move => xiangqiIsLegal(position, move))).toBe(true);
   });
 
   it('uses go-board for captures, overwrite, and suicide prevention', () => {

@@ -6,6 +6,7 @@ import {
   createBackup,
   createCharacterCardExport,
   createDefaultArchive,
+  createDefaultWorldBook,
   createOnboardingPreferences,
   createWorldBookExport,
   clearLegacyArchiveAfterMigration,
@@ -532,3 +533,82 @@ describe('reverieArchive', () => {
   });
 });
 
+describe('worldbook insertion preservation', () => {
+  function archiveWithDepthEntry() {
+    return normalizeArchive({
+      characters: [],
+      activeCharacterIds: [],
+      worldBooks: [{
+        id: 'injection-preservation-book',
+        name: '保留插入设置',
+        createdAt: '2026-10-26T00:00:00Z',
+        updatedAt: '2026-10-26T00:00:00Z',
+        scanDepth: 1,
+        tokenBudget: 100,
+        recursiveScanning: false,
+        entries: [{
+          id: 'injection-preservation-entry',
+          content: '独立的资料正文',
+          keywords: ['保留'],
+          position: 'at_depth',
+          depth: 200,
+          role: 'assistant',
+          enabled: false,
+          insertionOrder: 40,
+        }],
+      }],
+    });
+  }
+
+  it('preserves disabled native depth insertion when normalizing a canonical archive', () => {
+    const archive = archiveWithDepthEntry();
+    expect(archive.worldBooks[0].entries[0]).toMatchObject({
+      position: 'at_depth', depth: 200, role: 'assistant', enabled: false, insertionOrder: 40,
+    });
+    expect(normalizeArchive(archive)).toEqual(archive);
+  });
+
+  it('keeps the native insertion tuple in a normalized archive save payload after an unrelated edit', () => {
+    const archive = archiveWithDepthEntry();
+    const expected = archive.worldBooks[0].entries[0];
+    const edited = { ...archive, worldBooks: [{ ...archive.worldBooks[0], name: '只修改书名' }] };
+    const payload = JSON.parse(JSON.stringify({ archive: normalizeArchive(edited), expected_revision: 9 }));
+    expect(payload.expected_revision).toBe(9);
+    expect(payload.archive.worldBooks[0].name).toBe('只修改书名');
+    expect(payload.archive.worldBooks[0].entries[0]).toEqual(expected);
+    expect(archive.worldBooks[0].name).toBe('保留插入设置');
+  });
+
+  it('round-trips native depth insertion through the canonical worldbook envelope', () => {
+    const book = archiveWithDepthEntry().worldBooks[0];
+    expect(parseWorldBookImport(createWorldBookExport(book))).toEqual(book);
+  });
+
+  it('preserves native depth insertion through the existing renderer backup normalization', () => {
+    const archive = archiveWithDepthEntry();
+    const backup = createBackup({ archive, onboarding: null, llmConfig: null,
+      diaryEntries: [], timelinePosts: [], chatMessages: [] });
+    expect(backup.archive).toEqual(archive);
+    expect(parseBackupImport(backup)?.archive).toEqual(archive);
+  });
+
+  it('does not expand external-format position conversion or invent unknown canonical positions', () => {
+    const imported = parseWorldBookImport({ entries: [{ uid: 41, key: ['外部'],
+      content: '外部格式正文', position: 'at_depth', depth: 4, role: 'user' }] });
+    expect(imported?.entries[0]).toMatchObject({ position: 'before_char', depth: 4, role: 'user' });
+    const archive = archiveWithDepthEntry();
+    const unknown = { ...archive, worldBooks: [{ ...archive.worldBooks[0],
+      entries: [{ ...archive.worldBooks[0].entries[0], position: 'unsupported_position' }] }] };
+    expect(normalizeArchive(unknown).worldBooks[0].entries[0].position).toBe('before_char');
+  });
+});
+
+
+describe('worldbook creation defaults', () => {
+  it('creates books with scan depth 50, token budget 500 and recursion disabled', () => {
+    const book = createDefaultWorldBook('2026-10-28T00:00:00Z');
+    expect(book.scanDepth).toBe(50);
+    expect(book.tokenBudget).toBe(500);
+    expect(book.recursiveScanning).toBe(false);
+  });
+});

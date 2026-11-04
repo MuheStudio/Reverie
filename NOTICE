@@ -27,12 +27,53 @@ This product includes software developed by:
            —— Project N.E.K.O. Team
    --- END N.E.K.O NOTICE ---
 
-2. cat-catch by xifangczy & contributors (GPL-3.0)
-3. Kazumi by Predidit & contributors (GPL-3.0)
-4. NachoBot by NachoBot contributors (GPLv3)
-5. Project AIRI by Neko Ayaka & moeru-ai contributors (MIT)
-6. foxgirls.club by foxgirls.org (MIT)
-7. OpenRoom (VibeApps) by MiniMax (MIT)
+2. Risuai by Kwaroran & contributors (GPL-3.0)
+   Historical declared ports: src/memory/hypa_v3.py and src/lorebook/.
+   Both source implementations were removed after independent replacements;
+   historical source attribution and metadata inventory are retained.
 
-For full license texts, see the LICENSES_CREDITS/ directory.
-For detailed credits, see CREDITS.md.
+3. Project AIRI by Neko Ayaka & moeru-ai contributors (MIT)
+   Includes declared Live2D rendering / speech adaptations.
+
+4. foxgirls.club by foxgirls.org (MIT)
+   Includes the vendored image service and Reverie wrappers.
+
+5. pixi-live2d-display by guansss / Guan & contributors (MIT), version 0.4.0
+   Selected Cubism 4 runtime files; Live2D Cubism Core has separate terms.
+
+6. elephantops by Luca Ferranti and Niklas Fiekas (original chessops)
+   Historical version 0.1.1, GPL-3.0-or-later, formerly used for Xiangqi.
+   The dependency was independently replaced; historical metadata and attribution
+   remain. New candidates must verify runtime and corresponding-source absence.
+
+Additional retained attribution and dependency notices:
+   Luna-ts by Alan-Yu-2077 & contributors (MIT)
+   OpenRoom (VibeApps) by MiniMax (MIT)
+   liquidglass-oss by Liquid Glass OSS contributors (MIT)
+   sqlite-vec by Alex Garcia & contributors (distributed under MIT)
+   ddgs / primp (MIT); trafilatura / courlan / htmldate (Apache-2.0)
+   Specific copied-source scope for Luna-ts, OpenRoom and liquidglass is
+   under provenance review; retaining attribution is not a claim that
+   every referenced upstream feature is incorporated.
+
+Removal/replacement records (not a blanket inclusion claim):
+   cat-catch by xifangczy & contributors (GPL-3.0), legacy download adapter
+   Kazumi by Predidit & contributors (GPL-3.0), unintegrated source tree
+   Risuai worldbook and Hypa by Kwaroran & contributors (GPL-3.0), former implementations
+   Their notices are retained with metadata-only pre-removal inventories.
+   Actual removal and build-verification status is recorded in
+   LICENSES_CREDITS/source-provenance.json.
+
+Historical credit:
+   NachoBot by NachoBot contributors (GPLv3).
+   No current integrated source path was identified in the 2026-10-05 audit.
+
+The current project license remains the root LICENSE. The original author
+supports continued development and a permissive-license migration;
+Apache-2.0 is the preferred target, MIT an alternative, not an automatic
+dual license. No overall license switch is made by this NOTICE.
+
+For full license texts and original notices, see LICENSES_CREDITS/.
+For current paths, historical removals and provenance review status, see
+LICENSES_CREDITS/source-provenance.json and CREDITS.md.
+Per-asset, user-provided model and Live2D terms remain separate.

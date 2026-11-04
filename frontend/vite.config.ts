@@ -1,7 +1,8 @@
 import { UserConfigExport, ConfigEnv, loadEnv } from 'vite';
 import type { PluginOption } from 'vite';
 import react from '@vitejs/plugin-react-swc';
-import { resolve } from 'path';
+import { resolve, relative, isAbsolute } from 'path';
+import { createHash } from 'node:crypto';
 import { visualizer } from 'rollup-plugin-visualizer';
 import autoprefixer from 'autoprefixer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
@@ -53,6 +54,27 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     // importantly, Vite's legacy bootstrap injects inline and data: scripts;
     // those are intentionally rejected by the production CSP. Keep one modern
     // module graph instead of weakening the renderer's security boundary.
+    {
+      name: 'reverie-retired-dependency-graph',
+      apply: 'build',
+      generateBundle() {
+        const ids = Array.from(this.getModuleIds()).sort();
+        if (ids.some(id => /(?:node_modules[/\\](?:\.pnpm[/\\]elephantops@[^/\\]+[/\\]node_modules[/\\])?elephantops)(?:[/\\]|$)/.test(id))) {
+          this.error('Retired elephantops module entered renderer compilation');
+        }
+        const modules = ids.map(id => {
+          const plain = id.replace(/^\0/, '');
+          if (!isAbsolute(plain)) return `virtual:${plain}`;
+          const name = relative(__dirname, plain).replace(/\\/g, '/');
+          return name.startsWith('../') ? `external:${createHash('sha256').update(plain).digest('hex')}` : name;
+        });
+        this.emitFile({ type: 'asset', fileName: 'retired-dependency-build-graph.json', source: JSON.stringify({
+          schema: 'reverie.renderer-module-retirement.v1', retired: ['elephantops'], passed: true,
+          modules, count: modules.length, digestKind: 'ordered-module-identifiers-json-sha256',
+          sha256: createHash('sha256').update(JSON.stringify(modules)).digest('hex'),
+        }, null, 2) + '\n' });
+      },
+    },
     react(),
   ];
 

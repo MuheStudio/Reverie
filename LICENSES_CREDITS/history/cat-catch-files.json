@@ -1,0 +1,566 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Metadata-only inventory of tracked files before source removal; not a source archive or proof of relicensing.",
+  "sourceTreeCommit": "db891cd853ce9ccaa43caf76471925ef27448230",
+  "capturedOn": "2026-10-05",
+  "oldDirectory": "src/download_service",
+  "fileCount": 111,
+  "totalBytes": 2346714,
+  "files": [
+    {
+      "path": "src/download_service/.github/FUNDING.yml",
+      "bytes": 81,
+      "sha256": "2712b619eb15dbf9fd813450b78296b9f8f10cb129ae41cc17290da36a77b67f"
+    },
+    {
+      "path": "src/download_service/.github/ISSUE_TEMPLATE/bug.yaml",
+      "bytes": 1797,
+      "sha256": "86e0ad4a39f68538d746bd43afe2d532383d3eec618850f3205d40677cde2390"
+    },
+    {
+      "path": "src/download_service/.github/ISSUE_TEMPLATE/功能-添加-修改-增强-请求.md",
+      "bytes": 183,
+      "sha256": "c941d6bd22f639c8961072065091e4d6d66de3e177ca47a7983c53edfa40ae63"
+    },
+    {
+      "path": "src/download_service/.gitignore",
+      "bytes": 45,
+      "sha256": "d22f4ecc16ff9e720fe8ffc753949ccbd26d60294d91eccc1838bc1ef5fffe14"
+    },
+    {
+      "path": "src/download_service/CHANGELOG.md",
+      "bytes": 18196,
+      "sha256": "bf6bb22eeb23582237d890452ad5cbe0a4b0549429366f4ecb0ca7d8c43e909e"
+    },
+    {
+      "path": "src/download_service/LICENSE",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "src/download_service/README.md",
+      "bytes": 3773,
+      "sha256": "df4b7fb12014bcee3cd50f6aa8a0afc44dc28538ec5149558f5a30552cf366e3"
+    },
+    {
+      "path": "src/download_service/README/edgeqrcode.png",
+      "bytes": 23767,
+      "sha256": "2fc581a6bc8a34e1e01f83fa11564dfcd2a5bd80379fbe1f34cb66d6bdb52ff9"
+    },
+    {
+      "path": "src/download_service/README/m3u8.png",
+      "bytes": 65418,
+      "sha256": "61f321f9c77d87baad7126de6b1fad8acad03885055c7ae36278509571900877"
+    },
+    {
+      "path": "src/download_service/README/m3u8_es.png",
+      "bytes": 56748,
+      "sha256": "4d44f9d9eb8b948c47c676f1f9960040883e5ca3ed03aa79ffade4e8d0a3e0f9"
+    },
+    {
+      "path": "src/download_service/README/popup.png",
+      "bytes": 115413,
+      "sha256": "bcc53cdbaa0930e481561e092f374232367be2c11ff8e868641f6c9166dba07f"
+    },
+    {
+      "path": "src/download_service/README/popup_es.png",
+      "bytes": 30365,
+      "sha256": "0c543ac4c86ba1ed4afb4088f75df868ac1d374576e5e843b68e53f127464c2d"
+    },
+    {
+      "path": "src/download_service/README_en.md",
+      "bytes": 4309,
+      "sha256": "1639ee2fa1f55789d7f255cc1c4de13f85f80651aa9fd6d3b00adc933a5f8cd6"
+    },
+    {
+      "path": "src/download_service/README_es.md",
+      "bytes": 4857,
+      "sha256": "64e24e7f6a6fc8bd7e0486806db8129fd9e980d2905bb6c28f517d4cad65eec1"
+    },
+    {
+      "path": "src/download_service/_locales/en/messages.json",
+      "bytes": 22588,
+      "sha256": "b7acaa80bbf9ac64ab00dc22b5ce5dee77b85f254a9acad2d2c07cc501ba2254"
+    },
+    {
+      "path": "src/download_service/_locales/es/messages.json",
+      "bytes": 23756,
+      "sha256": "88d686fec5ee6a2f8e2c5b53d701497a66500ab823a6475f06497b6cf5bfa28e"
+    },
+    {
+      "path": "src/download_service/_locales/ja/messages.json",
+      "bytes": 23363,
+      "sha256": "4469053a1b28234085e59dabf74ce9d59b4301ef7dfdc0562d9516bce33f9cc7"
+    },
+    {
+      "path": "src/download_service/_locales/pt_BR/messages.json",
+      "bytes": 24227,
+      "sha256": "c3b39de235dd7c2186d8aa263222013ddc6e5d99d6a937d5f4345e96c9121c89"
+    },
+    {
+      "path": "src/download_service/_locales/tr/messages.json",
+      "bytes": 23251,
+      "sha256": "9057558a624b219d7dfc1ccd28c3569c64ffda4db4e5d18932acce96f8867694"
+    },
+    {
+      "path": "src/download_service/_locales/vi/messages.json",
+      "bytes": 24588,
+      "sha256": "3d44d50a1578bcc8ab6e2182ed156a3d078e9b8107f90d4dc5083946c04302c8"
+    },
+    {
+      "path": "src/download_service/_locales/zh_CN/messages.json",
+      "bytes": 21643,
+      "sha256": "10f2f07dc78777480f9bc177e31f3370baba4d6df7ffc46165868ccd13584dd3"
+    },
+    {
+      "path": "src/download_service/_locales/zh_TW/messages.json",
+      "bytes": 21647,
+      "sha256": "c8068e5b492e649b80848b95df51d4416c2203c3146d117dc5c273a03955acd7"
+    },
+    {
+      "path": "src/download_service/catch-script/catch.js",
+      "bytes": 41449,
+      "sha256": "396e52f4702123aacdf6ee2676a0a569123e2ee721a42a50d7cb3b0f6341b991"
+    },
+    {
+      "path": "src/download_service/catch-script/i18n.js",
+      "bytes": 9421,
+      "sha256": "dc92367cfc8fa9c9620fd0a98fd39fa4f3d1ee18545d2c77471e52f477fa4ebd"
+    },
+    {
+      "path": "src/download_service/catch-script/recorder.js",
+      "bytes": 16950,
+      "sha256": "2a5b7dfdc1846a8f17e5fc153b3945385fc13b5c18e4352e44553ff73ffe4b81"
+    },
+    {
+      "path": "src/download_service/catch-script/recorder2.js",
+      "bytes": 9513,
+      "sha256": "e560ddc02d298b17f85904242caf8b18e1acf29ee58bdea80d05b16c1f35671e"
+    },
+    {
+      "path": "src/download_service/catch-script/search.js",
+      "bytes": 34232,
+      "sha256": "5db46b27aaecc0c9d0d68d1ab96f32ef2788be0eadbfff049a57c12b0daf40cc"
+    },
+    {
+      "path": "src/download_service/catch-script/webrtc.js",
+      "bytes": 13730,
+      "sha256": "2203533856ede2dcbced57031a8a16467705f8fa7a59f921628d02a5f06ce061"
+    },
+    {
+      "path": "src/download_service/css/install.css",
+      "bytes": 7323,
+      "sha256": "c5b93782e94e1afec52ddd1120b7f686ba4b2c82539a17c17b472efa0da11d8f"
+    },
+    {
+      "path": "src/download_service/css/mobile.css",
+      "bytes": 173,
+      "sha256": "6402386eff67008b6b8dbd8c6a819db631ef818c689dda0e0d8b65b01de8cedc"
+    },
+    {
+      "path": "src/download_service/css/options.css",
+      "bytes": 12854,
+      "sha256": "661e82deaf2702ff0e4dd20bbdf7e0f0d95fe1bf57d32286d9de426d0d45e07c"
+    },
+    {
+      "path": "src/download_service/css/popup.css",
+      "bytes": 4184,
+      "sha256": "3a59b620c41dd0f37652eea5247155114645e5eb8835881360d69b1351624ad2"
+    },
+    {
+      "path": "src/download_service/css/preview.css",
+      "bytes": 3772,
+      "sha256": "e2f32e2e255a4e17e4a905cb872180e4847d4e5a3750054379ba14d52d45e334"
+    },
+    {
+      "path": "src/download_service/css/public.css",
+      "bytes": 4902,
+      "sha256": "1021b9f29576178366fbb420b6b88d50c3acaa6652b39486118dee6e010680bc"
+    },
+    {
+      "path": "src/download_service/downloader.html",
+      "bytes": 2187,
+      "sha256": "f07fc517c0fc8c160df59a62faf48412297ba1cd7ba3f7edb422d2992d718ff7"
+    },
+    {
+      "path": "src/download_service/electron_adapter.js",
+      "bytes": 9680,
+      "sha256": "f4fa88ea864b2a9eea624e82fa317f3e77eed6adb40a6b2a51c7433e95860e7a"
+    },
+    {
+      "path": "src/download_service/img/aria2-dark.png",
+      "bytes": 830,
+      "sha256": "a40e7df581bf2d0cc5f664f5531c295686c830801b29567901e8c58b02f82fe8"
+    },
+    {
+      "path": "src/download_service/img/aria2.png",
+      "bytes": 852,
+      "sha256": "65902f36d189cf22a21dd6e629cb2114ca8a416268ee44616093c056c09f693c"
+    },
+    {
+      "path": "src/download_service/img/cat-down-dark.png",
+      "bytes": 482,
+      "sha256": "e34f86ee0ffb3be5b95300dbe51b663f9365593fd628ae2aae11799ea8ca71d3"
+    },
+    {
+      "path": "src/download_service/img/cat-down.png",
+      "bytes": 482,
+      "sha256": "e9536eae9d72f5918c681959a10df1a2728cab8d7be4f735c660e7870869c40e"
+    },
+    {
+      "path": "src/download_service/img/copy-dark.png",
+      "bytes": 288,
+      "sha256": "4f8de5a873098e6325d4dcd8b8e25f6ddebc1f13b61854d9f344887e1016139b"
+    },
+    {
+      "path": "src/download_service/img/copy.png",
+      "bytes": 292,
+      "sha256": "8d9234da3e445bd4d43871c54c0daa689983270aa6daf0fc4b5ef9e038445cf1"
+    },
+    {
+      "path": "src/download_service/img/delete-dark.svg",
+      "bytes": 302,
+      "sha256": "274bfac45352972be6bfad025b09fcd6b23d35c92b7777eda31bc4bc9575f820"
+    },
+    {
+      "path": "src/download_service/img/delete.svg",
+      "bytes": 305,
+      "sha256": "d4f0227ce7834e05ebf7e7b1f751305d22f3030b2693a747ee17f5451628e65c"
+    },
+    {
+      "path": "src/download_service/img/download-dark.svg",
+      "bytes": 287,
+      "sha256": "942adeb38ef3a2159aa88208cbb41bbd05eefbd9ef90dce7488d533941cfb03a"
+    },
+    {
+      "path": "src/download_service/img/download.svg",
+      "bytes": 290,
+      "sha256": "823d9325a4bb1a22552c5d626d41880f31841dba294f5ebc66ffd7768d70d813"
+    },
+    {
+      "path": "src/download_service/img/icon-disable.png",
+      "bytes": 762,
+      "sha256": "ee6b6e34c5f43e22da551159fda24c8e575c3d1049c99b75a54b544ecb82019f"
+    },
+    {
+      "path": "src/download_service/img/icon.png",
+      "bytes": 775,
+      "sha256": "8ca20c0a3badbe1dcc03c9fc1c891ddc0509e3a5bba6c39f547bd5927200b3b2"
+    },
+    {
+      "path": "src/download_service/img/icon128.png",
+      "bytes": 3734,
+      "sha256": "0a0c65bfd3cb75073a0485e58beef5dce95e44082096334e0187c1588e619991"
+    },
+    {
+      "path": "src/download_service/img/invoke-dark.svg",
+      "bytes": 511,
+      "sha256": "4effd11467d0d74f785634558b972109d953cceeea763672d68adea18e958ed0"
+    },
+    {
+      "path": "src/download_service/img/invoke.svg",
+      "bytes": 514,
+      "sha256": "18724b89b071854af5263f66d33beabe61b36a1c15871c1d6d08b61a5c9ed038"
+    },
+    {
+      "path": "src/download_service/img/mqtt-dark.svg",
+      "bytes": 673,
+      "sha256": "55c69080df11748ce6ee05f87bbd68b34d89be156829a1fdbf6d9711bae7c3b7"
+    },
+    {
+      "path": "src/download_service/img/mqtt.svg",
+      "bytes": 673,
+      "sha256": "8e6cf69f0433e936397a6e289a9dca6a98463d716cb61e9207eaacf294503986"
+    },
+    {
+      "path": "src/download_service/img/music.svg",
+      "bytes": 674,
+      "sha256": "2948acd837ebc51b3336816a642f79abd79005dfc9909a83bdd870ef2c67533a"
+    },
+    {
+      "path": "src/download_service/img/parsing-dark.png",
+      "bytes": 374,
+      "sha256": "48df68596d167c4140f352cd8b6e249e1486dd1f2104fc225ae4193ca8bc2852"
+    },
+    {
+      "path": "src/download_service/img/parsing.png",
+      "bytes": 391,
+      "sha256": "9a849cd24217bc77f96971589831addc556a228323d8e4c53a1ea9d74654ab79"
+    },
+    {
+      "path": "src/download_service/img/play-dark.png",
+      "bytes": 412,
+      "sha256": "932906e60aba9c7c56c062eb5fa78565d6093ea0b73cd69e4832be476d1de9e1"
+    },
+    {
+      "path": "src/download_service/img/play.png",
+      "bytes": 409,
+      "sha256": "ecf1068553f8075d169a48d5b4654c9db68c390a46970618e3a426af91354cc3"
+    },
+    {
+      "path": "src/download_service/img/qrcode-dark.png",
+      "bytes": 232,
+      "sha256": "51ee8ede6ed50a23e4b8dc962b8590b74b4695c4dca3fc6e2f851af103c74c91"
+    },
+    {
+      "path": "src/download_service/img/qrcode.png",
+      "bytes": 232,
+      "sha256": "7a7cb812ce5b5f5a274314ef355c4f3257015cce49f12c2d18f62b248ea2c9f5"
+    },
+    {
+      "path": "src/download_service/img/regex-dark.png",
+      "bytes": 610,
+      "sha256": "b4b6d56b6988279bfa1d25e3636c32403a345fb52a8ed5324e2c29ce824dc22c"
+    },
+    {
+      "path": "src/download_service/img/regex.png",
+      "bytes": 699,
+      "sha256": "024b9541ceabd190b248b36fab6103dc2c564a7313bd5c882e7138f1a04ecc4f"
+    },
+    {
+      "path": "src/download_service/img/retry-dark.svg",
+      "bytes": 367,
+      "sha256": "2bd8237cad31e05b6041e87d64ed53e315c4c3685e9ff19a02b6dfb16d43cef8"
+    },
+    {
+      "path": "src/download_service/img/retry.svg",
+      "bytes": 370,
+      "sha256": "c297fb7147765e423a91297b8168ca78f9d715916a819cdb916c365af096997e"
+    },
+    {
+      "path": "src/download_service/img/send-dark.svg",
+      "bytes": 170,
+      "sha256": "d8a38c321b4cb374129ac26f13fa4ea068e214b93df6040aa19cbb60edaff619"
+    },
+    {
+      "path": "src/download_service/img/send.svg",
+      "bytes": 173,
+      "sha256": "4bfc08537145ec4e7452aa6e81c1cbb10b3194b18548902d8b06b875d4cc392b"
+    },
+    {
+      "path": "src/download_service/img/send2ffmpeg-dark.svg",
+      "bytes": 346,
+      "sha256": "ece71f313009fa24e0f49b3df549c35ebbb566a0b4bd7689c61329a82315a25e"
+    },
+    {
+      "path": "src/download_service/img/send2ffmpeg.svg",
+      "bytes": 349,
+      "sha256": "cf019deebc7bee58289637e7e29729affa593fc8db8385e883f898d06a8bd0c5"
+    },
+    {
+      "path": "src/download_service/img/stop-dark.svg",
+      "bytes": 492,
+      "sha256": "c996ebcddfa0897864dde1ed995b25418ced4bc4622f4e6cb01c0b801a9008b9"
+    },
+    {
+      "path": "src/download_service/img/stop.svg",
+      "bytes": 495,
+      "sha256": "eba454373ef07d3225f61d9de0940881b4e38cdc3097910efdb0cdd405ab184d"
+    },
+    {
+      "path": "src/download_service/install.html",
+      "bytes": 5687,
+      "sha256": "9d0dfc0b97264ab70a4a75197d99c0ab038b4eaca65c44f6f02a24bd6b573d8c"
+    },
+    {
+      "path": "src/download_service/js/background.js",
+      "bytes": 36005,
+      "sha256": "0444e7c5f2791e8d009a45381e3840f380958d01f98fa8452a9ac1007eb8e5e7"
+    },
+    {
+      "path": "src/download_service/js/content-script.js",
+      "bytes": 12551,
+      "sha256": "ee726d6d6b1956d96a6e757745acb5e3df83adb49f456614bf3ec6d6ff6fcca8"
+    },
+    {
+      "path": "src/download_service/js/downloader.js",
+      "bytes": 17704,
+      "sha256": "34e06e6efd1c274f691d94ee166f58bea3f0b2d33c00b2201828ef07d9f5ac22"
+    },
+    {
+      "path": "src/download_service/js/firefox.js",
+      "bytes": 747,
+      "sha256": "a5c4e535a928bb114324778231a1126cd20204a56135b9e0c6356f97517f99dd"
+    },
+    {
+      "path": "src/download_service/js/function.js",
+      "bytes": 21215,
+      "sha256": "4ff3bb24e8ce95cefcbb978865d1fdbe351712d139de0dc437d26a70465abde3"
+    },
+    {
+      "path": "src/download_service/js/i18n.js",
+      "bytes": 783,
+      "sha256": "de32982ddee19616e79a97e9f45cb60b663215632edbb122e9cec3dde43ee614"
+    },
+    {
+      "path": "src/download_service/js/init.js",
+      "bytes": 20504,
+      "sha256": "dc1de6736b0087b3efff240ce0543ab6801ddad08141d056fcf4f56f4e7d2f93"
+    },
+    {
+      "path": "src/download_service/js/install.js",
+      "bytes": 3038,
+      "sha256": "08050a9a6f19f696a63b54ba7c6d102e9b501094ad13847d968c49ddce12a5b0"
+    },
+    {
+      "path": "src/download_service/js/json.js",
+      "bytes": 2657,
+      "sha256": "d73fbc72b05a4f2bcc5c7815304f67a38f4bb85f84a012e26bf5bf1fd431eb8b"
+    },
+    {
+      "path": "src/download_service/js/m3u8.downloader.js",
+      "bytes": 11803,
+      "sha256": "845b639c33c9aa90ab49b7dbd82c36c35c05d50feccd9c8d8b831d1d24517520"
+    },
+    {
+      "path": "src/download_service/js/m3u8.js",
+      "bytes": 84001,
+      "sha256": "1f0c4a3e65f31de7fbd335fb516ffb39fdf3b9781a89c87bfe33918fd876d15b"
+    },
+    {
+      "path": "src/download_service/js/media-control.js",
+      "bytes": 11132,
+      "sha256": "5f2defcbfe794dc18ea39ad1feca056359e5c3977d3cda433017e312df3036bf"
+    },
+    {
+      "path": "src/download_service/js/mpd.js",
+      "bytes": 7254,
+      "sha256": "5d4a82c771d866f3153a38e52997fdaa3c04f02f22e17d81e4abcda0a34ffae9"
+    },
+    {
+      "path": "src/download_service/js/options.js",
+      "bytes": 18313,
+      "sha256": "3803965f43acd8323777b04a1f7ee2c297e0b339a4db091334b0364f2bf9f87e"
+    },
+    {
+      "path": "src/download_service/js/popup-utils.js",
+      "bytes": 7662,
+      "sha256": "dc8957ce4cf1004a0df84aac9ff7eecadba46a0e96810b855413ce03e689edad"
+    },
+    {
+      "path": "src/download_service/js/popup.js",
+      "bytes": 43356,
+      "sha256": "37f156327b222701144c3fa7c02259f95d0b5ee5029b138e3c18e3ea0463b5c0"
+    },
+    {
+      "path": "src/download_service/js/preview.js",
+      "bytes": 43382,
+      "sha256": "406fcb6edff238e291b4df0e512f7339aafbf16503f97a0faa219382752e4f0f"
+    },
+    {
+      "path": "src/download_service/js/templates.js",
+      "bytes": 11750,
+      "sha256": "e18de92023c98f314f56a1fae79736140770cea52c7657be691a6454c10de7e4"
+    },
+    {
+      "path": "src/download_service/json.html",
+      "bytes": 1457,
+      "sha256": "5639653b281f2ae3193adb54b5ea71b3639e7ec3af7631db939814e4db7954e1"
+    },
+    {
+      "path": "src/download_service/justfile",
+      "bytes": 4615,
+      "sha256": "a45834a5514c4322b18e350d026d272a88d344a553909fcde9821713bae64a71"
+    },
+    {
+      "path": "src/download_service/lib/StreamSaver.js",
+      "bytes": 10303,
+      "sha256": "a110f78e0b092481dc372901c4d57ae50681d773bc9d55e62356f9a22f17e24b"
+    },
+    {
+      "path": "src/download_service/lib/base64.js",
+      "bytes": 1217,
+      "sha256": "08e9954c252792290cebaaaf9740f83129edfd7118acc79800fad00d697e88cd"
+    },
+    {
+      "path": "src/download_service/lib/hls.min.js",
+      "bytes": 543002,
+      "sha256": "442f599c34f103c3355b375a23bdff560592d7117d09a8c847242ea3de2d40e0"
+    },
+    {
+      "path": "src/download_service/lib/jquery.json-viewer.js",
+      "bytes": 5834,
+      "sha256": "4dbaba988d7f65eb9d51c93008685632557c4bf01ef5c41121fff2043560d049"
+    },
+    {
+      "path": "src/download_service/lib/jquery.min.js",
+      "bytes": 78748,
+      "sha256": "39a546ea9ad97f8bfaf5d3e0e8f8556adb415e470e59007ada9759dce472adaa"
+    },
+    {
+      "path": "src/download_service/lib/jquery.qrcode.min.js",
+      "bytes": 13995,
+      "sha256": "f4ccf02b69092819ac24575c717a080c3b6c6d6161f1b8d82bf0bb523075032d"
+    },
+    {
+      "path": "src/download_service/lib/m3u8-decrypt.js",
+      "bytes": 9507,
+      "sha256": "11b5558323f781e4243016bcc8ad3039cc92c85470e4ab987f911e1b5550dbae"
+    },
+    {
+      "path": "src/download_service/lib/mpd-parser.min.js",
+      "bytes": 22522,
+      "sha256": "a314b542634cd9e4338e5a42a65176dc34e14b5b838bd318c1e5b7db0d0117d5"
+    },
+    {
+      "path": "src/download_service/lib/mqtt.min.js",
+      "bytes": 368594,
+      "sha256": "a72e7b7c2bad997f81c9b394d38bc9cdb79c49dfb59f9ec729030c7e6209ac1e"
+    },
+    {
+      "path": "src/download_service/lib/mux.min.js",
+      "bytes": 116059,
+      "sha256": "eb088a07f954554db7c38114487b21df6d1f28c4a84d53003644e962c7567b5b"
+    },
+    {
+      "path": "src/download_service/lib/third-party-libraries.md",
+      "bytes": 1869,
+      "sha256": "0f71a957ae1070f2dbde1ff30343b5346f268fbad668aad97ace52ace5312ac4"
+    },
+    {
+      "path": "src/download_service/m3u8.html",
+      "bytes": 12222,
+      "sha256": "abba9be285cfd917b9ee30d4ddb2c85597c32303e8c790c89bf6e07010baf959"
+    },
+    {
+      "path": "src/download_service/manifest.firefox.json",
+      "bytes": 1870,
+      "sha256": "b9d91492311121f449f31ceacb6e3fffa1cca85ac866645984f929ebe27b48ea"
+    },
+    {
+      "path": "src/download_service/manifest.json",
+      "bytes": 1735,
+      "sha256": "ddc5205e05e10c5ad0d4511576df65a2e3e800b1e360bf9162afc33c2504501a"
+    },
+    {
+      "path": "src/download_service/mpd.html",
+      "bytes": 2474,
+      "sha256": "bf2af769229439045de3ab3ed363714ce9c30cbf87b55f7494c98bdd68dd787c"
+    },
+    {
+      "path": "src/download_service/options.html",
+      "bytes": 40604,
+      "sha256": "e990a2f966e785a005dc888d9918230577a10c2179deeb6f7fee8d6ca13a4a43"
+    },
+    {
+      "path": "src/download_service/popup.html",
+      "bytes": 7971,
+      "sha256": "57f3cf538ca778f3afa8a7615f595c848e49b8248bad93759c8de00702265612"
+    },
+    {
+      "path": "src/download_service/preview.html",
+      "bytes": 5221,
+      "sha256": "7dc0868b6382a6395c6bfd4669636cf5d02a5093327b59bb0666237e9a0d99b2"
+    },
+    {
+      "path": "src/download_service/tools/sync-locales.js",
+      "bytes": 2566,
+      "sha256": "5b37dade460090c1b421c6ceb2d1049186ba39fcbb86101be13df09bd95da513"
+    },
+    {
+      "path": "src/download_service/在Reverie中的用途.txt",
+      "bytes": 404,
+      "sha256": "c0fe06279b41b33a5d0af299d7f475d53f63023e74803a6ed2da57537616c038"
+    }
+  ]
+}

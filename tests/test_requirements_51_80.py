@@ -19,6 +19,7 @@ from src.stickers import StickerManager
 from src.timeline import TimelineManager
 from src.user import UserManager
 from src.web import WebSurfingManager, _is_public_https_url, _parse_feed
+from src.world.clock import WorldClock
 from PIL import Image
 
 
@@ -317,6 +318,9 @@ def test_web_feed_parser_and_ssrf_guards(tmp_path: Path) -> None:
 
 def test_proactive_reminders_care_and_state_survive_restart(tmp_path: Path) -> None:
     now = datetime(2026, 7, 13, 12, 0)
+    # One clock for the entire synthetic scenario: a holiday on the host's
+    # real date must not pre-empt the intended distress-followup assertion.
+    clock = WorldClock(data_dir=tmp_path / "calendar", now_provider=lambda: now)
     user = UserManager(data_dir=tmp_path / "user")
     user.add_important_date("交稿", "2026-07-14")
     user.save()
@@ -327,6 +331,7 @@ def test_proactive_reminders_care_and_state_survive_restart(tmp_path: Path) -> N
         StableEmotion(),
         user_manager=user,
         state_path=state_path,
+        world_clock=clock,
     )
 
     trigger, context = proactive._check_triggers(now)
@@ -340,14 +345,15 @@ def test_proactive_reminders_care_and_state_survive_restart(tmp_path: Path) -> N
         StableEmotion(),
         user_manager=user,
         state_path=state_path,
+        world_clock=clock,
     )
     assert restored._check_triggers(now) == (None, None)
 
     restored.mark_user_replied("我今天发烧，很难受")
-    restored._last_user_activity = datetime.now() - timedelta(hours=1)
+    restored._last_user_activity = now - timedelta(hours=1)
     restored._last_any_triggered = None
     restored._daily_trigger_count.clear()
-    care_trigger, care = restored._check_triggers(datetime.now())
+    care_trigger, care = restored._check_triggers(now)
     assert care_trigger == "user_care"
     assert care["reason"] == "distress_followup"
 

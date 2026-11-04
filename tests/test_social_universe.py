@@ -88,3 +88,36 @@ def test_social_universe_export_import_round_trip(tmp_path) -> None:
     state = target.list_state()
     assert any(item["name"] == "初夏" for item in state["characters"])
     assert state["threads"][0]["messages"]
+
+
+def test_complete_replacement_preserves_exact_tables_and_timestamps_on_replay(tmp_path) -> None:
+    settings = FeatureSettings(group_social_api_replies_enabled=False)
+    source = SocialUniverse(persona(), settings, path=tmp_path / "source.db")
+    source.sync_character_cards([{"name": "初夏", "personality": "开朗"}])
+    asyncio.run(source.send_user_message("synthetic saved message"))
+    payload = source.export_all()
+    for rows in payload["tables"].values():
+        for row in rows:
+            for field in ("updated_at", "created_at"):
+                if field in row:
+                    row[field] = 1234.25
+    owner = next(row for row in payload["tables"]["social_universe_characters"] if row["id"] == "owner")
+    owner["role"] = "saved snapshot role"
+    owner["speaking_style"] = "saved snapshot speech"
+    target = SocialUniverse(persona(), settings, path=tmp_path / "target.db")
+    target.sync_character_cards([{"name": "should be removed", "personality": "synthetic"}])
+    expected_count = sum(len(rows) for rows in payload["tables"].values())
+    assert target.replace_all(payload) == expected_count
+    assert target.export_all() == payload
+    assert target.replace_all(payload) == expected_count
+    assert target.export_all() == payload
+
+
+def test_complete_empty_replacement_does_not_reseed_owner_or_default_thread(tmp_path) -> None:
+    target = SocialUniverse(persona(), FeatureSettings(), path=tmp_path / "world.db")
+    payload = target.export_all()
+    payload["tables"] = {table: [] for table in payload["tables"]}
+    assert target.replace_all(payload) == 0
+    assert target.export_all() == payload
+    assert target.replace_all(payload) == 0
+    assert target.export_all() == payload

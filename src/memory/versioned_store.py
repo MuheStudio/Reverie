@@ -30,6 +30,7 @@ class VersionedVectorStore:
         catalog_path: str | Path | None = None,
         vector_quantization: str = "int8",
         vector_partitioning: bool = True,
+        defer_startup_writes: bool = False,
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
@@ -41,9 +42,13 @@ class VersionedVectorStore:
         self._db = None
         self.runtime = embedding_runtime_info(self.model_name)
         self.table_name = self._table_name(self.runtime.model_version)
-        self._migrate_legacy_lance_rows()
         self._sqlite_index: SQLiteVecIndex | None = None
         self.vector_backend = "bounded_lexical_fallback"
+        if not defer_startup_writes:
+            self.initialize_derivatives()
+
+    def initialize_derivatives(self) -> None:
+        self._migrate_legacy_lance_rows()
         self._activate_sqlite_index()
 
     def _activate_sqlite_index(self) -> None:
@@ -169,7 +174,7 @@ class VersionedVectorStore:
                     retention_layer=str(row.get("layer", "short_term")),
                     cognitive_layer=cognitive,
                     timestamp=float(row.get("timestamp", time.time()) or time.time()),
-                    importance=float(row.get("importance", 0.5) or 0.5),
+                    importance=float(0.5 if row.get("importance") is None else row["importance"]),
                     emotions=emotions,
                     embedding_model_version="legacy:unknown",
                     source_type="legacy_local",
@@ -273,6 +278,8 @@ class VersionedVectorStore:
         prefixes: tuple[str, ...],
         facts: list[str],
         skip_texts: Iterable[str] = (),
+        *,
+        source_type: str | None = None,
     ) -> int:
         """Atomically refresh anchored permanent profile facts.
 
@@ -297,7 +304,7 @@ class VersionedVectorStore:
             for fact in facts
             if fact not in skip
         ]
-        inserted = self.catalog.replace_prefixed_facts(prefixes, records)
+        inserted = self.catalog.replace_prefixed_facts(prefixes, records, source_type=source_type)
         for record in records:
             self._sync_vector_cache(record["id"], record["text"])
         return inserted
@@ -313,8 +320,32 @@ class VersionedVectorStore:
         event_time_min: int | None = None,
         event_time_max: int | None = None,
     ) -> list[dict]:
+        return self._search(
+            query_vector,
+            k=k,
+            layers=layers,
+            min_importance=min_importance,
+            event_buckets=event_buckets,
+            event_time_min=event_time_min,
+            event_time_max=event_time_max,
+        )
+
+    def _search(
+        self,
+        query_vector: np.ndarray,
+        k: int = 5,
+        layers: list[str] | None = None,
+        min_importance: float = 0.0,
+        *,
+        event_buckets: list[str] | None = None,
+        event_time_min: int | None = None,
+        event_time_max: int | None = None,
+        observation: dict[str, str] | None = None,
+    ) -> list[dict]:
         try:
             if self._sqlite_index is None:
+                if observation is not None:
+                    observation.update(mode="lexical_fallback", reason="index_unavailable")
                 return []
             indexed = self._sqlite_index.search(
                 np.asarray(query_vector, dtype=np.float32),
@@ -325,6 +356,8 @@ class VersionedVectorStore:
                 event_time_max=event_time_max,
             )
         except Exception:
+            if observation is not None:
+                observation.update(mode="unknown", reason="vector_search_failed")
             logger.exception("Current vector index search failed")
             return []
         results: list[dict] = []
@@ -343,6 +376,10 @@ class VersionedVectorStore:
             results.append(row)
             if len(results) >= k:
                 break
+        # Empty results also prove that this vector search completed. Mapping
+        # failures above must propagate before this proof can be recorded.
+        if observation is not None:
+            observation.update(mode="hybrid", reason="vector_search_completed")
         return results
 
     def delete(self, id: str) -> bool:
@@ -365,6 +402,21 @@ class VersionedVectorStore:
                         memory_id,
                     )
         return memory_ids
+
+    def delete_confirmed_memories(self, memory_ids: list[str]) -> list[str]:
+        purged_ids = self.catalog.delete_confirmed_memories(memory_ids)
+        # Canonical deletion has committed before touching this disposable
+        # cache. A failed vector cleanup cannot turn it into a partial purge.
+        if self._sqlite_index is not None:
+            for memory_id in purged_ids:
+                try:
+                    self._sqlite_index.delete(memory_id)
+                except Exception:
+                    logger.exception(
+                        "sqlite-vec batch lineage deletion failed for %s",
+                        memory_id,
+                    )
+        return purged_ids
 
     def delete_by_layer(self, layer: str) -> None:
         ids = [str(row["id"]) for row in self.catalog.list_by_layer(layer)]

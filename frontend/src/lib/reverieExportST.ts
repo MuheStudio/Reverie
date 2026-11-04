@@ -25,7 +25,7 @@ export interface STV2CharacterBookEntry {
   content: string;
   enabled: boolean;
   insertion_order: number;
-  position: 'before_char' | 'after_char';
+  position: WorldBookEntry['position'];
   constant: boolean;
   selective: boolean;
   case_sensitive: boolean;

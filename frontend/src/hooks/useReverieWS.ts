@@ -28,6 +28,10 @@ import {
 import { normalizeStickerTags, toStickerAttachmentPayload } from '@/lib/stickerPayload';
 import { toChatImagePayload, type ChatImageAttachment } from '@/lib/chatImage';
 import { reconnectDelayMs } from '@/utils/reconnectTiming';
+import {
+  acceptWorldbookArchiveResult, initialWorldbookDiagnostics, selectWorldbookPersona,
+} from '@/lib/worldbookDiagnostics';
+import { dispatchArchiveScopedRequest, type ArchivePersonaProof } from '@/lib/archiveOperationScope';
 export {
   PROTOCOL_VERSION,
   WSMsgType,
@@ -88,6 +92,8 @@ export interface WSMessage {
 export interface WSRequestOptions {
   expectedType: string | readonly string[];
   timeout?: number;
+  /** Local stale-callback preflight, not renderer authority or a wire field. */
+  personaScope?: ArchivePersonaProof;
 }
 
 export interface StickerItem {
@@ -160,6 +166,7 @@ export interface AuthoritativeSettingsSnapshot {
   memory?: Record<string, unknown>;
   features?: Record<string, unknown>;
   ui?: {
+    mode?: 'mvp' | 'dream';
     onboarding_completed?: boolean;
     onboarding_completed_at_utc?: string;
     onboarding_version?: number;
@@ -824,6 +831,10 @@ export function useReverieWS(wsUrl?: string) {
     setConnState(next);
   }, []);
   const [personaScope, setPersonaScope] = useState<PersonaScope | null>(null);
+  const [worldbookDiagnostics, setWorldbookDiagnostics] = useState(initialWorldbookDiagnostics);
+  const worldbookRefreshRef = useRef<() => void>(() => undefined);
+  const worldbookRefreshPendingRef = useRef(false);
+  const worldbookRefreshQueuedRef = useRef(false);
   const [localMode, setLocalModeState] = useState(false);
   const [localModePending, setLocalModePending] = useState(false);
   const [localModeAvailable, setLocalModeAvailable] = useState(false);
@@ -834,6 +845,8 @@ export function useReverieWS(wsUrl?: string) {
     if (!scope) return false;
     personaScopeRef.current = scope;
     setPersonaScope(scope);
+    setWorldbookDiagnostics((current) => selectWorldbookPersona(current, scope.persona_id));
+    worldbookRefreshRef.current();
     return true;
   }, []);
 
@@ -1021,6 +1034,9 @@ export function useReverieWS(wsUrl?: string) {
               : undefined;
             pending.reject(new Error(detail || 'Bridge request failed'));
           } else {
+            if (msg.type === WSMsgType.ARCHIVE_RESULT) {
+              setWorldbookDiagnostics((current) => acceptWorldbookArchiveResult(current, personaScopeRef.current?.persona_id ?? null, msg.payload));
+            }
             pending.resolve(msg.payload);
           }
           return;
@@ -1171,7 +1187,7 @@ export function useReverieWS(wsUrl?: string) {
       : 8_000;
     const timeout = Math.min(60_000, Math.max(250, Math.round(requestedTimeout)));
     const requestId = `rpc_${newRequestId()}`;
-    return new Promise<T>((resolve, reject) => {
+    return dispatchArchiveScopedRequest(options.personaScope, personaScopeRef.current, () => new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!pendingRequestRef.current.delete(requestId)) return;
         reject(new Error(`Bridge request timed out after ${timeout} ms`));
@@ -1187,8 +1203,23 @@ export function useReverieWS(wsUrl?: string) {
         clearTimeout(timer);
         reject(new Error('The authenticated bridge is unavailable'));
       }
-    });
+    }));
   }, [sendEnvelope]);
+
+  useEffect(() => {
+    worldbookRefreshRef.current = () => {
+      if (!personaScopeRef.current || !authenticatedRef.current) return;
+      if (worldbookRefreshPendingRef.current) { worldbookRefreshQueuedRef.current = true; return; }
+      worldbookRefreshPendingRef.current = true;
+      void request(WSMsgType.ARCHIVE_GET, {}, { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 12_000 })
+        .catch(() => undefined)
+        .finally(() => {
+          worldbookRefreshPendingRef.current = false;
+          if (worldbookRefreshQueuedRef.current) { worldbookRefreshQueuedRef.current = false; worldbookRefreshRef.current(); }
+        });
+    };
+    return () => { worldbookRefreshRef.current = () => undefined; };
+  }, [request]);
 
   // ── 事件订阅 ──────────────────────────────────────
 
@@ -1411,6 +1442,9 @@ export function useReverieWS(wsUrl?: string) {
       setPersona(p.persona);
       rememberPersonaScope(p);
     });
+    subscribeResult(WSMsgType.ARCHIVE_RESULT, (payload: unknown) => {
+      setWorldbookDiagnostics((current) => acceptWorldbookArchiveResult(current, personaScopeRef.current?.persona_id ?? null, payload));
+    });
     subscribeResult(WSMsgType.RELATIONSHIP_DATA, (p: RelationshipData) => setRelationship(p));
     subscribeResult(WSMsgType.CHAT_HISTORY_RESULT, (payload: unknown) => {
       const items = extractArrayPayload(payload, ['items', 'messages', 'data']);
@@ -1514,6 +1548,7 @@ export function useReverieWS(wsUrl?: string) {
       ];
       if (!acceptedStates.includes(rawState as ChatDeliveryState)) return;
       const state = rawState as ChatDeliveryState;
+      if (['done', 'cancelled', 'failed', 'failed_uncertain', 'error'].includes(state)) worldbookRefreshRef.current();
       v2RequestsSeenRef.current.add(requestId);
       setChatRequestStates((current) => upsertRequestState(current, {
         request_id: requestId,
@@ -1539,6 +1574,7 @@ export function useReverieWS(wsUrl?: string) {
       });
     }));
     unsubs.push(subscribe(WSMsgType.CHAT_ERROR, (payload: ChatStatePayload) => {
+      worldbookRefreshRef.current();
       const requestId = optionalString(payload?.request_id);
       if (!requestId) return;
       v2RequestsSeenRef.current.add(requestId);
@@ -1603,6 +1639,7 @@ export function useReverieWS(wsUrl?: string) {
       });
     }));
     unsubs.push(subscribe(WSMsgType.CHAT_DONE, (payload: any) => {
+      worldbookRefreshRef.current();
       setIsTyping(false);
       const presence = payload?.scheduler_status;
       if (isRecord(presence)) {
@@ -1791,7 +1828,7 @@ export function useReverieWS(wsUrl?: string) {
     exportBackup, importBackup,
     collectSticker, reactSticker,
     emotions, setEmotions,
-    persona, setPersona, personaScope,
+    persona, setPersona, personaScope, worldbookDiagnostics,
     relationship,
     chatPresence,
     diaryEntries, timelinePosts, ambient, apiBudget, groupState,

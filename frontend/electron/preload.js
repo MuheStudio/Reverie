@@ -36,11 +36,16 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "keepsake:add",
   "keepsake:list",
   "memory:candidates:confirm",
+  "memory:candidates:decide_many",
   "memory:candidates:list",
   "memory:candidates:reject",
+  "memory:candidates:status",
   "memory:delete",
+  "memory:delete_many",
   "memory:edit",
   "memory:list",
+  "memory:pin_many",
+  "memory:pin_status",
   "memory:query",
   "memory:reinforce",
   "memory:settings:get",
@@ -50,6 +55,9 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "persona:activate",
   "persona:get",
   "persona:import",
+  "persona:list",
+  "persona:profile:get",
+  "persona:profile:update",
   "relationship:get",
   "settings:get",
   "settings:update",
@@ -57,6 +65,10 @@ const COMMAND_NAMES = Object.freeze(new Set([
   "sticker:import",
   "sticker:list",
   "sticker:react",
+  "summary:get",
+  "summary:legacy:import",
+  "summary:legacy:preview",
+  "summary:status",
   "timeline:request",
   "tts:list",
   "tts:synthesize",
@@ -84,6 +96,18 @@ function boundedText(value, label, max) {
   if (typeof value !== 'string' || value.length < 1 || value.length > max
     || /[\u0000-\u001f\u007f]/u.test(value)) {
     throw new TypeError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function boundedPlaylist(value) {
+  const maxBytes = 8 * 1024 * 1024;
+  // HLS is line-oriented: CR/LF must cross IPC intact. Other control
+  // characters remain invalid; playlist syntax is checked by the host parser.
+  if (typeof value !== 'string' || value.length < 1 || value.length > maxBytes
+    || /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value)
+    || Buffer.byteLength(value, 'utf8') > maxBytes) {
+    throw new TypeError('m3u8 content is invalid');
   }
   return value;
 }
@@ -442,7 +466,7 @@ const api = Object.freeze({
       }
       const url = boundedUrl(value.url);
       const baseUrl = value.baseUrl == null ? '' : boundedUrl(value.baseUrl);
-      const m3u8Content = boundedText(value.m3u8Content, 'm3u8 content', 8 * 1024 * 1024);
+      const m3u8Content = boundedPlaylist(value.m3u8Content);
       return ipcRenderer.invoke('download:m3u8', { url, baseUrl, m3u8Content });
     },
     downloadDirect: (value) => {

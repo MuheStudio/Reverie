@@ -13,13 +13,52 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
-from src.storage.encrypted_sqlite import connect_database
+from src.storage.encrypted_sqlite import connect_database, integrity_errors
 
-from .lifecycle_constants import protection_tier_for_text
+from .lifecycle_constants import PIN_LIMIT, protection_tier_for_text
 
 RETENTION_LAYERS = {"permanent", "long_term", "short_term"}
 COGNITIVE_LAYERS = {"episodic", "semantic", "procedural"}
 USAGE_SIGNALS = {"injected", "reply_overlap", "user_confirmed", "user_rejected", "auto_reinforce"}
+
+
+class StaleMemorySelection(ValueError):
+    """No selected fact may be deleted after any selected revision changed."""
+
+    def __init__(self, stale_ids: list[str]) -> None:
+        super().__init__("Selected memories changed; no memories were deleted")
+        self.stale_ids = list(stale_ids)
+
+
+class StaleMemoryPinSelection(ValueError):
+    """A batch pin selection contains revisions that are no longer current."""
+
+    def __init__(self, stale_ids: list[str]) -> None:
+        super().__init__("Selected memories changed; no pin states were changed")
+        self.stale_ids = list(stale_ids)
+
+
+class MemoryPinLimitExceeded(ValueError):
+    """A batch needs more free pin slots than the catalog currently has."""
+
+    def __init__(self) -> None:
+        super().__init__(f"At most {PIN_LIMIT} memories may be pinned; no pin states were changed")
+
+
+class StaleCandidateSelection(ValueError):
+    """A batch candidate selection contains candidates that are no longer pending."""
+
+    def __init__(self, stale_ids: list[str]) -> None:
+        super().__init__("Selected candidates changed; no candidates were decided")
+        self.stale_ids = list(stale_ids)
+
+
+class CandidateFactConflict(ValueError):
+    """Two or more selected candidates would replace each other's fact."""
+
+    def __init__(self, groups: list[list[str]]) -> None:
+        super().__init__("Selected candidates share a fact; no candidates were decided")
+        self.groups = [list(group) for group in groups]
 
 
 def memory_terms(text: str) -> list[str]:
@@ -56,6 +95,7 @@ class MemoryCatalog:
             self._connection.execute("PRAGMA synchronous=FULL")
             self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.execute("PRAGMA busy_timeout=30000")
+            self._connection.execute("PRAGMA temp_store=MEMORY")
             self._create_schema()
 
     def _create_schema(self) -> None:
@@ -326,6 +366,52 @@ class MemoryCatalog:
             ).fetchall()
         return [self._candidate_row(row) for row in rows]
 
+    def list_candidates_page(
+        self,
+        *,
+        status: str = "pending",
+        limit: int = 100,
+        after: tuple[float, str] | None = None,
+    ) -> tuple[list[dict], tuple[float, str] | None]:
+        """Read one candidate page without changing evidence or activity.
+
+        The position is a value boundary, so confirming, rejecting or deleting
+        the row that supplied it does not invalidate the following page.
+        """
+
+        if status not in {"pending", "confirmed", "rejected", "all"}:
+            raise ValueError("Unsupported memory candidate status")
+        bounded_limit = max(1, min(200, int(limit)))
+        clauses = [] if status == "all" else ["status=?"]
+        params: list[object] = [] if status == "all" else [status]
+        if after is not None:
+            created_at, candidate_id = after
+            try:
+                valid_time = (not isinstance(created_at, bool)
+                              and isinstance(created_at, (int, float))
+                              and math.isfinite(float(created_at)))
+            except OverflowError:
+                valid_time = False
+            if (not valid_time or not isinstance(candidate_id, str)
+                    or not re.fullmatch(r"mc_[a-f0-9]{32}", candidate_id)):
+                raise ValueError("Invalid memory candidate page position")
+            clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+            params.extend((float(created_at), float(created_at), candidate_id))
+        params.append(bounded_limit + 1)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM memory_candidates" + where
+                + " ORDER BY created_at DESC,id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        selected = [self._candidate_row(row) for row in rows[:bounded_limit]]
+        next_after = None
+        if len(rows) > bounded_limit and selected:
+            last = selected[-1]
+            next_after = (float(last["created_at"]), str(last["id"]))
+        return selected, next_after
+
     def reject_candidate(self, candidate_id: str, *, reason: str = "user_rejected") -> dict:
         now = time.time()
         with self.transaction() as connection:
@@ -337,17 +423,137 @@ class MemoryCatalog:
                 raise KeyError("Memory candidate not found")
             if str(row["status"]) == "confirmed":
                 raise ValueError("Confirmed memory candidate cannot be rejected")
-            connection.execute(
-                """UPDATE memory_candidates
-                   SET status='rejected',decision_reason=?,decided_at=?,updated_at=?
-                   WHERE id=?""",
-                (str(reason)[:500], now, now, str(candidate_id)),
-            )
+            self._apply_candidate_rejection(connection, str(candidate_id), now=now, reason=reason)
             decided = connection.execute(
                 "SELECT * FROM memory_candidates WHERE id=?",
                 (str(candidate_id),),
             ).fetchone()
         return self._candidate_row(decided)
+
+    @staticmethod
+    def _apply_candidate_rejection(
+        connection: sqlite3.Connection, candidate_id: str, *, now: float, reason: str,
+    ) -> None:
+        """Caller holds the transaction and has checked the candidate status."""
+        connection.execute(
+            """UPDATE memory_candidates
+               SET status='rejected',decision_reason=?,decided_at=?,updated_at=?
+               WHERE id=?""",
+            (str(reason)[:500], now, now, str(candidate_id)),
+        )
+
+    @staticmethod
+    def _apply_candidate_confirmation(
+        connection: sqlite3.Connection,
+        candidate: sqlite3.Row,
+        *,
+        now: float,
+        embedding_model_version: str,
+        importance: float,
+        decision_reason: str,
+    ) -> tuple[str, str, bool]:
+        """Caller holds the transaction and has checked the candidate is pending.
+
+        Shared by single and batch confirmation so both supersede, revise and
+        stamp a fact identically.
+        """
+        candidate_id = str(candidate["id"])
+        fact_key = str(candidate["fact_key"])
+        proposed_text = str(candidate["proposed_text"])
+        current = connection.execute(
+            """SELECT * FROM memory_records
+               WHERE fact_key=? AND lifecycle_state='active'
+                 AND confirmation_state='confirmed'
+               ORDER BY fact_revision DESC,updated_at DESC LIMIT 1""",
+            (fact_key,),
+        ).fetchone()
+        if current is not None and str(current["text"]) == proposed_text:
+            memory_id = str(current["id"])
+            conflict_id = ""
+            idempotent = True
+        else:
+            conflict_id = str(current["id"]) if current is not None else ""
+            revision = int(current["fact_revision"] or 0) + 1 if current is not None else 1
+            memory_id = f"fact_{hashlib.sha256(str(candidate_id).encode()).hexdigest()[:32]}"
+            if current is not None:
+                connection.execute(
+                    """UPDATE memory_records
+                       SET lifecycle_state='superseded',updated_at=? WHERE id=?""",
+                    (now, conflict_id),
+                )
+            emotions = json.dumps(
+                {
+                    name: 0.0
+                    for name in (
+                        "joy", "sadness", "anger", "excitement", "calm",
+                        "anxiety", "grievance", "touched",
+                    )
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            connection.execute(
+                """
+                INSERT INTO memory_records (
+                    id,text,retention_layer,cognitive_layer,timestamp,event_time,
+                    importance,emotions_json,source_type,source_uri,source_hash,
+                    trust_level,sanitizer_status,sanitizer_flags_json,keywords,
+                    embedding_model_version,embedding_status,lifecycle_state,
+                    fact_key,fact_revision,supersedes_id,confirmation_state,confirmed_at,
+                    created_at,updated_at,protection_tier,pinned
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    memory_id,
+                    proposed_text,
+                    "long_term",
+                    "semantic",
+                    now,
+                    None,
+                    max(0.0, min(1.0, float(importance))),
+                    emotions,
+                    str(candidate["source_type"]),
+                    str(candidate["source_uri"]),
+                    str(candidate["source_hash"]),
+                    "trusted_local",
+                    "not_required",
+                    "[]",
+                    " ".join(memory_terms(proposed_text)),
+                    str(embedding_model_version),
+                    "pending",
+                    "active",
+                    fact_key,
+                    revision,
+                    conflict_id,
+                    "confirmed",
+                    now,
+                    now,
+                    now,
+                    protection_tier_for_text(proposed_text),
+                    0,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
+                (memory_id, now, "candidate_confirmed"),
+            )
+            idempotent = False
+
+        connection.execute(
+            """UPDATE memory_candidates
+               SET status='confirmed',committed_memory_id=?,conflict_memory_id=?,
+                   decision_reason=?,decided_at=?,updated_at=?
+               WHERE id=?""",
+            (
+                memory_id,
+                conflict_id,
+                str(decision_reason)[:500],
+                now,
+                now,
+                str(candidate_id),
+            ),
+        )
+        return memory_id, conflict_id, idempotent
 
     def confirm_candidate(
         self,
@@ -380,100 +586,13 @@ class MemoryCatalog:
                     "idempotent": True,
                 }
 
-            fact_key = str(candidate["fact_key"])
-            proposed_text = str(candidate["proposed_text"])
-            current = connection.execute(
-                """SELECT * FROM memory_records
-                   WHERE fact_key=? AND lifecycle_state='active'
-                     AND confirmation_state='confirmed'
-                   ORDER BY fact_revision DESC,updated_at DESC LIMIT 1""",
-                (fact_key,),
-            ).fetchone()
-            if current is not None and str(current["text"]) == proposed_text:
-                memory_id = str(current["id"])
-                conflict_id = ""
-                idempotent = True
-            else:
-                conflict_id = str(current["id"]) if current is not None else ""
-                revision = int(current["fact_revision"] or 0) + 1 if current is not None else 1
-                memory_id = f"fact_{hashlib.sha256(str(candidate_id).encode()).hexdigest()[:32]}"
-                if current is not None:
-                    connection.execute(
-                        """UPDATE memory_records
-                           SET lifecycle_state='superseded',updated_at=? WHERE id=?""",
-                        (now, conflict_id),
-                    )
-                emotions = json.dumps(
-                    {
-                        name: 0.0
-                        for name in (
-                            "joy", "sadness", "anger", "excitement", "calm",
-                            "anxiety", "grievance", "touched",
-                        )
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-                connection.execute(
-                    """
-                    INSERT INTO memory_records (
-                        id,text,retention_layer,cognitive_layer,timestamp,event_time,
-                        importance,emotions_json,source_type,source_uri,source_hash,
-                        trust_level,sanitizer_status,sanitizer_flags_json,keywords,
-                        embedding_model_version,embedding_status,lifecycle_state,
-                        fact_key,fact_revision,supersedes_id,confirmation_state,confirmed_at,
-                        created_at,updated_at,protection_tier,pinned
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        memory_id,
-                        proposed_text,
-                        "long_term",
-                        "semantic",
-                        now,
-                        None,
-                        max(0.0, min(1.0, float(importance))),
-                        emotions,
-                        str(candidate["source_type"]),
-                        str(candidate["source_uri"]),
-                        str(candidate["source_hash"]),
-                        "trusted_local",
-                        "not_required",
-                        "[]",
-                        " ".join(memory_terms(proposed_text)),
-                        str(embedding_model_version),
-                        "pending",
-                        "active",
-                        fact_key,
-                        revision,
-                        conflict_id,
-                        "confirmed",
-                        now,
-                        now,
-                        now,
-                        protection_tier_for_text(proposed_text),
-                        0,
-                    ),
-                )
-                connection.execute(
-                    "INSERT INTO memory_references(memory_id,referenced_at,reason) VALUES (?,?,?)",
-                    (memory_id, now, "candidate_confirmed"),
-                )
-                idempotent = False
-
-            connection.execute(
-                """UPDATE memory_candidates
-                   SET status='confirmed',committed_memory_id=?,conflict_memory_id=?,
-                       decision_reason=?,decided_at=?,updated_at=?
-                   WHERE id=?""",
-                (
-                    memory_id,
-                    conflict_id,
-                    str(decision_reason)[:500],
-                    now,
-                    now,
-                    str(candidate_id),
-                ),
+            memory_id, conflict_id, idempotent = self._apply_candidate_confirmation(
+                connection,
+                candidate,
+                now=now,
+                embedding_model_version=embedding_model_version,
+                importance=importance,
+                decision_reason=decision_reason,
             )
             decided = connection.execute(
                 "SELECT * FROM memory_candidates WHERE id=?",
@@ -489,6 +608,128 @@ class MemoryCatalog:
             "idempotent": idempotent,
         }
 
+    @staticmethod
+    def _validate_candidate_ids(candidate_ids: list[str]) -> list[str]:
+        if not isinstance(candidate_ids, list) or not 1 <= len(candidate_ids) <= 100:
+            raise ValueError("Select between 1 and 100 memory candidates")
+        ids = list(candidate_ids)
+        if any(not isinstance(value, str) or not re.fullmatch(r"mc_[a-f0-9]{32}", value) for value in ids):
+            raise ValueError("candidate_ids contains an invalid memory candidate id")
+        if len(set(ids)) != len(ids):
+            raise ValueError("candidate_ids must be unique")
+        return ids
+
+    def _candidate_snapshot_rows(self, candidate_ids: list[str]) -> list[sqlite3.Row]:
+        """Caller holds the catalog lock; one SELECT supplies one SQL snapshot.
+
+        The current fact is chosen exactly as confirm_candidate chooses it.
+        Candidate and memory bodies are compared in SQL and never returned.
+        """
+        selected = ",".join("(?,?)" for _ in candidate_ids)
+        params = [value for ordinal, candidate_id in enumerate(candidate_ids) for value in (ordinal, candidate_id)]
+        return self._connection.execute(
+            f"WITH selected(ordinal,candidate_id) AS (VALUES {selected}) "
+            "SELECT selected.candidate_id,c.status,c.fact_key,m.id AS current_id,"
+            "CASE WHEN m.id IS NOT NULL AND m.text=c.proposed_text THEN 1 ELSE 0 END AS same_text,"
+            "CASE WHEN m.pinned=1 THEN 1 ELSE 0 END AS current_pinned "
+            "FROM selected LEFT JOIN memory_candidates AS c ON c.id=selected.candidate_id "
+            "LEFT JOIN memory_records AS m ON m.id=("
+            "SELECT id FROM memory_records WHERE fact_key=c.fact_key AND lifecycle_state='active' "
+            "AND confirmation_state='confirmed' ORDER BY fact_revision DESC,updated_at DESC LIMIT 1) "
+            "ORDER BY selected.ordinal",
+            params,
+        ).fetchall()
+
+    @staticmethod
+    def _candidate_preview(rows: list[sqlite3.Row]) -> dict:
+        pending = [row for row in rows if row["status"] == "pending"]
+        by_fact: dict[str, list[str]] = {}
+        for row in pending:
+            by_fact.setdefault(str(row["fact_key"]), []).append(str(row["candidate_id"]))
+        return {
+            "pending_ids": [str(row["candidate_id"]) for row in pending],
+            "stale_ids": [str(row["candidate_id"]) for row in rows if row["status"] != "pending"],
+            "new_ids": [str(row["candidate_id"]) for row in pending if row["current_id"] is None],
+            "replace_ids": [str(row["candidate_id"]) for row in pending
+                            if row["current_id"] is not None and not row["same_text"]],
+            "same_ids": [str(row["candidate_id"]) for row in pending if row["same_text"]],
+            "replaced_pinned_ids": [str(row["candidate_id"]) for row in pending
+                                    if row["current_id"] is not None and not row["same_text"]
+                                    and row["current_pinned"]],
+            "conflict_groups": [group for group in by_fact.values() if len(group) > 1],
+        }
+
+    def candidate_status(self, candidate_ids: list[str]) -> dict:
+        """Read pending states and the confirmation outcome without writes."""
+        ids = self._validate_candidate_ids(candidate_ids)
+        with self._lock:
+            rows = self._candidate_snapshot_rows(ids)
+        preview = self._candidate_preview(rows)
+        return {
+            "ok": True,
+            "candidate_ids": ids,
+            "states": [{"candidate_id": str(row["candidate_id"]), "status": str(row["status"])}
+                       for row in rows if row["status"] is not None],
+            **preview,
+        }
+
+    def decide_candidates(
+        self,
+        candidate_ids: list[str],
+        decision: str,
+        *,
+        embedding_model_version: str,
+        importance: float = 0.75,
+    ) -> dict:
+        """Confirm or reject a whole selection inside one transaction.
+
+        Stale candidates and same-fact conflicts reject before the first write,
+        so the outcome never depends on processing order. Storage and commit
+        failures propagate: callers must treat those outcomes as unknown.
+        """
+        ids = self._validate_candidate_ids(candidate_ids)
+        if not isinstance(decision, str) or decision not in {"confirm", "reject"}:
+            raise ValueError("decision must be confirm or reject")
+        now = time.time()
+        decided: list[dict] = []
+        with self.transaction() as connection:
+            rows = self._candidate_snapshot_rows(ids)
+            preview = self._candidate_preview(rows)
+            if preview["stale_ids"]:
+                raise StaleCandidateSelection(preview["stale_ids"])
+            if decision == "confirm" and preview["conflict_groups"]:
+                raise CandidateFactConflict(preview["conflict_groups"])
+            for candidate_id in ids:
+                if decision == "reject":
+                    self._apply_candidate_rejection(connection, candidate_id, now=now, reason="user_rejected")
+                    continue
+                candidate = connection.execute(
+                    "SELECT * FROM memory_candidates WHERE id=?", (candidate_id,),
+                ).fetchone()
+                memory_id, conflict_id, idempotent = self._apply_candidate_confirmation(
+                    connection,
+                    candidate,
+                    now=now,
+                    embedding_model_version=embedding_model_version,
+                    importance=importance,
+                    decision_reason="user_confirmed",
+                )
+                decided.append({"candidate_id": candidate_id, "memory_id": memory_id,
+                                "replaced_memory_id": conflict_id, "idempotent": idempotent})
+        result = {"ok": True, "candidate_ids": ids, "decision": decision}
+        if decision == "reject":
+            return {**result, "rejected_ids": ids}
+        # Outcome lists come from what was written; only the replaced rows'
+        # earlier pin states need the pre-write snapshot.
+        return {
+            **result,
+            "confirmed": decided,
+            "new_ids": [d["candidate_id"] for d in decided if not d["idempotent"] and not d["replaced_memory_id"]],
+            "replace_ids": [d["candidate_id"] for d in decided if not d["idempotent"] and d["replaced_memory_id"]],
+            "same_ids": [d["candidate_id"] for d in decided if d["idempotent"]],
+            "replaced_pinned_ids": preview["replaced_pinned_ids"],
+        }
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
@@ -499,7 +740,18 @@ class MemoryCatalog:
                 self._connection.execute("ROLLBACK")
                 raise
             else:
-                self._connection.execute("COMMIT")
+                try:
+                    self._connection.execute("COMMIT")
+                except BaseException:
+                    # COMMIT can report an exception after becoming durable.
+                    # Release an uncommitted transaction, then let restore
+                    # settle via a fresh readonly marker probe.
+                    if self._connection.in_transaction:
+                        try:
+                            self._connection.execute("ROLLBACK")
+                        except Exception:
+                            pass
+                    raise
 
     @staticmethod
     def _escape_like_term(term: str) -> str:
@@ -676,18 +928,27 @@ class MemoryCatalog:
         self,
         prefixes: tuple[str, ...],
         records: Iterable[dict],
+        *,
+        source_type: str | None = None,
     ) -> int:
         """Atomically swap anchored rows: delete rows whose text starts with
         any prefix, then insert the replacement records inside one transaction
-        so a crash can never leave the anchor set empty or half-written."""
+        so a crash can never leave the anchor set empty or half-written.
+        An explicit source limits replacement to that derived source; an
+        identical prefix on independent or unknown-source facts is retained.
+        """
         prepared = [self._prepare_record(**record) for record in records]
         inserted = 0
         with self.transaction() as connection:
             removed_ids: list[str] = []
             for prefix in prefixes:
+                query = "SELECT id FROM memory_records WHERE substr(text, 1, ?) = ?"
+                parameters: tuple = (len(prefix), prefix)
+                if source_type is not None:
+                    query += " AND source_type = ?"
+                    parameters += (source_type,)
                 rows = connection.execute(
-                    "SELECT id FROM memory_records WHERE substr(text, 1, ?) = ?",
-                    (len(prefix), prefix),
+                    query, parameters,
                 ).fetchall()
                 removed_ids.extend(str(row["id"]) for row in rows)
             for memory_id in removed_ids:
@@ -780,6 +1041,52 @@ class MemoryCatalog:
                 (bounded_limit,),
             ).fetchall()
         return [self._row(row) for row in rows]
+
+    def list_confirmed_page(
+        self,
+        *,
+        limit: int = 100,
+        after: tuple[float, str] | None = None,
+        query: str = "",
+    ) -> tuple[list[dict], tuple[float, str] | None]:
+        """Return one keyset page of current confirmed facts, newest first.
+
+        confirmed_at is written when a fact is confirmed and kept by backup
+        imports (created_at is not: an import rewrites it), so pages stay
+        consistent while embedding, decay or pinning rewrite updated_at and
+        across a restore. Rows without it fall back to created_at. A query is
+        a literal substring: instr() treats % and _ as plain text.
+        """
+
+        bounded_limit = max(1, min(200, int(limit)))
+        clauses = ["confirmation_state='confirmed'", "lifecycle_state='active'"]
+        params: list[object] = []
+        if query:
+            clauses.append("instr(lower(text), lower(?)) > 0")
+            params.append(str(query))
+        if after is not None:
+            created_at, memory_id = float(after[0]), str(after[1])
+            if not math.isfinite(created_at):
+                raise ValueError("Invalid memory list cursor")
+            clauses.append("(COALESCE(confirmed_at,created_at) < ? OR "
+                           "(COALESCE(confirmed_at,created_at) = ? AND id < ?))")
+            params.extend((created_at, created_at, memory_id))
+        params.append(bounded_limit + 1)
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT *,COALESCE(confirmed_at,created_at) AS list_order FROM memory_records WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY list_order DESC,id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        selected = [dict(row) for row in rows[:bounded_limit]]
+        next_after = None
+        if len(rows) > bounded_limit and selected:
+            last = selected[-1]
+            next_after = (float(last["list_order"]), str(last["id"]))
+        for row in selected:
+            row.pop("list_order", None)
+        return [self._row(row) for row in selected], next_after
 
     def page(
         self,
@@ -976,6 +1283,65 @@ class MemoryCatalog:
             )
         return memory_ids
 
+    def delete_confirmed_memories(self, memory_ids: list[str]) -> list[str]:
+        """Validate the whole selection, then purge all its lineages atomically.
+
+        Selected IDs are revision identities. Reading them under the same
+        immediate transaction as the purge prevents a correction or deletion
+        from turning a stale selection into a partial delete.
+        """
+
+        if not isinstance(memory_ids, list) or not 1 <= len(memory_ids) <= 100:
+            raise ValueError("Select between 1 and 100 memories")
+        ids = list(memory_ids)
+        if any(
+            not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value)
+            for value in ids
+        ):
+            raise ValueError("memory_ids contains unsupported characters")
+        if len(set(ids)) != len(ids):
+            raise ValueError("memory_ids must be unique")
+
+        with self.transaction() as connection:
+            stale_ids: list[str] = []
+            fact_keys: list[str] = []
+            for memory_id in ids:
+                current = connection.execute(
+                    "SELECT fact_key,confirmation_state,lifecycle_state "
+                    "FROM memory_records WHERE id=?",
+                    (memory_id,),
+                ).fetchone()
+                if (
+                    current is None
+                    or current["confirmation_state"] != "confirmed"
+                    or current["lifecycle_state"] != "active"
+                    or not str(current["fact_key"] or "").strip()
+                ):
+                    stale_ids.append(memory_id)
+                else:
+                    fact_keys.append(str(current["fact_key"]))
+            if stale_ids:
+                raise StaleMemorySelection(stale_ids)
+
+            keys = list(dict.fromkeys(fact_keys))
+            placeholders = ",".join("?" for _ in keys)
+            rows = connection.execute(
+                f"SELECT id FROM memory_records WHERE fact_key IN ({placeholders}) "
+                "ORDER BY fact_key,fact_revision,id",
+                keys,
+            ).fetchall()
+            purged_ids = [str(row["id"]) for row in rows]
+            connection.execute(
+                f"DELETE FROM memory_candidates WHERE fact_key IN ({placeholders})",
+                keys,
+            )
+            connection.execute(
+                f"DELETE FROM memory_records WHERE fact_key IN ({placeholders})",
+                keys,
+            )
+        return purged_ids
+
     def delete_by_layer(self, layer: str) -> None:
         with self.transaction() as connection:
             connection.execute("DELETE FROM memory_records WHERE retention_layer=?", (layer,))
@@ -1074,6 +1440,94 @@ class MemoryCatalog:
                 (1 if pinned else 0, time.time(), memory_id),
             )
         return cursor.rowcount > 0
+
+    @staticmethod
+    def _validate_pin_ids(memory_ids: list[str]) -> list[str]:
+        if not isinstance(memory_ids, list) or not 1 <= len(memory_ids) <= 100:
+            raise ValueError("Select between 1 and 100 memories")
+        ids = list(memory_ids)
+        if any(
+            not isinstance(value, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value)
+            for value in ids
+        ):
+            raise ValueError("memory_ids contains unsupported characters")
+        if len(set(ids)) != len(ids):
+            raise ValueError("memory_ids must be unique")
+        return ids
+
+    def _pin_snapshot_rows(self, memory_ids: list[str]) -> list[sqlite3.Row]:
+        """Caller holds the catalog lock; one SELECT supplies one SQL snapshot.
+
+        Include every catalog pin in the count, even rows outside the review
+        list. Do not fetch memory bodies or timestamps for this preview.
+        """
+        selected = ",".join("(?,?)" for _ in memory_ids)
+        params = [value for ordinal, memory_id in enumerate(memory_ids) for value in (ordinal, memory_id)]
+        return self._connection.execute(
+            f"WITH selected(ordinal,memory_id) AS (VALUES {selected}) "
+            "SELECT selected.memory_id,"
+            "CASE WHEN m.confirmation_state='confirmed' AND m.lifecycle_state='active' "
+            "THEN 1 ELSE 0 END AS is_current,"
+            "CASE WHEN m.pinned=1 THEN 1 ELSE 0 END AS pinned,"
+            "(SELECT COUNT(*) FROM memory_records WHERE pinned=1) AS pinned_total "
+            "FROM selected LEFT JOIN memory_records AS m ON m.id=selected.memory_id "
+            "ORDER BY selected.ordinal",
+            params,
+        ).fetchall()
+
+    def pin_status(self, memory_ids: list[str]) -> dict:
+        """Read current revision identities and global pin capacity without writes."""
+        ids = self._validate_pin_ids(memory_ids)
+        with self._lock:
+            rows = self._pin_snapshot_rows(ids)
+        return {
+            "ok": True,
+            "memory_ids": ids,
+            "states": [{"memory_id": str(row["memory_id"]), "pinned": bool(row["pinned"])}
+                       for row in rows if row["is_current"]],
+            "stale_ids": [str(row["memory_id"]) for row in rows if not row["is_current"]],
+            "pinned_total": int(rows[0]["pinned_total"]),
+            "pin_limit": PIN_LIMIT,
+        }
+
+    def pin_confirmed_memories(self, memory_ids: list[str], pinned: bool) -> dict:
+        """Change selected current revisions atomically using current capacity.
+
+        Stale selections and capacity overflow reject before the first UPDATE.
+        Storage and commit failures propagate: callers must treat those outcomes
+        as unknown instead of promising that nothing changed.
+        """
+        ids = self._validate_pin_ids(memory_ids)
+        if type(pinned) is not bool:
+            raise ValueError("pinned must be a boolean")
+        with self.transaction() as connection:
+            rows = self._pin_snapshot_rows(ids)
+            stale_ids = [str(row["memory_id"]) for row in rows if not row["is_current"]]
+            if stale_ids:
+                raise StaleMemoryPinSelection(stale_ids)
+            before = int(rows[0]["pinned_total"])
+            changed = [str(row["memory_id"]) for row in rows if bool(row["pinned"]) != pinned]
+            unchanged = [str(row["memory_id"]) for row in rows if bool(row["pinned"]) == pinned]
+            if pinned and changed and before + len(changed) > PIN_LIMIT:
+                raise MemoryPinLimitExceeded()
+            if changed:
+                placeholders = ",".join("?" for _ in changed)
+                connection.execute(
+                    f"UPDATE memory_records SET pinned=?,updated_at=? WHERE id IN ({placeholders})",
+                    [int(pinned), time.time(), *changed],
+                )
+            after = before + (len(changed) if pinned else -len(changed))
+        return {
+            "ok": True,
+            "memory_ids": ids,
+            "pinned": pinned,
+            "changed_ids": changed,
+            "unchanged_ids": unchanged,
+            "pinned_total_before": before,
+            "pinned_total_after": after,
+            "pin_limit": PIN_LIMIT,
+        }
 
     def count_pinned(self) -> int:
         row = self._connection.execute(
@@ -1388,7 +1842,7 @@ class MemoryCatalog:
                     raise ValueError("Backup contains a non-finite emotion value")
                 emotions[name] = max(0.0, min(100.0, value))
             timestamp = float(record.get("timestamp", now) or now)
-            importance = float(record.get("importance", 0.5) or 0.5)
+            importance = float(0.5 if record.get("importance") is None else record["importance"])
             event_time = record.get("event_time")
             event_time = None if event_time is None else float(event_time)
             if not math.isfinite(timestamp) or not math.isfinite(importance):
@@ -1457,6 +1911,7 @@ class MemoryCatalog:
         *,
         replace: bool,
         before_commit: Callable[[], None] | None = None,
+        after_commit: Callable[[], None] | None = None,
         restore_marker: str = "",
     ) -> int:
         """Consume an arbitrary record stream inside one atomic transaction."""
@@ -1503,7 +1958,7 @@ class MemoryCatalog:
                         "INSERT INTO reverie_import_seen_ids(id) VALUES (?)",
                         (prepared[0],),
                     )
-                except sqlite3.IntegrityError as exc:
+                except integrity_errors() as exc:
                     raise ValueError(f"Backup contains duplicate id: {prepared[0]}") from exc
                 connection.execute(sql, prepared)
                 count += 1
@@ -1517,6 +1972,8 @@ class MemoryCatalog:
             if before_commit is not None:
                 before_commit()
             connection.execute("DELETE FROM reverie_import_seen_ids")
+        if after_commit is not None:
+            after_commit()
         return count
 
     @staticmethod
@@ -1559,7 +2016,7 @@ class MemoryCatalog:
                 raise ValueError("Backup contains a non-finite emotion value")
             emotions[name] = max(0.0, min(100.0, value))
         timestamp = float(record.get("timestamp", now) or now)
-        importance = float(record.get("importance", 0.5) or 0.5)
+        importance = float(0.5 if record.get("importance") is None else record["importance"])
         event_time = record.get("event_time")
         event_time = None if event_time is None else float(event_time)
         if not math.isfinite(timestamp) or not math.isfinite(importance):

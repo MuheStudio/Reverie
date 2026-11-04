@@ -1,0 +1,18 @@
+#pragma once
+// These anchors are compiled into the signed checking host. The runtime's
+// writable JSON records cannot replace the verifier or supply its own digest.
+namespace PreviewUpgradeTrust {
+struct File { const char *path; const char *sha256; };
+inline constexpr File VerifierFiles[] = {
+    {".tools/node/bin/node", "@REVERIE_TRUST_NODE@"},
+    {"native-ui/preview-runtime.cjs", "@REVERIE_TRUST_VERIFIER@"},
+    {"native-ui/build-record.cjs", "@REVERIE_TRUST_BUILD_READER@"},
+};
+inline constexpr const char *PreviousPublicResultSha256 = "@REVERIE_TRUST_PREVIOUS_PUBLIC@";
+inline constexpr const char *PreviousCandidate = "@REVERIE_TRUST_PREVIOUS_CANDIDATE@";
+inline constexpr const char *PreviousSourceHead = "@REVERIE_TRUST_PREVIOUS_HEAD@";
+inline constexpr const char *PreviousBuildManifestSha256 = "@REVERIE_TRUST_PREVIOUS_BUILD@";
+inline constexpr const char *CurrentSourceHead = "@REVERIE_TRUST_CURRENT_HEAD@";
+inline constexpr const char *CurrentRuntimeInputsSha256 = "@REVERIE_TRUST_CURRENT_INPUTS@";
+inline constexpr const char *CurrentPythonSha256 = "@REVERIE_TRUST_CURRENT_PYTHON@";
+}

@@ -9,6 +9,7 @@ const {
   stageLive2DCoreOnlyTestRuntime,
 } = require('../electron/live2d-runtime-assets.cjs');
 const { createSeedConfig } = require('./seed-config.cjs');
+const { assertSourceMigrationSource, assertSourceMigrationStage } = require('./source-migration-policy.cjs');
 const { verifyPackagedWindowsIcons } = require('./windows-icon-verification.cjs');
 const {
   assertProductionPayload,
@@ -381,18 +382,7 @@ function collectFrontendLicenses() {
   }
   writeJson(path.join(licenseRoot, 'inventory.json'), inventory);
 
-  const elephantopsLink = path.join(licensesRoot, 'node_modules', 'elephantops');
-  if (!fs.existsSync(elephantopsLink)) {
-    throw new Error('GPL dependency source is missing: node_modules/elephantops');
-  }
-  const elephantops = fs.realpathSync(elephantopsLink);
-  if (!isInside(licensesRoot, elephantops)) {
-    throw new Error(`GPL dependency source escaped frontend root: ${elephantops}`);
-  }
-  copyRecursive(
-    elephantops,
-    path.join(sourceStage, 'vendor', 'elephantops'),
-  );
+
 }
 
 function collectPythonLicenses() {
@@ -446,7 +436,7 @@ function verifyWindowsIcons() {
   });
 }
 
-function writeArtifactHash() {
+function writeArtifactHash(sourceMigration) {
   const installer = path.join(outputRoot, installerArtifactName);
   if (!fs.existsSync(installer)) throw new Error(`Installer not found: ${installer}`);
   const hash = crypto.createHash('sha256').update(fs.readFileSync(installer)).digest('hex');
@@ -484,11 +474,13 @@ function writeArtifactHash() {
     },
     correspondingSource: path.basename(sourceArchive), correspondingSourceSha256: sourceHash,
     sourceRoot: projectRoot,
+    sourceMigration,
   });
   console.log(installer);
 }
 
 function main() {
+  const sourceMigration = { source: assertSourceMigrationSource(projectRoot), staged: null, correspondingSource: null };
   assertInside(path.join(reverieRoot, 'Reverie-project'), projectRoot, 'Project root');
   ensureDir(outputRoot);
   removeStage(appStage);
@@ -512,6 +504,7 @@ function main() {
       path.join(resourceStage, 'src'),
       resourceStage,
     );
+    sourceMigration.staged = assertSourceMigrationStage({ projectRoot, resourceRoot: resourceStage, appRoot: appStage });
     compileProductionPythonSource(path.join(resourceStage, 'src'), projectRoot);
     const runtime = preparePythonRuntime({
       projectRoot,
@@ -521,11 +514,13 @@ function main() {
     });
     prepareSourceBundle();
     collectFrontendLicenses();
+    sourceMigration.correspondingSource = assertSourceMigrationSource(sourceStage);
     collectPythonLicenses();
     writeProductionInventory({
       resourceRoot: resourceStage,
       appRoot: appStage,
       runtime,
+      sourceMigration,
     });
     assertProductionPayload(resourceStage, appStage);
     // Scan the exact staged payload as the final release gate. This catches a
@@ -540,7 +535,7 @@ function main() {
     buildInstaller();
     verifyWindowsIcons();
     compressSourceBundle();
-    writeArtifactHash();
+    writeArtifactHash(sourceMigration);
   } finally {
     removeStage(appStage);
     removeStage(resourceStage);

@@ -20,7 +20,8 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import { useMvpBridge } from '@/hooks/useMvpBridge';
+import type { useMvpBridge } from '@/hooks/useMvpBridge';
+import { worldbookNotice } from '@/lib/worldbookDiagnostics';
 import { LLM_PROVIDER_CONFIGS, type LLMProvider } from '@/lib/llmModels';
 import {
   mergeSavedDraft,
@@ -43,6 +44,9 @@ import {
 import BundledCharacter from './BundledCharacter';
 import VoicePackManagerPanel from '@/components/settings/VoicePackManagerPanel';
 import styles from './MvpRoom.module.scss';
+import Workspace, { type MainSection } from '../Workspace/Workspace';
+import FeaturePages from '../Workspace/FeaturePages';
+import About from '../Workspace/About';
 
 // Raw backend delivery-state enums (ready_waiting, accepted, …) must not leak
 // into the zh UI as-is.
@@ -59,7 +63,7 @@ const DELIVERY_STATE_LABELS: Record<string, string> = {
   error: '发送失败',
 };
 
-type Tab = 'chat' | 'memory' | 'settings';
+type Tab = MainSection;
 
 // User-specified liability disclaimer for the video download feature. Adopted
 // verbatim (see 待实施计划/…/视频下载到聊天发送-实施设计方案.md §1.2). It gates the
@@ -368,11 +372,26 @@ function ProviderSettings() {
   );
 }
 
-export default function MvpRoom() {
-  const bridge = useMvpBridge();
+export default function MvpRoom({ bridge }: { bridge: ReturnType<typeof useMvpBridge> }) {
   const [tab, setTab] = useState<Tab>('chat');
-  const [draft, setDraft] = useState<string>(() => loadReverieChatDraft('mvp-room'));
-  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [settingsVisited, setSettingsVisited] = useState(false);
+  const [featuresVisited, setFeaturesVisited] = useState(false);
+  const [editNotice, setEditNotice] = useState('');
+  const edited = useRef(false);
+  const navigate = (next: Tab) => {
+    if (next === 'settings') setSettingsVisited(true);
+    if (['character','memory','activities'].includes(next)) setFeaturesVisited(true);
+    setEditNotice(edited.current && next !== tab ? '页面编辑内容已保留；未保存的修改请在原页面完成保存。' : '');
+    setTab(next);
+  };
+  const [draftState, setDraftState] = useState(() => ({ scope: 'mvp-room', text: loadReverieChatDraft('mvp-room') }));
+  const draftScope = bridge.personaId;
+  const draft = !draftScope || draftState.scope === draftScope ? draftState.text : '';
+  const setDraft = (value: string | ((text: string) => string)) => setDraftState(current => {
+    const scope = draftScope || 'mvp-room';
+    return { scope, text: typeof value === 'function' ? value(current.scope === scope ? current.text : '') : value };
+  });
+  const attachmentScope = useRef(draftScope); attachmentScope.current = draftScope;
   const [memoryQuery, setMemoryQuery] = useState('');
   const [editingMemoryId, setEditingMemoryId] = useState('');
   const [editingMemoryText, setEditingMemoryText] = useState('');
@@ -413,34 +432,23 @@ export default function MvpRoom() {
     messageEndRef.current?.scrollIntoView({ block: 'end' });
   }, [bridge.messages, bridge.streamingText]);
 
-  // Chat draft persistence: drafts survive app restarts, shared with DreamRoom
-  // under the same persona id. Before the persona id is known they live under
-  // the 'mvp-room' fallback key and are migrated once the id arrives.
+  // A scope change cannot persist the previous persona's text under a new key.
   useEffect(() => {
-    const personaKey = bridge.personaId;
-    if (!personaKey) return;
-    if (draftHydrated) return;
-    setDraftHydrated(true);
-    if (draft) {
-      // Draft already present (from the mvp-room fallback or user typing):
-      // move it under the persona id so DreamRoom sees the same text, then
-      // consume the fallback slot so a future persona switch cannot revive it.
-      saveReverieChatDraft(draft, personaKey);
-      consumeFallbackDraft('mvp-room');
-      return;
-    }
-    const migrated = migrateReverieChatDraft('mvp-room', personaKey);
-    if (migrated) {
-      setDraft(migrated);
-    }
-  }, [bridge.personaId, draft, draftHydrated]);
-
-  // Persist subsequent edits under the active session key.
+    if (!draftScope) return;
+    setDraftState(current => {
+      if (current.scope === draftScope) return current;
+      const text = current.scope === 'mvp-room'
+        ? current.text || migrateReverieChatDraft('mvp-room', draftScope)
+        : loadReverieChatDraft(draftScope);
+      if (current.scope === 'mvp-room') consumeFallbackDraft('mvp-room');
+      return { scope: draftScope, text };
+    });
+    setPendingImage(null); setImageNotice(''); setGroupDraft(''); setEditingMemoryId(''); setEditingMemoryText('');
+    setManualMemoryText(''); setManualMemoryNotice(''); edited.current = false; setEditNotice('');
+  }, [draftScope]);
   useEffect(() => {
-    if (!draftHydrated) return;
-    const key = bridge.personaId || 'mvp-room';
-    saveReverieChatDraft(draft, key);
-  }, [draft, draftHydrated, bridge.personaId]);
+    if (draftScope && draftState.scope === draftScope) saveReverieChatDraft(draftState.text, draftScope);
+  }, [draftScope, draftState]);
 
   useEffect(() => {
     const value = bridge.memorySettings.retention_days;
@@ -485,8 +493,11 @@ export default function MvpRoom() {
 
   const attachImageFile = async (file: File | null | undefined) => {
     if (!file) return;
+    const scope = attachmentScope.current;
     try {
-      setPendingImage(await imageAttachmentFromFile(file));
+      const image = await imageAttachmentFromFile(file);
+      if (attachmentScope.current !== scope) return;
+      setPendingImage(image);
       setImageNotice('');
     } catch (reason) {
       setPendingImage(null);
@@ -495,9 +506,9 @@ export default function MvpRoom() {
   };
 
   return (
-    <main className={styles.shell} data-testid="mvp-room">
-      <div className={styles.atmosphere} aria-hidden="true" />
-      <section className={styles.characterColumn}>
+    <Workspace section={tab} onNavigate={navigate} name={personaName} connected={bridge.connection === 'connected'} notice={editNotice}>
+    <main className={styles.shell} data-testid="mvp-room" data-section={tab}>
+      <section className={styles.characterColumn} data-stage data-active={tab === 'chat' || tab === 'character'}>
         <div className={styles.identityNotice}>
           <Bot size={18} />
           <span>
@@ -507,16 +518,17 @@ export default function MvpRoom() {
         <BundledCharacter
           emotions={bridge.emotions}
           speaking={Boolean(bridge.streamingText)}
+          active={tab === 'chat' || tab === 'character'}
         />
-        <div className={styles.relationshipCard}>
+        <div className={styles.relationshipCard} data-relationship-card>
           <span>关系状态</span>
           <strong>{text(bridge.relationship.stage) || '刚刚认识'}</strong>
           <small>只根据有来源的共同经历变化，不把使用时长当作依赖分数。</small>
         </div>
       </section>
 
-      <section className={styles.panel}>
-        <header className={styles.panelHeader}>
+      <section className={styles.panel} data-ui-paper onChangeCapture={() => { if (tab !== 'chat') edited.current = true; }}>
+        <header className={styles.panelHeader} data-legacy-heading>
           <div>
             <strong>Reverie</strong>
             <span data-state={bridge.connection}>
@@ -547,6 +559,11 @@ export default function MvpRoom() {
           </nav>
         </header>
 
+        {worldbookNotice(bridge.worldbookDiagnostics) && (
+          <div className={styles.identityNotice} role="status" aria-live="polite" data-testid="worldbook-notice">
+            {worldbookNotice(bridge.worldbookDiagnostics)}
+          </div>
+        )}
         {bridge.error && (
           <div className={styles.errorBanner} role="alert">
             <span>{bridge.error}</span>
@@ -573,8 +590,12 @@ export default function MvpRoom() {
           </div>
         )}
 
-        {tab === 'chat' && (
-          <section className={styles.chat}>
+        {(
+          <section className={styles.chat} data-chat-panel hidden={tab !== 'chat'}>
+            <div aria-label="聊天工具" style={{ display: 'flex', gap: 8, paddingBottom: 12 }}>
+              <button type="button" onClick={() => { setGroupOpen(value => !value); if (!groupOpen) bridge.refreshGroup(); }}><Users size={15} />群聊</button>
+              <button type="button" onClick={() => { void window.electronAPI?.pet?.toggle?.(); }}>桌宠</button>
+            </div>
             <div className={styles.messages} aria-live="polite">
               {bridge.isTyping && (
                 <div className={styles.typingIndicator} role="status">
@@ -799,7 +820,7 @@ export default function MvpRoom() {
         )}
 
         {groupOpen && (
-          <section className={styles.groupChat} aria-label="群聊">
+          <section className={styles.groupChat} aria-label="群聊" hidden={tab !== 'chat'}>
             <header>
               <Users size={16} />
               <strong>群聊</strong>
@@ -872,7 +893,7 @@ export default function MvpRoom() {
         )}
 
         {tab === 'memory' && (
-          <section className={styles.memory}>
+          <details><summary>已确认记忆与待确认建议</summary><section className={styles.memory}>
             <div className={styles.memoryIntro}>
               <div>
                 <strong>可审查的长期记忆</strong>
@@ -1022,12 +1043,13 @@ export default function MvpRoom() {
                 </article>
               ))}
             </div>
-          </section>
+          </section></details>
         )}
 
-        {tab === 'settings' && (
-          <section className={styles.settingsPanel}>
+        {settingsVisited && (
+          <section className={styles.settingsPanel} hidden={tab !== 'settings'}>
             <ProviderSettings />
+            <details><summary>关于与开源许可</summary><About /></details>
             <section className={styles.settingsSection}>
               <header>
                 <Brain size={18} />
@@ -1397,9 +1419,13 @@ export default function MvpRoom() {
             </section>
           </section>
         )}
+        {featuresVisited && <div hidden={!['character','memory','activities'].includes(tab)}>
+          <FeaturePages key={bridge.personaId ?? 'unavailable'} section={tab} client={bridge.archiveClient}
+            onInviteAI={(game, state) => { bridge.sendChat(`一起来玩${game}吧。${state ?? ''}`); navigate('chat'); }} />
+        </div>}
       </section>
-
     </main>
+    </Workspace>
   );
 }
 

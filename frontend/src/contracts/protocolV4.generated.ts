@@ -15,16 +15,28 @@ export const WSMsgType = {
   MEMORY_LIST: "memory:list",
   MEMORY_EDIT: "memory:edit",
   MEMORY_DELETE: "memory:delete",
+  MEMORY_DELETE_MANY: "memory:delete_many",
+  MEMORY_PIN_STATUS: "memory:pin_status",
+  MEMORY_PIN_MANY: "memory:pin_many",
   MEMORY_SETTINGS_GET: "memory:settings:get",
   MEMORY_STORE: "memory:store",
   MEMORY_REINFORCE: "memory:reinforce",
   MEMORY_CANDIDATE_LIST: "memory:candidates:list",
   MEMORY_CANDIDATE_CONFIRM: "memory:candidates:confirm",
   MEMORY_CANDIDATE_REJECT: "memory:candidates:reject",
+  MEMORY_CANDIDATE_STATUS: "memory:candidates:status",
+  MEMORY_CANDIDATE_DECIDE_MANY: "memory:candidates:decide_many",
   EMOTION_GET: "emotion:get",
   PERSONA_GET: "persona:get",
   PERSONA_IMPORT: "persona:import",
   PERSONA_ACTIVATE: "persona:activate",
+  PERSONA_LIST: "persona:list",
+  PERSONA_PROFILE_GET: "persona:profile:get",
+  PERSONA_PROFILE_UPDATE: "persona:profile:update",
+  SUMMARY_STATUS: "summary:status",
+  SUMMARY_GET: "summary:get",
+  SUMMARY_LEGACY_PREVIEW: "summary:legacy:preview",
+  SUMMARY_LEGACY_IMPORT: "summary:legacy:import",
   ARCHIVE_GET: "archive:get",
   ARCHIVE_PUT: "archive:put",
   ARCHIVE_MIGRATE: "archive:migrate",
@@ -85,6 +97,10 @@ export const WSMsgType = {
   MEMORY_CANDIDATE_RESULT: "memory:candidates:result",
   PERSONA_DATA: "persona:data",
   PERSONA_IMPORT_RESULT: "persona:import:result",
+  PERSONA_LIST_RESULT: "persona:list:result",
+  PERSONA_PROFILE_GET_RESULT: "persona:profile:get:result",
+  PERSONA_PROFILE_UPDATE_RESULT: "persona:profile:update:result",
+  SUMMARY_RESULT: "summary:result",
   ARCHIVE_RESULT: "archive:result",
   MODULE_RESULT: "module:result",
   GAME_STATE_RESULT: "game_state:result",
@@ -112,7 +128,7 @@ export const WSMsgType = {
 } as const;
 
 export type LegacyMessageType = typeof WSMsgType[keyof typeof WSMsgType];
-export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:media" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "diary:write" | "emotion:get" | "game:move" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:list" | "memory:candidates:reject" | "memory:delete" | "memory:edit" | "memory:list" | "memory:query" | "memory:reinforce" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:import" | "sticker:list" | "sticker:react" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update" | "video:download";
+export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:media" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "diary:write" | "emotion:get" | "game:move" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:decide_many" | "memory:candidates:list" | "memory:candidates:reject" | "memory:candidates:status" | "memory:delete" | "memory:delete_many" | "memory:edit" | "memory:list" | "memory:pin_many" | "memory:pin_status" | "memory:query" | "memory:reinforce" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "persona:list" | "persona:profile:get" | "persona:profile:update" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:import" | "sticker:list" | "sticker:react" | "summary:get" | "summary:legacy:import" | "summary:legacy:preview" | "summary:status" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update" | "video:download";
 
 export interface PersonaScopeV4 {
   persona_id: string;

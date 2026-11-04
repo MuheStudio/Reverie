@@ -557,8 +557,10 @@ export default function AvatarStage({
     }[next] as typeof status;
     setStatus(mapped);
     setMessage(detail || '');
-    statusCallbackRef.current?.(mapped);
+    // A ready callback may immediately confirm the import. Publish detected
+    // capabilities first so that confirmation cannot persist an empty set.
     if (mapped === 'ready') capabilitiesCallbackRef.current?.(live2dCapabilities);
+    statusCallbackRef.current?.(mapped);
   }, [live2dCapabilities]);
 
   return (

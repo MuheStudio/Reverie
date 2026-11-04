@@ -70,6 +70,16 @@ class DummyMemory:
     def search(self, query: str, k: int = 5) -> list[str]:
         return [f"{query}:{k}"]
 
+    def query_recall(self, query: str, k: int = 5) -> dict:
+        return {
+            "memories": self.search(query, k=k),
+            "retrieval": {
+                "mode": "unknown",
+                "reason": "retrieval_path_unverified",
+                "indexPending": None,
+            },
+        }
+
     def sync_user_profile(self, _user_manager) -> int:
         self.synced_profiles += 1
         return self.synced_profiles
@@ -80,6 +90,12 @@ class DummyMemory:
 
     def list_memory_candidates(self, *, status: str, limit: int) -> list[dict]:
         return self.candidates[:limit] if status == "pending" else []
+
+    def list_memory_candidates_page(self, *, status: str, limit: int, cursor=None) -> dict:
+        assert cursor is None
+        return {"ok": True, "status": status,
+                "candidates": self.list_memory_candidates(status=status, limit=limit),
+                "has_more": False, "next_cursor": None}
 
     def confirm_memory_candidate(self, candidate_id: str) -> dict:
         return {
@@ -274,6 +290,11 @@ def test_unauthenticated_chat_cannot_reach_session_or_provider(monkeypatch) -> N
 
 
 def test_bridge_core_handlers_match_backend_contracts(monkeypatch) -> None:
+    ws = DummyWebSocket()
+    monkeypatch.setattr(ws_bridge, "_controller_ws", ws)
+    monkeypatch.setitem(ws_bridge._client_contexts, ws, ws_bridge.BridgeClientContext(
+        client_id="desktop_controller_01", protocol_version=3, authenticated=True,
+    ))
     monkeypatch.setattr(ws_bridge.bridge_state, "memory", DummyMemory())
     monkeypatch.setattr(ws_bridge.bridge_state, "emotion", EmotionSystem())
     monkeypatch.setattr(ws_bridge.bridge_state, "relationship", RelationshipTracker(120))
@@ -284,7 +305,6 @@ def test_bridge_core_handlers_match_backend_contracts(monkeypatch) -> None:
     monkeypatch.setattr(ws_bridge.bridge_state, "work_manager", None)
 
     async def exercise() -> tuple[dict, dict, dict, dict, dict]:
-        ws = DummyWebSocket()
         return (
             await ws_bridge.handle_memory_query({"query": "test", "top_k": 3}, ws),
             await ws_bridge.handle_emotion_get({}, ws),
@@ -295,7 +315,14 @@ def test_bridge_core_handlers_match_backend_contracts(monkeypatch) -> None:
 
     memory, emotion, relationship, diary, timeline = asyncio.run(exercise())
 
-    assert memory == {"memories": ["test:3"]}
+    assert memory == {
+        "memories": ["test:3"],
+        "retrieval": {
+            "mode": "unknown",
+            "reason": "retrieval_path_unverified",
+            "indexPending": None,
+        },
+    }
     assert "emotions" in emotion
     assert relationship["intimacy"] == 120
     assert relationship["stage"] == "熟悉期"
@@ -308,13 +335,16 @@ def test_bridge_core_handlers_match_backend_contracts(monkeypatch) -> None:
 def test_bridge_backup_handlers_use_complete_local_backup(monkeypatch) -> None:
     memory = DummyMemory()
     memory.export_all = lambda: [{"id": "mem-1", "content": "事件记忆"}]  # type: ignore[attr-defined]
-    memory.import_all = lambda memories, replace=False: len(memories)  # type: ignore[attr-defined]
+    import_all = MagicMock(side_effect=lambda memories, replace=False: len(memories))
+    memory.import_all = import_all  # type: ignore[attr-defined]
+    diary = DummyBackupDiary()
+    user = DummyBackupUser()
 
     monkeypatch.setattr(ws_bridge.bridge_state, "memory", memory)
     monkeypatch.setattr(ws_bridge.bridge_state, "emotion", EmotionSystem())
     monkeypatch.setattr(ws_bridge.bridge_state, "relationship", RelationshipTracker(88))
-    monkeypatch.setattr(ws_bridge.bridge_state, "diary", DummyBackupDiary())
-    monkeypatch.setattr(ws_bridge.bridge_state, "user_mgr", DummyBackupUser())
+    monkeypatch.setattr(ws_bridge.bridge_state, "diary", diary)
+    monkeypatch.setattr(ws_bridge.bridge_state, "user_mgr", user)
 
     exported = asyncio.run(ws_bridge.handle_backup_export({}, DummyWebSocket()))
     assert exported["ok"] is True
@@ -324,10 +354,14 @@ def test_bridge_backup_handlers_use_complete_local_backup(monkeypatch) -> None:
     imported = asyncio.run(
         ws_bridge.handle_backup_import({"backup": exported["backup"], "replace_memory": True}, DummyWebSocket())
     )
-    assert imported["ok"] is True
-    assert imported["result"]["memory"] == 1
-    assert imported["result"]["diary"] == 1
-    assert memory.synced_profiles == 1
+    # Inline restore must not bypass the native file restore coordinator.
+    assert imported["ok"] is False
+    assert imported["code"] == "BACKUP_RESTORE_DISABLED"
+    assert imported["retryable"] is False
+    import_all.assert_not_called()
+    assert diary.imported is None
+    assert user.imported is None
+    assert memory.synced_profiles == 0
 
 
 def test_bridge_diary_uses_work_manager_late_night_state(monkeypatch) -> None:

@@ -1,0 +1,8 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),{execFileSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..'),manifest=require('../config/qt-macos-toolchain.json');
+if(process.platform!=='darwin'||process.arch!=='arm64')throw Error('This setup is fixed to macOS arm64');
+const sdk=path.join(root,'.tools/qt-sdk'),cache=path.join(root,'.tools/qt-downloads');fs.mkdirSync(cache,{recursive:true});
+const hash=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+for(const a of manifest.sdkArchives){const p=path.join(cache,a.filename);if(!fs.existsSync(p)){const partial=p+'.download';if(fs.existsSync(partial))throw Error('Unfinished Qt download exists; inspect it first');execFileSync('/usr/bin/curl',['--fail','--location','--silent','--show-error','--proto','=https','--max-time','600',a.downloadUrl,'-o',partial]);if(hash(partial)!==a.sha256)throw Error(`Qt checksum mismatch: ${a.module}`);fs.renameSync(partial,p);}if(hash(p)!==a.sha256)throw Error(`Cached Qt checksum mismatch: ${a.module}`);}
+if(fs.existsSync(path.join(sdk,'bin/qtpaths'))){const version=execFileSync(path.join(sdk,'bin/qtpaths'),['--qt-version'],{encoding:'utf8'}).trim();if(version!==manifest.qtVersion)throw Error('Existing Qt SDK version differs; not replacing it');console.log(`Reusing Qt ${version}`);}else{if(fs.existsSync(sdk)&&fs.readdirSync(sdk).length)throw Error('Existing incomplete Qt SDK; not overwriting');fs.mkdirSync(sdk,{recursive:true});for(const a of manifest.sdkArchives)execFileSync('/usr/bin/tar',['-xf',path.join(cache,a.filename),'-C',sdk]);console.log(`Prepared Qt ${manifest.qtVersion}`);}

@@ -103,7 +103,7 @@ export function useCompanionOpponent(
   useEffect(() => cancelPending, [cancelPending, client, connected, game, mode]);
 
   const chooseMove = useCallback(async (input: CompanionMoveInput) => {
-    if (busyRef.current) return;
+    if (busyRef.current || input.isCurrent?.() === false) return;
     if (mode !== 'companion' || !client || !connected) {
       input.fallback();
       return;

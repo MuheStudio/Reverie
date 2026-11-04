@@ -18,6 +18,8 @@ const PYTHON_RUNTIME = Object.freeze({
 const OMITTED_SOURCE_MODULES = Object.freeze([
   'affairs',
   'anime_service',
+  'download_service',
+  'lorebook',
   'interest',
   'tests',
   'timeline',
@@ -33,6 +35,8 @@ const FORBIDDEN_RUNTIME_NAMES = Object.freeze([
   '__fixtures__',
   '__tests__',
   'anime_service',
+  'download_service',
+  'lorebook',
   'lancedb',
   'playwright',
   'pytest',
@@ -462,6 +466,7 @@ function writeProductionInventory({
   resourceRoot,
   appRoot,
   runtime,
+  sourceMigration = null,
   target = path.join(resourceRoot, 'PRODUCTION-INVENTORY.json'),
 }) {
   assertProductionPayload(resourceRoot, appRoot);
@@ -471,6 +476,7 @@ function writeProductionInventory({
     localFirst: true,
     transport: 'electron-parent-framed-stdio-v4',
     python: runtime,
+    sourceMigration,
     sourcePolicy: {
       packagedRoot: 'src',
       omittedReferenceOrDevelopmentModules: [...OMITTED_SOURCE_MODULES],

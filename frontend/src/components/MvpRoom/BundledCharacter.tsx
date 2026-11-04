@@ -8,6 +8,7 @@ import styles from './MvpRoom.module.scss';
 type Props = {
   emotions: Record<string, number>;
   speaking: boolean;
+  active?: boolean;
 };
 
 type CharacterSnapshot = {
@@ -41,7 +42,7 @@ function expressionFor(
   return mapped.replace(/^expression:/, '');
 }
 
-export default function BundledCharacter({ emotions, speaking }: Props) {
+export default function BundledCharacter({ emotions, speaking, active = true }: Props) {
   const [snapshot, setSnapshot] = useState<CharacterSnapshot>({
     record: null,
   });
@@ -53,6 +54,8 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
 
   useEffect(() => {
     let disposed = false;
+    const refresh = () => { void window.electronAPI?.character?.get().then(value => { if (!disposed) setSnapshot(value); }).catch(() => undefined); };
+    const unsubscribe = window.electronAPI?.avatar?.onChanged(refresh);
     void window.electronAPI?.character?.get()
       .then((value) => {
         if (!disposed) setSnapshot(value);
@@ -62,6 +65,7 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
       });
     return () => {
       disposed = true;
+      unsubscribe?.();
     };
   }, []);
 
@@ -102,6 +106,7 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
   return (
     <section
       className={styles.character}
+      data-character
       aria-label="内置陪伴角色"
       data-avatar-status={state === 'mounted' ? 'ready' : state}
     >
@@ -133,6 +138,7 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
               maxFps: 30,
               backgroundAlpha: 0,
             }}
+            active={active}
             modelUrl={record?.entryUrl}
             expression={expression}
             speaking={speaking}
@@ -144,12 +150,12 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
           />
         </div>
       ) : (
-        <div className={styles.characterPlaceholder} role="img" aria-label="尚未导入 Live2D 形象">
+        <div className={styles.characterPlaceholder} data-model-placeholder role="img" aria-label="尚未导入 Live2D 形象">
           <span>R</span>
-          <small>请导入 Live2D；角色卡不换皮</small>
+          <small>为这里留一个喜欢的形象</small>
         </div>
       )}
-      <div className={styles.characterCaption}>
+      <div className={styles.characterCaption} data-character-caption>
         <strong>{record?.name || 'Reverie'}</strong>
         <span>
           {canRender
@@ -158,7 +164,7 @@ export default function BundledCharacter({ emotions, speaking }: Props) {
               : state === 'error'
                 ? `角色加载失败：${runtimeError || '未知错误'}`
                 : '正在准备角色…'
-            : pendingReason}
+            : runtime?.available ? pendingReason : '当前环境未启用 Live2D，仍可正常聊天'}
         </span>
       </div>
     </section>

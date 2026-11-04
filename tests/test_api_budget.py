@@ -79,6 +79,45 @@ def test_snapshot_prefers_measured_usage_and_never_invents_currency(tmp_path) ->
     assert snapshot["currency_estimate"] is None
 
 
+def test_live_budget_follows_whole_settings_replacement_and_lowering(tmp_path, monkeypatch) -> None:
+    from src.bridge.ws_bridge import bridge_state
+    from src.conversation_summary.runtime import current_runtime_settings
+
+    initial = _Settings(features=_settings())
+    monkeypatch.setattr(bridge_state, "settings", initial)
+    tracker = ApiBudgetTracker(
+        initial.features,
+        path=tmp_path / "budget.sqlite3",
+        settings_provider=lambda: current_runtime_settings(initial).features,
+    )
+    now = datetime(2026, 10, 5, 9, 0)
+    request = {
+        "provider": "test", "model": "summary-model", "purpose": "memory_summary",
+        "background": True, "estimated_tokens": 10, "now": now,
+    }
+    assert tracker.begin(**request)
+    with pytest.raises(ApiBudgetExceeded):
+        tracker.begin(**request)
+
+    raised = initial.model_copy(deep=True)
+    raised.features.api_background_daily_request_budget = 2
+    monkeypatch.setattr(bridge_state, "settings", raised)
+    assert raised.features is not tracker.settings
+    assert tracker.begin(**request)
+    snapshot = tracker.snapshot(now)
+    assert snapshot["background"]["request_budget"] == 2
+    assert snapshot["background"]["requests"] == 2
+
+    lowered = raised.model_copy(deep=True)
+    lowered.features.api_background_daily_request_budget = 1
+    monkeypatch.setattr(bridge_state, "settings", lowered)
+    with pytest.raises(ApiBudgetExceeded):
+        tracker.begin(**request)
+    snapshot = tracker.snapshot(now)
+    assert snapshot["background"]["request_budget"] == 1
+    assert snapshot["background"]["requests"] == 2
+
+
 def test_adapter_tracks_selected_model_and_actual_usage(tmp_path, monkeypatch) -> None:
     tracker = ApiBudgetTracker(
         _settings(api_background_daily_request_budget=10),
@@ -87,7 +126,7 @@ def test_adapter_tracks_selected_model_and_actual_usage(tmp_path, monkeypatch) -
     settings = _Settings(
         features=_settings(
             api_background_daily_request_budget=10,
-            autonomous_memory_llm_enabled=True,
+            hypa_compression_enabled=True,
         ),
         ai_usage=AIUsageSettings(),
     )
@@ -95,7 +134,7 @@ def test_adapter_tracks_selected_model_and_actual_usage(tmp_path, monkeypatch) -
         settings_provider=lambda: settings,
         save_callback=lambda _settings: None,
     )
-    usage_policy.grant("memory_enrichment")
+    usage_policy.grant("conversation_summary")
     adapter = LLMAdapter(
         LLMSettings(provider="ollama", model="default-model"),
         budget_tracker=tracker,

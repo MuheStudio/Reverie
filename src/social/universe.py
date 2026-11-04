@@ -47,6 +47,7 @@ class SocialUniverse:
         rng: random.Random | None = None,
         state_scope: "PersonaModuleState | None" = None,
         memory: "MemoryManager | None" = None,
+        defer_startup_writes: bool = False,
     ) -> None:
         self.owner = owner
         if callable(getattr(owner, "seal_identity", None)):
@@ -67,6 +68,8 @@ class SocialUniverse:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.rng = rng or random.Random()
         self._initialize()
+        if defer_startup_writes:
+            return
         self._upsert_character(
             character_id="owner",
             name=owner.name,
@@ -81,7 +84,6 @@ class SocialUniverse:
         if self._state_scope is not None:
             self._state_scope.require_current()
         connection = connect_database(self.path, timeout=30.0, isolation_level=None)
-        connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=30000")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")
@@ -705,6 +707,14 @@ class SocialUniverse:
             }
 
     def import_all(self, payload: dict[str, Any]) -> int:
+        """Import legacy data, then refresh the active owner's derived rows."""
+        return self._import_all(payload, refresh_derived=True)
+
+    def replace_all(self, payload: dict[str, Any]) -> int:
+        """Replay exactly the supplied tables without owner or thread seeding."""
+        return self._import_all(payload, refresh_derived=False)
+
+    def _import_all(self, payload: dict[str, Any], *, refresh_derived: bool) -> int:
         if not isinstance(payload, dict) or payload.get("schema") != "reverie.social_universe.v1":
             raise ValueError("角色世界备份格式无效")
         tables = payload.get("tables")
@@ -750,13 +760,14 @@ class SocialUniverse:
             except BaseException:
                 connection.execute("ROLLBACK")
                 raise
-        self._upsert_character(
-            character_id="owner",
-            name=self.owner.name,
-            role=str(self.owner.identity.get("title", "")),
-            personality="、".join(self.owner.personality_traits[:12]),
-            speaking_style=str(self.owner.speaking_style.get("tone", "")),
-            source="active_persona",
-        )
-        self._ensure_default_thread()
+        if refresh_derived:
+            self._upsert_character(
+                character_id="owner",
+                name=self.owner.name,
+                role=str(self.owner.identity.get("title", "")),
+                personality="、".join(self.owner.personality_traits[:12]),
+                speaking_style=str(self.owner.speaking_style.get("tone", "")),
+                source="active_persona",
+            )
+            self._ensure_default_thread()
         return count

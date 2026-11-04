@@ -1,0 +1,77 @@
+{
+  "schema": "reverie.qt.macos.toolchain.v1",
+  "qtVersion": "6.11.2",
+  "qtBuild": "6.11.2-0-202608131016",
+  "architecture": "arm64",
+  "sdkArchives": [
+    {
+      "module": "qtshadertools",
+      "url": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.addons.qtshadertools.clang_64/6.11.2-0-202608131016qtshadertools-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "filename": "qtshadertools-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "build": "6.11.2-0-202608131016",
+      "bytes": 2480457,
+      "sha256": "81d9f6bdae01a6c2a8b0ff86e4773657f015ef428c1324bfeef3e1d3d7ea72b1",
+      "downloadUrl": "https://qt.mirror.constant.com/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.addons.qtshadertools.clang_64/6.11.2-0-202608131016qtshadertools-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "upstreamChecksumUrl": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.addons.qtshadertools.clang_64/6.11.2-0-202608131016qtshadertools-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z.meta4"
+    },
+    {
+      "module": "qtbase",
+      "url": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "filename": "qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "build": "6.11.2-0-202608131016",
+      "bytes": 31039494,
+      "sha256": "9592f84f7e26d532c5c56824d1da7c9214a766cb0a17beb5af71022bcfbcd271",
+      "downloadUrl": "https://qt.mirror.constant.com/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "upstreamChecksumUrl": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtbase-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z.meta4"
+    },
+    {
+      "module": "qtdeclarative",
+      "url": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtdeclarative-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "filename": "qtdeclarative-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "build": "6.11.2-0-202608131016",
+      "bytes": 130537813,
+      "sha256": "ceb8e3f3830531a52de5007ef3f50ffc5525021feb132ee322f59583eb2903cf",
+      "downloadUrl": "https://qt.mirror.constant.com/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtdeclarative-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "upstreamChecksumUrl": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtdeclarative-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z.meta4"
+    },
+    {
+      "module": "qtsvg",
+      "url": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtsvg-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "filename": "qtsvg-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "build": "6.11.2-0-202608131016",
+      "bytes": 420077,
+      "sha256": "c52f6cec6ce4b52ca017e0046345a85d33b2b73e0f6a93474bb7a60f8e829317",
+      "downloadUrl": "https://qt.mirror.constant.com/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtsvg-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z",
+      "upstreamChecksumUrl": "https://download.qt.io/online/qtsdkrepository/mac_x64/desktop/qt6_6112/qt6_6112/qt.qt6.6112.clang_64/6.11.2-0-202608131016qtsvg-MacOS-MacOS_15-Clang-MacOS-MacOS_15-X86_64-ARM64.7z.meta4"
+    }
+  ],
+  "modulesUsed": [
+    "QtCore",
+    "QtGui",
+    "QtQml",
+    "QtQuick",
+    "QtQuickControls2",
+    "QtQuickDialogs2",
+    "QtNetwork",
+    "QtOpenGL"
+  ],
+  "buildOnly": [
+    "QtShaderTools"
+  ],
+  "localValidationRuntime": [
+    "QtTest"
+  ],
+  "excluded": [
+    "QtQuick3D",
+    "QtCanvasPainter",
+    "QtWebEngine"
+  ],
+  "localNativeSdk": {
+    "version": "5-r.4.1",
+    "officialUrl": "https://cubism.live2d.com/sdk-native/bin/CubismSdkForNative-5-r.4.1.zip",
+    "archiveSha256": "b71ec6bafc6578cce3b4cbbaa42a1cb51ae6eb477557932b02d22af957e733c7",
+    "arm64CoreSha256": "b37198e8fa6e1cfc64300fa9ae42721e5c45889bfa15d6ee57389836c6acbe84",
+    "defaultDistribution": false
+  },
+  "licenseState": "Root license unchanged; Qt LGPLv3 runtime obligations and Cubism proprietary/Open Software terms require separate distribution review"
+}

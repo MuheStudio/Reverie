@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from src.persona.sillytavern_import import (
     CharacterCardImportError,
     parse_sillytavern_json,
+    save_imported_persona,
 )
 
 
@@ -256,6 +259,169 @@ def test_persist_imported_character_writes_prompt_fields(tmp_path, monkeypatch) 
         assert state["archive"]["activeCharacterIds"] == [report.card_id]
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("description, expected_age", [("生日未知，安静地画画。", ""), ("年龄：24。", "24")])
+def test_saved_sealed_persona_preserves_archive_card_fields(tmp_path, description, expected_age) -> None:
+    from src.bridge import ws_bridge
+
+    card = json.loads(_v2_card(None))
+    card["data"].update({
+        "description": description,
+        "personality": "认真，温柔。",
+        "alternate_greetings": ["早上好，{{user}}。"],
+        "system_prompt": "卡作者补充设定",
+        "post_history_instructions": "卡作者补充尾注",
+    })
+    report = parse_sillytavern_json(json.dumps(card, ensure_ascii=False))
+    save_imported_persona(report, tmp_path / "persona")
+
+    assert report.persona.identity_sealed is True
+    archived = ws_bridge._imported_character_card_record(report)
+
+    assert archived["age"] == expected_age
+    assert archived["identity"] == report.persona.identity["description"]
+    assert archived["speakingStyle"] == "认真，温柔。"
+    assert archived["neverSay"] == list(report.persona.speaking_style["never_say"])
+    assert archived["alternateGreetings"] == ["早上好，用户。"]
+    assert archived["firstMessage"] == "你来了？"
+    assert archived["importedSystemPrompt"] == "卡作者补充设定"
+    assert archived["importedPostHistoryInstructions"] == "卡作者补充尾注"
+    assert archived["useImportedSystemPrompt"] is False
+    assert archived["useImportedPostHistoryInstructions"] is False
+
+
+@pytest.mark.parametrize("mode", ["inactive", "activation_failed", "activation_unknown", "outcome_unconfirmed",
+                                  "rejection_unconfirmed", "restart_required", "wrong_identity", "runtime_locked"])
+def test_import_without_ready_confirmed_new_identity_has_no_archive_or_prompt_effects(
+    tmp_path, monkeypatch, mode,
+) -> None:
+    from src.archive.store import ArchiveStore
+    from src.bridge import ws_bridge
+    from src.config import settings
+    from src import mvp_runtime
+    from src.persona.persona_card import default_persona
+    from src.persona.sillytavern_import import load_imported_persona
+
+    persona_dir = tmp_path / "persona"
+    monkeypatch.setattr(settings, "PERSONA_DIR", persona_dir)
+    monkeypatch.setattr(ws_bridge, "_persona_effect_lock", asyncio.Lock())
+    previous = default_persona()
+    monkeypatch.setattr(ws_bridge.bridge_state, "persona", previous)
+    monkeypatch.setattr(ws_bridge.bridge_state, "persona_restart_required", False)
+    prompt_opts = {"use_imported_system_prompt": True, "use_imported_post_history_instructions": True}
+    session = SimpleNamespace(imported_prompt_opts=dict(prompt_opts))
+    monkeypatch.setattr(ws_bridge.bridge_state, "session", session)
+    scope = {"persona_id": "prior-persona", "persona_epoch": 1, "persona_fingerprint": "prior"}
+    monkeypatch.setattr(ws_bridge, "_active_persona_scope", lambda: dict(scope))
+    monkeypatch.setattr(ws_bridge, "_active_persona_id", lambda: scope["persona_id"])
+    store = ArchiveStore(tmp_path / "archive.sqlite3")
+    monkeypatch.setattr(ws_bridge.bridge_state, "archive_store", store)
+
+    class Runtime:
+        def require_writable(self):
+            if mode == "runtime_locked":
+                raise RuntimeError("private runtime recovery detail")
+
+    monkeypatch.setattr(mvp_runtime, "get_active_desktop_runtime", lambda: Runtime())
+
+    async def activation(_ws, payload):
+        if mode == "activation_failed":
+            return {"ok": False, "code": "identity_conflict"}
+        if mode == "activation_unknown":
+            return {"ok": False, "code": "internal_error"}
+        if mode == "outcome_unconfirmed":
+            return {"ok": True, "activated": False}
+        if mode == "rejection_unconfirmed":
+            return {"ok": False}
+        candidate = load_imported_persona(persona_dir, payload["profile_id"])
+        envelope = candidate.identity_envelope
+        scope.update(persona_id=envelope.persona_id, persona_epoch=2, persona_fingerprint=envelope.fingerprint)
+        if mode != "wrong_identity":
+            monkeypatch.setattr(ws_bridge.bridge_state, "persona", candidate)
+        return {"ok": True, "activated": True, "active_id": payload["profile_id"],
+                "restart_required": mode == "restart_required", **scope}
+
+    monkeypatch.setattr(ws_bridge, "_commit_live_persona", activation)
+
+    def unexpected_attachment(*_args, **_kwargs):
+        raise AssertionError("archive or prompt side effect before a ready confirmed new identity")
+
+    monkeypatch.setattr(ws_bridge, "_attach_imported_world_book", unexpected_attachment)
+    monkeypatch.setattr(ws_bridge, "_persist_imported_character_card", unexpected_attachment)
+    monkeypatch.setattr(ws_bridge, "_apply_imported_prompt_opts_from_archive", unexpected_attachment)
+    try:
+        before = store.put("prior-persona", {
+            "characters": [], "activeCharacterIds": [], "worldBooks": [],
+        }, expected_revision=0)
+        result = asyncio.run(ws_bridge.handle_persona_import({
+            "json": _v2_card(_entries({"keys": ["x"], "content": "设定"})),
+            "identity_change_confirmed": mode != "inactive",
+        }, None))
+
+        assert result["ok"] is True
+        assert result["saved"] is True
+        assert result["activated"] is (mode not in {"inactive", "activation_failed", "activation_unknown",
+                                                    "outcome_unconfirmed", "rejection_unconfirmed"})
+        assert result["activation_unknown"] is (mode in {"activation_unknown", "outcome_unconfirmed", "rejection_unconfirmed"})
+        assert result["runtime_ready"] is False
+        assert result["world_book_imported"] is False
+        assert store.get("prior-persona") == before
+        assert session.imported_prompt_opts == prompt_opts
+        if mode != "inactive":
+            assert result["archive_warning"]
+        if mode in {"activation_unknown", "outcome_unconfirmed", "rejection_unconfirmed"}:
+            assert "身份切换结果未确认" in result["archive_warning"]
+            assert "未能切换" not in result["archive_warning"]
+        assert "private runtime" not in json.dumps(result, ensure_ascii=False)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("stage", ["save", "after_save", "after_activation"])
+def test_import_failure_receipt_reports_the_completed_stages(tmp_path, monkeypatch, stage) -> None:
+    from src.bridge import ws_bridge
+    from src.config import settings
+    from src.persona import sillytavern_import
+
+    monkeypatch.setattr(settings, "PERSONA_DIR", tmp_path / "persona")
+    monkeypatch.setattr(ws_bridge, "_persona_effect_lock", asyncio.Lock())
+    real_write = sillytavern_import._atomic_json_write
+
+    def failing_write(path, value):
+        if stage == "save" and path.name == "import-report.json":
+            raise OSError("private save path")
+        return real_write(path, value)
+
+    monkeypatch.setattr(sillytavern_import, "_atomic_json_write", failing_write)
+
+    async def activation(_ws, _payload):
+        if stage == "after_save":
+            raise OSError("private activation path")
+        return {"ok": True, "activated": True, "restart_required": False}
+
+    monkeypatch.setattr(ws_bridge, "_commit_live_persona", activation)
+    monkeypatch.setattr(ws_bridge, "_import_archive_attachment_ready", lambda *_args: True)
+
+    def failing_attachment(*_args):
+        raise OSError("private archive path")
+
+    monkeypatch.setattr(ws_bridge, "_attach_imported_world_book", failing_attachment)
+    result = asyncio.run(ws_bridge.handle_persona_import({
+        "json": _v2_card(None), "identity_change_confirmed": True,
+    }, None))
+
+    assert result["ok"] is False
+    assert result["saved"] is (stage != "save")
+    assert result["partial_write"] is (stage == "save")
+    assert result["activated"] is (stage == "after_activation")
+    assert result["activation_unknown"] is (stage != "save")
+    assert result["runtime_ready"] is (stage == "after_activation")
+    assert result["code"] == ("import_save_incomplete" if stage == "save" else "internal_error")
+    assert "未写入任何" not in result["error"]
+    if stage != "save":
+        assert "身份切换结果未确认" in result["archive_warning"]
+    assert "private" not in json.dumps(result, ensure_ascii=False)
 
 
 def test_attach_without_entries_is_noop(tmp_path, monkeypatch) -> None:

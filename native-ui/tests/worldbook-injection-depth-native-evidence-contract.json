@@ -1,0 +1,43 @@
+{
+  "schema": "reverie.qt.worldbook-injection-depth-native-contract.v1",
+  "recordSchema": "reverie.qt.worldbook-injection-depth-native-evidence.v1",
+  "manifestSchema": "reverie.qt.worldbook-injection-depth-native-manifest.v1",
+  "boundarySchema": "reverie.qt.worldbook-injection-depth-native-boundary.v1",
+  "environment": "REVERIE_P1_INJECTION_DEPTH_EVIDENCE_DIR",
+  "maximumRecordBytes": 131072,
+  "cases": [
+    {
+      "caseId": "depth-0-to-1",
+      "filename": "depth-0-to-1.json",
+      "dataTag": "wide-0-to-1",
+      "windowWidth": 1380,
+      "windowHeight": 900,
+      "beforeValue": 0,
+      "expectedValue": 1,
+      "step": 212,
+      "selectedEntryId": "priority-a"
+    },
+    {
+      "caseId": "depth-1-to-0",
+      "filename": "depth-1-to-0.json",
+      "dataTag": "wide-1-to-0",
+      "windowWidth": 1380,
+      "windowHeight": 900,
+      "beforeValue": 1,
+      "expectedValue": 0,
+      "step": 231,
+      "selectedEntryId": "priority-a"
+    },
+    {
+      "caseId": "depth-0-to-2",
+      "filename": "depth-0-to-2.json",
+      "dataTag": "wide-0-to-2",
+      "windowWidth": 1380,
+      "windowHeight": 900,
+      "beforeValue": 0,
+      "expectedValue": 2,
+      "step": 242,
+      "selectedEntryId": "priority-a"
+    }
+  ]
+}

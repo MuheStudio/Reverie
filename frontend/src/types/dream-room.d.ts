@@ -9,5 +9,5 @@
  */
 import type React from 'react';
 
-declare const DreamRoom: React.ComponentType<Record<string, never>>;
+declare const DreamRoom: React.ComponentType<{ onModeChange?: (mode: 'mvp' | 'dream') => void }>;
 export default DreamRoom;

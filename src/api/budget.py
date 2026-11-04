@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..config.settings import WORLD_STATE_DB
 from ..storage.encrypted_sqlite import connect_database
@@ -26,8 +26,15 @@ class ApiBudgetExceeded(RuntimeError):
 
 
 class ApiBudgetTracker:
-    def __init__(self, settings: "FeatureSettings", *, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        settings: "FeatureSettings",
+        *,
+        path: Path | None = None,
+        settings_provider: Callable[[], "FeatureSettings"] | None = None,
+    ) -> None:
         self.settings = settings
+        self._settings_provider = settings_provider
         self.path = Path(path or WORLD_STATE_DB)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._process_started_at = time.time()
@@ -127,6 +134,16 @@ class ApiBudgetTracker:
             + max(1, int(max_tokens)),
         )
 
+    def runtime_settings(self) -> dict[str, bool | int]:
+        """Report the current decision settings without reading the ledger."""
+        settings = self._settings_provider() if self._settings_provider else self.settings
+        return {
+            "tracking_enabled": bool(settings.api_budget_tracking_enabled),
+            "background_enforced": bool(settings.api_background_budget_enforced),
+            "request_budget": int(settings.api_background_daily_request_budget),
+            "token_budget": int(settings.api_background_daily_token_budget),
+        }
+
     def begin(
         self,
         *,
@@ -137,7 +154,10 @@ class ApiBudgetTracker:
         estimated_tokens: int,
         now: datetime | None = None,
     ) -> str | None:
-        if not self.settings.api_budget_tracking_enabled:
+        # A bridge update may replace the entire settings graph. Resolve the
+        # current feature object once for this synchronous budget decision.
+        settings = self._settings_provider() if self._settings_provider else self.settings
+        if not settings.api_budget_tracking_enabled:
             return None
         now = now or datetime.now()
         call_id = uuid.uuid4().hex
@@ -146,7 +166,7 @@ class ApiBudgetTracker:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                if background and self.settings.api_background_budget_enforced:
+                if background and settings.api_background_budget_enforced:
                     row = connection.execute(
                         """SELECT COUNT(*) AS requests,
                                   COALESCE(SUM(
@@ -160,9 +180,9 @@ class ApiBudgetTracker:
                     ).fetchone()
                     requests = int(row["requests"] if row else 0)
                     tokens = int(row["tokens"] if row else 0)
-                    if requests + 1 > int(self.settings.api_background_daily_request_budget):
+                    if requests + 1 > int(settings.api_background_daily_request_budget):
                         raise ApiBudgetExceeded("今日后台 API 请求预算已用完")
-                    if tokens + estimate > int(self.settings.api_background_daily_token_budget):
+                    if tokens + estimate > int(settings.api_background_daily_token_budget):
                         raise ApiBudgetExceeded("今日后台 Token 预算已用完")
                 connection.execute(
                     """INSERT INTO api_usage_calls(
@@ -216,6 +236,7 @@ class ApiBudgetTracker:
             return 0
 
     def snapshot(self, now: datetime | None = None) -> dict[str, Any]:
+        settings = self._settings_provider() if self._settings_provider else self.settings
         now = now or datetime.now()
         day = now.date().isoformat()
         with self._connect() as connection:
@@ -254,8 +275,8 @@ class ApiBudgetTracker:
         bg_tokens = int(background["tokens"] if background else 0)
         return {
             "local_day": day,
-            "tracking_enabled": bool(self.settings.api_budget_tracking_enabled),
-            "background_enforced": bool(self.settings.api_background_budget_enforced),
+            "tracking_enabled": bool(settings.api_budget_tracking_enabled),
+            "background_enforced": bool(settings.api_background_budget_enforced),
             "requests": int(total.get("requests", 0) or 0),
             "succeeded": int(total.get("succeeded", 0) or 0),
             "failed": int(total.get("failed", 0) or 0),
@@ -264,9 +285,9 @@ class ApiBudgetTracker:
             "estimated_unreported_tokens": int(total.get("estimated_tokens", 0) or 0),
             "background": {
                 "requests": bg_requests,
-                "request_budget": int(self.settings.api_background_daily_request_budget),
+                "request_budget": int(settings.api_background_daily_request_budget),
                 "tokens": bg_tokens,
-                "token_budget": int(self.settings.api_background_daily_token_budget),
+                "token_budget": int(settings.api_background_daily_token_budget),
             },
             "by_purpose": [dict(row) for row in purposes],
             "currency_estimate": None,

@@ -107,11 +107,17 @@ class DiaryCrypto:
     METHOD = "ChaCha20Poly1305"
     LEGACY_METHOD = "PBKDF2-HMAC-SHA256 + HMAC-SHA256 stream XOR"
 
-    def __init__(self, key_file: Path | None = None) -> None:
+    def __init__(self, key_file: Path | None = None, *, read_only: bool = False) -> None:
         self.key_file = key_file or KEY_FILE
         self.encryption_dir = self.key_file.parent
         self.key_backup_dir = self.encryption_dir / "key_backups"
         self.method_file = self.encryption_dir / METHOD_FILE.name
+        if read_only:
+            if not self.key_file.is_file():
+                raise ValueError("Diary read requires the existing encryption key")
+            data = json.loads(self.key_file.read_text(encoding="utf-8"))
+            self.master_key = self._b64d(data["master_key_base64"])
+            return
         self.key_file.parent.mkdir(parents=True, exist_ok=True)
         self._write_method_file()
         self.master_key = self._load_or_create_key()
@@ -327,6 +333,7 @@ class DiaryManager:
         usage_policy=None,
         state_scope: "PersonaModuleState | None" = None,
         world_clock=None,
+        read_only_crypto: bool = False,
     ) -> None:
         self.persona = persona
         if callable(getattr(self.persona, "seal_identity", None)):
@@ -337,6 +344,7 @@ class DiaryManager:
         self.memory = memory
         self.speech_habits = speech_habit_engine
         self.world_clock = world_clock
+        self.read_only_crypto = read_only_crypto
         if state_scope is not None and diary_dir is not None:
             if Path(diary_dir).resolve() != state_scope.path.resolve():
                 raise ValueError("DiaryManager diary_dir conflicts with persona state scope")
@@ -345,8 +353,14 @@ class DiaryManager:
         self.diary_dir.mkdir(parents=True, exist_ok=True)
         self.missed_file = self.diary_dir / "missed_queue.json"
         self.external_highlights_file = self.diary_dir / "external_highlights.json"
+        self.preferences_file = self.diary_dir / "preferences.json"
         self.privacy_enabled = True
         self.peek_enabled = True
+        preferences = read_json_object(self.preferences_file) or {}
+        if isinstance(preferences.get("privacy_enabled"), bool):
+            self.privacy_enabled = preferences["privacy_enabled"]
+        if isinstance(preferences.get("peek_enabled"), bool):
+            self.peek_enabled = preferences["peek_enabled"]
         self._crypto: DiaryCrypto | None = None
         self._last_generated_date: str | None = None
         self._emotion_snapshot: dict[str, float] = {}
@@ -364,7 +378,8 @@ class DiaryManager:
         if self._crypto is None:
             def create_crypto() -> None:
                 if self._crypto is None:
-                    self._crypto = DiaryCrypto(self.diary_dir / "keys" / KEY_FILE.name)
+                    self._crypto = DiaryCrypto(self.diary_dir / "keys" / KEY_FILE.name,
+                                              read_only=self.read_only_crypto)
 
             self._commit_bound(create_crypto)
         assert self._crypto is not None
@@ -901,6 +916,68 @@ class DiaryManager:
             "peek_enabled": self.peek_enabled,
         }
 
+    @staticmethod
+    def _read_restore_object(path: Path) -> dict | None:
+        """Refuse unreadable persistent evidence instead of exporting a default."""
+        secondary = backup_path(path)
+        if not path.exists():
+            if secondary.exists():
+                raise ValueError("Diary snapshot contains an incomplete persistent file")
+            return None
+        payload = None
+        for candidate in (path, secondary):
+            if not candidate.exists():
+                continue
+            try:
+                value = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError("Diary snapshot contains unreadable persistent state") from exc
+            if not isinstance(value, dict):
+                raise ValueError("Diary snapshot contains invalid persistent state")
+            if candidate == path:
+                payload = value
+        return payload
+
+    def export_for_restore(self) -> dict:
+        """Capture every diary participant, declining incomplete rollback state."""
+        self._require_scope()
+        dates = self.list_entries()
+        if dates and not (self.diary_dir / "keys" / KEY_FILE.name).is_file():
+            raise ValueError("Diary snapshot requires the existing encryption key")
+        entries = []
+        previous_read_only = self.read_only_crypto
+        self.read_only_crypto = True
+        try:
+            for date_str in dates:
+                self._valid_restore_date(date_str)
+                entry = self.load_entry(date_str)
+                if entry is None or entry.date != date_str:
+                    raise ValueError("Diary snapshot contains an unreadable or mismatched entry")
+                entries.append(entry.to_dict())
+        finally:
+            self.read_only_crypto = previous_read_only
+        queue = self._read_restore_object(self.missed_file)
+        missed = [] if queue is None else queue.get("missed")
+        if (not isinstance(missed, list) or (queue is not None and set(queue) != {"missed"})
+                or any(not isinstance(value, str) for value in missed)):
+            raise ValueError("Diary snapshot contains an invalid missed queue")
+        missed = [self._valid_restore_date(value) for value in missed]
+        if len(set(missed)) != len(missed):
+            raise ValueError("Diary snapshot contains duplicate queued dates")
+        highlights = self._read_restore_object(self.external_highlights_file) or {}
+        for date_str, values in highlights.items():
+            self._valid_restore_date(date_str)
+            if not isinstance(values, list) or any(not isinstance(value, str) or not value.strip() or len(value) > 300 for value in values):
+                raise ValueError("Diary snapshot contains invalid external highlights")
+        preferences = self._read_restore_object(self.preferences_file)
+        if preferences is not None and (
+            set(preferences) != {"privacy_enabled", "peek_enabled"}
+            or any(not isinstance(value, bool) for value in preferences.values())
+        ):
+            raise ValueError("Diary snapshot contains invalid preferences")
+        return {"entries": entries, "missed": sorted(missed), "external_highlights": highlights,
+                "privacy_enabled": self.privacy_enabled, "peek_enabled": self.peek_enabled}
+
     def import_all(self, data: dict) -> int:
         """Restore diary entries, missed queue, and pending highlights."""
         self._require_scope()
@@ -932,7 +1009,71 @@ class DiaryManager:
             self.privacy_enabled = data["privacy_enabled"]
         if isinstance(data.get("peek_enabled"), bool):
             self.peek_enabled = data["peek_enabled"]
+        self._save_preferences()
         return imported
+
+    @staticmethod
+    def _valid_restore_date(value: object) -> str:
+        date_str = str(value)
+        if not DATE_RE.fullmatch(date_str):
+            raise ValueError("Diary restore contains an invalid date")
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("Diary restore contains an invalid calendar date") from exc
+        return date_str
+
+    def _save_preferences(self) -> None:
+        self._write_json(self.preferences_file, {
+            "privacy_enabled": self.privacy_enabled, "peek_enabled": self.peek_enabled,
+        })
+
+    def replace_all(self, data: dict) -> int:
+        """Replay a complete diary snapshot using the existing encryption key."""
+        self._require_scope()
+        if not isinstance(data, dict) or not isinstance(data.get("entries", []), list):
+            raise ValueError("Diary restore must contain an entries list")
+        entries: dict[str, DiaryEntry] = {}
+        for item in data.get("entries", []):
+            if not isinstance(item, dict):
+                raise ValueError("Diary restore contains a non-object entry")
+            date_str = self._valid_restore_date(item.get("date", ""))
+            if date_str in entries:
+                raise ValueError("Diary restore contains duplicate dates")
+            entries[date_str] = DiaryEntry.from_dict(item)
+        missed = data.get("missed", [])
+        highlights = data.get("external_highlights", {})
+        if not isinstance(missed, list) or not isinstance(highlights, dict):
+            raise ValueError("Diary restore queues are invalid")
+        safe_missed = [self._valid_restore_date(value) for value in missed]
+        safe_highlights: dict[str, list[str]] = {}
+        for key, values in highlights.items():
+            date_str = self._valid_restore_date(key)
+            if not isinstance(values, list):
+                raise ValueError("Diary restore highlights are invalid")
+            safe_highlights[date_str] = [str(value)[:300] for value in values if str(value).strip()]
+        for name in ("privacy_enabled", "peek_enabled"):
+            if name in data and not isinstance(data[name], bool):
+                raise ValueError("Diary restore preferences are invalid")
+        key_file = self.diary_dir / "keys" / KEY_FILE.name
+        if entries and not key_file.is_file():
+            raise ValueError("Diary restore requires the existing encryption key")
+        for entry in entries.values():
+            self.save_entry(entry)
+        # Include backup files: stale entries must never reappear through the
+        # normal read fallback after a committed complete replacement.
+        for path in self.diary_dir.iterdir():
+            date_str = path.name[:10]
+            if DATE_RE.fullmatch(date_str) and path.name in {f"{date_str}.json", f"{date_str}.json.bak"}:
+                if date_str not in entries or path.name.endswith(".bak"):
+                    path.unlink()
+        self._save_missed(safe_missed)
+        self._write_json(self.external_highlights_file, safe_highlights)
+        self.privacy_enabled = data.get("privacy_enabled", True)
+        self.peek_enabled = data.get("peek_enabled", True)
+        self._save_preferences()
+        self._last_generated_date = None
+        return len(entries)
 
     def get_entry_metadata(self, date_str: str) -> dict | None:
         """Get public metadata for a diary entry without decrypting private content.

@@ -86,9 +86,11 @@ test('production IPC registration is an exact MVP allowlist', () => {
     'voicePack:setActive',
   ]);
   assert.equal(source.includes('registerLegacyIpcHandlers();'), false);
-  // The cat-catch download handlers are the only non-MVP surface and they
-  // must remain fail-closed: disabled until features.download_service_enabled.
-  assert.match(source, /REVERIE_DOWNLOAD_SERVICE_DISABLED/);
+  // Download policy stays host-owned even when the legacy implementation is
+  // gone. Dynamic denial and cancellation are covered by media-service tests.
+  const media = fs.readFileSync(path.join(__dirname, 'media-service.cjs'), 'utf8');
+  assert.match(media, /REVERIE_DOWNLOAD_SERVICE_DISABLED/);
+  assert.equal(source.includes("'download_service',"), false);
 });
 
 test('production dependencies are the exact renderer MVP closure', () => {
@@ -101,7 +103,6 @@ test('production dependencies are the exact renderer MVP closure', () => {
     '@pixiv/three-vrm-animation',
     '@sabaki/go-board',
     'chess.js',
-    'elephantops',
     'i18next',
     'lucide-react',
     'pixi-live2d-display',

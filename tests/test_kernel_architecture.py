@@ -80,7 +80,8 @@ def test_generated_typescript_is_current():
     assert generated == typescript()
     assert "LOCAL_MODE_SET" in generated
     assert "STICKER_SEND" not in generated
-    assert "PERSONA_LIST" not in generated
+    # persona:list is the confirmed native persona switch's read-only list (4b454ba).
+    assert 'PERSONA_LIST: "persona:list",' in generated
 
 
 def test_generated_electron_command_allowlist_is_current():

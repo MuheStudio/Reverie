@@ -11,14 +11,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Mapping
 import hashlib
 import hmac
+import time
 import json
 import logging
 import os
 import re
 import secrets
 import sys
+from functools import wraps
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -29,10 +32,18 @@ from websockets.server import WebSocketServerProtocol
 from ..kernel.contracts import (
     CommandEnvelopeV4,
     LEGACY_MESSAGE_TYPES,
+    MemoryCandidateDecideManyPayload,
+    MemoryCandidateStatusPayload,
+    MemoryDeleteManyPayload,
+    MemoryPinManyPayload,
+    MemoryPinStatusPayload,
     MUTATING_COMMAND_NAMES,
     PersonaScopeV4,
+    SummaryGetPayload,
+    UserProfileUpdatePayload,
 )
 from ..kernel.storage import IdempotencyConflict
+from ..user import user_profile_snapshot
 
 logger = logging.getLogger("reverie.bridge.ws")
 
@@ -80,13 +91,16 @@ class BridgeState:
         self.phrase_alignment = None # UserPhraseAlignment
         self.kernel_store = None      # KernelStore: canonical identity/chat/event ledger
         self.archive_store = None     # Optional persona-scoped archive/world-book store
-        self.lorebook_mgr = None      # Optional world book matcher (chat prompt injection)
+        self.worldbook_runtime = None      # Optional world book matcher (chat prompt injection)
         self.module_registry = None   # Failure isolation and user-visible module health
         self.game_state_store = None  # Optional persona-scoped mini-game state
         self.persona_epoch = 0       # Incremented only by privileged activation.
         self.persona_restart_required = False  # Blocks mixed old-runtime/new-identity chat.
         self.model_epoch = 0         # Isolates replies from hot-swapped providers.
         self.runtime_unavailable: tuple[str, ...] = ()
+        self.recovery_state = "clean"
+        self.recovery_reason = ""
+        self.restore_coordinator = None
 
 
 bridge_state = BridgeState()
@@ -119,6 +133,9 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MEMORY_EDIT: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_REINFORCE: MsgType.MEMORY_RESULT,
     MsgType.MEMORY_DELETE: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_DELETE_MANY: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_PIN_STATUS: MsgType.MEMORY_RESULT,
+    MsgType.MEMORY_PIN_MANY: MsgType.MEMORY_RESULT,
     MsgType.CHAT_HISTORY: MsgType.CHAT_HISTORY_RESULT,
     MsgType.CHAT_MEDIA: MsgType.CHAT_MEDIA_RESULT,
     MsgType.VIDEO_DOWNLOAD: MsgType.VIDEO_DOWNLOAD_RESULT,
@@ -127,10 +144,19 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.MEMORY_CANDIDATE_LIST: MsgType.MEMORY_CANDIDATE_RESULT,
     MsgType.MEMORY_CANDIDATE_CONFIRM: MsgType.MEMORY_CANDIDATE_RESULT,
     MsgType.MEMORY_CANDIDATE_REJECT: MsgType.MEMORY_CANDIDATE_RESULT,
+    MsgType.MEMORY_CANDIDATE_STATUS: MsgType.MEMORY_CANDIDATE_RESULT,
+    MsgType.MEMORY_CANDIDATE_DECIDE_MANY: MsgType.MEMORY_CANDIDATE_RESULT,
     MsgType.EMOTION_GET: MsgType.EMOTION_UPDATE,
     MsgType.PERSONA_GET: MsgType.PERSONA_DATA,
     MsgType.PERSONA_IMPORT: MsgType.PERSONA_IMPORT_RESULT,
     MsgType.PERSONA_ACTIVATE: MsgType.PERSONA_IMPORT_RESULT,
+    MsgType.PERSONA_LIST: MsgType.PERSONA_LIST_RESULT,
+    MsgType.PERSONA_PROFILE_GET: MsgType.PERSONA_PROFILE_GET_RESULT,
+    MsgType.PERSONA_PROFILE_UPDATE: MsgType.PERSONA_PROFILE_UPDATE_RESULT,
+    MsgType.SUMMARY_STATUS: MsgType.SUMMARY_RESULT,
+    MsgType.SUMMARY_GET: MsgType.SUMMARY_RESULT,
+    MsgType.SUMMARY_LEGACY_PREVIEW: MsgType.SUMMARY_RESULT,
+    MsgType.SUMMARY_LEGACY_IMPORT: MsgType.SUMMARY_RESULT,
     MsgType.ARCHIVE_GET: MsgType.ARCHIVE_RESULT,
     MsgType.ARCHIVE_PUT: MsgType.ARCHIVE_RESULT,
     MsgType.ARCHIVE_MIGRATE: MsgType.ARCHIVE_RESULT,
@@ -178,6 +204,7 @@ def response_type_for_request(msg_type: str) -> str:
 
 
 _POST_PERSONA_SWITCH_ALLOWED = frozenset({
+    MsgType.PERSONA_PROFILE_GET,
     MsgType.CHAT_STOP,
     MsgType.CHAT_CANCEL,
     MsgType.CHAT_REVEAL,
@@ -186,8 +213,13 @@ _POST_PERSONA_SWITCH_ALLOWED = frozenset({
     MsgType.AI_USAGE_GRANT,
     MsgType.AI_USAGE_REVOKE,
     MsgType.PERSONA_GET,
+    MsgType.PERSONA_LIST,
     MsgType.PERSONA_IMPORT,
     MsgType.API_BUDGET_GET,
+    MsgType.SUMMARY_STATUS,
+    MsgType.SUMMARY_GET,
+    MsgType.SUMMARY_LEGACY_PREVIEW,
+    MsgType.SUMMARY_LEGACY_IMPORT,
     MsgType.ARCHIVE_GET,
     MsgType.ARCHIVE_PUT,
     MsgType.ARCHIVE_MIGRATE,
@@ -210,13 +242,20 @@ def persona_restart_blocks(msg_type: str) -> bool:
 
 
 _DEGRADED_KERNEL_ALLOWED = frozenset({
+    MsgType.PERSONA_PROFILE_GET,
+    MsgType.PERSONA_PROFILE_UPDATE,
     MsgType.LOCAL_MODE_SET,
     MsgType.AI_USAGE_GET,
     MsgType.AI_USAGE_GRANT,
     MsgType.AI_USAGE_REVOKE,
     MsgType.PERSONA_GET,
+    MsgType.PERSONA_LIST,
     MsgType.PERSONA_IMPORT,
     MsgType.PERSONA_ACTIVATE,
+    MsgType.SUMMARY_STATUS,
+    MsgType.SUMMARY_GET,
+    MsgType.SUMMARY_LEGACY_PREVIEW,
+    MsgType.SUMMARY_LEGACY_IMPORT,
     MsgType.ARCHIVE_GET,
     MsgType.ARCHIVE_PUT,
     MsgType.ARCHIVE_MIGRATE,
@@ -238,6 +277,80 @@ def degraded_runtime_blocks(msg_type: str) -> bool:
     )
 
 
+def recovery_status_payload() -> dict[str, Any]:
+    """Writability is independent of authentication and provider availability."""
+    manager = bridge_state.backup_manager
+    status = getattr(manager, "recovery_status", None)
+    try:
+        snapshot = status() if callable(status) else {}
+    except Exception:
+        snapshot = {"state": "recovery_required"}
+    if not isinstance(snapshot, dict):
+        snapshot = {"state": "recovery_required"}
+    state = str(snapshot.get("recovery_state", snapshot.get("state", bridge_state.recovery_state)))
+    if bridge_state.recovery_state in {"recovering", "recovery_required"}:
+        state = bridge_state.recovery_state
+    if state not in {"clean", "recovering", "recovery_required"}:
+        state = "recovery_required"
+    blocked = state != "clean"
+    return {
+        "recovery_state": state,
+        "writes_blocked": blocked,
+        "runtime_writable": not blocked,
+        "recovery_reason": "Local recovery requires owner action" if blocked else "",
+    }
+
+
+_RECOVERY_READ_COMMANDS = frozenset({
+    MsgType.BACKUP_EXPORT, MsgType.CHAT_HISTORY, MsgType.MEMORY_LIST, MsgType.MEMORY_QUERY,
+    MsgType.MEMORY_SETTINGS_GET, MsgType.MEMORY_CANDIDATE_LIST,
+    MsgType.MEMORY_PIN_STATUS, MsgType.MEMORY_CANDIDATE_STATUS,
+    MsgType.EMOTION_GET, MsgType.RELATIONSHIP_GET, MsgType.USER_PROFILE_GET,
+    MsgType.PERSONA_GET, MsgType.PERSONA_LIST, MsgType.SETTINGS_GET, MsgType.API_BUDGET_GET,
+    MsgType.PERSONA_PROFILE_GET,
+    MsgType.SUMMARY_STATUS, MsgType.SUMMARY_GET, MsgType.ARCHIVE_GET, MsgType.MODULE_LIST,
+    MsgType.GAME_STATE_GET, MsgType.TTS_LIST, MsgType.AI_USAGE_GET,
+})
+
+
+def command_preflight(msg_type: str) -> dict[str, Any] | None:
+    """Run before ledger/cache lookup, including direct handler callers."""
+    if msg_type == MsgType.BACKUP_IMPORT:
+        return {"ok": False, "code": "BACKUP_RESTORE_DISABLED", "retryable": False,
+                "error": "Inline backup restore is disabled; use the native file restore coordinator"}
+    state = recovery_status_payload()
+    if state["writes_blocked"] and msg_type not in _RECOVERY_READ_COMMANDS:
+        return {"ok": False, "code": "BACKUP_RECOVERY_REQUIRED", "retryable": False,
+                "error": "Recovery must finish before this operation can run", **state}
+    return None
+
+
+def control_preflight(control_type: str) -> None:
+    if recovery_status_payload()["writes_blocked"] and control_type not in {
+        "backup:file:export", "backup:file:inspect", "backup:file:import", "provider:get", "local_mode:set",
+    }:
+        from src.backup_inspection import BackupRestoreError
+        raise BackupRestoreError("Recovery must finish before this control operation", code="BACKUP_RECOVERY_REQUIRED")
+
+
+_PUBLIC_CONTROL_ERROR_CODES = frozenset({
+    "BACKUP_RESTORE_FAILED", "BACKUP_RESTORE_DISABLED", "BACKUP_RECOVERY_REQUIRED",
+    "BACKUP_RECOVERY_UNAVAILABLE", "BACKUP_FILE_CHANGED", "BACKUP_UNCONFIRMED_EXPORT",
+    "BACKUP_PARTICIPANT_UNAVAILABLE", "BACKUP_ROLLED_BACK", "REVERIE_CONTROL_REJECTED",
+    "BACKUP_INVALID_FORMAT", "BACKUP_FILE_UNAVAILABLE", "BACKUP_PERSONA_MISMATCH",
+    "PROVIDER_UNAUTHORIZED", "PROVIDER_AUTH_FAILED", "PROVIDER_RATE_LIMITED", "PROVIDER_TIMEOUT",
+    "PROVIDER_UNREACHABLE", "PROVIDER_CONNECTION_FAILED", "PROVIDER_INVALID_RESPONSE",
+    "PROVIDER_INVALID_RESPONSE_SCHEMA", "PROVIDER_EMPTY_RESPONSE", "PROVIDER_REASONING_ONLY_RESPONSE",
+    "PROVIDER_OUTPUT_TRUNCATED", "PROVIDER_CONTENT_FILTERED", "PROVIDER_TOOL_ONLY_RESPONSE",
+    "PROVIDER_REJECTED", "PROVIDER_FAILURE",
+})
+
+
+def control_error_code(error: BaseException) -> str:
+    code = str(getattr(error, "code", "") or "")
+    return code if code in _PUBLIC_CONTROL_ERROR_CODES else "REVERIE_CONTROL_REJECTED"
+
+
 _PERSONA_SCOPED_COMMANDS = frozenset({
     MsgType.CHAT_SEND,
     MsgType.CHAT_CANCEL,
@@ -245,18 +358,29 @@ _PERSONA_SCOPED_COMMANDS = frozenset({
     MsgType.CHAT_STOP,
     MsgType.CHAT_HISTORY,
     MsgType.MEMORY_QUERY,
+    MsgType.MEMORY_DELETE_MANY,
+    MsgType.MEMORY_PIN_STATUS,
+    MsgType.MEMORY_PIN_MANY,
     MsgType.MEMORY_SETTINGS_GET,
     MsgType.MEMORY_STORE,
     MsgType.MEMORY_CANDIDATE_LIST,
     MsgType.MEMORY_CANDIDATE_CONFIRM,
     MsgType.MEMORY_CANDIDATE_REJECT,
+    MsgType.MEMORY_CANDIDATE_STATUS,
+    MsgType.MEMORY_CANDIDATE_DECIDE_MANY,
     MsgType.EMOTION_GET,
+    MsgType.SUMMARY_STATUS,
+    MsgType.SUMMARY_GET,
+    MsgType.SUMMARY_LEGACY_PREVIEW,
+    MsgType.SUMMARY_LEGACY_IMPORT,
     MsgType.ARCHIVE_GET,
     MsgType.ARCHIVE_PUT,
     MsgType.ARCHIVE_MIGRATE,
     MsgType.GAME_STATE_GET,
     MsgType.GAME_STATE_PUT,
     MsgType.RELATIONSHIP_GET,
+    MsgType.USER_PROFILE_GET,
+    MsgType.USER_PROFILE_UPDATE,
     MsgType.DIARY_REQUEST,
     MsgType.TIMELINE_REQUEST,
     MsgType.AMBIENT_GET,
@@ -291,8 +415,14 @@ def _matches_expected_persona(payload: dict[str, Any]) -> bool:
 def register_handler(msg_type: str):
     """装饰器：注册消息处理器。"""
     def decorator(fn):
-        _handlers[msg_type] = fn
-        return fn
+        @wraps(fn)
+        async def guarded(payload, endpoint):
+            rejected = command_preflight(msg_type)
+            if rejected is not None:
+                return rejected
+            return await fn(payload, endpoint)
+        _handlers[msg_type] = guarded
+        return guarded
     return decorator
 
 
@@ -357,6 +487,7 @@ def _runtime_activity_payload() -> dict[str, Any]:
     return {
         "diary_writing": bool(getattr(work_manager, "diary_writing", False)),
         "timeline_revision": timeline_revision,
+        **recovery_status_payload(),
     }
 
 
@@ -407,6 +538,8 @@ async def _proactive_broadcast_loop() -> None:
     while True:
         try:
             await asyncio.sleep(5)
+            if recovery_status_payload()["writes_blocked"]:
+                continue
             proactive = bridge_state.proactive
             electron_host = os.environ.get("REVERIE_BRIDGE_MODE") == "1"
             pending_results = (
@@ -416,6 +549,8 @@ async def _proactive_broadcast_loop() -> None:
             )
             for result in pending_results:
                 async with _persona_effect_lock:
+                    if recovery_status_payload()["writes_blocked"]:
+                        continue
                     is_current = getattr(proactive, "is_result_current", None)
                     if not callable(is_current) or not is_current(result):
                         logger.info("Discarded stale proactive result before bridge side effects")
@@ -674,6 +809,8 @@ def _model_fingerprint() -> str:
 
 
 def _chat_scope_is_current(item: dict[str, Any]) -> bool:
+    if recovery_status_payload()["writes_blocked"]:
+        return False
     active_scope = _active_persona_scope()
     persona_id = str(item.get("persona_id") or "")
     if not persona_id or persona_id != active_scope["persona_id"]:
@@ -855,7 +992,24 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
                     "bubble_index": 0,
                 }
             )
-    items.sort(key=lambda item: (item["created_at_utc"], item["id"]))
+    # Committed rows keep storage order; pending rows merge separately after
+    # the last committed row whose timestamp is no later than their own.
+    committed_count = len(page["items"])
+    committed_items = items[:committed_count]
+    pending_by_anchor: list[list[dict]] = [[] for _ in range(committed_count + 1)]
+    for pending_item in sorted(
+        items[committed_count:],
+        key=lambda item: (item["created_at_utc"], item["id"]),
+    ):
+        anchor = 0
+        for index, committed_item in enumerate(committed_items, start=1):
+            if committed_item["created_at_utc"] <= pending_item["created_at_utc"]:
+                anchor = index
+        pending_by_anchor[anchor].append(pending_item)
+    items = list(pending_by_anchor[0])
+    for index, committed_item in enumerate(committed_items, start=1):
+        items.append(committed_item)
+        items.extend(pending_by_anchor[index])
     return {**page, "items": items}
 
 
@@ -1301,12 +1455,12 @@ async def handle_ai_usage_revoke(payload: dict, ws: WebSocketServerProtocol) -> 
 @register_handler(MsgType.MEMORY_QUERY)
 async def handle_memory_query(payload: dict, ws: WebSocketServerProtocol) -> dict:
     """语义搜索记忆。"""
+    _require_memory_controller(ws)
     if not bridge_state.memory:
         return {"memories": [], "error": "记忆系统未初始化"}
     query = payload.get("query", "")
     top_k = payload.get("top_k", 10)
-    results = bridge_state.memory.search(query, k=top_k)
-    return {"memories": results}
+    return bridge_state.memory.query_recall(query, k=top_k)
 
 
 @register_handler(MsgType.MEMORY_LIST)
@@ -1317,10 +1471,12 @@ async def handle_memory_list(
     _require_memory_controller(ws)
     if not bridge_state.memory:
         return {"ok": False, "error": "Memory system is not initialized", "memories": []}
-    memories = bridge_state.memory.list_confirmed_memories(
+    # Keyset pages, newest confirmed fact first; the cursor is bound to its query.
+    return bridge_state.memory.list_confirmed_memories_page(
         limit=int(payload.get("limit") or 100),
+        cursor=payload.get("cursor"),
+        query=payload.get("query"),
     )
-    return {"ok": True, "memories": memories}
 
 
 @register_handler(MsgType.MEMORY_EDIT)
@@ -1349,15 +1505,8 @@ async def handle_memory_reinforce(payload: dict, ws: WebSocketServerProtocol) ->
     raw_amount = payload.get("amount")
     amount = float(raw_amount) if isinstance(raw_amount, (int, float)) else None
     try:
-        if op == "weaken":
-            changed = bridge_state.memory.weaken_memory(
-                memory_id, amount=0.1 if amount is None else amount)
-        elif op == "strengthen":
-            changed = bridge_state.memory.strengthen_memory(
-                memory_id, amount=0.1 if amount is None else amount)
-        elif op == "reactivate":
-            changed = bridge_state.memory.reactivate_memory(
-                memory_id, amount=0.15 if amount is None else amount)
+        if op in {"weaken", "strengthen", "reactivate"}:
+            return bridge_state.memory.adjust_memory(memory_id, op, amount=amount)
         elif op == "pin":
             pin_result = bridge_state.memory.pin_memory(memory_id)
             return {"ok": bool(pin_result.get("ok")), "op": op, "memory_id": memory_id,
@@ -1385,6 +1534,48 @@ async def handle_memory_delete(
             str(payload.get("memory_id") or ""),
         ),
     }
+
+
+@register_handler(MsgType.MEMORY_DELETE_MANY)
+async def handle_memory_delete_many(
+    payload: dict,
+    ws: WebSocketServerProtocol,
+) -> dict:
+    _require_memory_controller(ws)
+    selection = MemoryDeleteManyPayload.model_validate({
+        key: value for key, value in payload.items()
+        if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+    })
+    if not bridge_state.memory:
+        return {"ok": False, "error_code": "memory_unavailable",
+                "error": "Memory system is not initialized"}
+    return bridge_state.memory.delete_confirmed_memories(selection.memory_ids)
+
+
+@register_handler(MsgType.MEMORY_PIN_STATUS)
+async def handle_memory_pin_status(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    _require_memory_controller(ws)
+    selection = MemoryPinStatusPayload.model_validate({
+        key: value for key, value in payload.items()
+        if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+    })
+    if not bridge_state.memory:
+        return {"ok": False, "error_code": "memory_unavailable",
+                "error": "Memory system is not initialized"}
+    return bridge_state.memory.pin_status(selection.memory_ids)
+
+
+@register_handler(MsgType.MEMORY_PIN_MANY)
+async def handle_memory_pin_many(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    _require_memory_controller(ws)
+    selection = MemoryPinManyPayload.model_validate({
+        key: value for key, value in payload.items()
+        if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+    })
+    if not bridge_state.memory:
+        return {"ok": False, "error_code": "memory_unavailable",
+                "error": "Memory system is not initialized"}
+    return bridge_state.memory.pin_confirmed_memories(selection.memory_ids, selection.pinned)
 
 
 @register_handler(MsgType.MEMORY_SETTINGS_GET)
@@ -1500,11 +1691,14 @@ async def handle_memory_candidate_list(
 ) -> dict:
     _require_memory_controller(ws)
     if not bridge_state.memory:
-        return {"ok": False, "error": "Memory system is not initialized", "candidates": []}
+        return {"ok": False, "status": str(payload.get("status") or "pending"),
+                "error": "Memory system is not initialized", "candidates": [],
+                "has_more": False, "next_cursor": None}
     status = str(payload.get("status") or "pending")
     limit = max(1, min(200, int(payload.get("limit") or 100)))
-    candidates = bridge_state.memory.list_memory_candidates(status=status, limit=limit)
-    return {"ok": True, "status": status, "candidates": candidates}
+    return bridge_state.memory.list_memory_candidates_page(
+        status=status, limit=limit, cursor=payload.get("cursor"),
+    )
 
 
 @register_handler(MsgType.MEMORY_CANDIDATE_CONFIRM)
@@ -1537,6 +1731,32 @@ async def handle_memory_candidate_reject(
     return {"ok": True, "candidate": candidate}
 
 
+@register_handler(MsgType.MEMORY_CANDIDATE_STATUS)
+async def handle_memory_candidate_status(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    _require_memory_controller(ws)
+    selection = MemoryCandidateStatusPayload.model_validate({
+        key: value for key, value in payload.items()
+        if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+    })
+    if not bridge_state.memory:
+        return {"ok": False, "error_code": "memory_unavailable",
+                "error": "Memory system is not initialized"}
+    return bridge_state.memory.memory_candidate_status(selection.candidate_ids)
+
+
+@register_handler(MsgType.MEMORY_CANDIDATE_DECIDE_MANY)
+async def handle_memory_candidate_decide_many(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    _require_memory_controller(ws)
+    selection = MemoryCandidateDecideManyPayload.model_validate({
+        key: value for key, value in payload.items()
+        if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+    })
+    if not bridge_state.memory:
+        return {"ok": False, "error_code": "memory_unavailable",
+                "error": "Memory system is not initialized"}
+    return bridge_state.memory.decide_memory_candidates(selection.candidate_ids, selection.decision)
+
+
 @register_handler(MsgType.EMOTION_GET)
 async def handle_emotion_get(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """获取当前情绪状态。"""
@@ -1566,6 +1786,128 @@ async def handle_persona_get(_payload: dict, _ws: WebSocketServerProtocol) -> di
     }
 
 
+@register_handler(MsgType.PERSONA_LIST)
+async def handle_persona_list(_payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    """List local persona profiles for an explicit switch, without paths."""
+    from src.config.settings import PERSONA_DIR
+    from src.persona.sillytavern_import import (
+        CharacterCardImportError,
+        list_imported_personas,
+    )
+
+    # The live scope lets the renderer drop a list read under an older identity.
+    scope = _active_persona_scope()
+    try:
+        registry = list_imported_personas(PERSONA_DIR)
+    except (CharacterCardImportError, OSError, ValueError):
+        logger.exception("Persona registry listing failed")
+        return {"ok": False, "code": "persona_registry_unavailable",
+                "error": "本地人格列表暂时无法读取", **scope}
+    active_id = str(registry.get("active_id") or "")
+    profiles = [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "source_format": item["source_format"],
+            "active": item["id"] == active_id,
+        }
+        for item in registry.get("profiles", [])
+    ]
+    return {"ok": True, "active_id": active_id, "profiles": profiles, **scope}
+
+
+def _profile_controller_allowed(ws: WebSocketServerProtocol) -> bool:
+    context = _client_contexts.get(ws)
+    return bool(context and context.authenticated and ws is _controller_ws)
+
+
+@register_handler(MsgType.PERSONA_PROFILE_GET)
+async def handle_persona_profile_get(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    from src.config.settings import PERSONA_DIR
+    from src.persona.profile_edit import PersonaProfileEditError, read_persona_profile
+    from src.persona.sillytavern_import import CharacterCardImportError
+
+    if not _profile_controller_allowed(ws):
+        return {"ok": False, "code": "forbidden", "error": "authenticated controller required"}
+    try:
+        async with _persona_effect_lock:
+            return read_persona_profile(PERSONA_DIR, str(payload.get("profile_id") or "").strip())
+    except PersonaProfileEditError as exc:
+        return exc.result()
+    except CharacterCardImportError as exc:
+        return {"ok": False, "code": exc.code, "error": "人格档案无法读取"}
+    except Exception:
+        logger.exception("Persona profile read failed")
+        return {"ok": False, "code": "profile_unavailable", "error": "人格档案暂时无法读取"}
+
+
+@register_handler(MsgType.PERSONA_PROFILE_UPDATE)
+async def handle_persona_profile_update(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    from src.config.settings import DATA_DIR, PERSONA_DIR
+    from src.persona.identity import GLOBAL_PERSONA_EPOCH
+    from src.persona.profile_edit import (
+        PersonaProfileEditError, check_profile_restore_pending,
+        commit_persona_profile_update, prepare_persona_profile_update,
+    )
+    from src.persona.sillytavern_import import CharacterCardImportError, _load_registry
+
+    if not _profile_controller_allowed(ws):
+        return {"ok": False, "code": "forbidden", "error": "authenticated controller required"}
+    profile_id = str(payload.get("profile_id") or "").strip()
+    if (payload.get("identity_change_confirmed") is not True
+            or payload.get("confirmed_profile_id") != profile_id):
+        return {"ok": False, "code": "identity_confirmation_required",
+                "error": "保存需要明确确认所选人格"}
+    actor, reason = payload.get("actor"), payload.get("reason")
+    if (not isinstance(actor, str) or actor not in {"owner", "local_admin"} or not isinstance(reason, str)
+            or len(reason.strip()) < 3):
+        return {"ok": False, "code": "identity_authorization_required",
+                "error": "保存需要所有者或本机管理员以及审计理由"}
+    try:
+        async with _persona_effect_lock:
+            # Unlike generic scoped commands, this contract reports a conflict
+            # before examining whether the edited target has become active.
+            scope_fingerprint = payload.get("expected_persona_fingerprint")
+            if (type(payload.get("expected_persona_epoch")) is not int
+                    or not isinstance(payload.get("expected_persona_id"), str)
+                    or not isinstance(scope_fingerprint, str) or not scope_fingerprint.isascii()
+                    or not _matches_expected_persona(payload)):
+                return {"ok": False, "code": "identity_conflict",
+                        "error": "人格已变化，请重新打开编辑"}
+            rejected = command_preflight(MsgType.PERSONA_PROFILE_UPDATE)
+            if rejected is not None:
+                return rejected
+            if persona_restart_blocks(MsgType.PERSONA_PROFILE_UPDATE):
+                return {"ok": False, "code": "persona_restart_required", "restart_required": True,
+                        "error": "人格尚未就绪，需要重启后再保存"}
+            registry = _load_registry(Path(PERSONA_DIR).resolve() / "registry.json")
+            if profile_id == str(registry.get("active_id") or "default"):
+                return {"ok": False, "code": "persona_active",
+                        "error": "使用中的人格不能编辑，请先切换到其他人格"}
+            prepared = prepare_persona_profile_update(
+                PERSONA_DIR, profile_id,
+                expected_identity_version=payload.get("expected_identity_version"),
+                expected_identity_fingerprint=payload.get("expected_identity_fingerprint"),
+                fields=payload.get("fields"),
+            )
+            check_profile_restore_pending(DATA_DIR, prepared.candidate.identity_envelope.persona_id)
+            authorization = GLOBAL_PERSONA_EPOCH.authorize_update(
+                actor=actor, reason=reason.strip(), user_confirmed=True,
+            )
+            return GLOBAL_PERSONA_EPOCH.commit_inactive_update_with_commit(
+                prepared.candidate, authorization, lambda: commit_persona_profile_update(prepared),
+            )
+    except PersonaProfileEditError as exc:
+        return exc.result()
+    except CharacterCardImportError as exc:
+        return {"ok": False, "code": exc.code, "error": "人格档案无法读取，没有保存"}
+    except (PermissionError, ValueError):
+        return {"ok": False, "code": "identity_update_rejected", "error": "人格更新授权被拒绝，没有保存"}
+    except Exception:
+        logger.exception("Inactive persona profile update failed")
+        return {"ok": False, "code": "profile_save_failed", "error": "人格保存未完成，请重新打开查看"}
+
+
 @register_handler(MsgType.PERSONA_IMPORT)
 async def handle_persona_import(payload: dict, ws: WebSocketServerProtocol) -> dict:
     """Strictly validate and persist an untrusted SillyTavern JSON card."""
@@ -1578,95 +1920,155 @@ async def handle_persona_import(payload: dict, ws: WebSocketServerProtocol) -> d
 
     raw = payload.get("json")
     filename = str(payload.get("filename", "character.json"))
+    outcome: dict[str, Any] = {
+        "saved": False,
+        "activated": False,
+        "activation_unknown": False,
+        "runtime_ready": False,
+        "partial_write": False,
+        "world_book_imported": False,
+    }
+    activation_attempted = False
     if not isinstance(raw, str):
-        return {"ok": False, "error": "角色卡内容必须是 JSON 文本", "code": "invalid_payload"}
+        return {"ok": False, **outcome,
+                "error": "角色卡内容必须是 JSON 文本", "code": "invalid_payload"}
     try:
         report = parse_sillytavern_json(raw, filename=filename)
-        result = save_imported_persona(report, PERSONA_DIR, activate=False)
-        activate_now = payload.get("identity_change_confirmed") is True
-        activation: dict[str, Any] = {}
-        if activate_now:
-            activation = await _commit_live_persona(
-                ws,
-                {
-                    "profile_id": report.card_id,
-                    "confirmed_profile_id": report.card_id,
-                    "identity_change_confirmed": True,
-                    "actor": payload.get("actor") or "owner",
-                    "reason": str(payload.get("reason") or "imported character card became live identity"),
-                    "expected_persona_id": payload.get("expected_persona_id"),
-                    "expected_persona_epoch": payload.get("expected_persona_epoch"),
-                    "expected_persona_fingerprint": payload.get("expected_persona_fingerprint"),
-                },
-            )
-            if activation.get("ok") is not True:
-                return {
-                    "ok": True,
-                    **result,
-                    "persona": report.persona.to_dict(),
-                    "first_message": report.metadata.get("first_message", ""),
-                    "creator_notes": report.metadata.get("creator_notes", ""),
-                    "imported_system_prompt": report.metadata.get("imported_system_prompt", ""),
-                    "imported_post_history_instructions": report.metadata.get("imported_post_history_instructions", ""),
-                    "injection_warning": report.metadata.get("injection_warning", False),
-                    "world_book_imported": False,
-                    "world_book_entry_count": len(report.character_book),
-                    "activated": False,
-                    "activation": activation,
-                    "world_book_warning": "角色卡已保存，但未能切换为当前身份",
-                }
-        world_book, world_book_warning = _attach_imported_world_book(report)
-        card_warning = _persist_imported_character_card(report)
-        _apply_imported_prompt_opts_from_archive()
-        archive_warning = ", ".join(item for item in (world_book_warning, card_warning) if item)
-        return {
-            "ok": True,
-            **result,
+        async with _persona_effect_lock:
+            result = save_imported_persona(report, PERSONA_DIR, activate=False)
+        outcome.update(result)
+        outcome.update({
             "persona": report.persona.to_dict(),
             "first_message": report.metadata.get("first_message", ""),
             "creator_notes": report.metadata.get("creator_notes", ""),
             "imported_system_prompt": report.metadata.get("imported_system_prompt", ""),
             "imported_post_history_instructions": report.metadata.get("imported_post_history_instructions", ""),
             "injection_warning": report.metadata.get("injection_warning", False),
-            "world_book_imported": world_book,
-            "world_book_entry_count": len(report.character_book),
-            "activated": activation.get("ok") is True,
+        })
+        activate_now = payload.get("identity_change_confirmed") is True
+        if not activate_now:
+            # Saving an inactive profile does not change the current persona's
+            # archive, world books, or quarantined author-prompt opt-in flags.
+            warning = "角色卡已保存为未激活档案；未切换身份，卡内世界书未写入当前身份档案"
+            outcome.update({"archive_warning": warning, "world_book_warning": warning})
+            return {"ok": True, **outcome}
+        activation_attempted = True
+        activation = await _commit_live_persona(
+            ws,
+            {
+                "profile_id": report.card_id,
+                "confirmed_profile_id": report.card_id,
+                "identity_change_confirmed": True,
+                "actor": payload.get("actor") or "owner",
+                "reason": str(payload.get("reason") or "imported character card became live identity"),
+                "expected_persona_id": payload.get("expected_persona_id"),
+                "expected_persona_epoch": payload.get("expected_persona_epoch"),
+                "expected_persona_fingerprint": payload.get("expected_persona_fingerprint"),
+            },
+        )
+        outcome.update({
+            "activation": activation,
+            "activated": activation.get("ok") is True and activation.get("activated") is True,
+            "activation_unknown": (activation.get("code") == "internal_error"
+                                   or activation.get("activation_unknown") is True
+                                   or not isinstance(activation.get("ok"), bool)
+                                   or (activation.get("ok") is False and not activation.get("code"))
+                                   or (activation.get("ok") is True and activation.get("activated") is not True)),
             "restart_required": bool(activation.get("restart_required")),
-            **({"activation": activation} if activation else {}),
-            **({"world_book_warning": archive_warning} if archive_warning else {}),
-        }
+        })
+        if outcome["activated"]:
+            outcome.update({key: activation[key] for key in (
+                "persona_id", "persona_epoch", "persona_fingerprint"
+            ) if key in activation})
+        async with _persona_effect_lock:
+            # A concurrent switch can happen after the activation await.  Hold
+            # the same identity-effect lock while validating and attaching.
+            outcome["runtime_ready"] = (not outcome["activation_unknown"]
+                                        and _import_archive_attachment_ready(report, activation))
+            if not outcome["runtime_ready"]:
+                if outcome["activation_unknown"]:
+                    warning = "角色卡已保存，但身份切换结果未确认；未执行身份档案接线"
+                elif not outcome["activated"]:
+                    warning = "角色卡已保存，但未能切换为当前身份"
+                else:
+                    warning = "角色卡已保存并切换身份，但新身份运行时尚未就绪；未写入身份档案"
+                outcome.update({"archive_warning": warning, "world_book_warning": warning})
+                return {"ok": True, **outcome}
+            world_book, world_book_warning = _attach_imported_world_book(report)
+            outcome["world_book_imported"] = world_book
+            card_warning = _persist_imported_character_card(report)
+            if not card_warning:
+                _apply_imported_prompt_opts_from_archive()
+            archive_warning = ", ".join(item for item in (world_book_warning, card_warning) if item)
+            if archive_warning:
+                outcome.update({"archive_warning": archive_warning, "world_book_warning": archive_warning})
+        return {"ok": True, **outcome}
     except CharacterCardImportError as exc:
-        return {"ok": False, "error": str(exc), "code": exc.code}
+        outcome["partial_write"] = outcome["partial_write"] or exc.partial_write
+        return {"ok": False, **outcome, "error": str(exc), "code": exc.code}
     except Exception:
         logger.exception("SillyTavern character import failed")
-        return {"ok": False, "error": "角色卡导入失败，未写入任何档案", "code": "internal_error"}
+        if activation_attempted:
+            outcome["activation_unknown"] = True
+        error = "角色卡已保存，但后续导入步骤未完成" if outcome["saved"] else "角色卡导入未完成"
+        if outcome["saved"]:
+            warning = ("角色卡已保存，但身份切换结果未确认；身份档案的接线状态需要检查"
+                       if outcome["activation_unknown"] else
+                       "角色卡已保存；后续步骤未完成，身份档案的接线状态需要检查")
+            outcome.setdefault("archive_warning", warning)
+            outcome.setdefault("world_book_warning", outcome["archive_warning"])
+        return {"ok": False, **outcome, "error": error, "code": "internal_error"}
 
 
-def _refresh_lorebook_from_archive() -> None:
-    """Reload the active world book matcher from the persona archive.
+def _import_archive_attachment_ready(report, activation: dict[str, Any]) -> bool:
+    """Only the confirmed, correctly mounted, writable new identity can attach."""
+    from src.mvp_runtime import get_active_desktop_runtime
 
-    Called after an import writes a new world book so the chat prompt picks it
-    up immediately. Best-effort: any failure leaves the previous entries in
-    place and never affects the already-committed import response.
-    """
-    mgr = getattr(bridge_state, "lorebook_mgr", None)
-    store = getattr(bridge_state, "archive_store", None)
-    if mgr is None or store is None:
-        return
+    if (activation.get("ok") is not True or activation.get("activated") is not True
+            or str(activation.get("active_id") or "") != report.card_id
+            or activation.get("restart_required") or bridge_state.persona_restart_required):
+        return False
     try:
-        current = store.get(_active_persona_id())
-    except Exception as exc:
-        logger.warning("Lorebook refresh skipped: %s", exc)
-        return
-    existing = current.get("archive") if current.get("exists") else None
-    # Rebuild from the canonical store: drop any prior in-memory entries.
-    mgr.global_lorebook.entries.clear()
-    mgr.chat_lorebooks.clear()
-    try:
-        for book in (existing or {}).get("worldBooks", []):
-            mgr.load_world_book(book)
-    except Exception as exc:
-        logger.warning("Lorebook load after import failed: %s", exc)
+        expected = report.persona.identity_envelope
+        mounted = bridge_state.persona.identity_envelope
+        scope = _active_persona_scope()
+        if (mounted.persona_id != expected.persona_id or mounted.fingerprint != expected.fingerprint
+                or scope["persona_id"] != expected.persona_id
+                or scope["persona_fingerprint"] != expected.fingerprint
+                or activation.get("persona_id") != expected.persona_id
+                or activation.get("persona_fingerprint") != expected.fingerprint
+                or activation.get("persona_epoch") != scope["persona_epoch"]):
+            return False
+        runtime = get_active_desktop_runtime()
+        if runtime is None:
+            return False
+        runtime.require_writable()
+        return True
+    except Exception:
+        logger.warning("Imported persona archive attachment deferred: new runtime is not ready")
+        return False
+
+
+def _archive_with_worldbook_diagnostics(record: dict[str, Any]) -> dict[str, Any]:
+    persona_id = _active_persona_id()
+    runtime = getattr(bridge_state, "worldbook_runtime", None)
+    diagnostics = {"persona_id": persona_id, "revision": int(record.get("revision") or 0),
+                   "request_id": "", "entries": [], "truncated": 0}
+    if runtime is not None and runtime.persona_id == persona_id:
+        try:
+            diagnostics = runtime.diagnostics_for(record)
+        except Exception:
+            logger.warning("Worldbook diagnostics unavailable; archive result remains authoritative")
+    return {**record, "persona_id": persona_id, "world_book_diagnostics": diagnostics}
+
+
+def _worldbook_failure_metadata() -> dict[str, Any]:
+    runtime = getattr(bridge_state, "worldbook_runtime", None)
+    if runtime is not None and runtime.persona_id == _active_persona_id():
+        diagnostics = runtime.diagnostics_for()
+        return {"persona_id": runtime.persona_id, "revision": diagnostics["revision"],
+                "world_book_diagnostics": diagnostics}
+    return {}
 
 
 def _attach_imported_world_book(
@@ -1729,7 +2131,7 @@ def _attach_imported_world_book(
         "worldBooks": books,
     }
     try:
-        store.put(
+        committed = store.put(
             persona_id,
             merged,
             expected_revision=int(current.get("revision") or 0),
@@ -1737,7 +2139,7 @@ def _attach_imported_world_book(
     except Exception as exc:
         logger.warning("World-book attach skipped: %s", exc)
         return False, "档案版本已变化，卡内世界书未写入，角色卡本身已导入"
-    _refresh_lorebook_from_archive()
+    _archive_with_worldbook_diagnostics(committed)
     return True, ""
 
 
@@ -1746,8 +2148,8 @@ def _imported_character_card_record(report) -> dict[str, Any]:
     from datetime import datetime, timezone
 
     persona = report.persona
-    identity = persona.identity if isinstance(persona.identity, dict) else {}
-    speaking = persona.speaking_style if isinstance(persona.speaking_style, dict) else {}
+    identity = persona.identity if isinstance(persona.identity, Mapping) else {}
+    speaking = persona.speaking_style if isinstance(persona.speaking_style, Mapping) else {}
     timestamp = datetime.now(timezone.utc).isoformat()
     age_unknown = identity.get("age_unknown") is True
     return {
@@ -1822,35 +2224,120 @@ def _persist_imported_character_card(report) -> str:
     return ""
 
 
-def _apply_imported_prompt_opts_from_archive() -> None:
-    """Reload quarantined prompt opt-in flags from the active archive card."""
+# Read-model key, persona identity field holding the quarantined text, and the
+# archive card switch that opts the persona in.
+_AUTHOR_PROMPT_KINDS = (
+    ("system", "imported_system_prompt", "useImportedSystemPrompt"),
+    ("post_history", "imported_post_history_instructions", "useImportedPostHistoryInstructions"),
+)
+
+
+def _author_prompt_texts() -> dict[str, str]:
+    """The quarantined author prompts of the persona the chat session sends."""
     session = getattr(bridge_state, "session", None)
-    store = getattr(bridge_state, "archive_store", None)
-    if session is None or store is None:
-        return
-    try:
-        current = store.get(_active_persona_id())
-    except Exception:
-        logger.exception("Imported prompt opts reload failed")
-        return
-    archive = current.get("archive") if current.get("exists") else None
+    for persona in (getattr(session, "persona", None), bridge_state.persona):
+        identity = getattr(persona, "identity", None)
+        if isinstance(identity, Mapping):
+            return {key: str(identity.get(field) or "").strip() for key, field, _switch in _AUTHOR_PROMPT_KINDS}
+    return {key: "" for key, _field, _switch in _AUTHOR_PROMPT_KINDS}
+
+
+def _selected_archive_card(archive: Any) -> dict[str, Any] | None:
+    """The card whose author-prompt switches the chat session follows."""
     if not isinstance(archive, dict):
-        session.imported_prompt_opts = {
-            "use_imported_system_prompt": False,
-            "use_imported_post_history_instructions": False,
-        }
-        return
+        return None
     active_ids = [str(item) for item in (archive.get("activeCharacterIds") or []) if str(item)]
     cards = [card for card in (archive.get("characters") or []) if isinstance(card, dict)]
     selected = next((card for card in cards if str(card.get("id") or "") in active_ids), None)
     if selected is None and cards:
         selected = cards[0]
-    session.imported_prompt_opts = {
-        "use_imported_system_prompt": bool(selected and selected.get("useImportedSystemPrompt") is True),
-        "use_imported_post_history_instructions": bool(
-            selected and selected.get("useImportedPostHistoryInstructions") is True
-        ),
+    return selected
+
+
+def _author_prompt_review(archive: Any) -> dict[str, Any]:
+    """What the archive switches hold and what the chat session may send.
+
+    A switch takes effect only when the persona has that text and the text
+    carries no unsafe-instruction pattern; flagged text is never sent.
+    """
+    from src.persona.sillytavern_import import author_prompt_flags
+
+    texts = _author_prompt_texts()
+    card = _selected_archive_card(archive)
+    review: dict[str, Any] = {"card_id": str(card.get("id") or "") if card is not None else ""}
+    for key, _field, switch in _AUTHOR_PROMPT_KINDS:
+        text = texts[key]
+        flags = author_prompt_flags(text) if text else []
+        enabled = card is not None and card.get(switch) is True
+        review[key] = {
+            "text": text,
+            "flags": flags,
+            "enabled": enabled,
+            "effective": enabled and bool(text) and not flags,
+        }
+    return review
+
+
+def _with_author_prompts(record: dict[str, Any]) -> dict[str, Any]:
+    """Attach the author-prompt review beside, never inside, the archive."""
+    archive = record.get("archive") if record.get("exists") else None
+    return {**record, "author_prompts": _author_prompt_review(archive)}
+
+
+def _author_prompt_switch_refusal(previous: Any, proposed: Any) -> dict[str, Any] | None:
+    """Refuse a write that turns on an author prompt the persona cannot send.
+
+    Only a switch going from off to on is checked, so an older archive that
+    already holds an enabled flagged prompt can still be saved and turned off.
+    """
+    from src.persona.sillytavern_import import author_prompt_flags
+
+    if not isinstance(proposed, dict):
+        return None
+    before = {
+        str(card.get("id") or ""): card
+        for card in ((previous.get("characters") or []) if isinstance(previous, dict) else [])
+        if isinstance(card, dict)
     }
+    texts = _author_prompt_texts()
+    for card in proposed.get("characters") or []:
+        if not isinstance(card, dict):
+            continue
+        prior = before.get(str(card.get("id") or ""), {})
+        for key, _field, switch in _AUTHOR_PROMPT_KINDS:
+            if card.get(switch) is not True or prior.get(switch) is True:
+                continue
+            if not texts[key]:
+                return {"code": "author_prompt_missing", "kind": key,
+                        "error": "The active persona has no imported author prompt of this kind"}
+            flags = author_prompt_flags(texts[key])
+            if flags:
+                return {"code": "author_prompt_untrusted", "kind": key, "flags": flags,
+                        "error": "The imported author prompt contains unsafe instructions and cannot be enabled"}
+    return None
+
+
+def _apply_imported_prompt_opts_from_archive() -> dict[str, bool] | None:
+    """Reload the author-prompt switches in effect from the active archive card.
+
+    Returns the switches now in effect, or None when the archive could not be
+    read and the session keeps its current switches.
+    """
+    session = getattr(bridge_state, "session", None)
+    store = getattr(bridge_state, "archive_store", None)
+    if session is None or store is None:
+        return None
+    try:
+        current = store.get(_active_persona_id())
+    except Exception:
+        logger.exception("Imported prompt opts reload failed")
+        return None
+    review = _with_author_prompts(current)["author_prompts"]
+    session.imported_prompt_opts = {
+        "use_imported_system_prompt": review["system"]["effective"],
+        "use_imported_post_history_instructions": review["post_history"]["effective"],
+    }
+    return dict(session.imported_prompt_opts)
 
 
 def _persona_payload() -> dict[str, Any]:
@@ -2010,6 +2497,13 @@ async def _commit_live_persona(ws: WebSocketServerProtocol, payload: dict) -> di
                 except Exception:
                     logger.exception("Live persona remount failed")
                     remount_warning = "remount_failed"
+            # The renderer settles a switch from the identity broadcast; report
+            # writability first so a remount that locked writes is never shown
+            # as a completed switch.
+            try:
+                await broadcast(MsgType.RUNTIME_ACTIVITY, _runtime_activity_payload())
+            except Exception:
+                logger.exception("Runtime activity broadcast after identity switch failed")
             live = await _publish_live_persona(ws)
             warning = ", ".join(item for item in (cancellation_warning, remount_warning, result.get("warning", "")) if item)
             return {
@@ -2344,6 +2838,7 @@ async def handle_user_profile_get(_payload: dict, _ws: WebSocketServerProtocol) 
         return {"profile": None, "emotional_memories": [], "error": "用户档案系统未初始化"}
     return {
         "profile": bridge_state.user_mgr.profile.to_dict(),
+        "profile_snapshot": user_profile_snapshot(bridge_state.user_mgr.profile),
         "emotional_memories": [
             memory.to_dict()
             for memory in bridge_state.user_mgr.get_recent_emotional_memories(20)
@@ -2351,9 +2846,85 @@ async def handle_user_profile_get(_payload: dict, _ws: WebSocketServerProtocol) 
     }
 
 
+def _profile_clear_failure(error_code: str, error: str) -> dict[str, Any]:
+    """Return a bounded current view without claiming persistence or rollback."""
+    result: dict[str, Any] = {
+        "ok": False, "operation": "clear", "error_code": error_code, "error": error,
+    }
+    manager = bridge_state.user_mgr
+    if manager is None:
+        return result
+    try:
+        profile = manager.profile
+        data = profile.to_dict()
+        current: dict[str, Any] = {}
+        for key, limit in (
+            ("name", 80), ("nickname", 80), ("birthday", 10),
+            ("identity", 500), ("schedule", 200),
+        ):
+            value = data.get(key, "")
+            if isinstance(value, str):
+                current[key] = value[:limit]
+        for key in ("interests", "hobbies", "favorite_topics", "favorite_games", "favorite_anime"):
+            value = data.get(key, [])
+            if isinstance(value, list):
+                current[key] = [item[:160] for item in value[:50] if isinstance(item, str)]
+        age = data.get("age")
+        current["age"] = age if isinstance(age, int) and not isinstance(age, bool) else None
+        snapshot = user_profile_snapshot(profile)
+        result.update(profile=current, profile_snapshot=snapshot)
+    except Exception:
+        # Even a failing snapshot read must not replace a clear receipt with
+        # exception text or a claim that the original state was preserved.
+        pass
+    return result
+
+
 @register_handler(MsgType.USER_PROFILE_UPDATE)
 async def handle_user_profile_update(payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """保存用户档案并同步到长期记忆。"""
+    if "clear_fields" in payload or "expected_profile_snapshot" in payload:
+        from ..user import ProfileClearValidationError, ProfileSnapshotChangedError
+
+        # The transport already validates V4, but compatibility/direct callers
+        # share the same strict explicit-clear contract. Persona proof remains
+        # authoritative in the existing locked dispatcher, outside this model.
+        clear_payload = {
+            key: value for key, value in payload.items()
+            if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+        }
+        try:
+            command = UserProfileUpdatePayload.model_validate(clear_payload)
+        except (TypeError, ValueError):
+            return _profile_clear_failure("PROFILE_CLEAR_INVALID", "清空档案请求无效。")
+        clear = getattr(bridge_state.user_mgr, "clear_profile_fields", None)
+        sync = getattr(bridge_state.memory, "sync_user_profile", None)
+        if not callable(clear) or not callable(sync):
+            return _profile_clear_failure("PROFILE_CLEAR_UNAVAILABLE", "档案清空功能当前不可用。")
+        try:
+            profile = clear(
+                command.clear_fields,
+                expected_profile_snapshot=command.expected_profile_snapshot,
+            )
+            sync(bridge_state.user_mgr)
+            return {
+                "ok": True,
+                "operation": "clear",
+                "cleared_fields": list(command.clear_fields),
+                "profile": profile.to_dict(),
+                "profile_snapshot": user_profile_snapshot(profile),
+                "emotional_memories": [
+                    memory.to_dict()
+                    for memory in bridge_state.user_mgr.get_recent_emotional_memories(20)
+                ],
+            }
+        except ProfileClearValidationError:
+            return _profile_clear_failure("PROFILE_CLEAR_INVALID", "清空档案请求无效。")
+        except ProfileSnapshotChangedError:
+            return _profile_clear_failure("PROFILE_SNAPSHOT_CHANGED", "用户档案已更改，请重新加载后再确认清空。")
+        except Exception:
+            logger.error("用户档案清空结果未能确认")
+            return _profile_clear_failure("PROFILE_CLEAR_UNCONFIRMED", "无法确认档案清空结果，请重新加载档案后检查。")
     if not bridge_state.user_mgr:
         return {"profile": None, "emotional_memories": [], "error": "用户档案系统未初始化"}
     try:
@@ -2362,12 +2933,17 @@ async def handle_user_profile_update(payload: dict, _ws: WebSocketServerProtocol
         else:
             profile_payload = payload.get("profile", payload)
             if not isinstance(profile_payload, dict):
-                return {"profile": bridge_state.user_mgr.profile.to_dict(), "error": "用户档案格式无效"}
+                return {
+                    "profile": bridge_state.user_mgr.profile.to_dict(),
+                    "profile_snapshot": user_profile_snapshot(bridge_state.user_mgr.profile),
+                    "error": "用户档案格式无效",
+                }
             profile = bridge_state.user_mgr.update_profile(profile_payload)
         if bridge_state.memory and hasattr(bridge_state.memory, "sync_user_profile"):
             bridge_state.memory.sync_user_profile(bridge_state.user_mgr)
         return {
             "profile": profile.to_dict(),
+            "profile_snapshot": user_profile_snapshot(profile),
             "emotional_memories": [
                 memory.to_dict()
                 for memory in bridge_state.user_mgr.get_recent_emotional_memories(20)
@@ -2377,6 +2953,7 @@ async def handle_user_profile_update(payload: dict, _ws: WebSocketServerProtocol
         logger.exception("用户档案更新失败")
         return {
             "profile": bridge_state.user_mgr.profile.to_dict(),
+            "profile_snapshot": user_profile_snapshot(bridge_state.user_mgr.profile),
             "emotional_memories": [
                 memory.to_dict()
                 for memory in bridge_state.user_mgr.get_recent_emotional_memories(20)
@@ -2527,25 +3104,95 @@ async def handle_game_state_put(payload: dict, _ws: WebSocketServerProtocol) -> 
         return {"ok": False, "code": "module_degraded", "error": str(exc)}
 
 
+def _summary_runtime():
+    runtime = getattr(bridge_state.session, "conversation_summary", None)
+    if runtime is None:
+        raise ValueError("Conversation summary service is unavailable")
+    runtime.require_current()
+    return runtime
+
+
+@register_handler(MsgType.SUMMARY_STATUS)
+async def handle_summary_status(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    runtime = _summary_runtime()
+    return {"ok": True, "operation": "status", **runtime.status(str(payload.get("conversation_id") or "dream-room")),
+            **_active_persona_scope()}
+
+
+@register_handler(MsgType.SUMMARY_GET)
+async def handle_summary_get(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    # The body is private content: authorize before even resolving the runtime.
+    _require_usage_controller(ws)
+    parsed = SummaryGetPayload.model_validate({
+        key: value for key, value in payload.items()
+        if key not in {"expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint"}
+    })
+    from src.persona.identity import StalePersonaEpoch
+
+    try:
+        item = _summary_runtime().detail(parsed.conversation_id, parsed.summary_id)
+    except (ValueError, StalePersonaEpoch):
+        item = None
+    if item is None:
+        return {"ok": False, "operation": "detail", "conversation_id": parsed.conversation_id,
+                "code": "summary_unavailable", "error": "Conversation summary is unavailable",
+                **_active_persona_scope()}
+    return {"ok": True, "operation": "detail", "conversation_id": parsed.conversation_id,
+            "summary": {"summary_id": item.id, "text": item.text, "sourceDigest": item.source_digest,
+                        "firstSequence": item.source_first_sequence, "lastSequence": item.source_last_sequence,
+                        "messageIds": list(item.source_ids), "contractVersion": item.contract_version},
+            **_active_persona_scope()}
+
+
+@register_handler(MsgType.SUMMARY_LEGACY_PREVIEW)
+async def handle_summary_legacy_preview(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    from src.conversation_summary.legacy import parse_legacy
+
+    runtime = _summary_runtime()
+    document = parse_legacy(payload.get("content"))
+    preview = runtime.commit_local(lambda: runtime.store.preview_legacy(document))
+    # Public preview stays bounded even when a small file has many tiny rows.
+    public = {key: preview[key] for key in ("sha256", "total", "linked", "unattributed", "active")}
+    return {"ok": True, "operation": "preview", **public, **_active_persona_scope()}
+
+
+@register_handler(MsgType.SUMMARY_LEGACY_IMPORT)
+async def handle_summary_legacy_import(payload: dict, _ws: WebSocketServerProtocol) -> dict:
+    from src.conversation_summary.legacy import parse_legacy
+
+    runtime = _summary_runtime()
+    document = parse_legacy(payload.get("content"))
+    expected = payload.get("expected_sha256")
+    if payload.get("confirmed") is not True or not isinstance(expected, str) or not hmac.compare_digest(document.sha256, expected):
+        raise ValueError("Legacy summary preview changed or import was not confirmed")
+    imported = runtime.commit_local(lambda: runtime.store.import_legacy(document, now=time.time()))
+    public = {key: imported[key] for key in ("sha256", "total", "linked", "unattributed", "active", "imported", "reused")}
+    return {"ok": True, "operation": "import", **public, **_active_persona_scope()}
+
+
 def _archive_module_snapshot() -> dict[str, Any]:
     unavailable = _optional_module_unavailable("archive")
     if unavailable:
-        return unavailable
+        return {**unavailable, **_worldbook_failure_metadata()}
     store = bridge_state.archive_store
     if store is None:
         return {
             "ok": False,
             "code": "module_unavailable",
             "error": "Archive module is unavailable; persona and chat remain active",
+            **_worldbook_failure_metadata(),
         }
     try:
-        return {"ok": True, **store.get(_active_persona_id())}
+        return {"ok": True, **_with_author_prompts(
+            _archive_with_worldbook_diagnostics(store.get(_active_persona_id()))
+        )}
     except Exception as exc:
         logger.exception("Archive module read failed")
         return {
             "ok": False,
             "code": "module_degraded",
             "error": str(exc),
+            **_worldbook_failure_metadata(),
         }
 
 
@@ -2577,6 +3224,14 @@ async def _commit_archive(
         expected_revision = int(raw_revision)
     except (TypeError, ValueError):
         return {"ok": False, "code": "invalid_request", "error": "Invalid archive revision"}
+    # A one-time legacy migration keeps its switches as stored; they still take
+    # effect only for present, unflagged text.
+    refusal = None if migrate_only else _author_prompt_switch_refusal(
+        availability.get("archive") if availability.get("exists") else None,
+        payload.get("archive"),
+    )
+    if refusal is not None:
+        return {**availability, "ok": False, **refusal}
     try:
         result = store.put(
             _active_persona_id(),
@@ -2615,7 +3270,7 @@ async def _commit_archive(
     _apply_imported_prompt_opts_from_archive()
     return {
         "ok": True,
-        **result,
+        **_with_author_prompts(_archive_with_worldbook_diagnostics(result)),
         "social_sync": {
             "ok": social.get("ok") is True,
             "synced": int(social.get("synced") or 0),
@@ -2649,22 +3304,8 @@ async def handle_backup_export(_payload: dict, _ws: WebSocketServerProtocol) -> 
 
 @register_handler(MsgType.BACKUP_IMPORT)
 async def handle_backup_import(payload: dict, _ws: WebSocketServerProtocol) -> dict:
-    """Restore the complete local memory state from a JSON-safe payload."""
-    manager, error = _local_backup_manager()
-    if error:
-        return {"ok": False, "error": error}
-    backup_payload = payload.get("backup", payload)
-    if not isinstance(backup_payload, dict):
-        return {"ok": False, "error": "备份数据格式无效"}
-    try:
-        result = manager.import_payload(
-            backup_payload,
-            replace_memory=bool(payload.get("replace_memory", True)),
-        )
-        return {"ok": True, "result": result}
-    except Exception as exc:
-        logger.exception("本地备份导入失败")
-        return {"ok": False, "error": str(exc)}
+    """Inline restore never enters a manager or the idempotency ledger."""
+    return command_preflight(MsgType.BACKUP_IMPORT)
 
 
 @register_handler(MsgType.KEEPSAKE_LIST)
@@ -3072,7 +3713,7 @@ async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> d
     """Return the public authoritative settings projection without secrets."""
     settings = bridge_state.settings
     if settings is None:
-        return {"ok": False, "error": "Settings are not initialized"}
+        return {"ok": False, "error": "Settings are not initialized", "budgetRuntime": _budget_runtime_snapshot()}
     return {
         "ok": True,
         "chat": settings.chat.model_dump(),
@@ -3087,6 +3728,89 @@ async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> d
             or settings.tts.provider == "gpt-sovits",
         },
         "llm": _provider_settings_snapshot(),
+        "emotionRuntime": _emotion_runtime_snapshot(),
+        "budgetRuntime": _budget_runtime_snapshot(),
+    }
+
+
+def _budget_runtime_snapshot() -> dict[str, bool | int] | None:
+    """Read the running ledger's settings; unavailable is not a disabled budget."""
+    tracker = bridge_state.api_budget
+    if tracker is None:
+        return None
+    try:
+        return tracker.runtime_settings()
+    except Exception:
+        logger.exception("Could not read running API budget settings")
+        return None
+
+
+def _emotion_runtime_snapshot() -> dict[str, Any] | None:
+    """The parameters the running emotion system uses, not the saved settings."""
+    emotion = bridge_state.emotion
+    if emotion is None:
+        return None
+    return {
+        "enabled": bool(emotion.enabled),
+        "carryover_days": int(emotion.carryover_days),
+        "inertia_factor": float(emotion.inertia_factor),
+    }
+
+
+def _record_emotion_pause(current: Any, staged: Any) -> None:
+    """Only a real switch between on and off changes the pause record.
+
+    Switching off notes when; switching on closes that period so the daily
+    carryover skips it for every persona. Restarts and persona switches
+    never touch it.
+    """
+    if bool(current.emotion_system_enabled) == bool(staged.emotion_system_enabled):
+        return
+    from datetime import datetime
+
+    emotion = bridge_state.emotion
+    moment = emotion.wall_time() if emotion is not None else datetime.now().isoformat()
+    if not staged.emotion_system_enabled:
+        staged.emotion_paused_since = moment
+    elif staged.emotion_paused_since:
+        from src.config.settings import EMOTION_PAUSE_INTERVAL_LIMIT
+
+        staged.emotion_pause_intervals = (
+            list(staged.emotion_pause_intervals) + [(staged.emotion_paused_since, moment)]
+        )[-EMOTION_PAUSE_INTERVAL_LIMIT:]
+        staged.emotion_paused_since = ""
+
+
+def _commit_staged_settings(staged: Any, *sections: str) -> None:
+    """Persist a validated copy, then copy its sections into the live models.
+
+    Nothing live changes unless the file write succeeds. The live settings
+    object and its shared ``features`` model keep their identity, so every
+    component holding them sees the committed values.
+    """
+    from src.config.settings import write_settings_file
+
+    write_settings_file(staged)
+    live = bridge_state.settings
+    for section in sections:
+        source = getattr(staged, section)
+        if section != "features":
+            setattr(live, section, source)
+            continue
+        # Field by field without per-assignment validation: the staged model is
+        # consistent, an intermediate mix of old and new paired limits may not be.
+        target = live.features
+        for name in type(source).model_fields:
+            object.__setattr__(target, name, getattr(source, name))
+
+
+def _settings_runtime_unconfirmed(key: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The new values are saved; the running session did not confirm them."""
+    return {
+        "ok": False,
+        "code": "settings_runtime_unconfirmed",
+        "error": "Settings were saved, but applying them to the running session is not confirmed",
+        key: snapshot,
     }
 
 
@@ -3095,17 +3819,16 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
     """更新设置（API Key、Lorebook 等）。"""
     section = payload.get("section", "")
     if section == "persona_prompt_opts":
-        # 卡作者提示词运行时开关：默认关闭，用户显式开启后才注入。
-        # 状态保存在内存中的 session 槽；archive card 是持久事实源。
-        opts = {
-            "use_imported_system_prompt": payload.get("use_imported_system_prompt") is True,
-            "use_imported_post_history_instructions": (
-                payload.get("use_imported_post_history_instructions") is True
-            ),
-        }
-        if bridge_state.session is not None:
-            bridge_state.session.imported_prompt_opts = opts
-        return {"ok": True, **opts}
+        # 卡作者提示词开关只保存在档案的角色卡记录里，经 archive:put 写入并校验。
+        # 这里不再按请求直接改运行态：只按档案重新应用，并回报实际生效的状态。
+        opts = _apply_imported_prompt_opts_from_archive()
+        if opts is None:
+            return {
+                "ok": False,
+                "code": "module_unavailable",
+                "error": "Author prompt switches are read from the persona archive, which is unavailable",
+            }
+        return {"ok": True, "source": "archive", **opts}
     if section == "lorebook":
         # 保存世界书到文件
         # Retired before V4. Accepting this legacy write would recreate a second
@@ -3137,6 +3860,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
 
             features = bridge_state.settings.features
             bool_fields = {
+                "hypa_compression_enabled",
                 "diary_enabled",
                 "diary_privacy_enabled",
                 "diary_peek_enabled",
@@ -3195,8 +3919,13 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 features.video_download_enabled = False
 
             if bridge_state.diary:
-                bridge_state.diary.privacy_enabled = features.diary_privacy_enabled
-                bridge_state.diary.peek_enabled = features.diary_peek_enabled
+                if "diary_privacy_enabled" in payload:
+                    bridge_state.diary.privacy_enabled = features.diary_privacy_enabled
+                if "diary_peek_enabled" in payload:
+                    bridge_state.diary.peek_enabled = features.diary_peek_enabled
+                persist_preferences = getattr(bridge_state.diary, "_save_preferences", None)
+                if callable(persist_preferences) and {"diary_privacy_enabled", "diary_peek_enabled"} & payload.keys():
+                    persist_preferences()
 
             if bridge_state.proactive:
                 bridge_state.proactive.late_night_enabled = features.late_night_enabled
@@ -3221,7 +3950,18 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 else:
                     bridge_state.work_manager.stop()
 
+            # Persist the owner's off switch before potentially failing cleanup.
+            # An uncooperative provider must not re-enable work after restart.
             save_settings(bridge_state.settings)
+            if "hypa_compression_enabled" in payload and not features.hypa_compression_enabled:
+                summary_runtime = getattr(bridge_state.session, "conversation_summary", None)
+                if summary_runtime is not None:
+                    try:
+                        await summary_runtime.cancel_pending()
+                    except Exception:
+                        return {"ok": False, "code": "summary_cleanup_unconfirmed",
+                                "error": "Summary is disabled; background cleanup is not confirmed",
+                                "features": features.model_dump()}
             return {
                 "ok": True,
                 "features": bridge_state.settings.features.model_dump(),
@@ -3344,8 +4084,6 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             return {"ok": False, "error": str(exc)}
     elif section == "memory":
         try:
-            from src.config.settings import save_settings
-
             if not bridge_state.settings:
                 return {"ok": False, "error": "Settings are not initialized"}
 
@@ -3362,8 +4100,11 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             def clamp_float(value: Any, minimum: float, maximum: float) -> float:
                 return min(maximum, max(minimum, float(value)))
 
-            memory_settings = bridge_state.settings.memory
-            features = bridge_state.settings.features
+            # Every change lands on a detached copy; the live models change only
+            # after the copy is on disk, so a rejected or failed update leaves no trace.
+            staged = bridge_state.settings.model_copy(deep=True)
+            memory_settings = staged.memory
+            features = staged.features
             if "retention_days" in payload:
                 try:
                     retention_days = int(payload["retention_days"])
@@ -3436,23 +4177,25 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             features.self_growth_from_web_enabled = False
             if "self_growth_interval_days" in payload:
                 features.self_growth_interval_days = clamp_int(payload["self_growth_interval_days"], 30, 365)
-
-            if bridge_state.memory and hasattr(bridge_state.memory, "apply_settings"):
-                bridge_state.memory.apply_settings(memory_settings, features)
-            save_settings(bridge_state.settings)
-            snapshot = (
-                bridge_state.memory.settings_snapshot()
-                if bridge_state.memory and hasattr(bridge_state.memory, "settings_snapshot")
-                else memory_settings.model_dump()
-            )
-            return {"ok": True, "settings": snapshot}
+            _commit_staged_settings(staged, "memory", "features")
         except Exception as exc:
             logger.exception("Memory settings update failed")
             return {"ok": False, "error": str(exc)}
+        live = bridge_state.settings
+        try:
+            if bridge_state.memory and hasattr(bridge_state.memory, "apply_settings"):
+                bridge_state.memory.apply_settings(live.memory, live.features)
+            snapshot = (
+                bridge_state.memory.settings_snapshot()
+                if bridge_state.memory and hasattr(bridge_state.memory, "settings_snapshot")
+                else live.memory.model_dump()
+            )
+        except Exception:
+            logger.exception("Memory settings were saved but not applied to the running session")
+            return _settings_runtime_unconfirmed("settings", live.memory.model_dump())
+        return {"ok": True, "settings": snapshot}
     elif section == "chat":
         try:
-            from src.config.settings import save_settings
-
             if not bridge_state.settings:
                 return {"ok": False, "error": "Settings are not initialized"}
 
@@ -3466,7 +4209,8 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     return value.strip().lower() in {"1", "true", "yes", "on"}
                 return bool(value)
 
-            chat = bridge_state.settings.chat
+            staged = bridge_state.settings.model_copy(deep=True)
+            chat = staged.chat
             if "reply_delay_min" in payload:
                 chat.reply_delay_min = clamp_float(payload["reply_delay_min"], 1.0, 60.0)
             if "reply_delay_max" in payload:
@@ -3484,7 +4228,11 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 status = str(payload["status"]).strip()
                 if status in {"online", "busy", "away", "sleeping"}:
                     chat.status = status
-
+            _commit_staged_settings(staged, "chat")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        chat = bridge_state.settings.chat
+        try:
             scheduler = getattr(getattr(bridge_state, "session", None), "scheduler", None)
             if scheduler:
                 scheduler.reply_delay_min = chat.reply_delay_min
@@ -3494,22 +4242,17 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 scheduler.allow_environment_description = chat.allow_environment_description
                 if hasattr(scheduler, "set_status"):
                     scheduler.set_status(chat.status)
-
-            save_settings(bridge_state.settings)
-            return {
-                "ok": True,
-                "chat": bridge_state.settings.chat.model_dump(),
-                "presence": _scheduler_status_payload(),
-            }
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            presence = _scheduler_status_payload()
+        except Exception:
+            logger.exception("Chat settings were saved but not applied to the scheduler")
+            return _settings_runtime_unconfirmed("chat", chat.model_dump())
+        return {"ok": True, "chat": chat.model_dump(), "presence": presence}
     elif section == "personality":
         try:
-            from src.config.settings import save_settings
             from src.persona.flaws import sanitize_user_flaws
 
             if not bridge_state.settings:
-                return {"ok": False, "error": "Settings are not initialized"}
+                return {"ok": False, "error": "Settings are not initialized", "budgetRuntime": _budget_runtime_snapshot()}
 
             def as_bool(value: Any) -> bool:
                 if isinstance(value, bool):
@@ -3524,7 +4267,8 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             def clamp_float(value: Any, minimum: float, maximum: float) -> float:
                 return min(maximum, max(minimum, float(value)))
 
-            features = bridge_state.settings.features
+            staged = bridge_state.settings.model_copy(deep=True)
+            features = staged.features
             bool_fields = {
                 "personality_flaws_enabled",
                 "personality_flaws_disclaimer_acknowledged",
@@ -3675,12 +4419,31 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 features.group_social_max_api_calls_per_action = clamp_int(
                     payload["group_social_max_api_calls_per_action"], 0, 3
                 )
-
-            bridge_state.settings.features = features
+            _record_emotion_pause(bridge_state.settings.features, features)
+            staged.features = features
+            _commit_staged_settings(staged, "features")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "budgetRuntime": _budget_runtime_snapshot()}
+        features = bridge_state.settings.features
+        # A partial update touches web consent and the surfing manager only when
+        # it carries web fields; saving unrelated traits must neither grant nor
+        # revoke network access.
+        consent_fields = {"web_surfing_enabled", "web_disclaimer_acknowledged"}
+        web_fields = consent_fields | {
+            "web_native_search_enabled",
+            "surf_keyless_search_enabled",
+            "web_allowed_topics",
+            "web_search_windows",
+            "web_refresh_interval_minutes",
+        }
+        consent_changed = bool(consent_fields & payload.keys())
+        web_changed = bool(web_fields & payload.keys())
+        try:
             if bridge_state.emotion:
                 bridge_state.emotion.enabled = features.emotion_system_enabled
                 bridge_state.emotion.carryover_days = features.emotion_carryover_days
                 bridge_state.emotion.inertia_factor = features.emotion_inertia_factor
+                bridge_state.emotion.pause_intervals = list(features.emotion_pause_intervals)
             if bridge_state.session:
                 bridge_state.session.feature_settings = features
                 if bridge_state.keepsakes:
@@ -3692,23 +4455,24 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     enabled=features.keepsake_collection_enabled,
                     recall_probability=features.keepsake_recall_probability,
                 )
-            try:
-                from src.config.usage_policy import UsagePolicyDenied, get_usage_policy
+            if consent_changed:
+                try:
+                    from src.config.usage_policy import UsagePolicyDenied, get_usage_policy
 
-                policy = getattr(bridge_state.adapter, "usage_policy", None) or get_usage_policy()
-                grant = bridge_state.settings.ai_usage.web_access
-                if features.web_surfing_enabled and features.web_disclaimer_acknowledged:
-                    if not policy.allowed("web_access"):
-                        try:
-                            policy.grant("web_access")
-                        except UsagePolicyDenied as exc:
-                            logger.warning("Web-access grant deferred: %s", exc)
-                elif grant.enabled:
-                    policy.revoke("web_access")
-            except Exception:
-                logger.exception("Web-access consent update failed; surfing flags were still saved")
+                    policy = getattr(bridge_state.adapter, "usage_policy", None) or get_usage_policy()
+                    grant = bridge_state.settings.ai_usage.web_access
+                    if features.web_surfing_enabled and features.web_disclaimer_acknowledged:
+                        if not policy.allowed("web_access"):
+                            try:
+                                policy.grant("web_access")
+                            except UsagePolicyDenied as exc:
+                                logger.warning("Web-access grant deferred: %s", exc)
+                    elif grant.enabled:
+                        policy.revoke("web_access")
+                except Exception:
+                    logger.exception("Web-access consent update failed; surfing flags were still saved")
 
-            if features.web_surfing_enabled and bridge_state.web_surfing is None:
+            if web_changed and features.web_surfing_enabled and bridge_state.web_surfing is None:
                 from src.web import WebSurfingManager
 
                 bridge_state.web_surfing = WebSurfingManager(
@@ -3720,7 +4484,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     keyless_search_enabled=features.surf_keyless_search_enabled,
                     surfing_consent=True,
                 )
-            if bridge_state.web_surfing:
+            if web_changed and bridge_state.web_surfing:
                 from src.web import SAFE_TOPICS
 
                 bridge_state.web_surfing.allowed_topics = [
@@ -3747,7 +4511,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     bridge_state.proactive.wake_max_minutes = features.proactive_wake_max_minutes
                 bridge_state.proactive.event_stories_enabled = features.proactive_event_stories_enabled
                 bridge_state.proactive.local_reflex_probability = features.local_care_reflex_probability
-                if hasattr(bridge_state.proactive, "web_surfing"):
+                if web_changed and hasattr(bridge_state.proactive, "web_surfing"):
                     bridge_state.proactive.web_surfing = (
                         bridge_state.web_surfing if features.web_surfing_enabled else None
                     )
@@ -3756,11 +4520,18 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                         bridge_state.proactive.start()
                     elif not features.proactive_chat_enabled and bridge_state.proactive.running:
                         bridge_state.proactive.stop()
-
-            save_settings(bridge_state.settings)
-            return {"ok": True, "features": bridge_state.settings.features.model_dump()}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        except Exception:
+            logger.exception("Personality settings were saved but not applied to the running session")
+            return {
+                **_settings_runtime_unconfirmed("features", features.model_dump()),
+                "budgetRuntime": _budget_runtime_snapshot(),
+            }
+        return {
+            "ok": True,
+            "features": features.model_dump(),
+            "emotionRuntime": _emotion_runtime_snapshot(),
+            "budgetRuntime": _budget_runtime_snapshot(),
+        }
     elif section == "immersion":
         try:
             from src.config.settings import save_settings
@@ -3978,37 +4749,123 @@ async def _apply_runtime_credentials(value: Any) -> dict[str, bool]:
     return {"llm": True, "imageGen": False}
 
 
-async def _run_native_backup(operation: str, raw_path: Any) -> dict[str, Any]:
+async def _run_native_card_export(payload: dict[str, Any]) -> dict[str, Any]:
+    """Only private controls call this file writer; no WebSocket handler exists."""
+    from src.config.settings import PERSONA_DIR
+    from src.persona.identity import GLOBAL_PERSONA_EPOCH, StalePersonaEpoch
+    from src.persona.sillytavern_export import (
+        CharacterCardExportError, EXPORT_FIELDS, build_v2_card, imported_identity,
+        load_export_metadata, serialize_importable_card, validate_export_path, write_card_file,
+    )
+
+    def fail(code: str, message: str) -> None:
+        raise CharacterCardExportError(code, message)
+
+    try:
+        if os.getenv("REVERIE_BRIDGE_MODE", "").strip() != "1":
+            fail("forbidden", "角色卡文件导出只接受原生专用控制通道")
+        if not isinstance(payload, dict) or set(payload) != EXPORT_FIELDS:
+            fail("invalid_request", "角色卡导出请求字段不完整或含有未知字段")
+        if (not isinstance(payload["persona_id"], str)
+                or not isinstance(payload["persona_fingerprint"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["persona_fingerprint"])
+                or type(payload["persona_epoch"]) is not int
+                or payload["persona_epoch"] < 1):
+            fail("persona_changed", "当前人格已变化，请重新发起导出")
+        if type(payload["archive_revision"]) is not int or payload["archive_revision"] < 0:
+            fail("archive_changed", "档案版本已变化，请重新发起导出")
+        book_id = payload["world_book_id"]
+        if book_id is not None and (not isinstance(book_id, str) or not book_id):
+            fail("world_book_not_found", "当前人格的档案里没有所选世界书")
+        target = validate_export_path(payload["path"])
+
+        def require_scope() -> None:
+            active = _active_persona_scope()
+            if (payload["persona_id"] != active["persona_id"]
+                    or payload["persona_epoch"] != active["persona_epoch"]
+                    or not payload["persona_fingerprint"]
+                    or not hmac.compare_digest(payload["persona_fingerprint"], active["persona_fingerprint"])):
+                fail("persona_changed", "当前人格已变化，请重新发起导出")
+
+        async with _persona_effect_lock:
+            if recovery_status_payload()["writes_blocked"]:
+                fail("BACKUP_RECOVERY_REQUIRED", "恢复必须完成后才能导出角色卡")
+            require_scope()
+            token = GLOBAL_PERSONA_EPOCH.token()
+            persona = bridge_state.persona
+            if persona is None or not getattr(persona, "identity_sealed", False):
+                fail("persona_changed", "当前人格尚未确认，请重新发起导出")
+            envelope = persona.identity_envelope
+            if envelope.persona_id != token.persona_id or envelope.fingerprint != token.fingerprint:
+                fail("persona_changed", "当前人格运行时已变化，请重新发起导出")
+            imported_identity(persona, token.persona_id)
+            store = bridge_state.archive_store
+            if store is None:
+                fail("card_export_unavailable", "当前人格的档案暂时无法读取")
+            record = store.get(token.persona_id)
+            if record["revision"] != payload["archive_revision"]:
+                fail("archive_changed", "档案版本已变化，请重新发起导出")
+            books = (record.get("archive") or {}).get("worldBooks", [])
+            book = next((item for item in books if item.get("id") == book_id), None) if book_id is not None else None
+            if book_id is not None and book is None:
+                fail("world_book_not_found", "当前人格的档案里没有所选世界书")
+            metadata = load_export_metadata(PERSONA_DIR, persona, token.persona_id)
+            encoded = serialize_importable_card(build_v2_card(persona, metadata, book), filename=target.name)
+
+            def commit() -> dict[str, Any]:
+                # ArchiveStore.put uses this same RLock. Keep the selected
+                # revision and the epoch stable through the atomic replace.
+                with store._lock:  # noqa: SLF001
+                    require_scope()
+                    if bridge_state.persona is not persona or bridge_state.archive_store is not store:
+                        fail("persona_changed", "当前人格运行时已变化，请重新发起导出")
+                    if recovery_status_payload()["writes_blocked"]:
+                        fail("BACKUP_RECOVERY_REQUIRED", "恢复必须完成后才能导出角色卡")
+                    if store.get(token.persona_id)["revision"] != payload["archive_revision"]:
+                        fail("archive_changed", "档案版本已变化，请重新发起导出")
+                    return write_card_file(target, encoded)
+
+            written = GLOBAL_PERSONA_EPOCH.commit_if_current(token, commit)
+            return {"ok": True, **written, "world_book_id": book_id,
+                    "world_book_name": book["name"] if book is not None else "",
+                    "entry_count": len(book.get("entries", [])) if book is not None else 0,
+                    "persona_id": token.persona_id}
+    except CharacterCardExportError as exc:
+        return exc.result()
+    except StalePersonaEpoch:
+        return {"ok": False, "code": "persona_changed", "error": "当前人格已变化，请重新发起导出"}
+    except (OSError, ValueError, TypeError, RuntimeError, KeyError):
+        return {"ok": False, "code": "card_export_unavailable", "error": "角色卡导出暂时无法完成"}
+
+
+async def _run_native_backup(operation: str, raw_path: Any, **options: Any) -> dict[str, Any]:
+    if operation == "inspect":
+        from src.backup_inspection import inspect_backup_file
+        source = _validated_backup_control_path(raw_path, must_exist=True)
+        inspection = await asyncio.to_thread(inspect_backup_file, source)
+        return {"operation": "inspect", **inspection.as_dict(), **recovery_status_payload()}
+    if operation == "import":
+        known_good = options.pop("known_good_confirmed", False)
+        if options.get("rescue") and not known_good:
+            from src.backup_inspection import BackupRestoreError
+            raise BackupRestoreError("Rescue requires explicit known-good confirmation", code="BACKUP_RECOVERY_REQUIRED")
+        coordinator = bridge_state.restore_coordinator
+        if coordinator is None:
+            from src.backup_inspection import BackupRestoreError
+            raise BackupRestoreError("Native restore coordinator is unavailable", code="BACKUP_RESTORE_DISABLED")
+        source = _validated_backup_control_path(raw_path, must_exist=True)
+        result = await coordinator.restore_file(source, **options)
+        return {"operation": "import", "mode": "rescue" if options.get("rescue") else "normal",
+                "result": result, **result, **recovery_status_payload()}
     manager, error = _local_backup_manager()
     if manager is None:
         raise RuntimeError(str(error or "local backup manager is unavailable"))
     if operation == "export":
         target = _validated_backup_control_path(raw_path, must_exist=False)
         await asyncio.to_thread(manager.backup_to_file, target)
-        return {"operation": "export"}
-    if operation != "import":
-        raise ValueError("unsupported backup operation")
-    source = _validated_backup_control_path(raw_path, must_exist=True)
-    await _get_chat_coordinator().cancel_all(reason="backup_restore")
-    proactive = bridge_state.proactive
-    work_manager = bridge_state.work_manager
-    proactive_was_running = bool(getattr(proactive, "running", False))
-    work_was_running = bool(getattr(work_manager, "running", False))
-    if proactive_was_running and callable(getattr(proactive, "stop", None)):
-        proactive.stop()
-    if work_was_running and callable(getattr(work_manager, "stop", None)):
-        work_manager.stop()
-    try:
-        result = await asyncio.to_thread(manager.restore_from_file, source)
-    finally:
-        if proactive_was_running and callable(getattr(proactive, "start", None)):
-            proactive.start()
-        if work_was_running and callable(getattr(work_manager, "start", None)):
-            work_manager.start()
-    return {
-        "operation": "import",
-        "result": result if isinstance(result, dict) else {},
-    }
+        status = recovery_status_payload()
+        return {"operation": "export", "export_consistency": "unconfirmed" if status["writes_blocked"] else "confirmed", **status}
+    raise ValueError("unsupported backup operation")
 
 
 async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> None:
@@ -4052,6 +4909,7 @@ async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> N
             request_id = str(message.get("requestId") or "")
             if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
                 raise ValueError("invalid requestId")
+            control_preflight(control_type)
             if control_type == "local_mode:set":
                 active = message.get("active")
                 if not isinstance(active, bool):
@@ -4084,15 +4942,31 @@ async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> N
                         "ok": True,
                     }
                 )
-            elif control_type in {"backup:file:export", "backup:file:import"}:
-                operation = "export" if control_type.endswith(":export") else "import"
-                backup_result = await _run_native_backup(operation, message.get("path"))
+            elif control_type == "persona:card:export":
+                from src.persona.sillytavern_export import EXPORT_FIELDS
+
+                envelope_fields = {"kind", "schema", "type", "requestId"}
+                export_payload = {key: value for key, value in message.items() if key not in envelope_fields}
+                if set(export_payload) != EXPORT_FIELDS:
+                    export_result = {"ok": False, "code": "invalid_request", "error": "角色卡导出请求字段不完整或含有未知字段"}
+                else:
+                    export_result = await _run_native_card_export(export_payload)
+                _write_bridge_control({**export_result,
+                    "schema": "reverie.bridge.control.ack.v1", "type": control_type,
+                    "requestId": request_id})
+            elif control_type in {"backup:file:export", "backup:file:import", "backup:file:inspect"}:
+                operation = control_type.rsplit(":", 1)[-1]
+                backup_result = await _run_native_backup(
+                    operation, message.get("path"), rescue=message.get("mode") == "rescue",
+                    expected_sha256=message.get("sha256"), expected_file_bytes=message.get("file_bytes"),
+                    known_good_confirmed=message.get("known_good_confirmed") is True,
+                )
                 _write_bridge_control(
                     {
+                        **backup_result,
                         "schema": "reverie.bridge.control.ack.v1",
                         "type": control_type,
                         "requestId": request_id,
-                        **backup_result,
                         "ok": True,
                     }
                 )
@@ -4110,13 +4984,20 @@ async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> N
                 }
             else:
                 failure = {"type": control_type}
+            if control_type == "backup:file:import":
+                if getattr(exc, "code", "") == "BACKUP_ROLLED_BACK":
+                    failure["outcome"] = "rolled_back"
+                elif recovery_status_payload()["writes_blocked"]:
+                    failure["outcome"] = "unconfirmed"
             _write_bridge_control(
                 {
                     "schema": "reverie.bridge.control.ack.v1",
                     "requestId": request_id,
                     **failure,
                     "ok": False,
-                    "error": str(exc)[:240],
+                    "code": control_error_code(exc),
+                    **recovery_status_payload(),
+                    "error": "The requested local control operation was rejected",
                 }
             )
 
@@ -4264,6 +5145,13 @@ async def dispatch_authenticated_message(
         payload = message.get("payload", {})
         if not isinstance(msg_type, str) or not re.fullmatch(r"[A-Za-z0-9:_-]{1,80}", msg_type):
             raise ValueError("invalid message type")
+        if msg_type == MsgType.BACKUP_IMPORT:
+            raw_id = str(message.get("request_id") or "")
+            result = command_preflight(msg_type)
+            if emit_result:
+                await send_to_frontend(endpoint, response_type_for_request(msg_type), result,
+                                      request_id=raw_id if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", raw_id) else "")
+            return result
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         raw_request_id = message.get("request_id", "")
@@ -4274,6 +5162,11 @@ async def dispatch_authenticated_message(
             request_id = candidate_request_id
 
         handler = _handlers.get(msg_type)
+        rejected = command_preflight(msg_type)
+        if rejected is not None:
+            if emit_result:
+                await send_to_frontend(endpoint, response_type_for_request(msg_type), rejected, request_id=request_id)
+            return rejected
         if handler is None:
             await send_to_frontend(
                 endpoint,
@@ -4316,7 +5209,16 @@ async def dispatch_authenticated_message(
             # identity activation. Chat generation itself remains asynchronous
             # and carries its own epoch/fingerprint rejection barrier.
             async with _persona_effect_lock:
-                result = await handler(payload, endpoint)
+                # Activation may have committed while this request waited.
+                # Revalidate inside the same lock that protects the side effect.
+                rejected = command_preflight(msg_type)
+                if rejected is not None:
+                    result = rejected
+                elif context is not None and context.protocol_version >= 3 and not _matches_expected_persona(payload):
+                    result = {"ok": False, "error": "Persona changed while the command was waiting",
+                              "code": "stale_persona", "retryable": False, **_active_persona_scope()}
+                else:
+                    result = await handler(payload, endpoint)
         else:
             result = await handler(payload, endpoint)
         if result is not None and emit_result:
@@ -4378,10 +5280,11 @@ async def websocket_handler(ws: WebSocketServerProtocol):
             "persona_restart_required": bool(bridge_state.persona_restart_required),
             "runtime_degraded": bool(bridge_state.runtime_unavailable),
             "runtime_unavailable": list(bridge_state.runtime_unavailable),
+            **recovery_status_payload(),
         },
     )
     await send_to_frontend(ws, MsgType.RUNTIME_ACTIVITY, _runtime_activity_payload())
-    if bridge_state.session is not None:
+    if bridge_state.session is not None and not recovery_status_payload()["writes_blocked"]:
         await _get_chat_coordinator().resume(
             client_id=context.client_id,
             conversation_id=context.conversation_id,
@@ -4401,6 +5304,11 @@ async def websocket_handler(ws: WebSocketServerProtocol):
                 payload = msg.get("payload", {})
                 if not isinstance(msg_type, str) or len(msg_type) > 80:
                     raise ValueError("invalid message type")
+                if msg_type == MsgType.BACKUP_IMPORT:
+                    raw_id = str(msg.get("request_id") or "")
+                    await send_to_frontend(ws, response_type_for_request(msg_type), command_preflight(msg_type),
+                                          request_id=raw_id if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", raw_id) else "")
+                    continue
                 if not isinstance(payload, dict):
                     raise ValueError("payload must be an object")
                 carries_persona_proof = any(
@@ -4446,6 +5354,10 @@ async def websocket_handler(ws: WebSocketServerProtocol):
                 )
 
                 handler = _handlers.get(msg_type)
+                rejected = command_preflight(msg_type)
+                if rejected is not None:
+                    await send_to_frontend(ws, response_type_for_request(msg_type), rejected, request_id=request_id)
+                    continue
                 store = bridge_state.kernel_store
                 is_mutating = bool(handler) and msg_type in MUTATING_COMMAND_NAMES and store is not None
                 if is_mutating:
@@ -4630,12 +5542,18 @@ async def start_bridge(host: str = "127.0.0.1", port: int = 48913):
                 "personaFingerprint": persona_scope["persona_fingerprint"],
                 "runtimeDegraded": bool(bridge_state.runtime_unavailable),
                 "runtimeUnavailable": list(bridge_state.runtime_unavailable),
+                "recoveryState": recovery_status_payload()["recovery_state"],
+                "writesBlocked": recovery_status_payload()["writes_blocked"],
+                "runtimeWritable": recovery_status_payload()["runtime_writable"],
             }
             print(
                 "REVERIE_BRIDGE_READY "
                 + json.dumps(ready, ensure_ascii=False, separators=(",", ":")),
                 flush=True,
             )
+            recovery = bridge_state.restore_coordinator
+            if recovery is not None:
+                recovery.start_startup_recovery()
             await shutdown_event.wait()
     finally:
         proactive_task.cancel()

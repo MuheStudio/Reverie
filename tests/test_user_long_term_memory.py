@@ -228,7 +228,8 @@ def test_chat_session_injects_lorebook_context_on_keyword_match() -> None:
     """P0-1: ChatSession passes the activated world book into the system prompt
     when the current user message hits a world book keyword; a missing matcher
     degrades to normal chat."""
-    from src.lorebook import LorebookManager
+    from src.archive import ArchiveStore
+    from src.worldbook.runtime import WorldbookRuntime
 
     def make_session(tmp_path, mgr=None):
         session = ChatSession(
@@ -238,20 +239,22 @@ def test_chat_session_injects_lorebook_context_on_keyword_match() -> None:
             emotion=FakeEmotion(),  # type: ignore[arg-type]
             relationship=RelationshipTracker(120),
             user_manager=UserManager(data_dir=tmp_path),
-            lorebook_mgr=mgr,
+            worldbook_runtime=mgr,
         )
         return session
 
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        mgr = LorebookManager("测试角色")
-        mgr.load_world_book({
-            "name": "测试世界书",
-            "entries": [
-                {"keywords": ["明日方舟"], "content": "博士驻守罗德岛。", "insertionOrder": 1},
-            ],
-        })
+        store = ArchiveStore(Path(tmp) / "worldbook-test.sqlite3")
+        store.put("test-persona", {
+            "characters": [], "activeCharacterIds": [], "worldBooks": [{
+                "id": "test-book", "name": "Synthetic world book",
+                "entries": [{"id": "test-entry", "keywords": ["明日方舟"],
+                             "content": "博士驻守罗德岛。", "insertionOrder": 1}],
+            }],
+        }, expected_revision=0)
+        mgr = WorldbookRuntime(store, "test-persona")
         session = make_session(Path(tmp), mgr)
         result = asyncio.run(session.send_message("我们聊聊明日方舟"))
         assert result["reply"] == "唔，我在这里，不会走的"
@@ -270,3 +273,5 @@ def test_chat_session_injects_lorebook_context_on_keyword_match() -> None:
         session_none = make_session(Path(tmp), None)
         result_none = asyncio.run(session_none.send_message("你好"))
         assert result_none["reply"] == "唔，我在这里，不会走的"
+        asyncio.run(mgr.aclose())
+        store.close()

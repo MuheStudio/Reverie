@@ -302,10 +302,25 @@ class AIUsageSettings(_ValidatedSettingsModel):
     image_generation: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
     timeline_generation: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
     memory_enrichment: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
+    conversation_summary: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
     social_generation: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
     semantic_verification: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
     emotion_analysis: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
     other_background_generation: AIFeatureConsent = Field(default_factory=AIFeatureConsent)
+
+
+EMOTION_PAUSE_INTERVAL_LIMIT = 64
+
+
+def _wall_time(value: object) -> datetime | None:
+    """A naive ISO wall time, as the emotion system records, or None."""
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is None else None
 
 
 class FeatureSettings(_ValidatedSettingsModel):
@@ -359,6 +374,11 @@ class FeatureSettings(_ValidatedSettingsModel):
     emotion_system_enabled: bool = Field(default=True)
     emotion_carryover_days: int = Field(default=3, ge=1, le=7)
     emotion_inertia_factor: float = Field(default=0.15, ge=0.01, le=0.60)
+    # When emotion updates were switched off, for every persona. Emotions stay
+    # as they were while off, and switching on does not catch up: the daily
+    # carryover skips these periods. Written only by the settings bridge.
+    emotion_paused_since: str = Field(default="", max_length=64)
+    emotion_pause_intervals: list[tuple[str, str]] = Field(default_factory=list)
     world_life_enabled: bool = Field(default=True)
     ambient_presence_enabled: bool = Field(default=True)
     ambient_book_pages_per_hour: float = Field(default=2.5, ge=0.1, le=12.0)
@@ -406,6 +426,24 @@ class FeatureSettings(_ValidatedSettingsModel):
     hypa_compression_enabled: bool = Field(default=False)
     neko_import_enabled: bool = Field(default=False)
     neko_import_source_dir: str = Field(default="", max_length=2048)
+
+    # A malformed pause record never invalidates the whole file; it is dropped.
+    @field_validator("emotion_paused_since", mode="before")
+    @classmethod
+    def _sanitize_paused_since(cls, value: object) -> str:
+        return value if isinstance(value, str) and _wall_time(value) is not None else ""
+
+    @field_validator("emotion_pause_intervals", mode="before")
+    @classmethod
+    def _sanitize_pause_intervals(cls, value: object) -> list[tuple[str, str]]:
+        intervals: list[tuple[str, str]] = []
+        for item in value if isinstance(value, (list, tuple)) else ():
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            start, end = (_wall_time(part) for part in item)
+            if start is not None and end is not None and start <= end:
+                intervals.append((str(item[0]), str(item[1])))
+        return intervals[-EMOTION_PAUSE_INTERVAL_LIMIT:]
 
     @model_validator(mode="after")
     def _validate_dependent_ranges(self) -> "FeatureSettings":
@@ -633,6 +671,17 @@ def _backup_invalid_config(path: Path) -> Path | None:
 
 def save_settings(settings: _Settings) -> None:
     """Persist current settings to config.json. API key is NEVER saved to disk."""
+    write_settings_file(settings)
+    global _settings
+    _settings = settings
+
+
+def write_settings_file(settings: _Settings) -> None:
+    """Write ``settings`` to config.json without making it the live object.
+
+    Staged updates persist a detached copy first and change the live models
+    only after the file is durable.
+    """
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = settings.model_dump()
     # Security: api_key lives in .env only — never persist it
@@ -645,5 +694,3 @@ def save_settings(settings: _Settings) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(temp_path, CONFIG_FILE)
-    global _settings
-    _settings = settings

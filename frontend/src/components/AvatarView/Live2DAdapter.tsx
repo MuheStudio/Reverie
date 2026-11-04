@@ -7,7 +7,8 @@
  * 原始渲染代码: Project AIRI (MIT) Canvas.vue / Model.vue
  * 适配修改: Muhe Studio 2026
  */
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState, useContext } from 'react';
+import { ModelVisibility } from '../Workspace/modelVisibility';
 import * as PIXI from 'pixi.js';
 import { install as installPixiCspAdapter } from '@pixi/unsafe-eval';
 import {
@@ -714,9 +715,11 @@ export class Live2DRenderer {
 
 // ── React Hook ─────────────────────────────────────────
 
-export function useLive2D(config: Live2DConfig) {
+export function useLive2D(config: Live2DConfig, viewActive = true) {
+  const viewActiveRef = useRef(viewActive); viewActiveRef.current = viewActive;
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Live2DRenderer | null>(null);
+  const readyRendererRef = useRef<Live2DRenderer | null>(null);
   const [state, setState] = useState<Live2DState>('pending');
   const [error, setError] = useState<string | null>(null);
   // Bumped every time the renderer is (re)created. Callers gate per-renderer
@@ -743,7 +746,11 @@ export function useLive2D(config: Live2DConfig) {
     renderer
       .init(container)
       .then(() => {
-        if (active && rendererRef.current === renderer) setState('mounted');
+        if (active && rendererRef.current === renderer) {
+          readyRendererRef.current = renderer;
+          setState('mounted');
+          if (!viewActiveRef.current || document.hidden) void setActive(false);
+        }
       })
       .catch((err) => {
         if (active && rendererRef.current === renderer) {
@@ -756,6 +763,7 @@ export function useLive2D(config: Live2DConfig) {
       active = false;
       renderer.destroy();
       if (rendererRef.current === renderer) rendererRef.current = null;
+      if (readyRendererRef.current === renderer) readyRendererRef.current = null;
     };
   }, [config.width, config.height, config.resolution, config.maxFps, config.backgroundAlpha]);
 
@@ -789,7 +797,10 @@ export function useLive2D(config: Live2DConfig) {
 
   const setActive = useCallback(async (active: boolean) => {
     const renderer = rendererRef.current;
-    if (!renderer) return;
+    // Visibility can arrive while init() is still awaiting the Core/runtime.
+    // It must not advertise mounted before the WebGL application exists.
+    // init's completion applies the latest visibility through viewActiveRef.
+    if (!renderer || readyRendererRef.current !== renderer) return;
     try {
       setState(active ? 'loading' : 'suspended');
       await renderer.setActive(active);
@@ -803,9 +814,9 @@ export function useLive2D(config: Live2DConfig) {
   }, []);
 
   useEffect(() => {
-    const handleVisibility = () => { void setActive(!document.hidden); };
+    const handleVisibility = () => { void setActive(viewActiveRef.current && !document.hidden); };
     const handleLifecycle = (event: { state?: string }) => {
-      const active = !document.hidden
+      const active = viewActiveRef.current && !document.hidden
         && !['inactive', 'suspend', 'lock-screen', 'hidden'].includes(event?.state || '');
       void setActive(active);
     };
@@ -816,6 +827,8 @@ export function useLive2D(config: Live2DConfig) {
       unsubscribe?.();
     };
   }, [setActive]);
+
+  useEffect(() => { void setActive(viewActive && !document.hidden); }, [viewActive, setActive]);
 
   const setExpression = useCallback((expr: string) => {
     rendererRef.current?.setExpression(expr);
@@ -850,6 +863,7 @@ export function useLive2D(config: Live2DConfig) {
 // ── React 组件 ─────────────────────────────────────────
 
 export function Live2DCanvas({
+  active = true,
   config,
   modelUrl,
   expression = 'neutral',
@@ -859,6 +873,7 @@ export function Live2DCanvas({
   className,
   onStateChange,
 }: {
+  active?: boolean;
   config: Live2DConfig;
   modelUrl?: string;
   expression?: string;
@@ -868,6 +883,7 @@ export function Live2DCanvas({
   className?: string;
   onStateChange?: (state: Live2DState, error: string | null) => void;
 }) {
+  const viewActive = useContext(ModelVisibility);
   const {
     containerRef,
     state,
@@ -878,7 +894,7 @@ export function Live2DCanvas({
     setSpeaking,
     setMouth,
     playMotion,
-  } = useLive2D(config);
+  } = useLive2D(config, active && viewActive);
   const loadedModelUrlRef = useRef('');
   const loadingModelUrlRef = useRef('');
   const failedModelUrlRef = useRef('');

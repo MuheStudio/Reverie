@@ -1,0 +1,353 @@
+{
+  "schema": "reverie.live2d.yumi-local-acceptance.v1",
+  "recordedOn": "2026-10-06",
+  "validationKind": "isolated-development-source-entry",
+  "sourceCommit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+  "sourceDirtyDuringExecution": false,
+  "applicationRebuilt": false,
+  "core": {
+    "version": "5.1.0 (official Cubism 5.2 Web Core channel 05)",
+    "sourceUrl": "https://cubism.live2d.com/sdk-web/core/05/live2dcubismcore.min.js",
+    "sha256": "25ae938cb4fe282ce189b357bcc97e603d1e1f7ec78bf04150d401c23cdc792f",
+    "termsAccepted": true
+  },
+  "originalModel": {
+    "files": 28,
+    "bytes": 22557613,
+    "treeSha256": "40b24cb2470596229566a8fe1a0d912fdc629abc618c615fae8b335758499103",
+    "digestKind": "sha256-ordered-json-model-file-inventory",
+    "unchangedAfterValidation": true
+  },
+  "testCopy": {
+    "files": 27,
+    "treeSha256": "a8c402fec2d566edc03a3a324a82a2a76bf8b3973d7f6df8b4554edd9031bac2",
+    "excludedFiles": [
+      ".DS_Store"
+    ],
+    "modelAssetBytesIdenticalToOriginal": true
+  },
+  "localPermission": {
+    "basis": "direct-user-supplied-test-material-and-request",
+    "rightsHolder": null,
+    "redistributionAuthorized": false,
+    "coreTermsAcceptedByUser": true
+  },
+  "checks": {
+    "importPreviewCommitSelection": "passed",
+    "realGpuFrame": "passed",
+    "unicodeAndSpaceInputPath": "passed",
+    "navigationNoReload": "passed",
+    "modelReplacementCleanup": "passed",
+    "restartModelSelectionCapabilitiesAndDisplay": "passed",
+    "messagesAndIdsRestored": "passed",
+    "encryptedDatabaseHeader": "passed",
+    "normalExits": 2,
+    "modelCallsDuringRestart": 0,
+    "forcedCleanupCount": 0,
+    "noResidualProcesses": true,
+    "isolatedDataRemoved": true
+  },
+  "rendering": {
+    "parameterCount": 131,
+    "nonTransparentPixels": 144405,
+    "coreVersion": 83951616,
+    "mouth": {
+      "invoked": true,
+      "value": 0.699999988079071
+    },
+    "motion": "wave",
+    "expression": "拿话筒"
+  },
+  "detected": {
+    "animationClips": [
+      "wave",
+      "tear"
+    ],
+    "expressions": [
+      "拿话筒",
+      "黑脸",
+      "蚊香眼",
+      "歪嘴",
+      "短发1",
+      "爱心眼",
+      "短发2",
+      "眼罩",
+      "星星眼",
+      "泪汪汪",
+      "猫猫嘴",
+      "眼泪",
+      "抬手左",
+      "俯身按键",
+      "舌头伸出",
+      "漂浮小狗",
+      "抬手右"
+    ]
+  },
+  "textureTransforms": [
+    "texture_downscaled:yumi.8192/texture_00.png:8192x8192→4096x4096"
+  ],
+  "initializationRace": {
+    "delayMs": 250,
+    "earlyLoads": 0
+  },
+  "navigationCounters": {
+    "loads": 2,
+    "destroys": 1,
+    "modelReleases": 1
+  },
+  "replacementCounters": {
+    "loads": 5,
+    "destroys": 2,
+    "modelReleases": 4
+  },
+  "stages": [
+    {
+      "name": "Import through model page",
+      "elapsedMs": 5
+    },
+    {
+      "name": "Original model installed and rendered",
+      "elapsedMs": 3557
+    },
+    {
+      "name": "Navigation retained model instance",
+      "elapsedMs": 3656
+    },
+    {
+      "name": "GPU frame and supported capabilities verified",
+      "elapsedMs": 4134
+    },
+    {
+      "name": "Model replacement released prior model",
+      "elapsedMs": 7613
+    }
+  ],
+  "regression": {
+    "pytest": {
+      "passed": 1146,
+      "xfailed": 1,
+      "warnings": 1
+    },
+    "node": {
+      "tests": 879,
+      "passed": 879,
+      "failed": 0,
+      "skipped": 0
+    },
+    "vitest": {
+      "tests": 323,
+      "files": 40
+    },
+    "steps": [
+      {
+        "name": "node-environment",
+        "status": "passed",
+        "durationSeconds": 0
+      },
+      {
+        "name": "python-environment",
+        "status": "passed",
+        "durationSeconds": 0.483
+      },
+      {
+        "name": "uv-version",
+        "status": "passed",
+        "durationSeconds": 0.046
+      },
+      {
+        "name": "pnpm-version",
+        "status": "passed",
+        "durationSeconds": 0.285
+      },
+      {
+        "name": "python-dependency-consistency",
+        "status": "passed",
+        "durationSeconds": 0.05
+      },
+      {
+        "name": "encrypted-storage",
+        "status": "passed",
+        "durationSeconds": 0.363
+      },
+      {
+        "name": "pytest",
+        "status": "passed",
+        "durationSeconds": 16.102
+      },
+      {
+        "name": "frontend-typecheck-tsconfig.json",
+        "status": "passed",
+        "durationSeconds": 2.929
+      },
+      {
+        "name": "frontend-typecheck-tsconfig.node.json",
+        "status": "passed",
+        "durationSeconds": 0.468
+      },
+      {
+        "name": "frontend-test",
+        "status": "passed",
+        "durationSeconds": 7.03
+      },
+      {
+        "name": "frontend-build",
+        "status": "passed",
+        "durationSeconds": 1.382
+      },
+      {
+        "name": "framed-bridge",
+        "status": "passed",
+        "durationSeconds": 1.282
+      },
+      {
+        "name": "desktop-core",
+        "status": "passed",
+        "durationSeconds": 8.167
+      }
+    ]
+  },
+  "sourceFiles": [
+    {
+      "path": "frontend/electron/main.js",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 117698,
+      "sha256": "8f50be24ce8d2d2d17c9935680b12133c93d18892054cc7de9aa51c45fae90fc"
+    },
+    {
+      "path": "frontend/electron/live2d-import-transform.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 3649,
+      "sha256": "f854c1c906eddfce2ea3d3cf32675b10d5de4cbdc56fe56f21618d63d1608cf0"
+    },
+    {
+      "path": "frontend/electron/live2d-import-transform.test.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 3059,
+      "sha256": "e01f31812eda21f707b47bd549f38b401274c647cb793702c6dde0afe82d1b0d"
+    },
+    {
+      "path": "frontend/src/components/AvatarView/Live2DAdapter.tsx",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 36466,
+      "sha256": "8f509226a6738cf33188d2286dd457e4c236883e0753ca695faa08cb5bf8cdb2"
+    },
+    {
+      "path": "frontend/src/components/DreamRoom/AvatarStage.tsx",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 21506,
+      "sha256": "cb92a7cb9db021decb31b4a3228514826504525953528de7c92a0d8808c3439e"
+    },
+    {
+      "path": "frontend/script/live2d-ui-contract.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 9942,
+      "sha256": "19373f474521c859d9977d1584941579877d960d88aca70dc34f5a7ffae63ed6"
+    },
+    {
+      "path": "frontend/script/e2e-desktop-core-smoke.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 30572,
+      "sha256": "8b386a0044bf53e719dbb449df1f204aecde3d02a4e9ecfd051b165e524da181"
+    },
+    {
+      "path": "frontend/script/macos-ui-materials.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 4130,
+      "sha256": "9d8e79a76ab138a4abd974b32a8da2b560bcb84887f83b4f42b789b7a36a14f9"
+    },
+    {
+      "path": "frontend/script/macos-ui-materials.test.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 3109,
+      "sha256": "2df7024e05aafb832da2038648797129ac60bb8e08ddbd4292bbf6e2b59d0e91"
+    },
+    {
+      "path": "frontend/script/ui-workspace-contract.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 10484,
+      "sha256": "e1d1ea7c6c606100916297a209e04baaebcb14430465ad11c9f48628fe369a21"
+    },
+    {
+      "path": "frontend/script/check-macos-ui.cjs",
+      "commit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+      "bytes": 1359,
+      "sha256": "25d4b55db1499eb30c15577aacde469b60dafce7e8b23b5949ca539b045eb99f"
+    }
+  ],
+  "evidence": {
+    "finalApplicationRun": {
+      "path": "frontend/.desktop-core-smoke/2026-10-06T15-35-34-460Z-976/report.json",
+      "bytes": 12195,
+      "sha256": "cf1996637f8be4f3364562ef04a60190305376d7b051ac821441223f5f5848b0",
+      "digestKind": "sha256-file-bytes"
+    },
+    "fullSourceRegression": {
+      "path": ".tools/reports/check-2026-10-06T15-34-22-804Z-249/summary.json",
+      "bytes": 8694,
+      "sha256": "6f2765a2d5559b546774b7d561e5ab3a586af1c23a499b9f71dd87b6a58fb2ef",
+      "digestKind": "sha256-file-bytes"
+    },
+    "firstFailedAttempts": [
+      {
+        "path": "frontend/.desktop-core-smoke/2026-10-06T15-22-48-841Z-95095/report.json",
+        "bytes": 2050,
+        "sha256": "a15ca138492ecbbf6b2ca8706647f29ae59522eae575ec2a2f42e2bb6fa31dbb",
+        "digestKind": "sha256-file-bytes"
+      },
+      {
+        "path": "frontend/.desktop-core-smoke/2026-10-06T15-23-55-350Z-95605/report.json",
+        "bytes": 2050,
+        "sha256": "f8a4c8e789e30960070b1b6dd154e81aa6fac5d9325bfa045d2d9965918f90cc",
+        "digestKind": "sha256-file-bytes"
+      },
+      {
+        "path": "frontend/.desktop-core-smoke/2026-10-06T15-24-50-437Z-96105/report.json",
+        "bytes": 3686,
+        "sha256": "3c922ec74f861a2cff3b1c9c30ad3d59ac78167401658286b09063f86aaf05a8",
+        "digestKind": "sha256-file-bytes"
+      },
+      {
+        "path": "frontend/.desktop-core-smoke/2026-10-06T15-27-21-490Z-98299/report.json",
+        "bytes": 5168,
+        "sha256": "b273cf80dde4fe9dd5a032297d26af761a6067e31b3669958719f7ed7bc106d9",
+        "digestKind": "sha256-file-bytes"
+      }
+    ],
+    "screenshots": [
+      {
+        "path": "frontend/.desktop-core-smoke/2026-10-06T15-35-34-460Z-976/ui/live2d-real.png",
+        "bytes": 683226,
+        "sha256": "94f399be5320d9467fba7243f51f4d50e4f126d87a6ebdcada4500510b52e716",
+        "digestKind": "sha256-file-bytes"
+      },
+      {
+        "path": "frontend/.desktop-core-smoke/2026-10-06T15-35-34-460Z-976/ui/live2d-restored.png",
+        "bytes": 693365,
+        "sha256": "954100730c9008c3fc181571991425e6ea32824fe4ac18bd7f32be3f53edf13a",
+        "digestKind": "sha256-file-bytes"
+      }
+    ]
+  },
+  "preservedDefaultApplication": {
+    "schema": "reverie.live2d.existing-app-preserved.v1",
+    "candidate": "ui-foundation-stage-five-r4",
+    "appBuild": "3e81c577b3d6c51c1a8a2f3943fecfc819c45f5a",
+    "files": 7321,
+    "digestKind": "sha256-json-file-and-link-inventory",
+    "sha256": "dd8352eec1e0eb8a8859c2014393e839a717181d32d7917005417d78b35faeb7",
+    "inventoryUnchanged": true,
+    "strictSignatureValid": true,
+    "coreOrMocOutsideAsar": false,
+    "appRebuilt": false,
+    "signatureKind": "local-ad-hoc-test-only"
+  },
+  "limits": [
+    "Default production app remains Core-free; not tested with Core",
+    "Native picker returns controlled test path; scanner, preview, confirmation and renderer are genuine",
+    "Timing stress uses a 250 ms delay before actual renderer init",
+    "One model imported as two identities; no independent second model",
+    "Human visual/interaction acceptance not asserted",
+    "Motion/expression selection invoked through actual adapter; not all UI mappings exhaustively tested",
+    "No distribution license conclusion, signing, notarization or cross-version Keychain acceptance"
+  ]
+}

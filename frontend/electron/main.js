@@ -11,6 +11,7 @@ for (const stdio of [process.stdout, process.stderr]) {
     throw error;
   });
 }
+const startupStartedAt = process.hrtime.bigint();
 
 const {
   app,
@@ -18,6 +19,7 @@ const {
   dialog,
   ipcMain,
   Menu,
+  nativeImage,
   Notification,
   powerMonitor,
   protocol,
@@ -35,6 +37,8 @@ const { Worker } = require('worker_threads');
 const { installAppProtocol } = require('./app-protocol.cjs');
 const { BridgeHostProxy } = require('./bridge-host-proxy.cjs');
 const { FramedBridgeSupervisor } = require('./framed-bridge-supervisor.cjs');
+const { resolveMacDevelopmentPython } = require('./python-command.cjs');
+const { createPackagedPythonEnvironment, resolveMacPackagedPython } = require('./packaged-python.cjs');
 const { CredentialVault } = require('./credential-vault.cjs');
 const { StorageKeyVault } = require('./storage-key-vault.cjs');
 const {
@@ -72,7 +76,7 @@ const {
 } = require('./runtime-security.cjs');
 const { SafeLogger } = require('./safe-log.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
-const { resolveTestUserDataOverride } = require('./test-user-data.cjs');
+const { MAC_TEST_PRODUCT_NAME, validateMacTestBuild, resolveTestUserDataOverride } = require('./test-user-data.cjs');
 const {
   resolveAppUserModelId,
 } = require('./windows-app-identity.cjs');
@@ -127,6 +131,16 @@ const FRONTEND_DEV_URL = 'http://localhost:5173';
 const IS_DEV = !app.isPackaged;
 const BRIDGE_RESTART_MAX_MS = 30_000;
 
+function logStartupStage(stage, startedAt = null, details = {}) {
+  const now = process.hrtime.bigint();
+  console.log('[Electron] Startup stage', {
+    stage,
+    elapsedMs: Math.round(Number(now - startupStartedAt) / 1e6),
+    ...(startedAt ? { durationMs: Math.round(Number(now - startedAt) / 1e6) } : {}),
+    ...details,
+  });
+}
+
 registerDesktopSchemes(protocol);
 
 const appUserModelId = resolveAppUserModelId({
@@ -142,10 +156,25 @@ if (IS_DEV && process.env.REVERIE_USER_DATA_DIR) {
   fs.mkdirSync(override, { recursive: true });
   app.setPath('userData', override);
 }
+if (!IS_DEV && process.platform === 'darwin') {
+  const identity = validateMacTestBuild(path.resolve(process.resourcesPath, '..', '..'), { required: false });
+  if (identity) {
+    app.setName(MAC_TEST_PRODUCT_NAME);
+    if (!process.env.REVERIE_TEST_USER_DATA_DIR) {
+      const isolatedDefault = path.join(app.getPath('appData'), MAC_TEST_PRODUCT_NAME);
+      fs.mkdirSync(path.join(isolatedDefault, 'session'), { recursive: true, mode: 0o700 });
+      app.setPath('userData', isolatedDefault);
+      app.setPath('sessionData', path.join(isolatedDefault, 'session'));
+    }
+  }
+}
 if (!IS_DEV && process.env.REVERIE_TEST_USER_DATA_DIR) {
-  const packageRoot = path.resolve(__dirname, '..', '..', '..');
+  const packageRoot = process.platform === 'darwin'
+    ? path.resolve(process.resourcesPath, '..', '..')
+    : path.resolve(__dirname, '..', '..', '..');
   const override = resolveTestUserDataOverride({
     isPackaged: app.isPackaged,
+    platform: process.platform,
     packageRoot,
     requestedPath: process.env.REVERIE_TEST_USER_DATA_DIR,
   });
@@ -154,6 +183,27 @@ if (!IS_DEV && process.env.REVERIE_TEST_USER_DATA_DIR) {
   fs.mkdirSync(sessionData, { recursive: true });
   app.setPath('userData', override);
   app.setPath('sessionData', sessionData);
+}
+if (!IS_DEV && process.platform === 'darwin') {
+  const userData = app.getPath('userData');
+  const directories = {
+    sessionData: path.join(userData, 'session'),
+    cache: path.join(userData, 'runtime', 'cache'),
+    crashDumps: path.join(userData, 'crash-dumps'),
+    logs: path.join(userData, 'logs'),
+  };
+  for (const [name, directory] of Object.entries(directories)) {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    app.setPath(name, directory);
+  }
+  for (const name of ['tmp', 'data', 'state']) {
+    fs.mkdirSync(path.join(userData, 'runtime', name), { recursive: true, mode: 0o700 });
+  }
+  const privateEnvironment = createPackagedPythonEnvironment(process.resourcesPath, process.env, userData);
+  for (const name of ['TMPDIR', 'TMP', 'TEMP', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME']) {
+    process.env[name] = privateEnvironment[name];
+  }
+  app.commandLine.appendSwitch('disk-cache-dir', directories.cache);
 }
 
 const packagedIndex = path.join(__dirname, '..', 'dist', 'index.html');
@@ -275,6 +325,12 @@ function probeLive2DRuntime() {
 
 function getPythonCommand() {
   if (!IS_DEV) {
+    if (process.platform === 'darwin') {
+      return resolveMacPackagedPython(getRuntimeRoot(), {
+        userDataPath: app.getPath('userData'),
+        onDiagnostic: ({ elapsedMs, ...details }) => logStartupStage('python-probe', null, { ...details, probeElapsedMs: elapsedMs }),
+      });
+    }
     const bundled = path.join(
       getRuntimeRoot(),
       'python',
@@ -282,6 +338,9 @@ function getPythonCommand() {
     );
     if (isRegularUnlinkedFile(bundled)) return bundled;
     throw new Error('Verified bundled Python runtime is missing');
+  }
+  if (process.platform === 'darwin') {
+    return resolveMacDevelopmentPython(getRuntimeRoot());
   }
   const developmentRuntime = path.join(
     getRuntimeRoot(),
@@ -690,19 +749,30 @@ function setupLogging() {
 function spawnBridgeChild(context) {
   const dataDir = prepareWritableDataDir();
   const command = getPythonCommand();
-  const storageKey = storageKeyVault.getOrCreateKey();
+  const keyStartedAt = process.hrtime.bigint();
+  let storageKey;
+  try { storageKey = storageKeyVault.getOrCreateKey(); } catch (error) {
+    logStartupStage('bridge-key-vault-failed', keyStartedAt, { code: error?.code || 'REVERIE_STORAGE_KEY_UNAVAILABLE' });
+    throw error;
+  }
+  logStartupStage('bridge-key-vault-ready', keyStartedAt, {
+    encryption: process.platform === 'darwin' ? 'electron-safeStorage-keychain' : 'electron-safeStorage',
+  });
+  const isolatedPython = !IS_DEV && process.platform === 'darwin';
   const args = [
+    ...(isolatedPython ? ['-I', '-B', '-u', '-X', 'utf8'] : []),
     path.join(getRuntimeRoot(), 'src', 'main.py'),
     '--stdio-bridge',
   ];
   logger?.addSecret(context.secret);
   let child;
   try {
+    const spawnStartedAt = process.hrtime.bigint();
     child = spawn(command, args, {
       cwd: getRuntimeRoot(),
       windowsHide: true,
       env: {
-        ...process.env,
+        ...(isolatedPython ? createPackagedPythonEnvironment(getRuntimeRoot(), process.env, app.getPath('userData')) : process.env),
         PYTHONIOENCODING: 'utf-8',
         PYTHONUNBUFFERED: '1',
         PYTHONDONTWRITEBYTECODE: '1',
@@ -721,6 +791,7 @@ function spawnBridgeChild(context) {
       },
       stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
     });
+    logStartupStage('python-spawned', spawnStartedAt, { pid: child.pid || null, transport: 'stdio-framed', protocolVersion: 4 });
     const bootstrap = child.stdio[3];
     if (!bootstrap) throw new Error('Database key bootstrap pipe was not created');
     let cleared = false;
@@ -758,6 +829,7 @@ function scheduleBridgeRestart(reason) {
 
 function startBridge() {
   if (isQuitting || bridge?.child) return;
+  const bridgeStartedAt = Date.now();
   let promise;
   try {
     promise = bridge.start({ localMode: networkGate.snapshot() });
@@ -768,6 +840,7 @@ function startBridge() {
   promise.then(async () => {
     backendRestartAttempts = 0;
     await bridgeHostProxy.connect();
+    logStartupStage('v4-authenticated', null, { generation: bridge.generation, protocolVersion: 4 });
     try {
       await enqueueProviderMutation(async () => {
         await recoverProviderTransaction();
@@ -778,6 +851,7 @@ function startBridge() {
       broadcastCredentialStatus({ runtimeApplied: false });
     }
     broadcast('bridge:changed', { ready: true, generation: bridge.generation });
+    console.log(`[Electron] Local backend authenticated: protocol v4 (${Date.now() - bridgeStartedAt}ms)`);
   }).catch(async (error) => {
     try {
       await bridge.stopAndWait('SIGKILL');
@@ -991,15 +1065,20 @@ function createRuntimeModules() {
   storageKeyVault = new StorageKeyVault({
     storageDir: path.join(runtimeDir, 'storage-key'),
     safeStorage,
+    ...(process.platform === 'darwin' ? { existingDataDir: prepareWritableDataDir() } : {}),
   });
-  // Fail before opening a renderer if DPAPI is unavailable or the existing
-  // protected key cannot be decrypted for this Windows user. A corrupt vault
-  // offers one explicit, user-confirmed reset instead of a boot loop.
+  // The OS-protected key must be usable before opening a renderer. macOS
+  // failures always stop startup and preserve the existing key and databases.
+  // Windows retains its existing explicit user-confirmed recovery path.
   let storageProbe;
+  const keyVaultStartedAt = process.hrtime.bigint();
+  const encryption = process.platform === 'darwin' ? 'electron-safeStorage-keychain' : 'electron-safeStorage';
+  logStartupStage('key-vault-start', null, { encryption, appName: app.getName() });
   try {
     storageProbe = storageKeyVault.getOrCreateKey();
   } catch (error) {
-    if (String(error?.code || '') !== 'REVERIE_STORAGE_KEY_CORRUPT'
+    logStartupStage('key-vault-failed', keyVaultStartedAt, { encryption, code: error?.code || 'REVERIE_STORAGE_KEY_UNAVAILABLE' });
+    if (process.platform === 'darwin' || String(error?.code || '') !== 'REVERIE_STORAGE_KEY_CORRUPT'
       || !offerStorageKeyReset()) {
       throw error;
     }
@@ -1008,13 +1087,19 @@ function createRuntimeModules() {
     storageProbe = storageKeyVault.getOrCreateKey();
   }
   storageProbe.fill(0);
+  logStartupStage('key-vault-ready', keyVaultStartedAt, { encryption, appName: app.getName() });
   providerConfigStore = new ProviderConfigStore({
     storageDir: path.join(runtimeDir, 'provider-config'),
   });
   providerTransactionJournal = new ProviderTransactionJournal({
     storageDir: path.join(runtimeDir, 'provider-transaction'),
   });
-  bridge = new FramedBridgeSupervisor({ spawnChild: spawnBridgeChild });
+  bridge = new FramedBridgeSupervisor({
+    spawnChild: spawnBridgeChild,
+    // Development dependencies can load slowly on macOS storage. Keep the
+    // process alive long enough to finish; all V4 authority checks still apply.
+    ...(IS_DEV && process.platform === 'darwin' ? { readyTimeoutMs: 120_000 } : {}),
+  });
   bridgeHostProxy = new BridgeHostProxy({ supervisor: bridge, broadcast });
   bridgeHostProxy.on('disconnect', (error) => {
     if (isQuitting) return;
@@ -1077,8 +1162,8 @@ function createRuntimeModules() {
         // Packaged builds never auto-install a character. Cubism distribution
         // does not allow shipping a model with the app; users import one in
         // onboarding. Dev may still point REVERIE_YUMI_SOURCE at a local folder.
-        const yumiSource = IS_DEV
-          ? path.resolve(process.env.REVERIE_YUMI_SOURCE || '')
+        const yumiSource = IS_DEV && process.env.REVERIE_YUMI_SOURCE?.trim()
+          ? path.resolve(process.env.REVERIE_YUMI_SOURCE)
           : '';
         if (IS_DEV && yumiSource && fs.existsSync(yumiSource) && avatarManager.list().records.length === 0) {
           try {
@@ -1824,186 +1909,41 @@ function bundledCharacterSnapshot() {
  * XSS cannot reach files, location, notifications, custom avatars, games,
  * backups, focus timers, or image generation through ghost channels.
  */
-// ── cat-catch download service (GPL-3.0, Muhe Studio adaptation) ──
-// Vendored at src/download_service/electron_adapter.js. Registered through the
-// secure IPC registrar only; every handler fails closed unless the owner
-// enabled features.download_service_enabled in data/config.json.
-let downloadAdapter = null;
-function getDownloadAdapter() {
-  if (downloadAdapter !== null) return downloadAdapter;
-  try {
-    downloadAdapter = require(path.join(
-      getRuntimeRoot(),
-      'src',
-      'download_service',
-      'electron_adapter.js',
-    ));
-  } catch (error) {
-    downloadAdapter = null;
-    console.error('[Electron] cat-catch download adapter unavailable', error);
+// Media capability coordination. The host owns policy and saved files; the
+// renderer only receives the established download interface.
+let mediaService = null;
+function getMediaService() {
+  if (!mediaService) {
+    const { createMediaService } = require('./media-service.cjs');
+    const mediaDataRoot = prepareWritableDataDir();
+    mediaService = createMediaService({
+      getWindow: () => mainWindow,
+      getFeatures: () => {
+        try {
+          const file = path.join(mediaDataRoot, 'config.json');
+          const stat = fs.lstatSync(file);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) return {};
+          const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+          return value.features && typeof value.features === 'object' ? value.features : {};
+        } catch { return {}; }
+      },
+      getGate: () => networkGate,
+      getCacheDirectory: () => path.join(mediaDataRoot, 'runtime', 'downloads'),
+      chooseSavePath: async (window, options) => {
+        const result = await dialog.showSaveDialog(window, options);
+        return result.canceled ? null : result.filePath;
+      },
+      onDiagnostic: (event) => console.warn('[Electron] Media transfer diagnostic', { code: event.code }),
+    });
   }
-  return downloadAdapter;
-}
-
-function downloadServiceEnabled() {
-  if (!getDownloadAdapter()) return false;
-  try {
-    const configPath = path.join(prepareWritableDataDir(), 'config.json');
-    const raw = fs.readFileSync(configPath, 'utf8');
-    return Boolean(JSON.parse(raw)?.features?.download_service_enabled);
-  } catch {
-    return false;
-  }
-}
-
-function requireDownloadAdapter() {
-  if (!downloadServiceEnabled()) {
-    throw new Error('REVERIE_DOWNLOAD_SERVICE_DISABLED');
-  }
-  return getDownloadAdapter();
+  return mediaService;
 }
 
 function registerDownloadHandlers(handle) {
-  handle('sniff:resources', () => {
-    requireDownloadAdapter();
-    if (!mainWindow || mainWindow.isDestroyed()) return [];
-    return mainWindow.webContents.executeJavaScript(`
-      (() => {
-        const resources = [];
-        document.querySelectorAll('video, audio').forEach((el) => {
-          const src = el.currentSrc || el.src;
-          if (src) resources.push({ url: src, type: el.tagName.toLowerCase(), title: document.title });
-          el.querySelectorAll('source').forEach((s) => {
-            if (s.src) resources.push({ url: s.src, type: s.type || 'media', title: document.title });
-          });
-        });
-        document.querySelectorAll('img').forEach((el) => {
-          if (el.src && el.naturalWidth > 100) {
-            resources.push({ url: el.src, type: 'image/' + (el.src.split('.').pop() || 'jpg'), title: el.alt || document.title, size: el.naturalWidth * el.naturalHeight });
-          }
-        });
-        return resources;
-      })()
-    `).catch(() => []);
-  });
-
-  handle('sniff:m3u8', async (_event, url) => {
-    const adapter = requireDownloadAdapter();
-    const target = boundedString(url, { label: 'm3u8 url', max: 2048 });
-    if (!/^https?:\/\//i.test(target)) {
-      throw new TypeError('m3u8 url must be http(s)');
-    }
-    // Guard against SSRF-style use of the sniff endpoint: local focus mode
-    // blocks outbound fetches (global fetch is gate-wrapped), but outside
-    // local mode the URL must still be http(s) and the response bounded.
-    if (networkGate?.snapshot?.()?.active && !/^https:\/\//i.test(target)) {
-      throw new TypeError('m3u8 sniffing is restricted during local focus mode');
-    }
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15_000);
-      let response;
-      try {
-        response = await fetch(target, { signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!response.ok) {
-        return { error: `m3u8 source returned HTTP ${response.status}` };
-      }
-      const MAX_M3U8_BYTES = 1 * 1024 * 1024;
-      const reader = response.body?.getReader?.();
-      let content = '';
-      if (reader) {
-        // Stream and bound the body so a hostile server cannot make the
-        // sniff endpoint buffer unbounded data before the size check.
-        const decoder = new TextDecoder();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          content += decoder.decode(value, { stream: true });
-          if (content.length > MAX_M3U8_BYTES) {
-            await reader.cancel?.();
-            return { error: 'm3u8 manifest exceeds the safe size limit' };
-          }
-        }
-      } else {
-        content = await response.text();
-      }
-      if (content.length > MAX_M3U8_BYTES) {
-        return { error: 'm3u8 manifest exceeds the safe size limit' };
-      }
-      return adapter.parseM3U8(content);
-    } catch (error) {
-      return { error: String(error?.message || error) };
-    }
-  });
-
-  handle('download:m3u8', async (event, input) => {
-    const adapter = requireDownloadAdapter();
-    assertPlainObject(input, 'm3u8 download');
-    if (typeof input.url !== 'string' || input.url.length > 2048
-      || typeof input.m3u8Content !== 'string' || input.m3u8Content.length > 8 * 1024 * 1024) {
-      throw new TypeError('m3u8 download payload is invalid');
-    }
-    if (!/^https?:\/\//i.test(input.url)) {
-      throw new TypeError('m3u8 download url must be http(s)');
-    }
-    const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl : '';
-    const onProgress = (progress) => {
-      try { event.sender.send('download:progress', progress); } catch {}
-    };
-    const buffer = await adapter.downloadM3U8Segments(
-      input.url,
-      baseUrl,
-      input.m3u8Content,
-      onProgress,
-    );
-    const tmpDir = path.join(require('os').tmpdir(), 'reverie-downloads');
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const tmpFile = path.join(
-      tmpDir,
-      `m3u8_${Date.now()}_${Math.random().toString(16).slice(2)}.ts`,
-    );
-    fs.writeFileSync(tmpFile, buffer);
-    return { path: tmpFile, size: buffer.length };
-  });
-
-  handle('download:direct', async (_event, input) => {
-    requireDownloadAdapter();
-    assertPlainObject(input, 'direct download');
-    const url = boundedString(input.url, { label: 'download url', max: 2048 });
-    const filename = input.filename == null ? '' : boundedString(input.filename, { label: 'download filename', max: 512 });
-    if (!/^https?:\/\//i.test(url)) throw new TypeError('download url must be http(s)');
-    const savePath = dialog.showSaveDialogSync(mainWindow, {
-      defaultPath: filename || path.basename(new URL(url).pathname) || 'download',
-    });
-    if (!savePath) return { cancelled: true };
-    mainWindow.webContents.downloadURL(url);
-    return new Promise((resolve) => {
-      mainWindow.webContents.session.once('will-download', (_ev, item) => {
-        item.setSavePath(savePath);
-        item.on('updated', () => {
-          if (item.isPaused()) return;
-          mainWindow.webContents.send('download:progress', {
-            current: item.getReceivedBytes(),
-            total: item.getTotalBytes(),
-            percentage: item.getTotalBytes()
-              ? Math.round((item.getReceivedBytes() / item.getTotalBytes()) * 100)
-              : 0,
-          });
-        });
-        item.on('done', (_e, state) => {
-          resolve({
-            path: savePath,
-            size: item.getReceivedBytes(),
-            state,
-            cancelled: state === 'cancelled',
-          });
-        });
-      });
-    });
-  });
+  handle('sniff:resources', (event) => getMediaService().sniffResources(event));
+  handle('sniff:m3u8', (event, url) => getMediaService().sniffM3u8(event, url));
+  handle('download:m3u8', (event, input) => getMediaService().downloadM3u8(event, input));
+  handle('download:direct', (event, input) => getMediaService().downloadDirect(event, input));
 }
 
 function requestPetBridge(type, payload, expectedTypes, timeoutMs = 15_000) {
@@ -2714,7 +2654,26 @@ function registerIpcHandlers() {
 
 function createTray() {
   if (tray) return;
-  tray = new Tray(getWindowIconPath());
+  let icon = getWindowIconPath();
+  if (process.platform === 'darwin') {
+    // AppKit cannot load ICO directly. Reuse its approved embedded PNG frame
+    // rather than introducing another logo or modifying the Windows resource.
+    const ico = fs.readFileSync(icon);
+    let png;
+    for (let index = 0; index < ico.readUInt16LE(4); index += 1) {
+      const entry = 6 + index * 16;
+      if (ico[entry] !== 32 || ico[entry + 1] !== 32) continue;
+      const length = ico.readUInt32LE(entry + 8);
+      const offset = ico.readUInt32LE(entry + 12);
+      png = ico.subarray(offset, offset + length);
+      break;
+    }
+    if (!png) throw new Error('Approved tray icon has no 32px PNG frame');
+    icon = nativeImage.createFromBuffer(png);
+    if (icon.isEmpty()) throw new Error('Approved tray PNG could not be decoded');
+    icon = icon.resize({ width: 18, height: 18 });
+  }
+  tray = new Tray(icon);
   tray.setToolTip('Reverie');
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '打开 Reverie', click: showMainWindow },
@@ -2738,7 +2697,11 @@ function createTray() {
 }
 
 function installWindowDiagnostics(windowRef) {
+  const rendererStartedAt = process.hrtime.bigint();
   windowRef.once('ready-to-show', () => windowRef.show());
+  windowRef.webContents.once('did-finish-load', () => {
+    logStartupStage('renderer-loaded', rendererStartedAt, { renderer: IS_DEV ? 'development' : 'reverie-app' });
+  });
   windowRef.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
     if (!isMainFrame) return;
     console.error('[Electron] Renderer load failed', { code, description, url });
@@ -2787,9 +2750,9 @@ function createWindow() {
   // handler is registered and receive a false denial.
   installPermissionPolicy(mainWindow.webContents.session, trustPolicy, () => mainWindow);
   mainWindow.webContents.session.on('will-download', (event) => {
-    // Downloads stay blocked unless the owner enabled the vendored cat-catch
-    // download service (features.download_service_enabled in config.json).
-    if (!downloadServiceEnabled()) event.preventDefault();
+    // Browser-initiated downloads cannot bypass the host media service's
+    // feature, network, destination and file-commit policy.
+    event.preventDefault();
   });
   if (IS_DEV) {
     mainWindow.loadURL(FRONTEND_DEV_URL).catch((error) => {
@@ -2985,6 +2948,7 @@ const hasSingleInstanceLock = acquireSingleInstance(app, showMainWindow, {
 if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     setupLogging();
+    logStartupStage('main-ready', null, { isPackaged: app.isPackaged, platform: process.platform, architecture: process.arch });
     createRuntimeModules();
     if (!IS_DEV) {
       unregisterAppProtocol = installAppProtocol(protocol, path.dirname(packagedIndex));
@@ -3062,6 +3026,8 @@ app.on('before-quit', (event) => {
     ipcRegistrar?.dispose();
     ipcRegistrar = null;
     focusManager?.dispose();
+    await mediaService?.dispose();
+    mediaService = null;
     for (const pending of petBridgeRequests.values()) {
       clearTimeout(pending.timer);
       pending.reject(Object.assign(new Error('Reverie is shutting down'), { code: 'REVERIE_SHUTDOWN' }));

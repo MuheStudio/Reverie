@@ -12,10 +12,12 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections import Counter
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -27,9 +29,16 @@ from typing import Callable, Iterable, TYPE_CHECKING
 
 from ..config.settings import FeatureSettings, MemorySettings, load_settings
 from ..persona.identity import identity_attack_flags, require_identity_safe_memory
-from .catalog import memory_terms
+from .catalog import (
+    CandidateFactConflict,
+    MemoryPinLimitExceeded,
+    StaleCandidateSelection,
+    StaleMemoryPinSelection,
+    StaleMemorySelection,
+    memory_terms,
+)
 from .candidates import explicit_fact_key, extract_memory_candidate
-from .cognitive_decay import CognitiveDecaySystem
+from .cognitive_decay import CognitiveDecaySystem, conversational_recall_active
 from .entity_index import entity_boost_candidates
 from .temporal_intent import detect_temporal_intent, temporal_recency_boost
 from .layers import MemoryLayers
@@ -59,6 +68,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("reverie.memory.manager")
 
+# The complete compact UTF-8 response stays below the production 1 MiB frame.
+# Reserve space for the event/frame wrappers and the bounded request ID.
+MEMORY_CANDIDATE_PAGE_MAX_BYTES = 900_000
+_MEMORY_CANDIDATE_PAGE_ENVELOPE_BYTES = 1_024
+
 
 class MemoryManager:
     """Central controller for all memory operations."""
@@ -71,7 +85,11 @@ class MemoryManager:
         adapter: "LLMAdapter | None" = None,
         feature_settings: FeatureSettings | None = None,
         state_scope: "PersonaModuleState | None" = None,
+        defer_startup_writes: bool = False,
     ) -> None:
+        # New on every normal construction, including persona remounts. A
+        # cursor from a previous process or manager must never become readable.
+        self._candidate_cursor_instance = uuid.uuid4().hex
         if settings is None:
             loaded_settings = load_settings()
             self.settings = loaded_settings.memory
@@ -90,6 +108,9 @@ class MemoryManager:
         if callable(getattr(self.persona, "seal_identity", None)):
             self.persona.seal_identity()
         self.adapter = adapter
+        # A composition root may pin the autonomous gate off for the manager's
+        # lifetime; runtime settings updates then cannot re-enable it.
+        self.autonomous_allowed = True
         self.autonomous_enabled = self.feature_settings.autonomous_memory_enabled
         self.autonomous_llm_enabled = self.feature_settings.autonomous_memory_llm_enabled
 
@@ -109,10 +130,11 @@ class MemoryManager:
             catalog_path=catalog_path,
             vector_quantization=self.settings.vector_quantization,
             vector_partitioning=self.settings.vector_partitioning_enabled,
+            defer_startup_writes=defer_startup_writes,
         )
 
         # Initialize layers (seeds permanent memory on first run)
-        self.layers = MemoryLayers(self.store, persona)
+        self.layers = MemoryLayers(self.store, persona, defer_startup_writes=defer_startup_writes)
 
         # P1D: Initialize fold worker and wire it to the catalog
         from .fold_worker import FoldWorker
@@ -327,41 +349,54 @@ class MemoryManager:
 
     def weaken_memory(self, memory_id: str, amount: float = 0.1) -> bool:
         """Lower a memory's importance without deleting it."""
-        self._require_current()
-        changed = self._commit(
-            lambda: self._adjust_memory_importance(memory_id, -abs(amount), touch=False)
-        )
-        if changed and self.settings.memory_lifecycle_governance_enabled:
-            self.store.catalog.record_usage_event(
-                memory_id=memory_id, signal="user_rejected", weight=-USER_SIGNAL_WEIGHT,
-            )
-        return changed
+        return bool(self.adjust_memory(memory_id, "weaken", amount=amount).get("changed"))
 
     def strengthen_memory(self, memory_id: str, amount: float = 0.1) -> bool:
         """Raise a memory's importance so it is retained and retrieved more often."""
-        self._require_current()
-        changed = self._commit(
-            lambda: self._adjust_memory_importance(memory_id, abs(amount), touch=False)
-        )
-        if changed and self.settings.memory_lifecycle_governance_enabled:
-            self.store.catalog.record_usage_event(
-                memory_id=memory_id, signal="user_confirmed", weight=USER_SIGNAL_WEIGHT,
-            )
-        return changed
+        return bool(self.adjust_memory(memory_id, "strengthen", amount=amount).get("changed"))
 
     def reactivate_memory(self, memory_id: str, amount: float = 0.15) -> bool:
         """Refresh a memory's timestamp and strengthen it after renewed relevance."""
+        return bool(self.adjust_memory(memory_id, "reactivate", amount=amount).get("changed"))
+
+    def adjust_memory(self, memory_id: str, op: str, *, amount: float | None = None) -> dict:
+        """Adjust one current confirmed fact and report its canonical before/after values."""
         self._require_current()
-        def commit_reactivation() -> bool:
-            reactivated = self.store.catalog.reactivate(memory_id)
-            strengthened = self._adjust_memory_importance(memory_id, abs(amount), touch=True)
-            return reactivated or strengthened
-        changed = self._commit(commit_reactivation)
-        if changed and self.settings.memory_lifecycle_governance_enabled:
+        if op not in {"strengthen", "weaken", "reactivate"}:
+            raise ValueError(f"Unsupported memory adjust op: {op}")
+        delta = abs((0.15 if op == "reactivate" else 0.1) if amount is None else amount)
+        if op == "weaken":
+            delta = -delta
+        not_adjustable = {"ok": False, "error_code": "memory_not_adjustable",
+                          "error": "这条记忆当前不能调整", "op": op, "memory_id": memory_id}
+
+        def commit_adjustment() -> dict:
+            target = self.store.catalog.get(memory_id)
+            if (
+                target is None
+                or target.get("confirmation_state") != "confirmed"
+                or target.get("lifecycle_state") != "active"
+            ):
+                return not_adjustable
+            before = float(0.5 if target.get("importance") is None else target["importance"])
+            after = round(max(0.0, min(1.0, before + delta)), 6)
+            changed = after != before or op == "reactivate"
+            if changed:
+                if not self.store.catalog.update_importance(memory_id, after):
+                    return not_adjustable
+                if op == "reactivate":
+                    self.store.catalog.touch_access([memory_id])
+            return {"ok": True, "op": op, "memory_id": memory_id, "changed": changed,
+                    "importance_before": before, "importance_after": after}
+
+        result = self._commit(commit_adjustment)
+        if result.get("changed") and self.settings.memory_lifecycle_governance_enabled:
             self.store.catalog.record_usage_event(
-                memory_id=memory_id, signal="user_confirmed", weight=USER_SIGNAL_WEIGHT,
+                memory_id=memory_id,
+                signal="user_rejected" if op == "weaken" else "user_confirmed",
+                weight=-USER_SIGNAL_WEIGHT if op == "weaken" else USER_SIGNAL_WEIGHT,
             )
-        return changed
+        return result
 
     def pin_memory(self, memory_id: str) -> dict:
         """Pin one memory: budget pressure and confusion never set it aside.
@@ -379,6 +414,22 @@ class MemoryManager:
     def unpin_memory(self, memory_id: str) -> bool:
         self._require_current()
         return self.store.catalog.set_pinned(memory_id, False)
+
+    def pin_status(self, memory_ids: list[str]) -> dict:
+        """Preview a revision selection without memory activity or timestamp writes."""
+        self._require_current()
+        return self.store.catalog.pin_status(memory_ids)
+
+    def pin_confirmed_memories(self, memory_ids: list[str], pinned: bool) -> dict:
+        """Set a batch's pin state within the active persona's commit boundary."""
+        self._require_current()
+        try:
+            return self._commit(lambda: self.store.catalog.pin_confirmed_memories(memory_ids, pinned))
+        except StaleMemoryPinSelection as exc:
+            return {"ok": False, "error_code": "stale_selection", "error": str(exc),
+                    "stale_ids": exc.stale_ids}
+        except MemoryPinLimitExceeded as exc:
+            return {"ok": False, "error_code": "pin_limit_exceeded", "error": str(exc)}
 
     # ── Lifecycle governance (P0 batch) ────────────────────
 
@@ -544,6 +595,67 @@ class MemoryManager:
         self._require_current()
         return self.store.catalog.list_candidates(status=status, limit=limit)
 
+    def list_memory_candidates_page(
+        self,
+        *,
+        status: str = "pending",
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> dict:
+        """Return a bounded candidate page tied to this manager and status."""
+
+        self._require_current()
+        instance = self._candidate_cursor_instance
+        if status not in {"pending", "confirmed", "rejected", "all"}:
+            raise ValueError("Unsupported memory candidate status")
+        after = None
+        if cursor is not None:
+            after = _decode_memory_candidate_cursor(cursor, status, instance)
+            if after is None:
+                return _memory_candidate_page_error(
+                    status, "invalid_cursor", "Memory candidate cursor is invalid for this list",
+                )
+        rows, next_after = self.store.catalog.list_candidates_page(
+            status=status, limit=limit, after=after,
+        )
+        if not rows and next_after is not None:
+            return _memory_candidate_page_error(
+                status, "invalid_candidate_page", "Memory candidate page could not be read",
+            )
+
+        selected: list[dict] = []
+        candidate_bytes = 0
+        for index, row in enumerate(rows):
+            more = index + 1 < len(rows) or next_after is not None
+            next_cursor = (_encode_memory_candidate_cursor(
+                (row["created_at"], row["id"]), status, instance,
+            ) if more else None)
+            # Account for the complete response metadata, the actual cursor,
+            # every field in each candidate, and commas between candidates.
+            response = {"ok": True, "status": status, "candidates": [],
+                        "has_more": more, "next_cursor": next_cursor}
+            row_bytes = len(_compact_candidate_json(row))
+            size = (len(_compact_candidate_json(response)) + candidate_bytes
+                    + row_bytes + len(selected) + _MEMORY_CANDIDATE_PAGE_ENVELOPE_BYTES)
+            if size > MEMORY_CANDIDATE_PAGE_MAX_BYTES:
+                if not selected:
+                    return _memory_candidate_page_error(
+                        status, "candidate_page_too_large",
+                        "A memory candidate exceeds the response size limit",
+                    )
+                break
+            selected.append(row)
+            candidate_bytes += row_bytes
+
+        has_more = len(selected) < len(rows) or next_after is not None
+        # Resume after the last row actually delivered, including a page that
+        # was shortened by the byte budget. Candidate text is never truncated.
+        next_cursor = (_encode_memory_candidate_cursor(
+            (selected[-1]["created_at"], selected[-1]["id"]), status, instance,
+        ) if has_more else None)
+        return {"ok": True, "status": status, "candidates": selected,
+                "has_more": has_more, "next_cursor": next_cursor}
+
     def confirm_memory_candidate(self, candidate_id: str) -> dict:
         self._require_current()
         result = self._commit(
@@ -561,9 +673,35 @@ class MemoryManager:
             lambda: self.store.catalog.reject_candidate(candidate_id)
         )
 
+    def memory_candidate_status(self, candidate_ids: list[str]) -> dict:
+        """Preview a candidate selection without decisions or activity writes."""
+        self._require_current()
+        return self.store.catalog.candidate_status(candidate_ids)
+
+    def decide_memory_candidates(self, candidate_ids: list[str], decision: str) -> dict:
+        """Confirm or reject a candidate batch within the active persona's commit boundary."""
+        self._require_current()
+        try:
+            result = self._commit(
+                lambda: self.store.catalog.decide_candidates(
+                    candidate_ids,
+                    decision,
+                    embedding_model_version=self.store.runtime.model_version,
+                )
+            )
+        except StaleCandidateSelection as exc:
+            return {"ok": False, "error_code": "stale_selection", "error": str(exc),
+                    "stale_ids": exc.stale_ids}
+        except CandidateFactConflict as exc:
+            return {"ok": False, "error_code": "fact_conflict", "error": str(exc),
+                    "conflict_groups": exc.groups}
+        if decision == "confirm":
+            self._last_memory_activity_at = time.monotonic()
+        return result
+
     @staticmethod
     def _confirmed_memory_view(row: dict) -> dict:
-        """Project the review surface without vector or internal scoring data."""
+        """Project the review surface with its user-adjustable importance."""
 
         return {
             "id": str(row.get("id", "")),
@@ -579,6 +717,40 @@ class MemoryManager:
             "updated_at": float(row.get("updated_at", 0.0) or 0.0),
             "protection_tier": int(row.get("protection_tier", 0) or 0),
             "pinned": bool(int(row.get("pinned", 0) or 0)),
+            "importance": round(max(0.0, min(1.0, float(
+                0.5 if row.get("importance") is None else row["importance"]
+            ))), 6),
+        }
+
+    def list_confirmed_memories_page(
+        self,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+        query: str | None = None,
+    ) -> dict:
+        """One page of the review surface; the cursor is bound to its query."""
+
+        self._require_current()
+        literal = (query or "").strip()
+        after = None
+        if cursor is not None:
+            after = _decode_memory_list_cursor(cursor, literal)
+            if after is None:
+                return {"ok": False, "error_code": "invalid_cursor",
+                        "error": "Memory list cursor is invalid for this query",
+                        "memories": [], "has_more": False, "next_cursor": None,
+                        "query": literal}
+        rows, next_after = self.store.catalog.list_confirmed_page(
+            limit=limit, after=after, query=literal,
+        )
+        return {
+            "ok": True,
+            "memories": [self._confirmed_memory_view(row) for row in rows],
+            "has_more": next_after is not None,
+            "next_cursor": (_encode_memory_list_cursor(next_after, literal)
+                            if next_after is not None else None),
+            "query": literal,
         }
 
     def list_confirmed_memories(self, *, limit: int = 100) -> list[dict]:
@@ -663,6 +835,30 @@ class MemoryManager:
             "memory_id": str(memory_id),
             "deleted": str(memory_id) in deleted_ids,
             "purged_revisions": len(deleted_ids),
+        }
+
+    def delete_confirmed_memories(self, memory_ids: list[str]) -> dict:
+        """Purge a selected batch only while every selected revision is current."""
+
+        self._require_current()
+        if not isinstance(memory_ids, list):
+            raise ValueError("memory_ids must be a list")
+        selected_ids = list(memory_ids)
+        try:
+            purged_ids = self._commit(
+                lambda: self.store.delete_confirmed_memories(selected_ids)
+            )
+        except StaleMemorySelection as exc:
+            return {
+                "ok": False,
+                "error_code": "stale_selection",
+                "error": str(exc),
+                "stale_ids": exc.stale_ids,
+            }
+        return {
+            "ok": True,
+            "deleted_ids": selected_ids,
+            "purged_revisions": len(purged_ids),
         }
 
     def confirm_explicit_statement(
@@ -810,6 +1006,12 @@ class MemoryManager:
             "memory": self._confirmed_memory_view(memory) if memory else None,
         }
 
+    def pin_autonomous_gate_off(self) -> None:
+        """Keep the autonomous memory gate off for this manager's lifetime."""
+        self.autonomous_allowed = False
+        self.autonomous_enabled = False
+        self.autonomous_llm_enabled = False
+
     def apply_settings(
         self,
         memory_settings: MemorySettings | None = None,
@@ -827,8 +1029,9 @@ class MemoryManager:
         if feature_settings is not None:
             self.feature_settings = feature_settings
 
-        self.autonomous_enabled = self.feature_settings.autonomous_memory_enabled
-        self.autonomous_llm_enabled = self.feature_settings.autonomous_memory_llm_enabled
+        allowed = getattr(self, "autonomous_allowed", True)
+        self.autonomous_enabled = allowed and self.feature_settings.autonomous_memory_enabled
+        self.autonomous_llm_enabled = allowed and self.feature_settings.autonomous_memory_llm_enabled
         self.forgetting.forgetting_enabled = self.settings.forgetting_enabled
         self.forgetting.long_term_forgetting_enabled = self.settings.long_term_forgetting_enabled
         self.forgetting.short_term_forgetting_enabled = self.settings.short_term_forgetting_enabled
@@ -914,22 +1117,31 @@ class MemoryManager:
         """Refresh stable user profile facts in permanent memory."""
         self._require_current()
         facts = user_manager.profile_facts()
-        if not facts:
-            return 0
-        # Anchored rows carry the prefix, so only non-anchored copies (e.g.
-        # user-confirmed facts) suppress re-seeding; the anchored set itself is
-        # always rebuilt. Delete + reinsert runs in one canonical-store
-        # transaction: a crash mid-sync must never leave the permanent layer
-        # without any profile anchors.
+        prefixes = ("用户档案：", "User profile:")
+        rows = self.store.list_by_layer("permanent")
+
+        def is_profile_anchor(row: dict) -> bool:
+            return bool(
+                row.get("source_type") == "user_profile"
+                and str(row.get("text", "")).startswith(prefixes)
+            )
+
+        # Prefixes alone are not provenance: independently confirmed and
+        # unknown-source rows may use the same wording. Preserve those rows
+        # and their IDs, and suppress duplicate derived copies. Only explicit
+        # user_profile anchors participate in the atomic replacement.
         skip = {
-            text
-            for text in self.layers.get_permanent_memories()
-            if not text.startswith("用户档案：") and not text.startswith("User profile:")
+            row["text"] for row in rows if not is_profile_anchor(row)
         }
+        desired = {fact for fact in facts if fact not in skip}
+        existing = {row["text"] for row in rows if is_profile_anchor(row)}
+        if existing == desired:
+            return 0
         inserted = self.store.replace_permanent_profile_facts(
-            ("用户档案：", "User profile:"),
+            prefixes,
             facts,
             skip_texts=skip,
+            source_type="user_profile",
         )
         if inserted:
             logger.info("Seeded %d permanent memory facts from user profile", inserted)
@@ -1065,10 +1277,25 @@ class MemoryManager:
         k: int = 6,
         *,
         allow_fuzzy: bool = True,
+        record_access: bool = True,
     ) -> list[str]:
         """Bounded hybrid recall across semantics, time, emotion, and salience."""
+        return self._retrieve_relevant(
+            query, k=k, allow_fuzzy=allow_fuzzy, record_access=record_access,
+        )
+
+    def _retrieve_relevant(
+        self,
+        query: str,
+        k: int = 6,
+        *,
+        allow_fuzzy: bool = True,
+        record_access: bool = True,
+        observation: dict[str, str] | None = None,
+    ) -> list[str]:
         self._require_current()
-        self._last_memory_activity_at = time.monotonic()
+        if record_access:
+            self._last_memory_activity_at = time.monotonic()
         permanent_rows = self.store.catalog.permanent_candidates(
             query, limit=max(80, min(400, k * 24)),
         )
@@ -1077,8 +1304,15 @@ class MemoryManager:
         # Keep this call as an explicit failure boundary. Lexical recall remains
         # available during re-embedding, while a broken index cannot poison a turn.
         try:
-            vector_texts = self.layers.search_all(query, k=max(12, k * 4))
+            if observation is None:
+                vector_texts = self.layers.search_all(query, k=max(12, k * 4))
+            else:
+                vector_texts = self.layers._search_all(
+                    query, k=max(12, k * 4), observation=observation,
+                )
         except Exception:
+            if observation is not None and observation.get("reason") != "model_unavailable":
+                observation.update(mode="unknown", reason="retrieval_path_unverified")
             logger.exception("Memory semantic search failed; continuing with bounded lexical recall")
             vector_texts = []
 
@@ -1193,6 +1427,9 @@ class MemoryManager:
         selected_terms: list[set[str]] = []
         character_budget = 3600
         used_characters = 0
+        # A chat turn may fail to recall one old memory; the next candidate can
+        # take its place. The skipped row is neither touched nor injected.
+        may_lapse = allow_fuzzy and record_access and conversational_recall_active()
         for _score, row in scored:
             text = str(row.get("text", "")).strip()
             if not text or text in permanent:
@@ -1201,6 +1438,9 @@ class MemoryManager:
             if any(self._term_similarity(terms, prior) >= 0.82 for prior in selected_terms):
                 continue
             if used_characters + len(text) > character_budget:
+                continue
+            if may_lapse and self.forgetting.lapses(row):
+                may_lapse = False
                 continue
             selected_rows.append(row)
             selected_terms.append(terms)
@@ -1216,7 +1456,7 @@ class MemoryManager:
             )
         else:
             rendered = [str(row["text"]) for row in selected_rows]
-        if self.settings.memory_lifecycle_governance_enabled:
+        if record_access and self.settings.memory_lifecycle_governance_enabled:
             # P0-3：登记本轮注入（permanent 身份记忆常驻注入，不计信号）。
             now_ts = time.time()
             self._pending_injection = [
@@ -1224,7 +1464,8 @@ class MemoryManager:
                 for row in selected_rows
                 if str(row.get("layer", row.get("retention_layer", ""))) != "permanent"
             ]
-        self.store.catalog.touch_access(str(row.get("id", "")) for row in selected_rows)
+        if record_access:
+            self.store.catalog.touch_access(str(row.get("id", "")) for row in selected_rows)
         return [*permanent, *rendered]
 
     @staticmethod
@@ -1275,7 +1516,23 @@ class MemoryManager:
 
     def search(self, query: str, k: int = 5) -> list[str]:
         """Use the same bounded hybrid recall path as prompt assembly."""
-        return self.retrieve_relevant(query, k=k, allow_fuzzy=False)
+        return self.retrieve_relevant(query, k=k, allow_fuzzy=False, record_access=False)
+
+    def query_recall(self, query: str, k: int = 5) -> dict:
+        """Read-only recall with evidence from this invocation's vector path."""
+        observation = {"mode": "unknown", "reason": "retrieval_path_unverified"}
+        memories = self._retrieve_relevant(
+            query, k=k, allow_fuzzy=False, record_access=False, observation=observation,
+        )
+        try:
+            _indexed, pending = self.store.catalog.embedding_counts(self.store.runtime.model_version)
+            if type(pending) is not int or pending < 0:
+                pending = None
+        except Exception:
+            # Pending is a separate diagnostic; its failure cannot change the
+            # result or the vector-path evidence from this invocation.
+            pending = None
+        return {"memories": memories, "retrieval": {**observation, "indexPending": pending}}
 
     def list_event_facts_for_date(self, date_str: str, k: int = 20) -> list[str]:
         """Return event facts whose persisted timestamp belongs to one local day.
@@ -1527,6 +1784,7 @@ class MemoryManager:
         *,
         replace: bool = False,
         before_commit: Callable[[], None] | None = None,
+        after_commit: Callable[[], None] | None = None,
         restore_marker: str = "",
     ) -> int:
         """Validate and import an unbounded iterator in one SQLite transaction."""
@@ -1569,6 +1827,7 @@ class MemoryManager:
                 normalized_records(),
                 replace=replace,
                 before_commit=before_commit,
+                after_commit=after_commit,
                 restore_marker=restore_marker,
             )
 
@@ -1646,7 +1905,7 @@ class MemoryManager:
             "cognitive_layer": str(row.get("cognitive_layer", "semantic")),
             "timestamp": float(row.get("timestamp", time.time()) or time.time()),
             "event_time": row.get("event_time"),
-            "importance": float(row.get("importance", 0.5) or 0.5),
+            "importance": float(0.5 if row.get("importance") is None else row["importance"]),
             "emotions": dict(row.get("emotions", {})) if isinstance(row.get("emotions"), dict) else {},
             "source_type": str(row.get("source_type", "local_interaction")),
             "source_uri": str(row.get("source_uri", "")),
@@ -1670,7 +1929,7 @@ class MemoryManager:
         if not target:
             return False
 
-        old_importance = float(target.get("importance", 0.5) or 0.5)
+        old_importance = float(0.5 if target.get("importance") is None else target["importance"])
         new_importance = max(0.0, min(1.0, old_importance + delta))
         changed = self.store.catalog.update_importance(memory_id, new_importance)
         if changed and touch:
@@ -1683,3 +1942,112 @@ def re_split_memory_terms(text: str) -> list[str]:
     import re
 
     return re.findall(r"[\u4e00-\u9fff]{2,}|[a-zA-Z0-9_]{2,}", text.lower())
+
+
+_MEMORY_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_MEMORY_CANDIDATE_ID_PATTERN = re.compile(r"^mc_[a-f0-9]{32}$")
+_MEMORY_CANDIDATE_INSTANCE_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+
+
+def _compact_candidate_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"),
+                      allow_nan=False).encode("utf-8")
+
+
+def _memory_candidate_page_error(status: str, code: str, message: str) -> dict:
+    return {"ok": False, "status": status, "candidates": [], "has_more": False,
+            "next_cursor": None, "error_code": code, "error": message}
+
+
+def _encode_memory_candidate_cursor(
+    after: tuple[float, str], status: str, instance: str,
+) -> str:
+    created_at, candidate_id = after
+    if (isinstance(created_at, bool) or not isinstance(created_at, (int, float))
+            or not math.isfinite(float(created_at))
+            or not isinstance(candidate_id, str)
+            or not _MEMORY_CANDIDATE_ID_PATTERN.fullmatch(candidate_id)
+            or status not in {"pending", "confirmed", "rejected", "all"}
+            or not isinstance(instance, str)
+            or not _MEMORY_CANDIDATE_INSTANCE_PATTERN.fullmatch(instance)):
+        raise ValueError("Invalid memory candidate page position")
+    body = _compact_candidate_json({
+        "kind": "memory_candidates", "status": status, "instance": instance,
+        "created_at": float(created_at), "id": candidate_id,
+    })
+    return "mc1." + base64.urlsafe_b64encode(body).decode("ascii").rstrip("=")
+
+
+def _unique_cursor_fields(pairs: list[tuple[str, object]]) -> dict:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Duplicate cursor field")
+        value[key] = item
+    return value
+
+
+def _decode_memory_candidate_cursor(
+    cursor: str, status: str, instance: str,
+) -> tuple[float, str] | None:
+    if not isinstance(cursor, str) or not cursor.startswith("mc1.") or len(cursor) > 512:
+        return None
+    encoded = cursor[4:]
+    if not encoded or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        if base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != encoded:
+            return None
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_cursor_fields)
+        if not isinstance(value, dict) or set(value) != {
+            "kind", "status", "instance", "created_at", "id",
+        }:
+            return None
+        created_at, candidate_id = value["created_at"], value["id"]
+        if (value["kind"] != "memory_candidates" or value["status"] != status
+                or not isinstance(value["instance"], str) or value["instance"] != instance
+                or not _MEMORY_CANDIDATE_INSTANCE_PATTERN.fullmatch(value["instance"])
+                or isinstance(created_at, bool) or not isinstance(created_at, (int, float))
+                or not math.isfinite(float(created_at))
+                or not isinstance(candidate_id, str)
+                or not _MEMORY_CANDIDATE_ID_PATTERN.fullmatch(candidate_id)):
+            return None
+    except (ValueError, UnicodeDecodeError, OverflowError):
+        return None
+    return float(created_at), candidate_id
+
+
+def _memory_list_query_digest(query: str) -> str:
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+
+
+def _encode_memory_list_cursor(after: tuple[float, str], query: str) -> str:
+    body = json.dumps({"c": float(after[0]), "i": str(after[1]),
+                       "q": _memory_list_query_digest(query)},
+                      separators=(",", ":"), allow_nan=False)
+    return "v1." + base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_memory_list_cursor(cursor: str, query: str) -> tuple[float, str] | None:
+    """Return the keyset position, or None for any malformed or foreign cursor."""
+
+    if not isinstance(cursor, str) or not cursor.startswith("v1.") or len(cursor) > 512:
+        return None
+    encoded = cursor[3:]
+    if not encoded or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        value = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(value, dict) or set(value) != {"c", "i", "q"}:
+        return None
+    created_at, memory_id, digest = value["c"], value["i"], value["q"]
+    if (isinstance(created_at, bool) or not isinstance(created_at, (int, float))
+            or not math.isfinite(float(created_at))
+            or not isinstance(memory_id, str) or not _MEMORY_ID_PATTERN.fullmatch(memory_id)
+            or digest != _memory_list_query_digest(query)):
+        return None
+    return float(created_at), memory_id

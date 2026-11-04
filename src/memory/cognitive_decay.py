@@ -1,12 +1,17 @@
 """Non-destructive memory decay and retrieval-time fuzzy recall.
 
 Canonical memories are never deleted or rewritten by this module. Forgetting
-means that a memory becomes harder to retrieve. A rare misremembering event is
-an ephemeral, auditable projection made from two eligible memories.
+means that a memory becomes harder to retrieve; during a conversation an old,
+unrecalled memory may also slip one turn by its layer's forget probability. A
+rare misremembering event is an ephemeral, auditable projection made from two
+eligible memories.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import logging
 import math
@@ -45,6 +50,25 @@ _DOMAIN_MARKERS: dict[str, tuple[str, ...]] = {
 
 # Single source of truth lives in lifecycle_constants (shared with catalog).
 _PROTECTED_FACT_MARKERS = _BASE_PROTECTED_MARKERS + PROMISE_FACT_MARKERS
+
+# Set only around a chat turn's own recall. Direct retrieval, search and the
+# query-only recall page never see a lapse.
+_CONVERSATIONAL_RECALL: ContextVar[bool] = ContextVar("reverie_conversational_recall", default=False)
+
+
+@contextmanager
+def conversational_recall() -> Iterator[None]:
+    """Mark the enclosed retrieval as recall during a conversation turn."""
+    token = _CONVERSATIONAL_RECALL.set(True)
+    try:
+        yield
+    finally:
+        _CONVERSATIONAL_RECALL.reset(token)
+
+
+def conversational_recall_active() -> bool:
+    return _CONVERSATIONAL_RECALL.get()
+
 
 _CORRECTION_MARKERS = (
     "\u8bb0\u9519", "\u641e\u9519", "\u8bb0\u53cd", "\u8bb0\u4e32", "\u6211\u8bf4\u7684\u662f",
@@ -97,7 +121,8 @@ class CognitiveDecaySystem:
         self.short_term_forgetting_enabled = bool(short_term_forgetting_enabled)
         self.long_term_forget_days = max(1, int(long_term_forget_days))
         self.short_term_forget_days = max(1, int(short_term_forget_days))
-        # Legacy deletion probabilities remain readable for old backups but are not executed.
+        # Per-layer forget probabilities drive lapses(); nothing is deleted. The
+        # global value is only the legacy fallback for both layers.
         self.forget_probability = float(forget_probability)
         self.long_term_forget_probability = float(
             forget_probability if long_term_forget_probability is None else long_term_forget_probability
@@ -150,7 +175,9 @@ class CognitiveDecaySystem:
         except (TypeError, ValueError):
             elapsed_days = 0.0
 
-        importance = max(0.0, min(1.0, float(memory.get("importance", 0.5) or 0.5)))
+        importance = max(0.0, min(1.0, float(
+            0.5 if memory.get("importance") is None else memory["importance"]
+        )))
         emotions = memory.get("emotions")
         emotion_intensity = 0.0
         if isinstance(emotions, dict):
@@ -183,7 +210,9 @@ class CognitiveDecaySystem:
         """Implement importance * exp(-lambda*t) * bounded recall reinforcement."""
         if str(memory.get("layer", "")) == "permanent":
             return 1.0
-        importance = max(0.0, min(1.0, float(memory.get("importance", 0.5) or 0.5)))
+        importance = max(0.0, min(1.0, float(
+            0.5 if memory.get("importance") is None else memory["importance"]
+        )))
         references = max(
             0,
             int(memory.get("access_count", 0) or 0)
@@ -192,6 +221,41 @@ class CognitiveDecaySystem:
         )
         reinforcement = 1.0 + self.recall_reinforcement_alpha * math.log1p(references)
         return max(0.0, min(1.5, importance * self.retention(memory, now=now) * reinforcement))
+
+    def lapses(self, memory: dict, *, now: float | None = None) -> bool:
+        """Whether an old, unrecalled memory slips this one turn.
+
+        Eligible only in an enabled layer, unprotected, and unrecalled for at
+        least that layer's forget days. The row itself never changes; a row
+        that is not eligible does not consume a random draw.
+        """
+        if not self.forgetting_enabled or self._is_protected(memory):
+            return False
+        layer = str(memory.get("layer", memory.get("retention_layer", "")))
+        if layer == "long_term":
+            enabled = self.long_term_forgetting_enabled
+            threshold = self.long_term_forget_days
+            probability = self.long_term_forget_probability
+        elif layer == "short_term":
+            enabled = self.short_term_forgetting_enabled
+            threshold = self.short_term_forget_days
+            probability = self.short_term_forget_probability
+        else:
+            return False
+        if not enabled:
+            return False
+        anchor = memory.get("last_accessed")
+        if anchor is None:
+            anchor = memory.get("timestamp")
+        current = time.time() if now is None else float(now)
+        try:
+            idle_days = (current - float(anchor)) / SECONDS_PER_DAY
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(idle_days) or idle_days < int(threshold):
+            return False
+        bounded = max(0.0, min(0.10, float(probability)))
+        return bounded > 0.0 and random.random() < bounded
 
     async def run_forgetting_cycle(self) -> dict:
         """Measure latent memories. This maintenance pass never deletes or mutates them."""
@@ -292,7 +356,9 @@ class CognitiveDecaySystem:
                 return False
             row = self.store.catalog.get(memory_id)
             if row:
-                importance = min(1.0, float(row.get("importance", 0.5) or 0.5) + 0.03)
+                importance = min(1.0, float(
+                    0.5 if row.get("importance") is None else row["importance"]
+                ) + 0.03)
                 self.store.catalog.update_importance(memory_id, importance)
                 self.store.catalog.touch_access([memory_id])
             return True
@@ -352,9 +418,12 @@ class CognitiveDecaySystem:
     def _is_protected(row: dict) -> bool:
         if str(row.get("layer", row.get("retention_layer", ""))) == "permanent":
             return True
+        # A pinned memory is never confused or forgotten (see pin_memory).
+        if int(row.get("pinned", 0) or 0):
+            return True
         if str(row.get("cognitive_layer", "")) == "procedural":
             return True
-        if float(row.get("importance", 0.5) or 0.5) >= 0.9:
+        if float(0.5 if row.get("importance") is None else row["importance"]) >= 0.9:
             return True
         text = str(row.get("text", "")).casefold()
         return any(marker in text for marker in _PROTECTED_FACT_MARKERS)

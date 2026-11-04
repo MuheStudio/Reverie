@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
@@ -13,9 +13,10 @@ import {
 } from 'lucide-react';
 import { Chess, type Move as ChessMove, type Square } from 'chess.js';
 import GoBoard, { type Sign, type Vertex } from '@sabaki/go-board';
-import { Xiangqi } from 'elephantops/xiangqi';
-import { squareFromCoords } from 'elephantops/util';
-import type { Move as XiangqiMove, Role, Square as XiangqiSquare } from 'elephantops/types';
+import { initialXiangqi, replayXiangqi, xiangqiSquare, xiangqiLegalMoves, xiangqiOutcome, xiangqiInCheck, parseXiangqiMove, chooseXiangqiPracticeMove, type XiangqiRole } from './xiangqiEngine';
+import { XiangqiState } from './xiangqiState';
+import { xiangqiBoardText } from './xiangqiPrompt';
+import type { ArchivePersonaProof } from '@/lib/archiveOperationScope';
 import { Engine, type TetrisState } from 'tetris-engine';
 import type { PhoneAppPanelId } from './roomState';
 import { WSMsgType, type WSRequestOptions } from '@/hooks/useReverieWS';
@@ -38,9 +39,11 @@ import {
 import styles from './MiniGamePanel.module.scss';
 
 interface MiniGamePanelProps {
+  active?: boolean;
   game: PhoneAppPanelId;
   connected: boolean;
   gameStateClient: {
+    personaScope?: ArchivePersonaProof | null;
     request<T = unknown>(
       type: string,
       payload: unknown,
@@ -230,12 +233,6 @@ function isGomokuState(value: unknown): value is GomokuState {
     && item.board.length === 225
     && Array.isArray(item.moves),
   );
-}
-
-function isStoredXiangqiMoves(value: unknown): value is StoredXiangqiMove[] {
-  return Array.isArray(value)
-    && value.length <= 1000
-    && value.every((move) => Number.isInteger(move?.from) && Number.isInteger(move?.to));
 }
 
 function isNonNegativeScore(value: unknown): value is number {
@@ -578,174 +575,89 @@ function ChessGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePane
   );
 }
 
-interface StoredXiangqiMove { from: number; to: number }
-
-function xiangqiFromMoves(moves: StoredXiangqiMove[]): Xiangqi {
-  const position = Xiangqi.default();
-  for (const move of moves) {
-    if (!position.isLegal(move)) break;
-    position.play(move);
-  }
-  return position;
-}
-
-const XIANGQI_LABELS: Record<`red:${Role}` | `black:${Role}`, string> = {
+const XIANGQI_LABELS: Record<`red:${XiangqiRole}` | `black:${XiangqiRole}`, string> = {
   'red:king': '帅', 'red:advisor': '仕', 'red:elephant': '相', 'red:horse': '马',
   'red:chariot': '车', 'red:cannon': '炮', 'red:pawn': '兵',
   'black:king': '将', 'black:advisor': '士', 'black:elephant': '象', 'black:horse': '马',
   'black:chariot': '车', 'black:cannon': '炮', 'black:pawn': '卒',
 };
-const XIANGQI_VALUE: Record<Role, number> = {
-  king: 1000, chariot: 90, cannon: 45, horse: 40, elephant: 20, advisor: 20, pawn: 10,
-};
-
-function chooseXiangqiMove(position: Xiangqi): XiangqiMove | null {
-  let best: XiangqiMove | null = null;
-  let bestScore = -Infinity;
-  for (const [from, destinations] of position.allDests()) {
-    for (const to of destinations) {
-      const captured = position.board.get(to);
-      const probe = position.clone();
-      probe.play({ from, to });
-      const score = (captured ? XIANGQI_VALUE[captured.role] * 10 : 0)
-        + (probe.isCheckmate() ? 100_000 : probe.isCheck() ? 20 : 0)
-        + Math.random() * 5;
-      if (score > bestScore) { best = { from, to }; bestScore = score; }
-    }
-  }
-  return best;
-}
-
-function XiangqiGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelProps, 'game'>) {
-  const [moves, setMoves] = useAuthoritativeGameState(
-    gameStateClient,
-    connected,
-    'xiangqi',
-    'reverie:game:xiangqi:v2',
-    () => [] as StoredXiangqiMove[],
-    isStoredXiangqiMoves,
-  );
-  const [selected, setSelected] = useState<XiangqiSquare | null>(null);
+function XiangqiGame({ connected, gameStateClient, onInviteAI, active: viewActive = true }: Omit<MiniGamePanelProps, 'game'>) {
+  const proof = gameStateClient.personaScope;
+  const request = gameStateClient.request;
+  const scopedClient = useMemo(() => ({ request: <T,>(type: string, payload: unknown, options: WSRequestOptions) => request<T>(type, payload, { ...options, personaScope: proof ?? undefined }) }),
+    [request, proof?.persona_id, proof?.persona_epoch, proof?.persona_fingerprint]);
+  const controller = useMemo(() => new XiangqiState(scopedClient, proof ? Object.freeze({ ...proof }) : null, connected),
+    [scopedClient, connected]);
+  const saved = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  useEffect(() => { controller.activate(); void controller.load(); return () => controller.dispose(); }, [controller]);
+  const moves = saved.moves;
+  const replay = useMemo(() => replayXiangqi(moves), [moves]);
+  const position = replay.valid ? replay.position : initialXiangqi();
+  const [selected, setSelected] = useState<number | null>(null);
   const [thinking, setThinking] = useState(false);
-  const position = useMemo(() => xiangqiFromMoves(moves), [moves]);
-  const targets = useMemo(() => selected === null ? [] : [...position.dests(selected)], [position, selected]);
-  const opponent = useCompanionOpponent('xiangqi', gameStateClient, connected);
-  const positionRef = useRef(position);
-  positionRef.current = position;
-
+  const refreshOnEntry = useRef(false);
   useEffect(() => {
-    if (position.turn !== 'black' || position.isEnd()) return;
+    if (!viewActive) { refreshOnEntry.current = true; return; }
+    if (!refreshOnEntry.current || thinking || !['ready', 'invalid', 'failed'].includes(saved.status)) return;
+    refreshOnEntry.current = false;
+    void controller.load();
+  }, [viewActive, thinking, saved.status, controller]);
+  const targets = useMemo(() => selected === null ? [] : xiangqiLegalMoves(position, selected).map(m => m.to), [position, selected]);
+  const outcome = xiangqiOutcome(position);
+  const opponent = useCompanionOpponent('xiangqi', scopedClient, connected && saved.status === 'ready');
+  const positionRef = useRef(position); positionRef.current = position;
+  useEffect(() => { setSelected(null); }, [controller]);
+  useEffect(() => {
+    if (saved.status !== 'ready' || position.turn !== 'black' || outcome) { setThinking(false); return; }
     let cancelled = false;
     setThinking(true);
+    const generation = saved.generation;
     const timer = window.setTimeout(() => {
       const requestedPosition = positionRef.current;
-      const boardText = Array.from({ length: 10 }, (_, row) => (
-        Array.from({ length: 9 }, (_, col) => {
-          const square = squareFromCoords(col, 9 - row)!;
-          const piece = positionRef.current.board.get(square);
-          if (!piece) return '·';
-          return piece.color === 'red' ? '△' : '▲';
-        }).join(' ')
-      )).join('\n');
-      void opponent.chooseMove({
-        boardText,
-        side: '黑棋',
-        historyText: `${moves.length} 手`,
-        isCurrent: () => positionRef.current === requestedPosition,
-        apply: (rawMove) => {
-          const parts = rawMove.trim().split(/[，,\s]+/).map((value) => Number(value));
-          if (parts.length !== 4 || parts.some((value) => !Number.isInteger(value))) {
-            return '走法需要四个整数坐标';
-          }
-          const [fx, fy, tx, ty] = parts;
-          if ([fx, fy, tx, ty].some((value) => value < 0 || value > 9)) {
-            return '坐标超出棋盘';
-          }
-          const from = squareFromCoords(fx, fy);
-          const to = squareFromCoords(tx, ty);
-          const current = positionRef.current;
-          if (!from || !to || !current.isLegal({ from, to })) {
-            return '这不是一步合法的走法';
-          }
-          setMoves((currentMoves) => [...currentMoves, { from, to }]);
-          return null;
+      const boardText = xiangqiBoardText(requestedPosition);
+      void opponent.chooseMove({ boardText, side: '黑棋', historyText: `${moves.length} 手`,
+        isCurrent: () => !cancelled && controller.getSnapshot().status === 'ready' && controller.getSnapshot().generation === generation && positionRef.current === requestedPosition,
+        apply: raw => {
+          const result = parseXiangqiMove(raw, requestedPosition);
+          if (!result.move) return result.error;
+          return controller.submit([...moves, result.move]) ? null : '棋谱状态已变化';
         },
-        fallback: () => {
-          setMoves((current) => {
-            const currentPosition = xiangqiFromMoves(current);
-            const move = chooseXiangqiMove(currentPosition);
-            return move ? [...current, move] : current;
-          });
-        },
-      }).finally(() => {
-        if (!cancelled) setThinking(false);
-      });
+        fallback: () => { const move = chooseXiangqiPracticeMove(requestedPosition); if (move) controller.submit([...moves, move]); },
+      }).finally(() => { if (!cancelled) setThinking(false); });
     }, 380);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    return () => { cancelled = true; window.clearTimeout(timer); opponent.cancelPending(); };
+    // The derived immutable position and canonical generation bind this move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [position]);
-
-  const outcome = position.outcome();
-  const status = outcome
-    ? outcome.winner === 'red' ? '你获胜了' : outcome.winner === 'black' ? '对手获胜' : '和棋'
-    : thinking ? '对手思考中'
-      : position.isCheck() ? '将军，轮到你' : '轮到红方';
-  const clickSquare = (square: XiangqiSquare) => {
-    if (thinking || position.turn !== 'red' || position.isEnd()) return;
-    if (selected !== null && targets.includes(square)) {
-      setMoves((current) => [...current, { from: selected, to: square }]);
-      setSelected(null);
-      return;
-    }
-    setSelected(position.board.get(square)?.color === 'red' ? square : null);
+  }, [position, saved.status, controller, opponent.chooseMove, opponent.cancelPending]);
+  const active = saved.status === 'ready';
+  const status = !active ? saved.notice || (saved.status === 'saving' ? '正在保存棋谱' : '正在读取棋谱')
+    : outcome ? outcome.winner === 'red' ? '你获胜了' : outcome.winner === 'black' ? '对手获胜' : '和棋（本地练习规则）'
+      : thinking ? '对手思考中' : xiangqiInCheck(position) ? '将军，轮到你' : '轮到红方';
+  const clickSquare = (square: number) => {
+    if (!active || thinking || position.turn !== 'red' || outcome) return;
+    if (selected !== null && targets.includes(square)) { controller.submit([...moves, { from: selected, to: square }]); setSelected(null); return; }
+    setSelected(position.board[square]?.color === 'red' ? square : null);
   };
-
-  return (
-    <div className={styles.gameRoot}>
-      <GameHeader
-        game="xiangqi"
-        status={status}
-        connected={connected}
-        onInvite={() => onInviteAI('xiangqi', `中国象棋共 ${moves.length} 手，${status}。`)}
-        onUndo={moves.length ? () => { opponent.cancelPending(); setThinking(false); setMoves(moves.slice(0, -Math.min(2, moves.length))); setSelected(null); } : undefined}
-        onReset={() => { opponent.cancelPending(); setThinking(false); setMoves([]); setSelected(null); }}
-        companionBar={(
-          <CompanionBar
-            mode={opponent.mode}
-            onToggle={() => opponent.setMode(opponent.mode === 'companion' ? 'practice' : 'companion')}
-            comment={opponent.comment}
-            notice={opponent.notice}
-          />
-        )}
-      />
-      <div className={styles.xiangqiBoard} role="grid" aria-label="中国象棋棋盘">
-        {Array.from({ length: 90 }, (_, index) => {
-          const row = Math.floor(index / 9);
-          const col = index % 9;
-          const square = squareFromCoords(col, 9 - row)!;
-          const piece = position.board.get(square);
-          return (
-            <button
-              type="button"
-              role="gridcell"
-              key={square}
-              className={`${selected === square ? styles.selected : ''} ${targets.includes(square) ? styles.legalTarget : ''}`}
-              data-river={row === 4}
-              aria-label={`${row + 1} 行 ${col + 1} 列`}
-              onClick={() => clickSquare(square)}
-            >
-              {piece && (
-                <span data-color={piece.color}>{XIANGQI_LABELS[`${piece.color}:${piece.role}`]}</span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+  return <div className={styles.gameRoot} data-testid="xiangqi-game" data-revision={saved.revision} data-state={saved.status} data-moves={moves.length}>
+    <GameHeader game="xiangqi" status={status} connected={connected}
+      onInvite={() => onInviteAI('xiangqi', `中国象棋共 ${moves.length} 手，${status}。`)}
+      onUndo={active && moves.length ? () => { opponent.cancelPending(); setThinking(false); controller.submit(moves.slice(0, -Math.min(2, moves.length))); setSelected(null); } : undefined}
+      onReset={() => { opponent.cancelPending(); setThinking(false); controller.submit([], true); setSelected(null); }}
+      companionBar={<CompanionBar mode={opponent.mode} onToggle={() => opponent.setMode(opponent.mode === 'companion' ? 'practice' : 'companion')} comment={opponent.comment} notice={opponent.notice} />} />
+    {saved.notice && <p role="status" data-testid="xiangqi-notice">{saved.notice}</p>}
+    {saved.status === 'failed' && <button type="button" onClick={() => { void controller.load(); }}>重新读取棋谱</button>}
+    <div className={styles.xiangqiBoard} role="grid" aria-label="中国象棋棋盘">
+      {Array.from({ length: 90 }, (_, index) => {
+        const row = Math.floor(index / 9), col = index % 9, square = xiangqiSquare(col, 9 - row)!;
+        const piece = active || saved.status === 'saving' ? position.board[square] : null;
+        return <button type="button" role="gridcell" key={square} data-square={square} disabled={!active || thinking || !!outcome}
+          className={`${selected === square ? styles.selected : ''} ${targets.includes(square) ? styles.legalTarget : ''}`}
+          data-river={row === 4} aria-label={`${row + 1} 行 ${col + 1} 列`} onClick={() => clickSquare(square)}>
+          {piece && <span data-color={piece.color}>{XIANGQI_LABELS[`${piece.color}:${piece.role}`]}</span>}
+        </button>;
+      })}
     </div>
-  );
+  </div>;
 }
 
 interface GoMove { sign: Sign; vertex: Vertex | null }
@@ -936,7 +848,8 @@ function GoGame({ connected, gameStateClient, onInviteAI }: Omit<MiniGamePanelPr
 function SnakeGame({
   connected,
   gameStateClient,
-}: Pick<MiniGamePanelProps, 'connected' | 'gameStateClient'>) {
+  active = true,
+}: Pick<MiniGamePanelProps, 'connected' | 'gameStateClient' | 'active'>) {
   const [state, setState] = useState(() => newSnakeState());
   const [highScore, setHighScore] = useAuthoritativeGameState(
     gameStateClient,
@@ -951,15 +864,16 @@ function SnakeGame({
     setState((current) => queueSnakeDirection(current, direction));
   }, []);
   useEffect(() => {
-    if (state.status !== 'playing') return;
+    if (!active || state.status !== 'playing') return;
     const timer = window.setInterval(() => setState((current) => tickSnake(current)), 135);
     return () => window.clearInterval(timer);
-  }, [state.status]);
+  }, [state.status, active]);
   useEffect(() => {
     if (state.score <= highScore) return;
     setHighScore(state.score);
   }, [state.score, highScore]);
   useEffect(() => {
+    if (!active) return;
     const handler = (event: KeyboardEvent) => {
       const target = event.target;
       if (
@@ -973,7 +887,7 @@ function SnakeGame({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [direct]);
+  }, [direct, active]);
 
   const toggle = () => setState(toggleSnake);
   const status = state.status === 'over' ? '游戏结束' : state.status === 'paused' ? '已暂停' : `得分 ${state.score}`;
@@ -1017,7 +931,8 @@ const EMPTY_TETRIS_STATE: TetrisState = {
 function TetrisGame({
   connected,
   gameStateClient,
-}: Pick<MiniGamePanelProps, 'connected' | 'gameStateClient'>) {
+  active = true,
+}: Pick<MiniGamePanelProps, 'connected' | 'gameStateClient' | 'active'>) {
   const engineRef = useRef<Engine | null>(null);
   const [state, setState] = useState<TetrisState>(EMPTY_TETRIS_STATE);
   const [highScore, setHighScore] = useAuthoritativeGameState(
@@ -1038,11 +953,11 @@ function TetrisGame({
   }, []);
   useEffect(() => { reset(); }, [reset]);
   useEffect(() => {
-    if (state.gameStatus !== 1) return;
+    if (!active || state.gameStatus !== 1) return;
     const speed = Math.max(180, 720 - state.statistic.countLinesReduced * 18);
     const timer = window.setInterval(() => engineRef.current?.moveDown(), speed);
     return () => window.clearInterval(timer);
-  }, [state.gameStatus, state.statistic.countLinesReduced]);
+  }, [state.gameStatus, state.statistic.countLinesReduced, active]);
   useEffect(() => {
     if (score <= highScore) return;
     setHighScore(score);
@@ -1064,6 +979,7 @@ function TetrisGame({
     setState({ ...engine.state });
   };
   useEffect(() => {
+    if (!active) return;
     const handler = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
       const engine = engineRef.current;
@@ -1078,7 +994,7 @@ function TetrisGame({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [hardDrop]);
+  }, [hardDrop, active]);
 
   const status = state.gameStatus === 3 ? '游戏结束' : state.gameStatus === 2 ? '已暂停' : `得分 ${score}`;
   return (
@@ -1109,6 +1025,7 @@ function TetrisGame({
 
 export default function MiniGamePanel(props: MiniGamePanelProps) {
   const shared = {
+    active: props.active,
     connected: props.connected,
     gameStateClient: props.gameStateClient,
     onInviteAI: props.onInviteAI,
@@ -1118,8 +1035,8 @@ export default function MiniGamePanel(props: MiniGamePanelProps) {
     case 'chess': return <ChessGame {...shared} />;
     case 'xiangqi': return <XiangqiGame {...shared} />;
     case 'go': return <GoGame {...shared} />;
-    case 'snake': return <SnakeGame connected={props.connected} gameStateClient={props.gameStateClient} />;
-    case 'tetris': return <TetrisGame connected={props.connected} gameStateClient={props.gameStateClient} />;
+    case 'snake': return <SnakeGame connected={props.connected} gameStateClient={props.gameStateClient} active={props.active} />;
+    case 'tetris': return <TetrisGame connected={props.connected} gameStateClient={props.gameStateClient} active={props.active} />;
     default: return null;
   }
 }

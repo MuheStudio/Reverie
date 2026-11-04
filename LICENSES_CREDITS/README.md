@@ -1,33 +1,38 @@
-# LICENSES_CREDITS — 第三方许可与来源登记索引
+# LICENSES_CREDITS — 第三方许可与来源登记
 
-本目录是 Reverie 的第三方许可与来源登记处（单一事实源）。打包流程会把本目录整体带入发行物。
+本目录保留许可证原文、适用通知、资产授权材料及来源登记，随现有打包流程带入产物。**某份许可证文本在目录中存在，不等于该项目源码仍在当前应用中。** 历史移除记录与当前组件分开标记；完整依赖还应核对每次构建生成的许可证清单和 SBOM。
 
-## 分类政策
+当前整体许可仍见根 [`LICENSE`](../LICENSE)。原作者支持交接和宽松许可迁移已经确认；目标优先 Apache-2.0，MIT 备选，不自动双许可，不提前改许可证。过程见 [`docs/LICENSE-MIGRATION.md`](../docs/LICENSE-MIGRATION.md)。
 
-| 类别 | 是否需登记 | 说明 |
-| --- | --- | --- |
-| **思想 / 架构借鉴** | 否（可选致谢） | 学结构、学思路、学公式，不复制代码。鼓励在文件头写一行 `inspired by <source>` 便于 review |
-| **实质性代码复用**（≥一行实质逻辑） | **必须** | 在本目录新增 `<LICENSE>-<project>.txt` 全文，并在被移植文件头部注明来源文件与许可 |
-| **npm 依赖** | 否 | 以 `package.json` + 各自仓库许可为准；引入新重依赖时在本 README 追加一行 |
-| **专有运行时 / 资产 / 权重** | **必须** | Live2D Cubism Core、模型权重、语音权重等不随宿主 MIT/私有许可变化，逐项登记 |
+## 登记规则
 
-## 现有登记（盘点于 2026-09-05）
+- 实际复制、移植或 vendored 源码：记录具体来源／版本／路径／修改，保留版权、完整许可及适用 NOTICE。不能用“参考”标签代替来源调查。
+- 仅公开规格、论文或设计参考：与实质复用分开登记；不把未经证实的独立实现声明写成审计结论。
+- npm、Python 及原生依赖：继续保留各自许可和构建收集结果；锁定版本和包元数据不替代应随产物提供的通知。
+- 资产、专有运行时、模型及声音：逐项登记；宿主改许可不会自动改变其条款。
+- 原创与其他贡献：按权利人及授权覆盖登记。历史 GPL 声明不要求将有权重新许可的原创代码重写；第三方 GPL 源码仍需单独处理。
 
-| 文件 | 覆盖对象 | 类别 |
-| --- | --- | --- |
-| `LICENSE` | Reverie 自身 | — |
-| `LICENSE-MIT-Luna-ts.txt` | 来自 Luna-ts（github.com/Alan-Yu-2077/Luna-ts，© Alan-Yu-2077）的代码与流程。当前关联：`frontend/electron/optional-runtime-provisioner.cjs`（供应流程 inspired by 其 ttsProvision）、`frontend/src/utils/reconnectTiming.ts`（等量抖动重连惯例） | 思想+轻量借鉴 |
-| `LICENSE-MIT-pixi-live2d-display.txt` | vendored `frontend/vendor/pixi-live2d-display`（© 2020 Guan, MIT） | 代码复用 |
-| `LICENSE-MIT-sqlite-vec.txt` | sqlite-vec 相关 | 依赖 |
-| `LICENSE-MIT-OpenRoom.txt` / `-airi.txt` / `-foxgirls-club.txt` / `-liquidglass-oss.txt` | 对应前端模块来源 | 代码复用 |
-| `LICENSE-Apache2.0-NEKO.txt` + `NOTICE-NEKO.txt` | NEKO（Apache-2.0 附 NOTICE 义务） | 代码复用 |
-| `LICENSE-GPLv3-Kazumi.txt` / `-NachoBot.txt` / `-Risuai.txt` / `-cat-catch.txt` | GPL-3.0 来源模块（隔离使用，见各自 NOTICE） | 代码复用 |
-| `LIVE2D_PUBLICATION_LICENSE.json` | Live2D Cubism Core 运行时（Live2D Inc. 专有许可，**非 MIT**；发行受其收入条款约束） | 专有运行时 |
-| `FOCUS-SOUNDS-NOTICE.txt` | 专注音效资产 | 资产 |
-| `YUMI-ASSET-NOTICE.txt` / `YUMI_CHARACTER_RIGHTS.json` | 角色形象与皮套资产权利（自持，非自由许可） | 资产 |
+## 当前分类（2026-10-05）
 
-## 通用注意
+机器可读细项见 [`source-provenance.json`](source-provenance.json)，状态由来源、删除提交及实际验收证据决定。
 
-- **BYO 模型 / 语音权重**（GPT-SoVITS 音色包、Live2D 模型文件等）由用户自带，许可归各自权利人，不因运行在 Reverie 中而改变。公开安装器只带 Cubism Core，不带任何角色模型。
-- GPL 来源代码保持模块隔离，不得与专有许可代码链接合并；新增 GPL 依赖前先确认隔离边界仍然成立。
-- 修改任何 vendored 依赖时，同步更新对应 LICENSE 文件内的版权年份与版本说明。
+| 项目／许可文件 | 当前证据与处理 |
+| --- | --- |
+| Kazumi / `LICENSE-GPLv3-Kazumi.txt` | 未集成的 vendored 工程列入首批清理；已在 `e84c994` 移除源码，历史元数据见 `history/kazumi-files.json`；新包验收单独登记 |
+| cat-catch / `LICENSE-GPLv3-cat-catch.txt` | 旧 Electron 下载适配器列入首批限定替换；历史元数据见 `history/cat-catch-files.json`；替换验收单独登记 |
+| Risuai / `LICENSE-GPLv3-Risuai.txt` | 旧世界书与 Hypa 源码已替换；历史元数据见 `history/risu-worldbook-files.json`、`history/risu-hypa-files.json`，历史通知保留 |
+| elephantops 0.1.1 / 构建收集的 npm LICENSE | 实际象棋规则依赖，GPL-3.0-or-later；后续迁移必需任务，当前 GPL 候选保留通知及 Windows 对应源码 |
+| NachoBot / `LICENSE-GPLv3-NachoBot.txt` | 历史致谢保留；本次未定位到当前集成源码，不宣称 QQ 适配已实现 |
+| NEKO / `LICENSE-Apache2.0-NEKO.txt` + `NOTICE-NEKO.txt` | 记忆导入及互操作桥声明有移植修改，不能统称仅思想参考；合规保留 |
+| AIRI / `LICENSE-MIT-airi.txt` | Live2DAdapter 文件头明确声明改编，保留 MIT 通知 |
+| pixi-live2d-display / `LICENSE-MIT-pixi-live2d-display.txt` | vendored 0.4.0，保留 Cubism 4 所需构建／类型及 MIT 许可；不包括 Cubism Core 授权 |
+| foxgirls.club / `LICENSE-MIT-foxgirls-club.txt` | `src/image_service/` 声明 vendored + Reverie 包装；图像内容版权另论 |
+| Luna-ts / `LICENSE-MIT-Luna-ts.txt` | 历史记录同时出现适配与流程参考；具体文件来源映射待核对，保留通知 |
+| OpenRoom、liquidglass / 对应 MIT 文本 | 保留历史来源记录，具体复制范围未由本次审计确立，不虚构源码复用结论 |
+| sqlite-vec / `LICENSE-MIT-sqlite-vec.txt` | MIT 或 Apache-2.0；当前发行按 MIT 保留通知 |
+| ddgs、primp / 对应 MIT 文本 | 搜索的直接／传递运行依赖，合规保留 |
+| trafilatura、courlan、htmldate / 对应 Apache-2.0 文本 | 正文抽取依赖，合规保留；其他传递依赖按各自条款收集 |
+| `LIVE2D_PUBLICATION_LICENSE.json` | Cubism Core 专有运行时；维持既有出版门禁，按实际构建检查是否带入 |
+| `FOCUS-SOUNDS-NOTICE.txt`、`YUMI-ASSET-NOTICE.txt`、`YUMI_CHARACTER_RIGHTS.json` | 声音／角色资产独立权利记录，不随宿主许可改变 |
+
+保留的宽松许可组件不是迁移前置重写清单。“模块隔离”或默认关闭不应被描述为自动消除 copyleft 的依据。修改 vendored 组件时记录自己的修改及日期，保留原权利人原始版权行，不擅自替换其年份或作者。

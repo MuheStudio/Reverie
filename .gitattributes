@@ -1,0 +1,3 @@
+# Preserve the exact upstream bytes checked by UPSTREAM.json on every platform.
+frontend/vendor/pixi-live2d-display/dist/cubism4.js -text
+frontend/vendor/pixi-live2d-display/dist/cubism4.es.js -text

@@ -1,0 +1,953 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-10-05",
+  "baselineCommit": "db891cd853ce9ccaa43caf76471925ef27448230",
+  "scope": "Local staged source migrations; original and replacement provenance, runtime reachability and candidate acceptance are recorded separately. This registry is not an SBOM or proof that all GPL obligations are gone.",
+  "licenseTransition": {
+    "current": "GPL-3.0 as root LICENSE",
+    "preferredTarget": "Apache-2.0",
+    "alternative": "MIT",
+    "dualLicense": false,
+    "readyForLicenseSwitch": false,
+    "remainingBlockers": [
+      "Complete file and contribution authorization coverage; original-author handover support is already confirmed.",
+      "Finish Python chat-video provenance review and retained dependency and asset notice coverage.",
+      "Audit the final code tree and a newly built candidate, then synchronize the root license, contribution rules and packaging notices."
+    ],
+    "knownHandoverFact": {
+      "source": "Direct user instruction in this local development task",
+      "date": "2026-10-05",
+      "statement": "The original author has entrusted continued development of Reverie to the user and explicitly supports migration to Apache-2.0/MIT.",
+      "status": "confirmed-context",
+      "scope": "Original works that the original author has authority to relicense; third-party rights and contribution coverage remain separately recorded."
+    }
+  },
+  "entries": [
+    {
+      "id": "reverie-original",
+      "source": "Original Reverie authors and contributors",
+      "version": null,
+      "paths": [
+        "src/",
+        "frontend/",
+        "tests/",
+        "script/"
+      ],
+      "license": "Current root LICENSE: GPL-3.0",
+      "originClass": "first-party-original",
+      "runtime": "Core product",
+      "bundle": "Source, renderer and backend resources",
+      "rights": "Original author supports handover and permissive migration (user statement, 2026-10-05). Original code that the author has authority to relicense does not need rewriting because of its historical GPL declaration. File/contribution coverage must be mapped before the final switch.",
+      "decision": "Retain authorized original code; prefer Apache-2.0, MIT alternative only; no automatic dual license.",
+      "status": "handover-support-confirmed-coverage-register-open",
+      "evidence": [
+        "docs/LICENSE-MIGRATION.md#已确认授权事实与当前许可",
+        "LICENSE",
+        "git log baseline db891cd853ce9ccaa43caf76471925ef27448230"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "unmapped-contributions",
+      "source": "Additional authors/commits in local Git history",
+      "version": null,
+      "paths": [
+        "Repository history through db891cd853ce9ccaa43caf76471925ef27448230"
+      ],
+      "license": null,
+      "originClass": "contribution-coverage",
+      "runtime": "Depends on contribution",
+      "bundle": "Depends on contribution",
+      "rights": "Author identities and commits are evidence of authorship, not proof that the original author can relicense every contribution. No lack of handover support is inferred.",
+      "decision": "Three Git author labels and imported snapshots are mapped as evidence keys, not presumed distinct holders. Original-author support remains confirmed; formal switching awaits file-origin/actual contribution coverage.",
+      "status": "coverage-review-required",
+      "evidence": [
+        "docs/LICENSE-MIGRATION.md#贡献覆盖登记",
+        "git shortlog -sne db891cd853ce9ccaa43caf76471925ef27448230",
+        "LICENSES_CREDITS/history/contribution-history-metadata.json",
+        "LICENSES_CREDITS/history/remaining-source-review.json"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "kazumi",
+      "source": "https://github.com/Predidit/Kazumi",
+      "version": "2.1.7+20107",
+      "paths": [
+        "src/anime_service/"
+      ],
+      "license": "GPL-3.0",
+      "originClass": "vendored-third-party",
+      "runtime": "No integrated runtime caller identified before removal; source now removed.",
+      "bundle": "Old tree absent from the final signed macOS candidate; metadata and historical license notices retained.",
+      "rights": "Third-party GPL grant; no broad relicensing grant recorded.",
+      "decision": "Remove unintegrated vendored source; retain metadata inventory and historical notice.",
+      "status": "removed-source-and-final-package-verified",
+      "evidence": [
+        "src/anime_service/pubspec.yaml (pre-removal version)",
+        "LICENSES_CREDITS/LICENSE-GPLv3-Kazumi.txt",
+        "LICENSES_CREDITS/history/kazumi-files.json"
+      ],
+      "acceptance": {
+        "state": "first-batch-source-and-package-passed",
+        "inventory": "LICENSES_CREDITS/history/kazumi-files.json",
+        "sourceTreeCommit": "db891cd853ce9ccaa43caf76471925ef27448230",
+        "removalCommit": "e84c9944f5f42e1db5fe631f6b03901eec3ca187",
+        "evidence": [
+          "git show --stat e84c9944f5f42e1db5fe631f6b03901eec3ca187",
+          "src/anime_service absent on 2026-10-05",
+          "docs/LICENSE-MIGRATION-ACCEPTANCE.md",
+          ".tools/reports/check-2026-10-04T18-35-11-353Z-19324/summary.json",
+          "frontend/release-macos/migration-final-package-audit.json",
+          "frontend/.package-smoke-macos/2026-10-04T18-37-46-702Z-47934/report.json"
+        ],
+        "codeCommit": "5076041bca35d1f2fb5530b81d12a08a0a052c52",
+        "sourceSha256": "4ef2872fc00022b185fb17855bbb4839bcd4849ebbdae8471a75fd81d8068d4b",
+        "signedBundleSha256": "0717917f6d295c4acbc30415cd470278050abf2577e0e866ef37234ed87fd924",
+        "digestKinds": {
+          "sourceSha256": "ordered-source-inventory-json-sha256",
+          "signedBundleSha256": "ordered-signed-app-inventory-json-sha256",
+          "validationScriptSha256": "raw-file-bytes-sha256"
+        },
+        "validationScriptSha256": "b66a6998286928261413e811617d5d1d383c978fdfefb2489f67ef46ae1a917a",
+        "scope": "First batch source, bounded contracts, real local HTTP integration and isolated signed arm64 app verification; not a complete license audit. Post-build acceptance ledger is not part of the immutable candidate snapshot.",
+        "diagnosticDeviation": "A separate UI diagnostic relaunch touched the default test-identity runtime state; excluded from acceptance and disclosed in docs/LICENSE-MIGRATION-ACCEPTANCE.md. Final passing run used isolated temporary data."
+      }
+    },
+    {
+      "id": "cat-catch",
+      "source": "https://github.com/xifangczy/cat-catch",
+      "version": "2.6.9",
+      "paths": [
+        "src/download_service/"
+      ],
+      "license": "GPL-3.0",
+      "originClass": "vendored-and-adapted-third-party",
+      "runtime": "Legacy Electron adapter and vendor tree removed; four established IPC capabilities now use first-party media modules.",
+      "bundle": "Complete old tree absent from source, staged payload and extracted final ASAR/resources; independent media modules verified in final candidate.",
+      "rights": "Third-party GPL grant; no broad relicensing grant recorded.",
+      "decision": "Replace reachable bounded IPC functionality with independently organized host media service; delete entire old source tree after validation.",
+      "status": "replaced-source-and-final-package-verified",
+      "evidence": [
+        "src/download_service/manifest.json (pre-removal version)",
+        "frontend/electron/main.js (legacy caller contract)",
+        "LICENSES_CREDITS/LICENSE-GPLv3-cat-catch.txt",
+        "LICENSES_CREDITS/history/cat-catch-files.json"
+      ],
+      "acceptance": {
+        "state": "first-batch-contract-source-and-package-passed",
+        "inventory": "LICENSES_CREDITS/history/cat-catch-files.json",
+        "sourceTreeCommit": "db891cd853ce9ccaa43caf76471925ef27448230",
+        "removalCommit": "e6b182e1e35c3f5ca2ae2f9a999529f54b833004",
+        "evidence": [
+          "src/download_service absent",
+          "media-playlist/media-resources/media-transfer/media-service tests",
+          "source-migration-policy old tree and renamed-body rejection",
+          "docs/LICENSE-MIGRATION-ACCEPTANCE.md",
+          ".tools/reports/check-2026-10-04T18-35-11-353Z-19324/summary.json",
+          "frontend/release-macos/migration-final-package-audit.json",
+          "frontend/.package-smoke-macos/2026-10-04T18-37-46-702Z-47934/report.json"
+        ],
+        "codeCommit": "5076041bca35d1f2fb5530b81d12a08a0a052c52",
+        "sourceSha256": "4ef2872fc00022b185fb17855bbb4839bcd4849ebbdae8471a75fd81d8068d4b",
+        "signedBundleSha256": "0717917f6d295c4acbc30415cd470278050abf2577e0e866ef37234ed87fd924",
+        "digestKinds": {
+          "sourceSha256": "ordered-source-inventory-json-sha256",
+          "signedBundleSha256": "ordered-signed-app-inventory-json-sha256",
+          "validationScriptSha256": "raw-file-bytes-sha256"
+        },
+        "validationScriptSha256": "b66a6998286928261413e811617d5d1d383c978fdfefb2489f67ef46ae1a917a",
+        "scope": "First batch source, bounded contracts, real local HTTP integration and isolated signed arm64 app verification; not a complete license audit. Post-build acceptance ledger is not part of the immutable candidate snapshot.",
+        "diagnosticDeviation": "A separate UI diagnostic relaunch touched the default test-identity runtime state; excluded from acceptance and disclosed in docs/LICENSE-MIGRATION-ACCEPTANCE.md. Final passing run used isolated temporary data."
+      }
+    },
+    {
+      "id": "host-media-service",
+      "source": "Reverie first-batch independent host implementation",
+      "version": null,
+      "paths": [
+        "frontend/electron/media-service.cjs",
+        "frontend/electron/media-playlist.cjs",
+        "frontend/electron/media-transfer.cjs",
+        "frontend/electron/media-resources.cjs"
+      ],
+      "license": "Current root LICENSE; final project relicensing pending",
+      "originClass": "new-first-party-implementation",
+      "runtime": "Replacement for existing opt-in Electron sniff/download IPC",
+      "bundle": "Four new modules match source hashes in the signed final ASAR; sandboxed preload multiline HLS fix also verified.",
+      "rights": "Implementation must use approved behavior contract, public API documentation and synthetic fixtures, without consulting copied source bodies. Separation records are engineering evidence, not a legal clean-room certification.",
+      "decision": "Implement resource discovery, pure HLS parser, bounded network transport and transactional file writing.",
+      "status": "implemented-contract-and-final-package-verified",
+      "evidence": [
+        "docs/LICENSE-MIGRATION.md#限定替换的材料与实现边界",
+        "https://www.rfc-editor.org/rfc/rfc8216",
+        "https://www.electronjs.org/docs/latest/api/web-request",
+        "https://nodejs.org/api/http.html"
+      ],
+      "acceptance": {
+        "state": "first-batch-contract-local-http-and-package-passed",
+        "evidence": [
+          "frontend/electron/media-playlist.test.cjs",
+          "frontend/electron/media-resources.test.cjs",
+          "frontend/electron/media-transfer.test.cjs",
+          "frontend/electron/media-service.test.cjs",
+          "frontend/electron/preload-media.test.cjs",
+          "docs/LICENSE-MIGRATION-ACCEPTANCE.md",
+          ".tools/reports/check-2026-10-04T18-35-11-353Z-19324/summary.json",
+          "frontend/release-macos/migration-final-package-audit.json",
+          "frontend/.package-smoke-macos/2026-10-04T18-37-46-702Z-47934/report.json"
+        ],
+        "codeCommit": "5076041bca35d1f2fb5530b81d12a08a0a052c52",
+        "sourceSha256": "4ef2872fc00022b185fb17855bbb4839bcd4849ebbdae8471a75fd81d8068d4b",
+        "signedBundleSha256": "0717917f6d295c4acbc30415cd470278050abf2577e0e866ef37234ed87fd924",
+        "digestKinds": {
+          "sourceSha256": "ordered-source-inventory-json-sha256",
+          "signedBundleSha256": "ordered-signed-app-inventory-json-sha256",
+          "validationScriptSha256": "raw-file-bytes-sha256"
+        },
+        "validationScriptSha256": "b66a6998286928261413e811617d5d1d383c978fdfefb2489f67ef46ae1a917a",
+        "scope": "First batch source, bounded contracts, real local HTTP integration and isolated signed arm64 app verification; not a complete license audit. Post-build acceptance ledger is not part of the immutable candidate snapshot.",
+        "diagnosticDeviation": "A separate UI diagnostic relaunch touched the default test-identity runtime state; excluded from acceptance and disclosed in docs/LICENSE-MIGRATION-ACCEPTANCE.md. Final passing run used isolated temporary data."
+      },
+      "authoringRecord": {
+        "inputs": "Approved behavior contract, public RFC/Node/DOM documentation, synthetic fixtures. Core implementation agents started without legacy source context.",
+        "integration": "Host integration author inspected existing callers and sandboxed legacy results to preserve interfaces.",
+        "reviewExposure": "After implementation and initial tests, a read-only reviewer inadvertently saw removed host coordination in a diff and three first-party video-setting lookups. No later core-module edits by that reviewer; legacy parser/transfer bodies were not opened.",
+        "claim": "Traceable development record, not a legal clean-room certification."
+      }
+    },
+    {
+      "id": "python-chat-video",
+      "source": "Reverie declared original implementation, referencing cat-catch structure",
+      "version": null,
+      "paths": [
+        "src/video_download/"
+      ],
+      "license": "Current root LICENSE",
+      "originClass": "declared-independent-provenance-review",
+      "runtime": "Chat video download pipeline; separate from Electron adapter",
+      "bundle": "Backend source resources",
+      "rights": "Headers state no runtime code reuse, but explicitly reference old adapter/background structure. This declaration alone does not close provenance review.",
+      "decision": "Retain existing behavior. Six files have only an imported baseline history; runtime independence is checked but pre-import creative provenance cannot be certified from this tree. See explicit missing materials.",
+      "status": "provenance-review-pending",
+      "evidence": [
+        "src/video_download/__init__.py:1",
+        "src/video_download/hls.py:1",
+        "LICENSES_CREDITS/history/remaining-source-review.json"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "risu-lorebook",
+      "source": "https://github.com/kwaroran/Risuai",
+      "version": null,
+      "paths": [
+        "src/lorebook/"
+      ],
+      "license": "GPL-3.0",
+      "originClass": "declared-gpl-port",
+      "runtime": "Legacy worldbook implementation removed; canonical archive and chat now use the independent first-party worldbook engine.",
+      "bundle": "Final signed macOS candidate verifies old worldbook absence and all five new worldbook Python modules; Hypa remains separately tracked.",
+      "rights": "Historical third-party GPL source attribution retained; no upstream relicensing grant asserted.",
+      "decision": "Delete old implementation after independent contract tests; preserve archive formats/IDs/revisions and encrypted persona fact source.",
+      "status": "source-and-final-package-verified",
+      "evidence": [
+        "LICENSES_CREDITS/LICENSE-GPLv3-Risuai.txt",
+        "LICENSES_CREDITS/history/risu-worldbook-files.json",
+        "docs/LICENSE-MIGRATION-STAGE-TWO.md"
+      ],
+      "acceptance": {
+        "state": "second-stage-source-and-isolated-package-passed",
+        "removalCommit": "7eb06ae83db998c7315fb0471f7f2118adda27d2",
+        "inventory": "LICENSES_CREDITS/history/risu-worldbook-files.json",
+        "evidence": [
+          "docs/LICENSE-MIGRATION-STAGE-TWO.md",
+          ".tools/reports/check-2026-10-04T23-12-48-528Z-64689/summary.json",
+          "frontend/release-macos/candidates/worldbook-stage-two-r2/migration-final-package-audit.json",
+          "frontend/.package-smoke-macos/2026-10-04T23-14-30-655Z-92495/report.json"
+        ],
+        "codeCommit": "6b625494f70612a523a96b8b653675c06eb21ddd",
+        "sourceSha256": "d3b51ea661a32cb21e971bfac556c1b5325c47f6e3e69a2b4aa6ab626ff66163",
+        "signedBundleSha256": "aac08b7a36a2f6e509e5b580bc50a5e01f4cddc5e337348cdaca4ece02632d0f",
+        "validationScriptSha256": "7bea3d25b4db9c5c8a0547d4c58211cf01073b2812b15746e9bdf9446a61392e",
+        "digestKinds": {
+          "sourceSha256": "ordered-source-inventory-json-sha256",
+          "signedBundleSha256": "ordered-signed-app-inventory-json-sha256",
+          "validationScriptSha256": "raw-file-bytes-sha256"
+        },
+        "scope": "Second-stage acceptance; post-build ledger, not part of the immutable candidate. Not a completed project relicensing audit."
+      }
+    },
+    {
+      "id": "risu-hypa",
+      "source": "https://github.com/kwaroran/Risuai",
+      "version": null,
+      "paths": [
+        "src/memory/hypa_v3.py"
+      ],
+      "license": "GPL-3.0",
+      "originClass": "declared-gpl-port",
+      "runtime": "Retired. Optional conversation summaries use src/conversation_summary; old JSON is an inactive explicit import format only.",
+      "bundle": "New signed local macOS candidate verifies retired Hypa absence, required independent modules and exact module/source digests.",
+      "rights": "Historical third-party GPL origin retained in Git and metadata-only retirement inventory; no relicensing of the old file.",
+      "decision": "Independent implementation from approved behavior contract and first-party storage/adapter APIs; preserve every legacy import inactive in encrypted storage.",
+      "status": "source-replaced-core-candidate-verified",
+      "evidence": [
+        "LICENSES_CREDITS/history/risu-hypa-files.json",
+        "src/conversation_summary/",
+        "docs/CONVERSATION-SUMMARY.md",
+        "LICENSES_CREDITS/LICENSE-GPLv3-Risuai.txt"
+      ],
+      "acceptance": {
+        "state": "passed-local-core-scope",
+        "applicationCodeCommit": "eb219a67bf8caf5cd93d3f383545a7ed753a8948",
+        "sourceInventory": {
+          "sha256": "5fcce89516788a0bfa2869cddfbb4a7f5d115a9788d2828df2c96c2428112129",
+          "digestKind": "ordered-source-inventory-json-sha256"
+        },
+        "signedAppInventory": {
+          "sha256": "c2d1ed9cc852c124dbaae478354d7d486c78cdcb32ff859dc54bfbbe98bb0f7f",
+          "digestKind": "ordered-signed-app-inventory-json-sha256"
+        },
+        "externalValidatorCommit": "85b9f2a",
+        "validatorSha256": "384fcd79f3589a540ae12830165c8509a3c8a975e3190af18bb4fd7ba7c8efcf",
+        "summaryValidatorSha256": "505f81d88b2352e28547a1ed6d07418ece9f9f009f889e7ed9675d3e4563d540",
+        "applicationRawReportSha256": "8d2612708f5bd5a1133505d04bb2db22e41a07db22347a5eab8c76b155f0c23e",
+        "finalPackageAuditRawSha256": "d6687c8184e9d4012579bd31f028ad5d645629795ebcad217d36252ea2e376e4",
+        "evidence": [
+          "docs/CONVERSATION-SUMMARY-ACCEPTANCE.md",
+          ".tools/reports/Reverie-conversation-summary-evidence-eb219a6.zip"
+        ],
+        "limits": [
+          "No real-user legacy data read or migrated",
+          "All imported legacy summaries inactive",
+          "Local ad-hoc signing only",
+          "No Windows execution",
+          "No overall license switch"
+        ]
+      }
+    },
+    {
+      "id": "elephantops",
+      "source": "https://github.com/lucaferranti/elephantops",
+      "version": "0.1.1",
+      "paths": [
+        "frontend/package.json",
+        "frontend/pnpm-lock.yaml",
+        "frontend/src/components/DreamRoom/MiniGamePanel.tsx",
+        "frontend/node_modules/elephantops/"
+      ],
+      "license": "GPL-3.0-or-later",
+      "originClass": "third-party-runtime-dependency",
+      "runtime": "Retired; first-party 90-square Xiangqi engine and canonical scope-bound controller retain the mini-game contract.",
+      "bundle": "Final r3 renderer graph, reachable npm graph, actual ASAR and collected npm notices verify retired dependency absence.",
+      "rights": "Installed package declares GPL-3.0-or-later, authored by Luca Ferranti and Niklas Fiekas (original chessops); bundled LICENSE is GNU GPL version 3. Original Reverie handover does not relicense this dependency.",
+      "decision": "Replace only actual Xiangqi calls using approved public behavior and WXF basic movement references; preserve historical attribution and stored {from,to} coordinates.",
+      "status": "retired-final-package-verified",
+      "evidence": [
+        "LICENSES_CREDITS/history/elephantops-files.json",
+        "LICENSES_CREDITS/history/elephantops-public-contract.json",
+        "frontend/src/components/DreamRoom/xiangqiEngine.ts",
+        "frontend/src/components/DreamRoom/xiangqiState.ts",
+        "docs/STAGE-FOUR-MIGRATION.md"
+      ],
+      "acceptance": {
+        "state": "passed-local-core-scope",
+        "applicationCodeCommit": "0d43069b5aeb4039114fcb55be7147b3a71eb18b",
+        "externalValidatorCommit": "919252f",
+        "sourceInventory": {
+          "sha256": "ed595afeae8f7a5e4c8943816e00c3b0c465c9742f64ab786a57a4e89b5a2664",
+          "digestKind": "ordered-source-inventory-json-sha256"
+        },
+        "signedAppInventory": {
+          "sha256": "7d281afccabd724bccf15146b9daaff4da2e0724cda4891d108f59a487bc376e",
+          "digestKind": "ordered-signed-app-inventory-json-sha256"
+        },
+        "applicationRawReportSha256": "4d9155549f1c82f81b5e4fe47b9af5e92c234aea37c53643d1a2964394096af3",
+        "finalAuditRawSha256": "8d614807ddfcab8557ed77a8f2705d30e64d1fab008e9365d3ec29c933c09214",
+        "evidence": [
+          "docs/STAGE-FOUR-ACCEPTANCE.md",
+          ".tools/reports/Reverie-stage-four-source-and-evidence.zip"
+        ],
+        "limits": [
+          "Local ad-hoc test signing",
+          "Manual confirmation pending",
+          "No Windows execution",
+          "No overall license switch"
+        ]
+      }
+    },
+    {
+      "id": "neko",
+      "source": "https://github.com/Project-N-E-K-O/N.E.K.O",
+      "version": null,
+      "paths": [
+        "src/memory/neko_import.py",
+        "src/bridge/memory_bridge.py",
+        "src/tts/"
+      ],
+      "license": "Apache-2.0",
+      "originClass": "declared-adaptation-and-design-reference",
+      "runtime": "Memory import/interop; TTS architecture references",
+      "bundle": "Backend source resources; reachability varies by feature",
+      "rights": "Retain upstream copyright, applicable original NOTICE and modification notices.",
+      "decision": "Retain compliantly; optional maintenance rewriting is not a license-migration prerequisite.",
+      "status": "retained-permissive",
+      "evidence": [
+        "src/memory/neko_import.py:1",
+        "src/bridge/memory_bridge.py:1",
+        "src/tts/__init__.py:1",
+        "LICENSES_CREDITS/NOTICE-NEKO.txt",
+        "LICENSES_CREDITS/LICENSE-Apache2.0-NEKO.txt"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "airi",
+      "source": "https://github.com/moeru-ai/airi",
+      "version": null,
+      "paths": [
+        "frontend/src/components/AvatarView/Live2DAdapter.tsx",
+        "src/tts/workers/gemini.py"
+      ],
+      "license": "MIT",
+      "originClass": "mixed-per-file-evidence",
+      "runtime": "Live2D renderer adaptation; Gemini worker declares protocol reference and original code.",
+      "bundle": "Renderer and backend when corresponding features are used",
+      "rights": "Retain MIT attribution for the renderer adaptation. Gemini protocol-reference header also explicitly declares all code original; do not classify that claim as copied implementation without evidence.",
+      "decision": "Retain compliantly; optional maintenance rewriting is separate.",
+      "status": "retained-permissive",
+      "evidence": [
+        "frontend/src/components/AvatarView/Live2DAdapter.tsx:1",
+        "src/tts/workers/gemini.py:1",
+        "LICENSES_CREDITS/LICENSE-MIT-airi.txt"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      },
+      "pathClassification": {
+        "frontend/src/components/AvatarView/Live2DAdapter.tsx": "declared-source-adaptation",
+        "src/tts/workers/gemini.py": "protocol-reference-and-original-code-declaration"
+      }
+    },
+    {
+      "id": "pixi-live2d-display",
+      "source": "https://github.com/guansss/pixi-live2d-display",
+      "version": "0.4.0",
+      "paths": [
+        "frontend/vendor/pixi-live2d-display/"
+      ],
+      "license": "MIT",
+      "originClass": "vendored-dependency",
+      "runtime": "Cubism 4 rendering",
+      "bundle": "Selected runtime build/types; not Cubism Core",
+      "rights": "Retain guansss/Guan copyright and MIT license.",
+      "decision": "Retain; no mandatory rewrite.",
+      "status": "retained-permissive",
+      "evidence": [
+        "frontend/vendor/pixi-live2d-display/package.json",
+        "frontend/vendor/pixi-live2d-display/LICENSE",
+        "LICENSES_CREDITS/LICENSE-MIT-pixi-live2d-display.txt"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "foxgirls",
+      "source": "https://github.com/foxgirlsorg/foxgirls.club",
+      "version": null,
+      "paths": [
+        "src/image_service/"
+      ],
+      "license": "MIT",
+      "originClass": "vendored-and-wrapper",
+      "runtime": "Image index service; availability depends on optional data/configuration",
+      "bundle": "Backend source resources; does not establish ownership of image content",
+      "rights": "Retain foxgirls.org copyright and MIT license; image rights are separate.",
+      "decision": "Retain compliantly; do not describe the whole subtree as idea-only.",
+      "status": "retained-permissive",
+      "evidence": [
+        "src/image_service/__init__.py:1",
+        "src/image_service/LICENSE",
+        "LICENSES_CREDITS/LICENSE-MIT-foxgirls-club.txt"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "luna",
+      "source": "https://github.com/Alan-Yu-2077/Luna-ts",
+      "version": null,
+      "paths": [
+        "frontend/electron/pet-drag.cjs",
+        "frontend/electron/optional-runtime-provisioner.cjs",
+        "frontend/src/utils/reconnectTiming.ts",
+        "frontend/src/lib/browserSpeech.ts",
+        "frontend/src/components/AvatarView/Live2DAdapter.tsx"
+      ],
+      "license": "MIT (Cubism Core excluded)",
+      "originClass": "mixed-reference-attribution-unresolved",
+      "runtime": "Dragging, provisioning, reconnect, speech and gaze references",
+      "bundle": "First-party host/renderer modules; precise upstream code contribution not yet mapped",
+      "rights": "Prior credits disagree between adaptation and inspiration; keep upstream notice while reviewing specific history.",
+      "decision": "Retain permissive material compliantly; classify exact files later, do not invent a source-copy finding.",
+      "status": "retained-provenance-review",
+      "evidence": [
+        "Named file headers",
+        "LICENSES_CREDITS/LICENSE-MIT-Luna-ts.txt",
+        "CREDITS.md"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "openroom",
+      "source": "https://github.com/MiniMax-AI/OpenRoom",
+      "version": null,
+      "paths": [
+        "frontend/src/components/DreamRoom/"
+      ],
+      "license": "MIT",
+      "originClass": "reference-attribution-unresolved",
+      "runtime": "Desktop-room product/design references",
+      "bundle": "Renderer; copied-source scope not established by current audit",
+      "rights": "Historical notices retained; old credits alone do not prove specific code copying.",
+      "decision": "Retain notices pending provenance review; not a blanket rewrite prerequisite.",
+      "status": "retained-provenance-review",
+      "evidence": [
+        "LICENSES_CREDITS/LICENSE-MIT-OpenRoom.txt",
+        "CREDITS.md"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "liquidglass",
+      "source": "https://github.com/ogtirth/LiquidGlass-OSS",
+      "version": null,
+      "paths": [
+        "frontend/src/styles/reverie-theme.css",
+        "frontend/src/components/ui/glass/"
+      ],
+      "license": "MIT",
+      "originClass": "declared-style-reference",
+      "runtime": "Glass UI visual style",
+      "bundle": "Renderer CSS/components",
+      "rights": "Headers describe inspiration; exact copied-source scope not established.",
+      "decision": "Retain credit and available license pending mapping; optional maintenance only.",
+      "status": "retained-provenance-review",
+      "evidence": [
+        "frontend/src/styles/reverie-theme.css:1",
+        "LICENSES_CREDITS/LICENSE-MIT-liquidglass-oss.txt"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "nachobot",
+      "source": "Historical credit: NachoBot",
+      "version": null,
+      "paths": [
+        "No current integrated source path identified"
+      ],
+      "license": "GPL-3.0 (excluded plugins separately listed in AGPL_EXCLUDED.md)",
+      "originClass": "historical-credit-no-current-source-identified",
+      "runtime": "No current runtime integration identified",
+      "bundle": "Not a claim that NachoBot code ships in current app",
+      "rights": "Existing notice retained as historical record, not evidence of runtime inclusion.",
+      "decision": "Do not remove first-party affairs code or claim an implemented QQ adapter.",
+      "status": "historical-notice-retained",
+      "evidence": [
+        "LICENSES_CREDITS/LICENSE-GPLv3-NachoBot.txt",
+        "AGPL_EXCLUDED.md",
+        "Tracked path and caller audit, 2026-10-05"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "sqlite-vec",
+      "source": "https://github.com/asg017/sqlite-vec",
+      "version": null,
+      "paths": [
+        "requirements-runtime.lock",
+        "requirements-macos-arm64.lock"
+      ],
+      "license": "MIT OR Apache-2.0; distribution uses MIT",
+      "originClass": "runtime-dependency",
+      "runtime": "Local vector extension",
+      "bundle": "Runtime wheel/native library",
+      "rights": "Dependency keeps its own license; no host-license rewrite prerequisite.",
+      "decision": "Retain fixed dependency and MIT notice.",
+      "status": "retained-permissive",
+      "evidence": [
+        "LICENSES_CREDITS/LICENSE-MIT-sqlite-vec.txt",
+        "Runtime lockfiles"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "web-search",
+      "source": "https://github.com/deedy5/ddgs; https://github.com/deedy5/primp",
+      "version": null,
+      "paths": [
+        "requirements-runtime.lock",
+        "requirements-macos-arm64.lock"
+      ],
+      "license": "MIT",
+      "originClass": "runtime-dependencies",
+      "runtime": "Key-free search; primp transitively used by ddgs",
+      "bundle": "Runtime wheels",
+      "rights": "Retain upstream notices; dependency behavior differs from Reverie-owned HTTP transport.",
+      "decision": "Retain fixed dependencies and notices.",
+      "status": "retained-permissive",
+      "evidence": [
+        "LICENSES_CREDITS/LICENSE-MIT-ddgs.txt",
+        "LICENSES_CREDITS/LICENSE-MIT-primp.txt",
+        "Runtime lockfiles"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "article-extraction",
+      "source": "https://github.com/adbar/trafilatura",
+      "version": null,
+      "paths": [
+        "requirements-runtime.lock",
+        "requirements-macos-arm64.lock"
+      ],
+      "license": "Apache-2.0 (trafilatura/courlan/htmldate)",
+      "originClass": "runtime-dependencies",
+      "runtime": "Article text extraction",
+      "bundle": "Runtime wheels",
+      "rights": "Retain licenses/any applicable notices; transitive components keep their respective grants.",
+      "decision": "Retain fixed dependencies and collected package notices.",
+      "status": "retained-permissive",
+      "evidence": [
+        "LICENSES_CREDITS/LICENSE-Apache2.0-trafilatura-courlan-htmldate.txt",
+        "Runtime lockfiles"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "live2d-core",
+      "source": "Live2D Inc.",
+      "version": null,
+      "paths": [
+        "LICENSES_CREDITS/LIVE2D_PUBLICATION_LICENSE.json"
+      ],
+      "license": "Proprietary Live2D terms",
+      "originClass": "proprietary-runtime",
+      "runtime": "Optional Cubism runtime",
+      "bundle": "Build-channel-specific; core-only tests may omit it",
+      "rights": "Independent publication terms; not relicensed by host MIT/Apache choice.",
+      "decision": "Keep existing publication gate; verify actual candidate contents.",
+      "status": "separate-asset-runtime-rights",
+      "evidence": [
+        "LICENSES_CREDITS/LIVE2D_PUBLICATION_LICENSE.json",
+        "frontend/electron/live2d-release-gate.cjs"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      },
+      "localDevelopmentValidation": {
+        "date": "2026-10-06",
+        "sourceCommit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+        "state": "passed-isolated-source-validation",
+        "record": "LICENSES_CREDITS/history/live2d-yumi-local-validation.json",
+        "documentation": "docs/LIVE2D-YUMI-VALIDATION.md",
+        "defaultAppRebuilt": false,
+        "publicationGateChanged": false,
+        "distributionAuthorized": false,
+        "core": {
+          "officialSourceUrl": "https://cubism.live2d.com/sdk-web/core/05/live2dcubismcore.min.js",
+          "apiVersion": "5.1.0",
+          "sha256": "25ae938cb4fe282ce189b357bcc97e603d1e1f7ec78bf04150d401c23cdc792f",
+          "termsAcceptedByDirectUserConfirmation": true
+        }
+      }
+    },
+    {
+      "id": "models-and-assets",
+      "source": "Respective model, voice, sound and character rightsholders",
+      "version": null,
+      "paths": [
+        "frontend/src/assets/dreamroom/",
+        "LICENSES_CREDITS/YUMI_CHARACTER_RIGHTS.json",
+        "LICENSES_CREDITS/YUMI-ASSET-NOTICE.txt",
+        "LICENSES_CREDITS/FOCUS-SOUNDS-NOTICE.txt"
+      ],
+      "license": "Per-asset terms; not automatically Apache/MIT",
+      "originClass": "assets-and-user-provided-models",
+      "runtime": "Sounds/character presentation; BYO models and voices",
+      "bundle": "Per candidate inventory; no blanket model/voice ownership assertion",
+      "rights": "Original-author code authorization is not assumed to cover all assets.",
+      "decision": "Keep individual notices and package gates; no automatic model/voice downloads.",
+      "status": "separate-asset-runtime-rights",
+      "evidence": [
+        "frontend/src/assets/dreamroom/LICENSES.md",
+        "LICENSES_CREDITS/YUMI_CHARACTER_RIGHTS.json",
+        "LICENSES_CREDITS/FOCUS-SOUNDS-NOTICE.txt"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      },
+      "localDevelopmentValidation": {
+        "date": "2026-10-06",
+        "sourceCommit": "a57e53d9abcc0c3fb66e2b50b3c5fcb85e3094c4",
+        "state": "passed-isolated-source-validation",
+        "record": "LICENSES_CREDITS/history/live2d-yumi-local-validation.json",
+        "documentation": "docs/LIVE2D-YUMI-VALIDATION.md",
+        "defaultAppRebuilt": false,
+        "publicationGateChanged": false,
+        "distributionAuthorized": false,
+        "model": "User-supplied Yumi test package",
+        "permissionBasis": "Direct user request for local testing only",
+        "rightsHolder": null,
+        "originalInventorySha256": "40b24cb2470596229566a8fe1a0d912fdc629abc618c615fae8b335758499103",
+        "originalUnchanged": true
+      }
+    },
+    {
+      "id": "spec-and-architecture-references",
+      "source": "Character Card V2/V3, PNG, SillyTavern formats, ALTM, Mem0, Letta/MemGPT, published memory papers",
+      "version": null,
+      "paths": [
+        "CREDITS.md",
+        "AGPL_EXCLUDED.md"
+      ],
+      "license": "Individual specification/project licenses",
+      "originClass": "declared-reference-only",
+      "runtime": "Formats and design concepts",
+      "bundle": "No imported upstream source established for these references by this entry",
+      "rights": "Existing declarations are recorded, not a blanket independent-implementation certification; concrete evidence of copying would change classification.",
+      "decision": "Keep attribution separate from actual copied/vendored code; review exceptions individually.",
+      "status": "reference-only-declaration",
+      "evidence": [
+        "CREDITS.md",
+        "AGPL_EXCLUDED.md"
+      ],
+      "acceptance": {
+        "state": "recorded-not-fully-verified",
+        "evidence": []
+      }
+    },
+    {
+      "id": "independent-worldbook",
+      "source": "Reverie independent worldbook implementation",
+      "version": null,
+      "paths": [
+        "src/worldbook/"
+      ],
+      "license": "Current root LICENSE; final project relicensing pending",
+      "originClass": "new-first-party-implementation",
+      "runtime": "Canonical encrypted archive snapshots, deterministic prompt matching and isolated regex execution",
+      "bundle": "Final signed macOS candidate verifies old worldbook absence and all five new worldbook Python modules; Hypa remains separately tracked.",
+      "rights": "Written from the approved contract, canonical first-party archive schema, public Python APIs and synthetic fixtures; no legacy matcher algorithm was provided to the core implementer.",
+      "decision": "Replace the declared Risu worldbook port; preserve data and maintain explicit diagnostic/identity boundaries. Hypa remains separate.",
+      "status": "source-and-final-package-verified",
+      "evidence": [
+        "docs/LICENSE-MIGRATION-STAGE-TWO.md",
+        "https://docs.python.org/3/library/asyncio-subprocess.html"
+      ],
+      "acceptance": {
+        "state": "second-stage-source-and-isolated-package-passed",
+        "evidence": [
+          "docs/LICENSE-MIGRATION-STAGE-TWO.md",
+          ".tools/reports/check-2026-10-04T23-12-48-528Z-64689/summary.json",
+          "frontend/release-macos/candidates/worldbook-stage-two-r2/migration-final-package-audit.json",
+          "frontend/.package-smoke-macos/2026-10-04T23-14-30-655Z-92495/report.json"
+        ],
+        "codeCommit": "6b625494f70612a523a96b8b653675c06eb21ddd",
+        "sourceSha256": "d3b51ea661a32cb21e971bfac556c1b5325c47f6e3e69a2b4aa6ab626ff66163",
+        "signedBundleSha256": "aac08b7a36a2f6e509e5b580bc50a5e01f4cddc5e337348cdaca4ece02632d0f",
+        "validationScriptSha256": "7bea3d25b4db9c5c8a0547d4c58211cf01073b2812b15746e9bdf9446a61392e",
+        "digestKinds": {
+          "sourceSha256": "ordered-source-inventory-json-sha256",
+          "signedBundleSha256": "ordered-signed-app-inventory-json-sha256",
+          "validationScriptSha256": "raw-file-bytes-sha256"
+        },
+        "scope": "Second-stage acceptance; post-build ledger, not part of the immutable candidate. Not a completed project relicensing audit."
+      },
+      "authoringRecord": {
+        "coreImplementer": "Approved contract plus canonical schema and first-party callsites; no legacy matcher body read.",
+        "integration": "Existing first-party bridge/chat/archive callsites and tests; synthetic black-box observations used to specify zero-budget/depth and recursion fixes.",
+        "review": "Reviewers read new implementation and lifecycle integration; engineering traceability, not legal clean-room certification."
+      }
+    },
+    {
+      "id": "independent-conversation-summary",
+      "source": "Approved local behavior contract and first-party kernel, persona and usage-policy APIs",
+      "version": "reverie.conversation-summary.v1",
+      "paths": [
+        "src/conversation_summary/"
+      ],
+      "license": "Current root license; no early Apache-2.0 switch",
+      "originClass": "independent-local-implementation",
+      "runtime": "Post-commit optional summaries; canonical message IDs, persona/conversation scope, independent consent, SQLCipher-derived storage.",
+      "bundle": "New signed local macOS candidate verifies retired Hypa absence, required independent modules and exact module/source digests.",
+      "rights": "Implementation agents used approved contract, first-party interfaces and synthetic examples; legacy compatibility restricted to JSON data fields. No legal clean-room certification claimed.",
+      "decision": "Replace retained Risu Hypa source; encrypted inactive legacy import, no guessed assignment or paid test models.",
+      "status": "independent-core-candidate-verified",
+      "evidence": [
+        "docs/CONVERSATION-SUMMARY.md",
+        "tests/test_conversation_summary_store.py",
+        "tests/test_conversation_summary_runtime.py",
+        "tests/test_conversation_summary_bridge.py"
+      ],
+      "acceptance": {
+        "state": "passed-local-core-scope",
+        "applicationCodeCommit": "eb219a67bf8caf5cd93d3f383545a7ed753a8948",
+        "sourceInventory": {
+          "sha256": "5fcce89516788a0bfa2869cddfbb4a7f5d115a9788d2828df2c96c2428112129",
+          "digestKind": "ordered-source-inventory-json-sha256"
+        },
+        "signedAppInventory": {
+          "sha256": "c2d1ed9cc852c124dbaae478354d7d486c78cdcb32ff859dc54bfbbe98bb0f7f",
+          "digestKind": "ordered-signed-app-inventory-json-sha256"
+        },
+        "externalValidatorCommit": "85b9f2a",
+        "validatorSha256": "384fcd79f3589a540ae12830165c8509a3c8a975e3190af18bb4fd7ba7c8efcf",
+        "summaryValidatorSha256": "505f81d88b2352e28547a1ed6d07418ece9f9f009f889e7ed9675d3e4563d540",
+        "applicationRawReportSha256": "8d2612708f5bd5a1133505d04bb2db22e41a07db22347a5eab8c76b155f0c23e",
+        "finalPackageAuditRawSha256": "d6687c8184e9d4012579bd31f028ad5d645629795ebcad217d36252ea2e376e4",
+        "evidence": [
+          "docs/CONVERSATION-SUMMARY-ACCEPTANCE.md",
+          ".tools/reports/Reverie-conversation-summary-evidence-eb219a6.zip"
+        ],
+        "limits": [
+          "No real-user legacy data read or migrated",
+          "All imported legacy summaries inactive",
+          "Local ad-hoc signing only",
+          "No Windows execution",
+          "No overall license switch"
+        ]
+      }
+    },
+    {
+      "id": "independent-xiangqi",
+      "source": "Approved local mini-game behavior, public Xiangqi basic rules, invented positions and first-party game/IPC interfaces",
+      "version": "reverie.xiangqi-engine.v1",
+      "paths": [
+        "frontend/src/components/DreamRoom/xiangqiEngine.ts",
+        "frontend/src/components/DreamRoom/xiangqiState.ts"
+      ],
+      "license": "Current root GPL-3.0; no permissive switch yet",
+      "originClass": "independent-local-implementation",
+      "runtime": "Pure 90-square engine, existing move-array replay and epoch-bound canonical persistence.",
+      "bundle": "Final r3 renderer graph, reachable npm graph, actual ASAR and collected npm notices verify retired dependency absence.",
+      "rights": "No elephantops algorithm/comments/file organization were opened or copied for implementation; no legal clean-room certification is asserted. Existing first-party labels/scoring are retained.",
+      "decision": "Retire actual GPL dependency while preserving gameplay and schema; coordinate-zero and invalid-prefix behavior corrected separately.",
+      "status": "independent-core-candidate-verified",
+      "evidence": [
+        "LICENSES_CREDITS/history/elephantops-public-contract.json",
+        "docs/STAGE-FOUR-MIGRATION.md"
+      ],
+      "acceptance": {
+        "state": "passed-local-core-scope",
+        "applicationCodeCommit": "0d43069b5aeb4039114fcb55be7147b3a71eb18b",
+        "externalValidatorCommit": "919252f",
+        "sourceInventory": {
+          "sha256": "ed595afeae8f7a5e4c8943816e00c3b0c465c9742f64ab786a57a4e89b5a2664",
+          "digestKind": "ordered-source-inventory-json-sha256"
+        },
+        "signedAppInventory": {
+          "sha256": "7d281afccabd724bccf15146b9daaff4da2e0724cda4891d108f59a487bc376e",
+          "digestKind": "ordered-signed-app-inventory-json-sha256"
+        },
+        "applicationRawReportSha256": "4d9155549f1c82f81b5e4fe47b9af5e92c234aea37c53643d1a2964394096af3",
+        "finalAuditRawSha256": "8d614807ddfcab8557ed77a8f2705d30e64d1fab008e9365d3ec29c933c09214",
+        "evidence": [
+          "docs/STAGE-FOUR-ACCEPTANCE.md",
+          ".tools/reports/Reverie-stage-four-source-and-evidence.zip"
+        ],
+        "limits": [
+          "Local ad-hoc test signing",
+          "Manual confirmation pending",
+          "No Windows execution",
+          "No overall license switch"
+        ]
+      }
+    }
+  ],
+  "dependencyMetadataReview": {
+    "verifiedOn": "2026-10-05",
+    "scope": "Installed npm production metadata only; 15 direct dependencies and 100 installed dependency instances including optional/peer edges. Not a source-content or full asset-license audit.",
+    "frontendPackageSha256": "8ed614166e50fda41a5eb67dad65eb7bb3be84c182027de498eec194e9931bf1",
+    "pnpmLockSha256": "402e4e5f3c372dfc9eefbfc2375fddcf2922fb23fc62c5a7e2d1ed7b653e0bc1",
+    "directDependencyCount": 15,
+    "installedProductionGraphCount": 100,
+    "missingRequiredPackages": [],
+    "unknownMetadataLicenses": [],
+    "gplOrAgplMatches": [
+      {
+        "name": "elephantops",
+        "version": "0.1.1",
+        "license": "GPL-3.0-or-later"
+      }
+    ],
+    "otherDirectMetadataLicenses": [
+      "MIT",
+      "BSD-2-Clause",
+      "ISC"
+    ],
+    "noticeFollowup": [
+      {
+        "name": "tetris-engine",
+        "version": "1.2.18",
+        "declaredLicense": "ISC",
+        "status": "Package metadata has license declaration; no top-level LICENSE/COPYING/NOTICE file found. Existing build license collector records package-metadata-only; resolve notice coverage before final distribution."
+      }
+    ],
+    "batchRole": "historical-before-stage-four-retirement",
+    "supersededForCurrentStateBy": "docs/STAGE-FOUR-ACCEPTANCE.md"
+  },
+  "currentDependencyMetadataReview": {
+    "recordedOn": "2026-10-06",
+    "sourceCandidate": "0d43069b5aeb4039114fcb55be7147b3a71eb18b",
+    "directDependencyCount": 14,
+    "installedProductionGraphCount": 98,
+    "scope": "Stage-four final graph; unchanged dependency inputs entering stage five. Metadata is not full source/asset authorization.",
+    "retired": [
+      "elephantops@0.1.1",
+      "@badrap/result@0.2.13"
+    ],
+    "evidence": "frontend/release-macos/candidates/xiangqi-license-stage-four-r3/npm-retirement-graph.json"
+  }
+}

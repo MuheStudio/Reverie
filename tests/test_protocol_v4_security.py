@@ -277,22 +277,25 @@ async def _async_value(value: dict) -> dict:
     return value
 
 
-def test_control_surface_rejects_retired_controls_and_unknown_fields() -> None:
+def test_control_surface_requires_restore_coordinator_and_rejects_unknown_fields(monkeypatch) -> None:
+    from src.bridge import ws_bridge
+    monkeypatch.setattr(ws_bridge.bridge_state, "restore_coordinator", None)
     base = {
         "kind": "control",
         "schema": CONTROL_SCHEMA,
         "requestId": "control_request_01",
     }
-    with pytest.raises(ValueError, match="unsupported"):
+    with pytest.raises(ValueError, match="coordinator") as caught:
         asyncio.run(
             _handle_control(
                 {
                     **base,
-                    "type": "backup:file:export",
-                    "path": "private.zip",
+                    "type": "backup:file:import",
+                    "path": "private.json",
                 }
             )
         )
+    assert caught.value.code == "BACKUP_RESTORE_DISABLED"
     with pytest.raises(ValueError, match="unsupported fields"):
         asyncio.run(
             _handle_control(
@@ -303,6 +306,136 @@ def test_control_surface_rejects_retired_controls_and_unknown_fields() -> None:
                 }
             )
         )
+
+
+def test_backup_file_export_reuses_the_native_backup_path(monkeypatch, tmp_path) -> None:
+    from src.bridge import ws_bridge
+
+    calls: list[tuple[str, object]] = []
+
+    async def native_backup(operation, path):
+        calls.append((operation, path))
+        return {"operation": operation}
+
+    monkeypatch.setattr(ws_bridge, "_run_native_backup", native_backup)
+    base = {"kind": "control", "schema": CONTROL_SCHEMA, "requestId": "control_request_02"}
+    target = str(tmp_path / "reverie-backup.json")
+    exported = asyncio.run(_handle_control({**base, "type": "backup:file:export", "path": target}))
+    assert exported["ok"] is True and exported["type"] == "backup:file:export"
+    assert exported["operation"] == "export"
+    assert calls == [("export", target)]
+    # The export control accepts only its host-selected path.
+    with pytest.raises(ValueError, match="unsupported fields"):
+        asyncio.run(
+            _handle_control(
+                {**base, "type": "backup:file:export", "path": target, "replace_memory": False}
+            )
+        )
+
+
+def test_backup_file_export_keeps_the_owner_and_path_gate(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from src.bridge import ws_bridge
+
+    written: list[object] = []
+    manager = SimpleNamespace(backup_to_file=written.append)
+    monkeypatch.setattr(ws_bridge, "_local_backup_manager", lambda: (manager, None))
+    base = {"kind": "control", "schema": CONTROL_SCHEMA, "requestId": "control_request_03"}
+    absolute = str(tmp_path / "reverie-backup.json")
+    monkeypatch.delenv("REVERIE_BRIDGE_MODE", raising=False)
+    with pytest.raises(PermissionError):
+        asyncio.run(_handle_control({**base, "type": "backup:file:export", "path": absolute}))
+    monkeypatch.setenv("REVERIE_BRIDGE_MODE", "1")
+    monkeypatch.setattr(ws_bridge.bridge_state, "restore_coordinator", None)
+    for rejected in ("reverie-backup.json", str(tmp_path / "reverie-backup.zip")):
+        with pytest.raises(ValueError, match="absolute JSON"):
+            asyncio.run(_handle_control({**base, "type": "backup:file:export", "path": rejected}))
+    assert written == []
+    exported = asyncio.run(_handle_control({**base, "type": "backup:file:export", "path": absolute}))
+    assert exported["ok"] is True and written == [(tmp_path / "reverie-backup.json").resolve()]
+
+
+def test_backup_file_import_rejects_valid_path_before_file_or_manager_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.bridge import ws_bridge
+
+    private_content = "private-backup-content-canary"
+    source = (tmp_path / "private-backup-path-canary.json").resolve()
+    source_bytes = json.dumps(
+        {
+            "schema": "reverie.full_local_backup.v3",
+            "memory": [],
+            "user": {"name": private_content},
+        }
+    ).encode("utf-8")
+    source.write_bytes(source_bytes)
+    local_data = tmp_path / "local-data.json"
+    local_data_bytes = b'{"memory":["existing-local-data-canary"]}'
+    local_data.write_bytes(local_data_bytes)
+    calls: list[str] = []
+    private_exception = f"private-import-exception-canary: {source} {private_content}"
+
+    def manager_factory():
+        calls.append("manager")
+        raise RuntimeError(private_exception)
+
+    def path_gate(*_args, **_kwargs):
+        calls.append("path")
+        raise RuntimeError(private_exception)
+
+    original_open = Path.open
+
+    def guarded_open(path: Path, *args, **kwargs):
+        if path in (source, local_data):
+            calls.append("file")
+            raise RuntimeError(private_exception)
+        return original_open(path, *args, **kwargs)
+
+    request = {
+        "kind": "control",
+        "schema": CONTROL_SCHEMA,
+        "requestId": "control_request_import_01",
+        "type": "backup:file:import",
+        "path": str(source),
+    }
+    monkeypatch.setattr(ws_bridge.bridge_state, "restore_coordinator", None)
+    monkeypatch.setenv("REVERIE_BRIDGE_MODE", "1")
+    monkeypatch.setattr(ws_bridge, "_local_backup_manager", manager_factory)
+    monkeypatch.setattr(ws_bridge, "_validated_backup_control_path", path_gate)
+    with monkeypatch.context() as guarded:
+        guarded.setattr(Path, "open", guarded_open)
+        with pytest.raises(ValueError, match="coordinator") as raised:
+            asyncio.run(_handle_control(request))
+
+    assert calls == []
+    assert source.read_bytes() == source_bytes
+    assert local_data.read_bytes() == local_data_bytes
+    response = _control_failure(request["requestId"], request["type"], raised.value)
+    assert response == {
+        "kind": "control_result",
+        "schema": CONTROL_SCHEMA,
+        "requestId": request["requestId"],
+        "type": "backup:file:import",
+        "ok": False,
+        "code": "BACKUP_RESTORE_DISABLED",
+        "error": "The requested local control operation was rejected",
+        "recovery_state": "clean",
+        "writes_blocked": False,
+        "runtime_writable": True,
+        "recovery_reason": "",
+    }
+    serialized = json.dumps(response)
+    for omitted in (
+        str(source),
+        private_content,
+        private_exception,
+        str(raised.value),
+        "ValueError",
+    ):
+        assert omitted not in serialized
 
 
 def test_public_control_failure_never_reflects_exception_secrets() -> None:

@@ -1,0 +1,19 @@
+{
+  "schema": "reverie.vendored-runtime-source.v1",
+  "package": "pixi-live2d-display",
+  "version": "0.4.0",
+  "repository": "https://github.com/guansss/pixi-live2d-display.git",
+  "tarball": "https://registry.npmjs.org/pixi-live2d-display/-/pixi-live2d-display-0.4.0.tgz",
+  "integrity": "sha512-xeYC6y4Y0Bxe9ksWNlGFZC1rII/MPrzPQK7t1c3ubA8RhkOISIqHJl38fNumXqhGEs+yItmgDOkFT+9dsyGDjA==",
+  "files": {
+    "dist/cubism4.es.js": {
+      "sha256": "8d2ed8bbd95aac6b157fe5a3cffc0ea83fa804efba853d93e12bf94f53c293b7",
+      "bytes": 208691
+    },
+    "dist/cubism4.js": {
+      "sha256": "fb65789289e4471b6b70829ea3a188c97174f2ebfa840bc0f3fc6ab7ce238075",
+      "bytes": 224911
+    }
+  },
+  "note": "These two files are unmodified upstream 0.4.0 Cubism 4 renderer distributions. The local package manifest retains the existing Reverie runtime-only exports. Live2DCubismCore.js and model assets are not included; the existing runtime/publication gates still apply."
+}

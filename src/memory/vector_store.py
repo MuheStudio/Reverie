@@ -10,16 +10,9 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-import lancedb
 import numpy as np
-from lancedb.pydantic import LanceModel, Vector
 
 from .versioned_store import VersionedVectorStore
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger("reverie.memory.vector_store")
 
@@ -30,18 +23,30 @@ logger = logging.getLogger("reverie.memory.vector_store")
 VECTOR_DIM = 384
 
 
-class MemoryEntry(LanceModel):
-    """A single memory record in the vector store."""
-    id: str
-    text: str
-    layer: str  # "permanent", "long_term", "short_term"
-    timestamp: float  # Unix epoch
-    importance: float = 0.5  # 0.0–1.0
-    emotion_joy: float = 0.0
-    emotion_sadness: float = 0.0
-    emotion_anger: float = 0.0
-    emotion_excitement: float = 0.0
-    vector: Vector(VECTOR_DIM)
+def __getattr__(name: str):
+    # Ordinary compatibility imports must work in the SQLite-only runtime.
+    # Only an explicit request for the historical Lance schema needs the
+    # optional migration dependencies; retain its real schema rather than
+    # substituting a different model when LanceDB is absent.
+    if name != "MemoryEntry":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from lancedb.pydantic import LanceModel, Vector
+
+    class MemoryEntry(LanceModel):
+        """A single record in the historical LanceDB layout."""
+        id: str
+        text: str
+        layer: str
+        timestamp: float
+        importance: float = 0.5
+        emotion_joy: float = 0.0
+        emotion_sadness: float = 0.0
+        emotion_anger: float = 0.0
+        emotion_excitement: float = 0.0
+        vector: Vector(VECTOR_DIM)
+
+    globals()[name] = MemoryEntry
+    return MemoryEntry
 
 
 # ── Store ──────────────────────────────────────────────────
@@ -64,6 +69,8 @@ class _RetiredLanceVectorStore:
     @property
     def db(self):
         if self._db is None:
+            import lancedb
+
             self._db = lancedb.connect(str(self.db_path))
         return self._db
 

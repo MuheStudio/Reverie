@@ -1,0 +1,18 @@
+{
+  "schema": "reverie.qt.worldbook-injection-hit-native-contract.v1",
+  "recordSchema": "reverie.qt.worldbook-injection-hit-native-evidence.v1",
+  "manifestSchema": "reverie.qt.worldbook-injection-hit-native-manifest.v1",
+  "inputHitSchema": "reverie.qt.worldbook-injection-input-hit.v1",
+  "environment": "REVERIE_P1_INJECTION_HIT_EVIDENCE_DIR",
+  "maximumRecordBytes": 131072,
+  "cases": [
+    {"caseId":"hit-button","filename":"hit-button.json","dataTag":"hit-button","windowWidth":1380,"windowHeight":900,"step":601,"control":"worldbookEnabled","kind":"button","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"none","expectedPassed":true},
+    {"caseId":"hit-text","filename":"hit-text.json","dataTag":"hit-text","windowWidth":1380,"windowHeight":900,"step":602,"control":"worldbookName","kind":"text","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"none","expectedPassed":true},
+    {"caseId":"hit-selector","filename":"hit-selector.json","dataTag":"hit-selector","windowWidth":1380,"windowHeight":900,"step":603,"control":"worldbookInsertionPosition","kind":"selector","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"none","expectedPassed":true},
+    {"caseId":"hit-depth","filename":"hit-depth.json","dataTag":"hit-depth","windowWidth":1380,"windowHeight":900,"step":604,"control":"worldbookInsertionDepth","kind":"depth-keyboard","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"none","expectedPassed":true},
+    {"caseId":"hit-navigation","filename":"hit-navigation.json","dataTag":"hit-navigation","windowWidth":1380,"windowHeight":900,"step":605,"control":"worldbookInsertionPosition","kind":"insertion-tab-backtab","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"none","expectedPassed":true},
+    {"caseId":"hit-dispatch-coordinate-mismatch","filename":"hit-dispatch-coordinate-mismatch.json","dataTag":"hit-dispatch-coordinate-mismatch","windowWidth":1380,"windowHeight":900,"step":606,"control":"worldbookEnabled","kind":"button","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"dispatch-coordinate-mismatch","expectedPassed":false},
+    {"caseId":"hit-legacy-without-envelope","filename":"hit-legacy-without-envelope.json","dataTag":"hit-legacy-without-envelope","windowWidth":1380,"windowHeight":900,"step":607,"control":"worldbookEnabled","kind":"button","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-a","fault":"legacy-input-without-envelope","expectedPassed":false},
+    {"caseId":"hit-entry-selector","filename":"hit-entry-selector.json","dataTag":"hit-entry-selector","windowWidth":1380,"windowHeight":900,"step":608,"control":"worldbookEntrySelector","kind":"selector","selectedEntryIdBefore":"priority-a","selectedEntryId":"priority-b","fault":"none","expectedPassed":true}
+  ]
+}

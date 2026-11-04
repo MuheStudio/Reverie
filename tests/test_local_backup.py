@@ -159,7 +159,7 @@ def test_complete_local_backup_exports_all_restorable_sections() -> None:
     assert payload["diary"]["entries"][0]["date"] == "2026-07-10"
 
 
-def test_complete_local_backup_import_restores_state_and_replaces_memory() -> None:
+def test_complete_local_backup_import_requires_encrypted_journal_before_mutation() -> None:
     memory = FakeMemory()
     emotion = FakeEmotion()
     relationship = FakeRelationship()
@@ -174,15 +174,15 @@ def test_complete_local_backup_import_restores_state_and_replaces_memory() -> No
     )
 
     payload = manager.export_payload()
-    result = manager.import_payload(payload)
-
-    assert result == {"memory": 1, "diary": 1}
-    assert memory.replace is True
-    assert emotion.restored == payload["emotion"]
-    assert relationship.restored == payload["relationship"]
-    assert user.restored == payload["user"]
-    assert diary.restored == payload["diary"]
-    assert memory.synced is True
+    with pytest.raises(ValueError) as error:
+        manager.import_payload(payload)
+    assert error.value.code == "BACKUP_RECOVERY_UNAVAILABLE"
+    assert memory.imported == []
+    assert emotion.restored is None
+    assert relationship.restored is None
+    assert user.restored is None
+    assert diary.restored is None
+    assert memory.synced is False
 
 
 def test_backup_from_another_persona_is_rejected_before_any_restore() -> None:
@@ -213,7 +213,7 @@ def _streaming_manager(memory: StreamingMemory) -> LocalBackupManager:
     )
 
 
-def test_file_backup_and_restore_stream_every_memory_record(tmp_path) -> None:
+def test_file_backup_streams_every_memory_record_and_restore_fails_closed_without_journal(tmp_path) -> None:
     rows = [
         {
             "id": f"memory-{index}",
@@ -231,12 +231,11 @@ def test_file_backup_and_restore_stream_every_memory_record(tmp_path) -> None:
     assert decoded["memory"][-1]["id"] == "memory-3004"
 
     restored_memory = StreamingMemory([])
-    result = _streaming_manager(restored_memory).restore_from_file(backup_path)
-
-    assert result["memory"] == len(rows)
-    assert restored_memory.stream_import_calls == 1
-    assert len(restored_memory.rows) == len(rows)
-    assert restored_memory.rows[-1]["id"] == "memory-3004"
+    with pytest.raises(ValueError) as error:
+        _streaming_manager(restored_memory).restore_from_file(backup_path)
+    assert error.value.code == "BACKUP_RECOVERY_UNAVAILABLE"
+    assert restored_memory.stream_import_calls == 0
+    assert restored_memory.rows == []
 
 
 def test_truncated_backup_is_rejected_before_restore_mutates_state(tmp_path) -> None:

@@ -79,15 +79,21 @@ def _control_failure(
     error: Exception,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
+        **ws_bridge.recovery_status_payload(),
         "kind": "control_result",
         "schema": CONTROL_SCHEMA,
         "requestId": request_id,
         "type": control_type,
         "ok": False,
-        "code": str(getattr(error, "code", "") or "REVERIE_CONTROL_REJECTED")[:80],
+        "code": ws_bridge.control_error_code(error),
         "error": "The requested local control operation was rejected",
     }
     retryable = getattr(error, "retryable", None)
+    if control_type == "backup:file:import":
+        if result["code"] == "BACKUP_ROLLED_BACK":
+            result["outcome"] = "rolled_back"
+        elif result["writes_blocked"]:
+            result["outcome"] = "unconfirmed"
     if isinstance(retryable, bool):
         result["retryable"] = retryable
     if control_type == "local_mode:set":
@@ -116,19 +122,21 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
         "provider:configure": {"llm"},
         "provider:test": {"llm", "credential"},
         "amap:nearby": {"request"},
+        # Host-chosen absolute .json export paths; validated again by the
+        # backup path gate.
+        "backup:file:export": {"path"},
+        "backup:file:inspect": {"path"},
+        "backup:file:import": {"path", "mode", "sha256", "file_bytes", "known_good_confirmed"},
+        "persona:card:export": {"path", "world_book_id", "persona_id", "persona_epoch",
+                                "persona_fingerprint", "archive_revision"},
     }.get(control_type)
     if allowed_fields is None:
         raise ValueError("unsupported control type")
     envelope_fields = {"kind", "schema", "type", "requestId"}
-    if set(message) - envelope_fields - allowed_fields:
+    if set(message) - envelope_fields - allowed_fields and control_type != "persona:card:export":
         raise ValueError("control message has unsupported fields")
-    result: dict[str, Any] = {
-        "kind": "control_result",
-        "schema": CONTROL_SCHEMA,
-        "requestId": request_id,
-        "type": control_type,
-        "ok": True,
-    }
+    ws_bridge.control_preflight(control_type)
+    result: dict[str, Any] = {"ok": True}
     if control_type == "local_mode:set":
         active = message.get("active")
         if not isinstance(active, bool):
@@ -174,7 +182,31 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
         result.update(tested)
     elif control_type == "amap:nearby":
         result.update(await ws_bridge._run_amap_nearby(message.get("request")))  # noqa: SLF001
-    return result
+    elif control_type == "persona:card:export":
+        result.update(await ws_bridge._run_native_card_export({  # noqa: SLF001
+            key: value for key, value in message.items() if key not in envelope_fields
+        }))
+    elif control_type in {"backup:file:export", "backup:file:inspect", "backup:file:import"}:
+        if message.get("mode") not in {None, "normal", "rescue"}:
+            raise ValueError("unsupported restore mode")
+        operation = control_type.rsplit(":", 1)[-1]
+        if operation == "import":
+            backup_result = await ws_bridge._run_native_backup(  # noqa: SLF001
+                operation, message.get("path"), rescue=message.get("mode") == "rescue",
+                expected_sha256=message.get("sha256"), expected_file_bytes=message.get("file_bytes"),
+                known_good_confirmed=message.get("known_good_confirmed") is True,
+            )
+        else:
+            backup_result = await ws_bridge._run_native_backup(operation, message.get("path"))  # noqa: SLF001
+        result.update(backup_result)
+    # Operation metadata cannot replace the identity of its control receipt.
+    return {
+        **result,
+        "kind": "control_result",
+        "schema": CONTROL_SCHEMA,
+        "requestId": request_id,
+        "type": control_type,
+    }
 
 
 async def start_stdio_bridge() -> None:
@@ -208,6 +240,9 @@ async def start_stdio_bridge() -> None:
         "runtimeUnavailable": list(ws_bridge.bridge_state.runtime_unavailable),
         "modelEpoch": int(getattr(ws_bridge.bridge_state, "model_epoch", 0) or 0),
         "personaRestartRequired": bool(ws_bridge.bridge_state.persona_restart_required),
+        "recoveryState": ws_bridge.recovery_status_payload()["recovery_state"],
+        "writesBlocked": ws_bridge.recovery_status_payload()["writes_blocked"],
+        "runtimeWritable": ws_bridge.recovery_status_payload()["runtime_writable"],
     }
     await controller.write(ready)
 
@@ -223,6 +258,9 @@ async def start_stdio_bridge() -> None:
     ws_bridge._connections.add(controller)  # noqa: SLF001
     ws_bridge._client_contexts[controller] = context  # noqa: SLF001
     ws_bridge._controller_ws = controller  # noqa: SLF001
+    recovery = ws_bridge.bridge_state.restore_coordinator
+    if recovery is not None:
+        recovery.start_startup_recovery()
 
     parent_task = asyncio.create_task(ws_bridge._parent_watch_loop(shutdown_event))  # noqa: SLF001
     activity_task = asyncio.create_task(ws_bridge._runtime_activity_loop())  # noqa: SLF001
@@ -233,7 +271,7 @@ async def start_stdio_bridge() -> None:
             ws_bridge.MsgType.RUNTIME_ACTIVITY,
             ws_bridge._runtime_activity_payload(),  # noqa: SLF001
         )
-        if ws_bridge.bridge_state.session is not None:
+        if ws_bridge.bridge_state.session is not None and not ws_bridge.recovery_status_payload()["writes_blocked"]:
             await ws_bridge._get_chat_coordinator().resume(  # noqa: SLF001
                 client_id=context.client_id,
                 conversation_id=context.conversation_id,
@@ -258,6 +296,15 @@ async def start_stdio_bridge() -> None:
                 break
             kind = message.get("kind")
             if kind == "renderer_command":
+                raw_envelope = message.get("envelope")
+                if isinstance(raw_envelope, dict) and raw_envelope.get("command") == "backup:import":
+                    raw_id = str(raw_envelope.get("request_id") or "")
+                    await ws_bridge.send_to_frontend(
+                        controller, ws_bridge.response_type_for_request("backup:import"),
+                        ws_bridge.command_preflight("backup:import"),
+                        request_id=raw_id if re.fullmatch(r"[A-Za-z0-9_-]{8,128}", raw_id) else "",
+                    )
+                    continue
                 try:
                     if message.get("schema") != "reverie.command.v4":
                         raise ValueError("invalid command envelope schema")
@@ -283,6 +330,13 @@ async def start_stdio_bridge() -> None:
                     expected_persona_epoch=envelope.persona.epoch,
                     expected_persona_fingerprint=envelope.persona.fingerprint,
                 )
+                rejected = ws_bridge.command_preflight(envelope.command)
+                if rejected is not None:
+                    await ws_bridge.send_to_frontend(
+                        controller, ws_bridge.response_type_for_request(envelope.command),
+                        rejected, request_id=envelope.request_id,
+                    )
+                    continue
                 store = ws_bridge.bridge_state.kernel_store
                 if envelope.command in MUTATING_COMMAND_NAMES and store is not None:
                     try:

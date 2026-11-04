@@ -1,0 +1,33 @@
+{
+  "schema": "reverie.restore-compatibility-fixture.v1",
+  "origin": "New synthetic export; not a retained historical GUI export",
+  "exporterCommit": "00d557062bac4093bb9c74ea5b6afaa7a9d8c0ea",
+  "exporterFile": "src/backup.py",
+  "exporterSha256": "09296a41c35ec07865c961d9cc1dbe623f366ccadd566f78273656c9e2b9ea8c",
+  "generatorSha256": "a5d874f5db0edb065ad5dd83f3ac07869a0b5f66878a60d24075640d393d3f0a",
+  "filename": "p1_restore_same_identity_v3.json",
+  "bytes": 1619,
+  "sha256": "152439d84d1a38b02cc0af40c78974cf8fef769fdb9737dee1f5675e64dabe78",
+  "personaIdentity": {
+    "persona_id": "builtin_hoshino_yumetsuki",
+    "fingerprint": "2b83b064b6ff4e0a41f8e8ff7ede53ca6537bc9dbc89b81a42122d17b8d926f4",
+    "identity_version": 1
+  },
+  "clock": "2026-10-13T00:00:00",
+  "sections": [
+    "schema",
+    "exported_at",
+    "storage_policy",
+    "cloud_status",
+    "persona_identity",
+    "emotion",
+    "relationship",
+    "user",
+    "diary",
+    "memory"
+  ],
+  "memoryIds": [
+    "compat-v3-memory-001",
+    "compat-v3-memory-002"
+  ]
+}

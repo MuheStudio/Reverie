@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Metadata-only dependency retirement inventory; no upstream algorithm source is copied here.",
+  "sourceTreeCommit": "d957d872b5f3d200de33e05fcf401bcf621d80fc",
+  "capturedOn": "2026-10-05",
+  "version": "0.1.1",
+  "source": "https://github.com/lucaferranti/elephantops",
+  "fileCount": 87,
+  "totalBytes": 473798,
+  "files": [
+    {
+      "path": "frontend/node_modules/elephantops/LICENSE",
+      "bytes": 35147,
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/README.md",
+      "bytes": 2062,
+      "sha256": "837bed2b2b972eb9dabf1b3cc6fe9127de473230bdc2ad662af6a0c685eec930"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/attacks.js",
+      "bytes": 8329,
+      "sha256": "20aef672b32fab96c725ba38ca00bf4cd5841cd19e732d5c48a24ca39c30aac6"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/attacks.js.map",
+      "bytes": 7986,
+      "sha256": "ee14fde43c832f014215224bf16061c7481046fd7afd499034fa933f51e63800"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/board.js",
+      "bytes": 4240,
+      "sha256": "6d29d0f2081431f7ae8542163886061a36d4cb17b102b1abe501b9bd96a08fe6"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/board.js.map",
+      "bytes": 3981,
+      "sha256": "b0605e6e02ae1a6de76e365d4abb9e2d4f52f704029d59e5fc580c3ff49f55a3"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/compat.js",
+      "bytes": 1124,
+      "sha256": "ccc95f499af66df3951a8d1396fc6ade6c2ad2f2a089c50e0fec530421e17952"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/compat.js.map",
+      "bytes": 801,
+      "sha256": "b0990511654fe0af381be04f19b0b75d218bfc2f9a7aed302d11440844f36c59"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/debug.js",
+      "bytes": 2304,
+      "sha256": "4b2778d67ecc01c58292641285671a474969e99c54039335a40030df66c9f65f"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/debug.js.map",
+      "bytes": 3010,
+      "sha256": "f8563a1e4d70389c8e5f1e0c3edf6ee9cb6241bda88d91bf2eee12f94033dd25"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/fen.js",
+      "bytes": 5770,
+      "sha256": "238a7322ee6ea36ec59a76034168e84522c1eafde21337038e97be62425049cc"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/fen.js.map",
+      "bytes": 5745,
+      "sha256": "30332c8e8fd7fe069417ab34e0776c5b7475f96623001cb0526ce96e781a580c"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/index.js",
+      "bytes": 6648,
+      "sha256": "c8b87ad902f8734d8db5e1fc939099955fc36009c760bb6b52d4b92080151657"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/index.js.map",
+      "bytes": 1029,
+      "sha256": "f1eff52c86b95de3e90b485da1c6dbfd6bdf82329ea6cb18666dfa3691d7583b"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/pgn.js",
+      "bytes": 25686,
+      "sha256": "6d3e37794adfe6205bff89875d10b56cbb8432f4a2d3c858a022028efc604132"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/pgn.js.map",
+      "bytes": 22350,
+      "sha256": "2ea9cecee63ed7fdff78469923f0c604e1c0ae1ddb4d25ee9047275a15742523"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/san.js",
+      "bytes": 4429,
+      "sha256": "d4fa0636380acd516fcb0ab1b2de594707c6b3ab9d2d185ec59f88c6fac1e7ea"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/san.js.map",
+      "bytes": 4592,
+      "sha256": "0bd11bc408ac43edb7327a9f2a8af95b696e02d313066a743b9631db5f9c42ad"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/setup.js",
+      "bytes": 3686,
+      "sha256": "928a71716c76aa61df42aa33292a32534ea39eb559d846ebc6daaf5969a5eb25"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/setup.js.map",
+      "bytes": 4170,
+      "sha256": "87f4c8e297b1aff5eb86a3b0535777618d8c80442540bae33097a7422ead9275"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/squareSet.js",
+      "bytes": 9147,
+      "sha256": "d01f327fad37499bfc5899b66d4e1e6760588bac0b47ff5883ef63c2f7f63c9e"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/squareSet.js.map",
+      "bytes": 10899,
+      "sha256": "2439618d37e639119a3fccec607152e3ffd3cd6cc1d59eed5bf3fc9ecfbfb081"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/types.js",
+      "bytes": 509,
+      "sha256": "4a6547b1d6487eea072f2ad1eeb4aef46a0d075aa35a9ad925ebb4294caf74ed"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/types.js.map",
+      "bytes": 553,
+      "sha256": "faa28d04e787f46d3c955764294f58abeca58f4b1d7ef11e8eb32850ba28cc09"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/util.js",
+      "bytes": 2846,
+      "sha256": "3d0a33bcf78fef0c272197f486930dc5d1a85a21eaf3f78d9e35092d2e40e108"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/util.js.map",
+      "bytes": 2703,
+      "sha256": "e9f09dce36db69000185fd3ffdff4bd74f152454ea3ccf8310f9cec5d7cb2ce8"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/variant.js",
+      "bytes": 883,
+      "sha256": "417a7c9c1ca6646c1a1f4bff106e61f194c1f0630fcb7b2e66499049d1589274"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/variant.js.map",
+      "bytes": 520,
+      "sha256": "8da8366d6b2f237fbe1712c5b8fd200324b14126d910c28d221768146e5b4874"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/xiangqi.js",
+      "bytes": 15594,
+      "sha256": "22f4b9c12fbbd3ea8140c2407d684d357212df1c70265e7fd0484619e431ea4e"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/cjs/xiangqi.js.map",
+      "bytes": 13656,
+      "sha256": "b924955eba4b8fb48ee15f2ac42d57692bc1b4b2e535d74a7023603ebb5bd6ea"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/attacks.js",
+      "bytes": 7209,
+      "sha256": "15521be6d659a3684a2d3eebad5484023bc0027944624c2837fdd5701d74696a"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/attacks.js.map",
+      "bytes": 7843,
+      "sha256": "ceb887240e645f6c6aa8615e81a7475376f873bda014cbd129eefe82c45283f5"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/board.js",
+      "bytes": 3808,
+      "sha256": "93e9a8dfafa5a4941b97a5163f31e485c10b976f2e2331e45368332181cde498"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/board.js.map",
+      "bytes": 4008,
+      "sha256": "5eefcfde26c9add90c01c2adfb4a2cf8498a0f0657942d9fe2a4b1584aab7776"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/compat.js",
+      "bytes": 845,
+      "sha256": "055d1f8e00bb1952fe5ead495ac447f0fd28cd44f3ae15253930bd840671bf93"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/compat.js.map",
+      "bytes": 778,
+      "sha256": "2a8e7a704d8858ba963ed7c6eb68ebc8b865b81e9818158ecfda96309811d96f"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/debug.js",
+      "bytes": 1928,
+      "sha256": "1ae3cfdcebebbba1b0b46c2e03c4de729ab1a4394463d20b6e683cb1742b5152"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/debug.js.map",
+      "bytes": 2969,
+      "sha256": "c3a4baaacae7150f0109c6cdf14578117066f806883f186d27c4818e71459942"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/fen.js",
+      "bytes": 4918,
+      "sha256": "63dbcf90b4807e2acc42a614617c7939162b6d16037bce5f22f9bbd7ead8a537"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/fen.js.map",
+      "bytes": 5760,
+      "sha256": "2299cc56cd92f8540cd706a6fd79bce4d850c72eba951434f8df49a1e239a992"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/index.js",
+      "bytes": 898,
+      "sha256": "32a84a97979d6c5908ab1bcdf6d1617685656dc20db512fb2170f17784779ffa"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/index.js.map",
+      "bytes": 891,
+      "sha256": "4649f67b86a8f86fe1795c6d0c5de40b9cdd5ccf7dea2372fa71132185a31b78"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/pgn.js",
+      "bytes": 24140,
+      "sha256": "aaeb2d70f5d088409fd923bfef2320c4bb7d96f1f5f93fe0c37c46445c2cf5bd"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/pgn.js.map",
+      "bytes": 22084,
+      "sha256": "3f0153b435a8abaff92542871bfca6494ec36529727da94dccf289bf923a0e41"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/san.js",
+      "bytes": 3933,
+      "sha256": "3f10313012a13e783c3e3e59672037517cf5127f95f7bf9515c7e8628125753a"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/san.js.map",
+      "bytes": 4648,
+      "sha256": "6bdde13e73c4668c1df79e64fd3d010a27620decd8c5ffb59daaf55261428e1e"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/setup.js",
+      "bytes": 3254,
+      "sha256": "dfbc32c863e717d4d18571cb4cbf286ef1db4e8efb305646b7a00b9d1dd3f91e"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/setup.js.map",
+      "bytes": 4169,
+      "sha256": "521f2da690905b8a7a1720d74080dee10c989627f00c22f0360cb3a28f4a75dc"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/squareSet.js",
+      "bytes": 9018,
+      "sha256": "8b1f7c0378f3707947470543af882e45d5532ebcbe77a5488fa6e1537afb8c83"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/squareSet.js.map",
+      "bytes": 10888,
+      "sha256": "6c5ae540eccc4fb270821e11427055e34dd14867171f7aa1f53ff1f7295ea12d"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/types.js",
+      "bytes": 358,
+      "sha256": "e40ce01e55f8790ae8c231578a37def684b662e706b3f141eec1d9f72e5a6352"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/types.js.map",
+      "bytes": 600,
+      "sha256": "6cbd313db26784e874e1704f8fc894feafbdf84a8cb7010f6f1338923c33519b"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/util.js",
+      "bytes": 2125,
+      "sha256": "5c181c74422c2b6466c7fa594054ad89e09785f04bdc559f13628ae92b0b5106"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/util.js.map",
+      "bytes": 2558,
+      "sha256": "cce1bf18af659820b7ea8d1bed00fe1548b6675cd25f052ca13886d2513d4fee"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/variant.js",
+      "bytes": 420,
+      "sha256": "49a89a9c309d27c61d03e8dd5f7c820b57e0b7bf3d2cfb735e4517b58e2342f6"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/variant.js.map",
+      "bytes": 535,
+      "sha256": "7880a199cbd10cd464d892a95c2994b7ca6057f1862c320eaa79ca54501e1d0a"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/xiangqi.js",
+      "bytes": 14111,
+      "sha256": "4b48eec95eb919ce51bfa930183590f8a59fcfe50b7f62cb86b94d7e5f0bc4c0"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/esm/xiangqi.js.map",
+      "bytes": 13671,
+      "sha256": "a81e978333095eceb6d446c9759ee061336082a128617018bafabc7123686c3b"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/attacks.d.ts",
+      "bytes": 2797,
+      "sha256": "ab1b9fdf9c8afa497f14d767f5114861b87b3cc36db67482e5e5ce6bcc6cf967"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/board.d.ts",
+      "bytes": 1828,
+      "sha256": "d34c7474f21de6ff1778ea80dd82c315442138a84a3567e3cdbe8683931d299c"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/compat.d.ts",
+      "bytes": 602,
+      "sha256": "066cba0c805af7f9d8642ea7d9907ad82d218ffc445128ab83cb11c30e896227"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/debug.d.ts",
+      "bytes": 546,
+      "sha256": "6773240531287b3aedf68958240d46f5c03708e29c9215c9c52b9134c4487eeb"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/fen.d.ts",
+      "bytes": 1161,
+      "sha256": "dc3cd0637a474f1107611318284ab3ca86134f6a2a3c377fdb1c3dd574777a7a"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/index.d.ts",
+      "bytes": 942,
+      "sha256": "0db0f1a6b6cb12629f85b2a3f7c782b296dc9e847842bfd6a1ad72785708c032"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/pgn.d.ts",
+      "bytes": 6435,
+      "sha256": "f34636cb1b6fd129cb8ae03a03f2f61687f2aea0711c8d0dbda3db1a86ace453"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/san.d.ts",
+      "bytes": 387,
+      "sha256": "8a6ab729273dcb7cc28477baddf47bb796e07b410008920a09616ffbb575850f"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/setup.d.ts",
+      "bytes": 1587,
+      "sha256": "e962e8627179c09e97ec89514dca2a4e0420ee2dfdc857e28a841458478acc1c"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/squareSet.d.ts",
+      "bytes": 1705,
+      "sha256": "6349d2cabe90329d15633f62817b139b8fb36a504229c1f79b3e31c23f220a71"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/types.d.ts",
+      "bytes": 1213,
+      "sha256": "6a5d74e187bcfb0018089061a470cb9c5a06280d739cc77f42f4e93b9b1f28d0"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/util.d.ts",
+      "bytes": 1121,
+      "sha256": "a17c994f6caae351edb6ef3d1f31afe983ef23d6af3a2e67485733dcd706102f"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/variant.d.ts",
+      "bytes": 372,
+      "sha256": "0a82e51a228a1c9db1dbaaa45d9bfc1be913a11db8f23c2c2b695d4564d8e6e2"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/dist/types/xiangqi.d.ts",
+      "bytes": 4719,
+      "sha256": "c8d9db0a229322ecc93584b4781b7fe5e58ccae9a164fa9ea66296175a181a95"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/package.json",
+      "bytes": 2004,
+      "sha256": "4bf569b116a4b64b4a4bb17d58961d2bfa3e1161571eaaa1e35677bb4e1287f1"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/attacks.ts",
+      "bytes": 7070,
+      "sha256": "192806aae34540e490008ab2bd8950149aad01038e3e1fee6ff780fcd97aab02"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/board.ts",
+      "bytes": 4086,
+      "sha256": "3ad4ca2810efa0a5d89446ab773f7e4aae6c34525e07105a0e4b8d231b77d0c4"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/compat.ts",
+      "bytes": 933,
+      "sha256": "ae190d4fc53bf8b733f7619743ccdbdc23a2dea65a8269711dd77f113959c655"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/debug.ts",
+      "bytes": 1954,
+      "sha256": "301a6bcda75c3ec35f420142dfd50cbb34a5847a25d2367c59a46e2e715abc33"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/fen.ts",
+      "bytes": 4492,
+      "sha256": "38e882a6f87d1db173242c64984f121c8cf2c1333bfe7790b406c85e41f00d2c"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/index.ts",
+      "bytes": 1079,
+      "sha256": "b51dc41106ccd664d30462c753cfc9834df80ccd941cda1d2b4284b408fe468a"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/pgn.ts",
+      "bytes": 23419,
+      "sha256": "abfc0d838fb5becf7906466079954e16712cf18e78a7e293f86d3ca5d7ccf718"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/san.ts",
+      "bytes": 3722,
+      "sha256": "f9d9e6ca51e727fc8fa57747dfb18ef453c270e1aabdcb96a977776dfbcb0d31"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/setup.ts",
+      "bytes": 3686,
+      "sha256": "d5bde68c02e8816d4ec7d9b90971f21f8579f38d39564a54aaaaf99a6e372f4c"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/squareSet.ts",
+      "bytes": 8938,
+      "sha256": "4fc3098828ce857c540e7d5eea78254bfba19905578265bf3cbb986454ac7357"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/types.ts",
+      "bytes": 1186,
+      "sha256": "1fc266c966737fd6e2976e57d03dde3fd32553b2049517c1f173936fe3c8e34b"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/util.ts",
+      "bytes": 2583,
+      "sha256": "12fbfabf536c1495aa4e3afe97b39f18d24968ff9423704c4b19aa6217fed0e6"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/variant.ts",
+      "bytes": 537,
+      "sha256": "5c855b4650e4a6daf74271b639970f8433317e86fa6aebefaee4cd80d093d375"
+    },
+    {
+      "path": "frontend/node_modules/elephantops/src/xiangqi.ts",
+      "bytes": 13928,
+      "sha256": "e7db08d02235378f523d50ba4ce3f3ceffff8016ccb41363691b8245e470e6c4"
+    }
+  ]
+}

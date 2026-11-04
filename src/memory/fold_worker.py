@@ -20,6 +20,8 @@ import time
 import uuid
 from typing import Any
 
+from src.storage.encrypted_sqlite import integrity_errors
+
 logger = logging.getLogger("reverie.memory.fold_worker")
 
 JOB_KINDS = frozenset({"reembed", "extract_atoms", "cleanup_usage", "evidence_check"})
@@ -79,8 +81,8 @@ class FoldWorker:
         now = time.time()
         payload_json = json.dumps(payload or {}, ensure_ascii=False)
         with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._conn.execute("BEGIN IMMEDIATE")
                 self._conn.execute(
                     """INSERT INTO memory_jobs
                            (id, kind, payload_json, max_attempts, dedupe_key,
@@ -92,9 +94,17 @@ class FoldWorker:
                 )
                 self._conn.execute("COMMIT")
                 return job_id
-            except sqlite3.IntegrityError:
+            except integrity_errors():
+                # An encrypted catalog raises sqlcipher3's IntegrityError,
+                # which is not a subclass of sqlite3's.
                 self._conn.execute("ROLLBACK")
                 return None  # dedupe_key collision = idempotent skip
+            except BaseException:
+                # COMMIT can fail after becoming durable; release only an
+                # open transaction so the original error stays visible.
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+                raise
 
     def claim_job(self, kind: str | None = None, lease_seconds: float = 300.0) -> dict | None:
         """Claim the oldest pending job, atomically setting it to 'running'."""

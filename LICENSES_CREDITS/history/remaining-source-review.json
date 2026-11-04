@@ -1,0 +1,115 @@
+{
+  "schema": "reverie.remaining-source-review.v1",
+  "recordedOn": "2026-10-05",
+  "authorHandoverSupportConfirmed": true,
+  "rootLicenseSwitchReady": false,
+  "items": [
+    {
+      "id": "python-chat-video",
+      "files": [
+        {
+          "path": "src/video_download/__init__.py",
+          "bytes": 1811,
+          "sha256": "3783dd5912e1032936584ca1242d4adb4a3481c9f94eae045c03a50df8355cc3",
+          "availableCommits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/downloader.py",
+          "bytes": 9182,
+          "sha256": "73e3f97a795add46c04f72de9f71d638e4755f3432747a56765d04fc0fc2c92f",
+          "availableCommits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/gates.py",
+          "bytes": 7498,
+          "sha256": "b545f1388065d30cf2b75cb6cde48883495af869a89fbfb1ee2a317496ff8a89",
+          "availableCommits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/hls.py",
+          "bytes": 12469,
+          "sha256": "60a2b8509a56e5568628619c5e85c483db09a06c6f405fc207b43b5bd6413e8e",
+          "availableCommits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/merge.py",
+          "bytes": 3413,
+          "sha256": "ce01c1bc44c077c811f451dd2cad06589598465cfcae5602524f0919fa43389d",
+          "availableCommits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        },
+        {
+          "path": "src/video_download/pipeline.py",
+          "bytes": 6856,
+          "sha256": "9777604b73ba4c1657320cd3d748229bcafb7c2b106886c033d7cff47fdbf2ed",
+          "availableCommits": [
+            "f9fcf0995fb1d9b4d54f3cd67595ad55c98f68fa"
+          ]
+        }
+      ],
+      "currentDependencyResult": "Only first-party video modules and ordinary installed dependencies are called; retired CatCatch host is not invoked.",
+      "originDeclaration": "Headers declare original implementation inspired by browser extension structure.",
+      "availableHistory": "Each file appears in one imported baseline commit; pre-import authoring/source materials are not available in this local history.",
+      "verifiedIndependentOrigin": false,
+      "decision": "Retain behavior and notices for the current GPL candidate; no demonstrated third-party code reuse was found, but do not claim authoring provenance is proven.",
+      "requiredMaterial": "A file-specific original-author origin statement or corresponding pre-import authoring/history identifying any translated/copied material. Handover support itself is already confirmed."
+    },
+    {
+      "id": "tetris-engine-notice",
+      "package": "tetris-engine@1.2.18",
+      "declaredLicense": "ISC",
+      "registryMetadataSha256": "19e7586d4dbb0ade91094f3c9e2eac9b3533d5aeec0efb60703c4b67ead9b7a4",
+      "gitHead": "4a227e31f974b6c517d4d174e0a569eda7f8f771",
+      "distributionIntegrity": "sha512-Vl8J7ZYm1zux0xT5zk5qwfelahkF+4oz+UNpkJHxbfa/rbVyz5NIZQPmmZXVDrB1GVD4sQNJkBpUBaaxqpwW+w==",
+      "verifiedTarballMembers": [
+        "package/package.json",
+        "package/readme.md",
+        "package/dist/engine.js",
+        "package/dist/index.js",
+        "package/dist/shape.js",
+        "package/dist/tetra-shapes.js"
+      ],
+      "licenseBodyFound": false,
+      "fixedCommitLicenseQueries": [
+        {
+          "url": "https://raw.githubusercontent.com/petelinmn/tetris-engine/4a227e31f974b6c517d4d174e0a569eda7f8f771/LICENSE",
+          "status": 404
+        },
+        {
+          "url": "https://raw.githubusercontent.com/petelinmn/tetris-engine/4a227e31f974b6c517d4d174e0a569eda7f8f771/LICENSE.md",
+          "status": 404
+        },
+        {
+          "url": "https://raw.githubusercontent.com/petelinmn/tetris-engine/4a227e31f974b6c517d4d174e0a569eda7f8f771/LICENSE.txt",
+          "status": 404
+        },
+        {
+          "url": "https://raw.githubusercontent.com/petelinmn/tetris-engine/4a227e31f974b6c517d4d174e0a569eda7f8f771/LICENCE",
+          "status": 404
+        }
+      ],
+      "decision": "Retain ISC metadata and attribution; keep package-metadata-only status. Do not fabricate copyright or a supplemental license body.",
+      "requiredMaterial": "Version-matched permission/copyright text from the holder or a verifiable original archive."
+    },
+    {
+      "id": "contribution-coverage",
+      "metadata": "LICENSES_CREDITS/history/contribution-history-metadata.json",
+      "gitAuthorLabels": {
+        "CrimeiInfull DarkiIne": 32,
+        "星野初夏": 3,
+        "Codex Local Baseline": 14
+      },
+      "decision": "Treat names as retrieval keys, not distinct rights holders; imported snapshots need source-level origin mapping. Do not rewrite authorized originals because of historical GPL headers.",
+      "requiredMaterial": "Resolve original-author aliases and any actual third-party/contributor scope using file origin records before the formal switch."
+    }
+  ]
+}

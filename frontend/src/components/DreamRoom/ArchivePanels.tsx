@@ -1,4 +1,8 @@
+import type { ArchiveClient } from './archiveClient';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ConversationSummaryPanel } from './ConversationSummaryPanel';
+import { worldbookEntryWarnings, worldbookNotice } from '@/lib/worldbookDiagnostics';
+import { createArchiveOperationScope, type ArchiveOperationToken, type ArchivePersonaProof } from '@/lib/archiveOperationScope';
 import {
   AlertTriangle,
   Bell,
@@ -50,7 +54,7 @@ import {
   type LLMConfig,
   type LLMProvider,
 } from '@/lib/llmModels';
-import { useReverieWS, WSMsgType } from '@/hooks/useReverieWS';
+import { WSMsgType } from '@/hooks/useReverieWS';
 import {
   createCharacterCardExport,
   createDefaultArchive,
@@ -1428,7 +1432,7 @@ export function AiSettingsPanel() {
     </div>
   );
 }
-export function DiarySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function DiarySettingsPanel({ ws }: { ws: ArchiveClient }) {
   const [settings, setSettings] = useState<DiaryFeatureSettings>(DEFAULT_DIARY_FEATURE_SETTINGS);
   const [status, setStatus] = useState('');
   const probabilityPercent = Math.round(settings.late_night_probability * 100);
@@ -1553,7 +1557,7 @@ export function DiarySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS>
   );
 }
 
-export function ChatSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function ChatSettingsPanel({ ws }: { ws: ArchiveClient }) {
   const [settings, setSettings] = useState<ChatFeatureSettings>(DEFAULT_CHAT_FEATURE_SETTINGS);
   const [status, setStatus] = useState('');
 
@@ -1662,7 +1666,7 @@ export function ChatSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> 
   );
 }
 
-export function AntiAiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function AntiAiSettingsPanel({ ws }: { ws: ArchiveClient }) {
   const [status, setStatus] = useState<AntiAiStatusPayload>(DEFAULT_ANTI_AI_STATUS);
   const [syncLine, setSyncLine] = useState('');
 
@@ -1745,7 +1749,7 @@ export function AntiAiSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
   );
 }
 
-export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function MemorySettingsPanel({ ws }: { ws: ArchiveClient }) {
   const [settings, setSettings] = useState<MemoryForgetSettings>(DEFAULT_MEMORY_SETTINGS);
   const [status, setStatus] = useState('');
   const longTermMisrememberPercent = Math.round(settings.long_term_misremember_probability * 100);
@@ -1779,6 +1783,7 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
   }, [ws.connState, ws.send, ws.subscribe]);
 
   useEffect(() => {
+    if (ws.viewActive === false) return;
     const unsubscribe = ws.subscribe(WSMsgType.MEMORY_SETTINGS_RESULT, (payload: unknown) => {
       if (isRecord(payload) && payload.error) {
         setStatus(safeString(payload.error));
@@ -1798,7 +1803,7 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
       window.clearInterval(timer);
       unsubscribe();
     };
-  }, [ws.connState, ws.send, ws.subscribe]);
+  }, [ws.connState, ws.send, ws.subscribe, ws.viewActive]);
 
   const setField = <K extends keyof MemoryForgetSettings>(key: K, value: MemoryForgetSettings[K]) => {
     setSettings((current) => normalizeMemorySettings({ ...current, [key]: value }));
@@ -1853,6 +1858,8 @@ export function MemorySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS
 
   return (
     <div className={styles.managementPanel}>
+      <ConversationSummaryPanel ws={ws} />
+      <AiUsageConsentPanel ws={ws} onlyFeature="conversation_summary" />
       <div className={styles.managementHero}>
         <Brain size={24} />
         <div>
@@ -2184,7 +2191,7 @@ interface AiUsageFeature {
   consentDigest: string;
 }
 
-function AiUsageConsentPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+function AiUsageConsentPanel({ ws, onlyFeature }: { ws: ArchiveClient; onlyFeature?: string }) {
   const [features, setFeatures] = useState<Record<string, AiUsageFeature>>({});
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState('默认拒绝；每项云端能力都需要单独确认。');
@@ -2238,7 +2245,7 @@ function AiUsageConsentPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
     setStatus(sent ? `正在撤销 ${feature}…` : '后端未连接，授权没有更改。');
   };
 
-  const entries = Object.entries(features).sort(([left], [right]) => left.localeCompare(right));
+  const entries = Object.entries(features).filter(([feature]) => !onlyFeature || feature === onlyFeature).sort(([left], [right]) => left.localeCompare(right));
   return (
     <section className={styles.aiUsageConsent} aria-labelledby="ai-usage-consent-title">
       <header>
@@ -2258,7 +2265,7 @@ function AiUsageConsentPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
       {entries.map(([feature, value]) => (
         <article key={`${feature}:${value.consentDigest}`} data-effective={value.effective}>
           <div>
-            <strong>{feature}</strong>
+            <strong>{feature === 'conversation_summary' ? '对话摘要' : feature}</strong>
             <span>{value.effective ? '已允许' : '未允许'}</span>
           </div>
           <p>{value.description}</p>
@@ -2293,7 +2300,7 @@ function AiUsageConsentPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
   );
 }
 
-export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function PersonalitySettingsPanel({ ws }: { ws: ArchiveClient }) {
   const [settings, setSettings] = useState<PersonalityFeatureSettings>(DEFAULT_PERSONALITY_SETTINGS);
   const [status, setStatus] = useState('');
   const [notificationStatus, setNotificationStatus] = useState('正在核对系统通知…');
@@ -3019,7 +3026,7 @@ export function PersonalitySettingsPanel({ ws }: { ws: ReturnType<typeof useReve
   );
 }
 
-export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function ImmersionSettingsPanel({ ws }: { ws: ArchiveClient }) {
   const [settings, setSettings] = useState<ImmersionFeatureSettings>(DEFAULT_IMMERSION_SETTINGS);
   const [status, setStatus] = useState('');
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
@@ -3548,7 +3555,7 @@ export function ImmersionSettingsPanel({ ws }: { ws: ReturnType<typeof useReveri
   );
 }
 
-export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function UserProfilePanel({ ws }: { ws: ArchiveClient }) {
   const [profile, setProfile] = useState<EditableUserProfile>(DEFAULT_USER_PROFILE);
   const [memories, setMemories] = useState<EmotionalMemoryPreview[]>([]);
   const [status, setStatus] = useState('');
@@ -3681,10 +3688,10 @@ export function UserProfilePanel({ ws }: { ws: ReturnType<typeof useReverieWS> }
   );
 }
 
-export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof useReverieWS>; initialTab?: 'characters' | 'worldBook' }) {
-  const [archive, setArchive] = useState(() => createDefaultArchive());
-  const [selectedCharacterId, setSelectedCharacterId] = useState(archive.characters[0]?.id ?? '');
-  const [selectedWorldBookId, setSelectedWorldBookId] = useState(archive.worldBooks[0]?.id ?? '');
+export function ArchiveManagerPanel({ ws, initialTab }: { ws: ArchiveClient; initialTab?: 'characters' | 'worldBook' }) {
+  const [archiveState, setArchive] = useState(() => createDefaultArchive());
+  const [selectedCharacterId, setSelectedCharacterId] = useState('');
+  const [selectedWorldBookId, setSelectedWorldBookId] = useState('');
   const [characterImportStatus, setCharacterImportStatus] = useState('');
   const [characterCreatorNote, setCharacterCreatorNote] = useState('');
   const [archiveStatus, setArchiveStatus] = useState('正在连接本地档案库…');
@@ -3692,10 +3699,35 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
   const archiveReadyRef = useRef(false);
   const archiveWritePendingRef = useRef<ReverieArchive | null>(null);
   const archiveWriteRunningRef = useRef(false);
-  const archiveRequest = ws.request;
+  const archiveOperationScope = useRef(createArchiveOperationScope()).current;
+  const scopeToken = archiveOperationScope.select(ws.personaScope, ws.connState === 'connected');
+  const previousScopeRef = useRef<ArchiveOperationToken | null>(null);
+  const archiveMountedRef = useRef(true);
+  if (previousScopeRef.current !== scopeToken) {
+    previousScopeRef.current = scopeToken;
+    archiveRevisionRef.current = 0;
+    archiveReadyRef.current = false;
+    archiveWritePendingRef.current = null;
+    archiveWriteRunningRef.current = false;
+  }
+  const currentArchiveScope = useCallback(() => archiveMountedRef.current && archiveOperationScope.isCurrent(scopeToken), [archiveOperationScope, scopeToken]);
+  const archiveRequest = useCallback(async <T,>(...args: Parameters<typeof ws.request>): Promise<T> => {
+    if (!currentArchiveScope() || !scopeToken.proof) throw new Error('人格已变化，旧档案操作已取消。');
+    const result = await archiveOperationScope.run(scopeToken, () => ws.request<T>(args[0], args[1], { ...args[2], personaScope: scopeToken.proof! }));
+    if (!result.current || !currentArchiveScope()) throw new Error('人格已变化，旧档案结果已忽略。');
+    if (!isRecord(result.value) || result.value.persona_id !== scopeToken.proof.persona_id) throw new Error('档案响应身份不匹配，未接受结果。');
+    return result.value;
+  }, [archiveOperationScope, currentArchiveScope, scopeToken, ws.request]);
+  const archive: ReverieArchive = archiveReadyRef.current && currentArchiveScope()
+    ? archiveState : { characters: [], activeCharacterIds: [], worldBooks: [] };
   const selectedCharacter = archive.characters.find((item) => item.id === selectedCharacterId) ?? archive.characters[0];
   const selectedWorldBook = archive.worldBooks.find((item) => item.id === selectedWorldBookId) ?? archive.worldBooks[0];
   const worldBookSectionRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    archiveMountedRef.current = true;
+    return () => { archiveMountedRef.current = false; };
+  }, []);
 
   // When opened via the dedicated "世界书管理" sidebar entry, scroll to the world book section
   useEffect(() => {
@@ -3705,10 +3737,10 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
   }, [initialTab]);
 
   const flushArchiveWrites = useCallback(async () => {
-    if (archiveWriteRunningRef.current || !archiveReadyRef.current) return;
+    if (!currentArchiveScope() || archiveWriteRunningRef.current || !archiveReadyRef.current) return;
     archiveWriteRunningRef.current = true;
     try {
-      while (archiveWritePendingRef.current) {
+      while (currentArchiveScope() && archiveWritePendingRef.current) {
         const desired = archiveWritePendingRef.current;
         archiveWritePendingRef.current = null;
         try {
@@ -3720,6 +3752,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
             },
             { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 15_000 },
           );
+          if (!currentArchiveScope()) return;
           if (response.ok !== true) {
             if (response.code === 'conflict' && response.archive) {
               const authoritative = normalizeArchive(response.archive);
@@ -3740,6 +3773,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
           if (!archiveWritePendingRef.current) setArchive(committed);
           setArchiveStatus('已保存到本地档案库');
         } catch (error) {
+          if (!currentArchiveScope()) return;
           archiveWritePendingRef.current ??= desired;
           setArchiveStatus(
             error instanceof Error
@@ -3750,11 +3784,12 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
         }
       }
     } finally {
-      archiveWriteRunningRef.current = false;
+      if (currentArchiveScope()) archiveWriteRunningRef.current = false;
     }
-  }, [archiveRequest]);
+  }, [archiveRequest, currentArchiveScope]);
 
   const persist = (nextArchive: ReverieArchive) => {
+    if (!currentArchiveScope()) return;
     if (!archiveReadyRef.current || ws.connState !== 'connected') {
       setArchiveStatus('本地档案库未连接；为避免制造第二事实源，本次修改未接受。');
       return;
@@ -3768,13 +3803,14 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
 
   const refreshArchiveFromBackend = useCallback(async () => {
     const personaId = safeString(ws.personaScope?.persona_id);
-    if (ws.connState !== 'connected' || !personaId) return;
+    if (!currentArchiveScope() || ws.connState !== 'connected' || !personaId) return;
     try {
       const response = await archiveRequest<Record<string, unknown>>(
         WSMsgType.ARCHIVE_GET,
         {},
         { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 12_000 },
       );
+      if (!currentArchiveScope()) return;
       if (response.ok !== true || response.exists !== true) return;
       const authoritative = normalizeArchive(response.archive);
       archiveRevisionRef.current = Number(response.revision) || archiveRevisionRef.current;
@@ -3784,11 +3820,16 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
     } catch {
       // 角色卡本身已经导入成功；世界书面板刷新失败不阻塞主流程。
     }
-  }, [archiveRequest, ws.connState, ws.personaScope?.persona_id]);
+  }, [archiveRequest, currentArchiveScope, ws.connState, ws.personaScope?.persona_id]);
 
   useEffect(() => {
+    setArchive({ characters: [], activeCharacterIds: [], worldBooks: [] });
+    setSelectedCharacterId('');
+    setSelectedWorldBookId('');
+    setCharacterImportStatus('');
+    setCharacterCreatorNote('');
     const personaId = safeString(ws.personaScope?.persona_id);
-    if (ws.connState !== 'connected' || !personaId) {
+    if (!currentArchiveScope() || ws.connState !== 'connected' || !personaId) {
       archiveReadyRef.current = false;
       setArchiveStatus('本地档案库未连接；人格和聊天仍可使用。');
       return undefined;
@@ -3803,6 +3844,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
           {},
           { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 12_000 },
         );
+        if (disposed || !currentArchiveScope()) return;
         if (response.ok !== true) throw new Error(safeString(response.error) || '档案模块不可用');
         if (response.exists !== true) {
           const legacy = loadLegacyArchiveForMigration();
@@ -3815,12 +3857,13 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
             { archive: seed, expected_revision: 0 },
             { expectedType: WSMsgType.ARCHIVE_RESULT, timeout: 15_000 },
           );
+          if (disposed || !currentArchiveScope()) return;
           if (response.ok !== true) {
             throw new Error(safeString(response.error) || '旧档案迁移失败');
           }
           if (legacy) clearLegacyArchiveAfterMigration();
         }
-        if (disposed) return;
+        if (disposed || !currentArchiveScope()) return;
         const authoritative = normalizeArchive(response.archive);
         archiveRevisionRef.current = Number(response.revision) || 0;
         archiveReadyRef.current = true;
@@ -3830,7 +3873,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
         setArchiveStatus('已连接本地档案库');
         void flushArchiveWrites();
       } catch (error) {
-        if (disposed) return;
+        if (disposed || !currentArchiveScope()) return;
         archiveReadyRef.current = false;
         setArchiveStatus(
           error instanceof Error
@@ -3842,9 +3885,9 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
     void hydrate();
     return () => {
       disposed = true;
-      archiveReadyRef.current = false;
+      if (currentArchiveScope()) archiveReadyRef.current = false;
     };
-  }, [flushArchiveWrites, ws.connState, ws.personaScope?.persona_id]);
+  }, [archiveRequest, currentArchiveScope, flushArchiveWrites, ws.connState, ws.personaScope?.persona_id]);
 
   const saveCharacterField = <K extends keyof ReverieCharacterCard>(field: K, value: ReverieCharacterCard[K]) => {
     if (!selectedCharacter) return;
@@ -3922,6 +3965,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
 
   const importCharacter = async (file?: File) => {
     if (!file) return;
+    if (!currentArchiveScope() || !scopeToken.proof) return;
     if (ws.connState !== 'connected') {
       setCharacterImportStatus('后端未连接，为避免产生未经核验的角色档案，本次没有导入');
       return;
@@ -3937,6 +3981,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
       const raw = isPng
         ? JSON.stringify(parseSillyTavernPngPayload(await file.arrayBuffer()))
         : await readTextFile(file);
+      if (!currentArchiveScope()) return;
       if (!raw || raw === 'null') {
         throw new Error(isPng
           ? '这是一张普通图，没有角色卡数据。请使用官网原文件或 JSON，不要用微信/论坛压缩过的图。'
@@ -3960,11 +4005,14 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
           actor: 'owner',
           reason: 'user imported a live character card',
         },
+        scopeToken.proof,
       );
+      if (!currentArchiveScope()) return;
       if (response.ok !== true || !isRecord(response.persona)) {
         throw new Error(safeString(response.error) || '角色卡核验失败');
       }
       await refreshArchiveFromBackend();
+      if (!currentArchiveScope()) return;
       setSelectedCharacterId(safeString(response.card_id));
       setCharacterCreatorNote(safeString(response.creator_notes).slice(0, 4000));
       const ignored = Array.isArray(response.ignored_fields)
@@ -3987,12 +4035,14 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
           : `已安全导入本地角色档案${worldBookNote}${activationNote}`,
       );
     } catch (error) {
+      if (!currentArchiveScope()) return;
       setCharacterCreatorNote('');
       setCharacterImportStatus(error instanceof Error ? error.message : '角色卡导入失败');
     }
   };
 
   const activateImportedCharacter = async () => {
+    if (!currentArchiveScope() || !scopeToken.proof) return;
     if (!selectedCharacter?.id.startsWith('st_')) return;
     const personaRecord = isRecord(ws.persona) ? ws.persona : {};
     const scope = ws.personaScope;
@@ -4034,7 +4084,9 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
           actor: 'owner',
           reason: 'user selected imported persona',
         },
+        scopeToken.proof,
       );
+      if (!currentArchiveScope()) return;
       if (response.ok !== true) {
         const code = `${safeString(response.code)} ${safeString(response.status)} ${safeString(response.error)}`.toLowerCase();
         if (response.conflict === true || code.includes('conflict') || code.includes('stale')) {
@@ -4049,6 +4101,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
           : '已切换为当前角色，可直接聊天。Live2D 形象需在「形象与语音」里另行设置。',
       );
     } catch (error) {
+      if (!currentArchiveScope()) return;
       setCharacterImportStatus(error instanceof Error ? error.message : '启用失败');
     }
   };
@@ -4076,24 +4129,28 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
   };
 
   const exportCharacterToSTPng = async () => {
-    if (!selectedCharacter) return;
+    if (!currentArchiveScope() || !selectedCharacter) return;
     const card = exportAsSTv2Json(selectedCharacter, selectedWorldBook);
     let basePng: Uint8Array | null = null;
     if (selectedCharacter.portraitUrl) {
       try {
         const candidate = await loadManagedPng(selectedCharacter.portraitUrl);
+        if (!currentArchiveScope()) return;
         if (candidate) basePng = candidate;
       } catch {
+        if (!currentArchiveScope()) return;
         basePng = null;
       }
     }
     if (!basePng) {
       const picked = await window.electronAPI?.files?.pickImage?.();
+      if (!currentArchiveScope()) return;
       if (!picked || picked.canceled || !picked.filePath) {
         setCharacterImportStatus('已取消 PNG 导出：需要一张底图');
         return;
       }
       const bytes = await readRawFile(picked.filePath);
+      if (!currentArchiveScope()) return;
       if (!bytes) {
         setCharacterImportStatus('无法读取底图，PNG 导出已取消');
         return;
@@ -4103,8 +4160,10 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
     try {
       const png = embedCardIntoPng(basePng, card);
       await saveBinaryFile(cardPngExportFilename(selectedCharacter.name), png);
+      if (!currentArchiveScope()) return;
       setCharacterImportStatus('已导出为 SillyTavern PNG 角色卡');
     } catch (error) {
+      if (!currentArchiveScope()) return;
       setCharacterImportStatus(error instanceof Error ? `PNG 导出失败：${error.message}` : 'PNG 导出失败');
     }
   };
@@ -4115,10 +4174,10 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
     setSelectedWorldBookId(worldBook.id);
   };
 
-  const updateEntry = (entryId: string, patch: Partial<WorldBookEntry>) => {
+  const updateEntry = (entryIndex: number, patch: Partial<WorldBookEntry>) => {
     if (!selectedWorldBook) return;
-    const entries = selectedWorldBook.entries.map((entry) =>
-      entry.id === entryId ? { ...entry, ...patch } : entry,
+    const entries = selectedWorldBook.entries.map((entry, index) =>
+      index === entryIndex ? { ...entry, ...patch } : entry,
     );
     persist(upsertWorldBook(archive, { ...selectedWorldBook, entries, updatedAt: new Date().toISOString() }));
   };
@@ -4132,21 +4191,25 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
     }));
   };
 
-  const removeEntry = (entryId: string) => {
+  const removeEntry = (entryIndex: number) => {
     if (!selectedWorldBook) return;
     persist(upsertWorldBook(archive, {
       ...selectedWorldBook,
-      entries: selectedWorldBook.entries.filter((entry) => entry.id !== entryId),
+      entries: selectedWorldBook.entries.filter((_entry, index) => index !== entryIndex),
       updatedAt: new Date().toISOString(),
     }));
   };
 
   const importWorldBook = async (file?: File) => {
-    if (!file) return;
-    const worldBook = parseWorldBookImportText(await readTextFile(file), filenameStem(file) || undefined);
-    if (!worldBook) return;
-    persist(upsertWorldBook(archive, { ...worldBook, updatedAt: new Date().toISOString() }));
-    setSelectedWorldBookId(worldBook.id);
+    if (!file || !currentArchiveScope()) return;
+    try {
+      const worldBook = parseWorldBookImportText(await readTextFile(file), filenameStem(file) || undefined);
+      if (!currentArchiveScope() || !worldBook) return;
+      persist(upsertWorldBook(archive, { ...worldBook, updatedAt: new Date().toISOString() }));
+      setSelectedWorldBookId(worldBook.id);
+    } catch {
+      if (currentArchiveScope()) setArchiveStatus('世界书读取失败，本次未保存。');
+    }
   };
 
   return (
@@ -4358,6 +4421,12 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
             </div>
           </div>
 
+          {ws.worldbookDiagnostics.revision === archiveRevisionRef.current && worldbookNotice(ws.worldbookDiagnostics) && (
+            <p className={styles.statusNote} role="status" data-testid="worldbook-editor-notice">
+              {worldbookNotice(ws.worldbookDiagnostics)} 保存修改后会在下一轮重新检查。
+            </p>
+          )}
+
           <div className={styles.itemList}>
             {archive.worldBooks.map((book) => (
               <button
@@ -4398,21 +4467,26 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                 </label>
               </div>
               <div className={styles.worldEntryList}>
-                {selectedWorldBook.entries.map((entry) => (
-                  <article key={entry.id} className={styles.worldEntry}>
+                {selectedWorldBook.entries.map((entry, entryIndex) => (
+                  <article key={`${entry.id}:${entryIndex}`} className={styles.worldEntry}>
+                    {ws.worldbookDiagnostics.revision === archiveRevisionRef.current && worldbookEntryWarnings(
+                      ws.worldbookDiagnostics, selectedWorldBook.id, archive.worldBooks.indexOf(selectedWorldBook), entry.id, entryIndex,
+                    ).map((warning) => (
+                      <p key={warning} className={styles.statusNote} role="status" data-testid="worldbook-entry-warning">{warning}</p>
+                    ))}
                     <TextField
                       label="关键词"
                       value={entry.keywords.join(', ')}
-                      onChange={(value) => updateEntry(entry.id, { keywords: splitKeywords(value) })}
+                      onChange={(value) => updateEntry(entryIndex, { keywords: splitKeywords(value) })}
                     />
-                    <TextField label="标题" value={entry.comment} onChange={(value) => updateEntry(entry.id, { comment: value })} />
-                    <TextAreaField label="内容" value={entry.content} onChange={(value) => updateEntry(entry.id, { content: value })} rows={3} />
+                    <TextField label="标题" value={entry.comment} onChange={(value) => updateEntry(entryIndex, { comment: value })} />
+                    <TextAreaField label="内容" value={entry.content} onChange={(value) => updateEntry(entryIndex, { content: value })} rows={3} />
                     <div className={styles.entryFlags}>
                       <label>
                         <input
                           type="checkbox"
                           checked={entry.alwaysActive}
-                          onChange={(event) => updateEntry(entry.id, { alwaysActive: event.target.checked })}
+                          onChange={(event) => updateEntry(entryIndex, { alwaysActive: event.target.checked })}
                         />
                         始终激活
                       </label>
@@ -4420,11 +4494,11 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                         <input
                           type="checkbox"
                           checked={entry.enabled}
-                          onChange={(event) => updateEntry(entry.id, { enabled: event.target.checked })}
+                          onChange={(event) => updateEntry(entryIndex, { enabled: event.target.checked })}
                         />
                         启用
                       </label>
-                      <button type="button" onClick={() => removeEntry(entry.id)}>
+                      <button type="button" onClick={() => removeEntry(entryIndex)}>
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -4435,10 +4509,13 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <span>注入位置</span>
                           <select
                             value={entry.position}
-                            onChange={(event) => updateEntry(entry.id, { position: event.target.value as 'before_char' | 'after_char' })}
+                            onChange={(event) => updateEntry(entryIndex, { position: event.target.value as 'before_char' | 'after_char' })}
                           >
                             <option value="before_char">角色前</option>
                             <option value="after_char">角色后</option>
+                            {entry.position === 'at_depth' && (
+                              <option value="at_depth" disabled>对话中 · 按深度插入（请在原生界面编辑）</option>
+                            )}
                           </select>
                         </label>
                         <label className={styles.fieldGroup}>
@@ -4446,7 +4523,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <input
                             type="number"
                             value={String(entry.priority)}
-                            onChange={(event) => updateEntry(entry.id, { priority: toInt(event.target.value) })}
+                            onChange={(event) => updateEntry(entryIndex, { priority: toInt(event.target.value) })}
                           />
                         </label>
                         <label className={styles.fieldGroup}>
@@ -4454,7 +4531,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <input
                             type="number"
                             value={String(entry.insertionOrder)}
-                            onChange={(event) => updateEntry(entry.id, { insertionOrder: toInt(event.target.value, 100) })}
+                            onChange={(event) => updateEntry(entryIndex, { insertionOrder: toInt(event.target.value, 100) })}
                           />
                         </label>
                         <label className={styles.fieldGroup}>
@@ -4462,14 +4539,14 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <input
                             type="number"
                             value={String(entry.depth)}
-                            onChange={(event) => updateEntry(entry.id, { depth: toInt(event.target.value) })}
+                            onChange={(event) => updateEntry(entryIndex, { depth: toInt(event.target.value) })}
                           />
                         </label>
                         <label className={styles.fieldGroup}>
                           <span>注入角色</span>
                           <select
                             value={entry.role}
-                            onChange={(event) => updateEntry(entry.id, { role: event.target.value as 'system' | 'user' | 'assistant' })}
+                            onChange={(event) => updateEntry(entryIndex, { role: event.target.value as 'system' | 'user' | 'assistant' })}
                           >
                             <option value="system">system</option>
                             <option value="user">user</option>
@@ -4480,7 +4557,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <span>选择性逻辑</span>
                           <select
                             value={entry.selectiveLogic}
-                            onChange={(event) => updateEntry(entry.id, { selectiveLogic: event.target.value as WorldBookEntry['selectiveLogic'] })}
+                            onChange={(event) => updateEntry(entryIndex, { selectiveLogic: event.target.value as WorldBookEntry['selectiveLogic'] })}
                           >
                             <option value="and_any">AND_ANY</option>
                             <option value="and_all">AND_ALL</option>
@@ -4491,19 +4568,19 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                         <TextField
                           label="辅助关键词"
                           value={entry.secondaryKeywords.join(', ')}
-                          onChange={(value) => updateEntry(entry.id, { secondaryKeywords: splitKeywords(value) })}
+                          onChange={(value) => updateEntry(entryIndex, { secondaryKeywords: splitKeywords(value) })}
                         />
                         <TextField
                           label="条目扫描深度(留空=全书)"
                           type="number"
                           value={entry.scanDepth === null ? '' : String(entry.scanDepth)}
-                          onChange={(value) => updateEntry(entry.id, { scanDepth: value.trim() === '' ? null : toInt(value) })}
+                          onChange={(value) => updateEntry(entryIndex, { scanDepth: value.trim() === '' ? null : toInt(value) })}
                         />
                         <TextField
                           label="条目 Token 预算(留空=全书)"
                           type="number"
                           value={entry.tokenBudget === null ? '' : String(entry.tokenBudget)}
-                          onChange={(value) => updateEntry(entry.id, { tokenBudget: value.trim() === '' ? null : toInt(value) })}
+                          onChange={(value) => updateEntry(entryIndex, { tokenBudget: value.trim() === '' ? null : toInt(value) })}
                         />
                       </div>
                       <div className={styles.entryFlags}>
@@ -4511,7 +4588,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <input
                             type="checkbox"
                             checked={entry.caseSensitive}
-                            onChange={(event) => updateEntry(entry.id, { caseSensitive: event.target.checked })}
+                            onChange={(event) => updateEntry(entryIndex, { caseSensitive: event.target.checked })}
                           />
                           大小写敏感
                         </label>
@@ -4519,7 +4596,7 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
                           <input
                             type="checkbox"
                             checked={entry.useRegex}
-                            onChange={(event) => updateEntry(entry.id, { useRegex: event.target.checked })}
+                            onChange={(event) => updateEntry(entryIndex, { useRegex: event.target.checked })}
                           />
                           正则匹配
                         </label>
@@ -4568,30 +4645,15 @@ export function ArchiveManagerPanel({ ws, initialTab }: { ws: ReturnType<typeof 
 }
 
 function requestPersonaResult(
-  ws: ReturnType<typeof useReverieWS>,
+  ws: ArchiveClient,
   requestType: string,
   payload: Record<string, unknown>,
+  personaScope: ArchivePersonaProof,
 ): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let unsubscribe = () => {};
-    const timer = window.setTimeout(() => {
-      unsubscribe();
-      reject(new Error('本地角色卡核验响应超时，未创建任何角色'));
-    }, 12_000);
-    unsubscribe = ws.subscribe(WSMsgType.PERSONA_IMPORT_RESULT, (response: Record<string, unknown>) => {
-      window.clearTimeout(timer);
-      unsubscribe();
-      resolve(response);
-    });
-    if (!ws.send(requestType, payload)) {
-      window.clearTimeout(timer);
-      unsubscribe();
-      reject(new Error('后端未连接，未创建任何角色'));
-    }
-  });
+  return ws.request(requestType, payload, { expectedType: WSMsgType.PERSONA_IMPORT_RESULT, timeout: 12_000, personaScope });
 }
 
-export function BackupPanel({ ws }: { ws: ReturnType<typeof useReverieWS> }) {
+export function BackupPanel({ ws }: { ws: ArchiveClient }) {
   const [status, setStatus] = useState('');
   const nativeBackup = window.electronAPI?.backup;
 

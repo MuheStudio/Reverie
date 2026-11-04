@@ -1,0 +1,95 @@
+{
+  "schema": "reverie.gui-mode-coverage.v1",
+  "advisoryOnly": true,
+  "formalRegressionUnchanged": true,
+  "scope": "Local iteration suggestions only. Source ranges indicate exercised areas, not exhaustive verification. Formal batches retain the complete seven-mode contract and its existing order.",
+  "command": "script/check-qt-macos.sh",
+  "requiredOptions": ["--build-dir", "ABS_LOCAL_BUILD_DIRECTORY"],
+  "sharedProductSources": [
+    "native-ui/src/main.cpp",
+    "native-ui/src/RuntimeBridge.*",
+    "native-ui/qml/Main.qml",
+    "native-ui/qml/ChatPanel.qml",
+    "native-ui/qml/Glass*.qml",
+    "src/bridge/**",
+    "src/chat/**"
+  ],
+  "sharedFixtures": [
+    "native-ui/tests/p0_backend_bootstrap.py",
+    "native-ui/tests/CheckContract.h",
+    "native-ui/tests/ControlReadiness.h",
+    "native-ui/tests/MoonroomInteractionCheck.*",
+    "native-ui/tests/ArchiveInteractionCheck.*"
+  ],
+  "sharedCheckSources": [
+    "native-ui/check-native.cjs",
+    "native-ui/native-check-options.cjs",
+    "script/check-qt-macos.sh",
+    "frontend/script/acceptance-isolation.cjs"
+  ],
+  "modes": [
+    {
+      "id": "injection",
+      "stage": "injection-check",
+      "options": ["--p1-worldbook-injection"],
+      "directions": ["docs/NATIVE-WORLDBOOK-INJECTION-20261026.md"],
+      "productSources": ["native-ui/qml/ArchiveDrawer.qml", "native-ui/qml/ArchiveEntryPolicy.qml", "native-ui/src/ArchiveEditor.*", "src/worldbook/**", "src/persona/prompt_builder.py", "src/archive/**"],
+      "fixtures": ["native-ui/tests/p1_worldbook_injection_backend_bootstrap.py", "native-ui/tests/WorldbookInjectionCheck.*", "native-ui/tests/WorldbookInjectionInput.h", "native-ui/tests/WorldbookInjectionNavigation.h", "native-ui/tests/WorldbookInjectionHit.h", "native-ui/tests/worldbook-injection-*-contract.json"],
+      "checkSources": ["native-ui/worldbook-injection-verdicts.cjs", "native-ui/worldbook-injection-*-native-evidence-consume.cjs", "native-ui/worldbook-injection-*-native-evidence-pair-consume.cjs"]
+    },
+    {
+      "id": "regex",
+      "stage": "regex-check",
+      "options": ["--p1-worldbook-regex"],
+      "directions": ["docs/NATIVE-WORLDBOOK-REGEX-20261025.md"],
+      "productSources": ["native-ui/qml/ArchiveDrawer.qml", "native-ui/qml/ArchiveEntryPolicy.qml", "native-ui/src/ArchiveEditor.*", "src/worldbook/**", "src/persona/prompt_builder.py", "src/archive/**"],
+      "fixtures": ["native-ui/tests/p1_worldbook_regex_backend_bootstrap.py", "native-ui/tests/WorldbookRegexCheck.*", "native-ui/tests/WorldbookRegexProbe.h"],
+      "checkSources": ["native-ui/worldbook-regex-verdicts.cjs"]
+    },
+    {
+      "id": "entry",
+      "stage": "entry-check",
+      "options": ["--p1-worldbook-entry"],
+      "directions": ["docs/NATIVE-WORLDBOOK-ENTRY-SETTINGS-20261023.md"],
+      "productSources": ["native-ui/qml/ArchiveDrawer.qml", "native-ui/qml/ArchiveEntryPolicy.qml", "native-ui/src/ArchiveEditor.*", "src/worldbook/**", "src/persona/prompt_builder.py", "src/archive/**"],
+      "fixtures": ["native-ui/tests/p1_worldbook_entry_backend_bootstrap.py", "native-ui/tests/WorldbookEntrySettingsCheck.*"],
+      "checkSources": ["native-ui/worldbook-entry-settings-verdicts.cjs"]
+    },
+    {
+      "id": "persona",
+      "stage": "persona-check",
+      "options": ["--p1-persona"],
+      "directions": ["docs/NATIVE-CARD-IMPORT-20261013.md", "docs/NATIVE-AUTHOR-PROMPT-20261014.md", "docs/NATIVE-WORLDBOOK-MANAGEMENT-20261015.md", "docs/NATIVE-WORLDBOOK-RULES-20261016.md", "docs/NATIVE-WORLDBOOK-PRIORITY-20261022.md", "docs/NATIVE-WORLDBOOK-BOOK-SETTINGS-20261023.md"],
+      "productSources": ["native-ui/qml/ArchiveDrawer.qml", "native-ui/qml/ArchiveEntryPolicy.qml", "native-ui/qml/TaskPanel.qml", "native-ui/src/ArchiveEditor.*", "native-ui/src/PersonaCardReader.*", "src/persona/**", "src/worldbook/**", "src/archive/**"],
+      "fixtures": ["native-ui/tests/p1_persona_backend_bootstrap.py", "native-ui/tests/PersonaRowInputProbe.h", "native-ui/tests/WorldbookPriorityCheck.*", "native-ui/tests/WorldbookBookSettingsCheck.*"],
+      "checkSources": ["native-ui/worldbook-priority-verdicts.cjs", "native-ui/worldbook-book-settings-verdicts.cjs", "native-ui/archive-control-readiness-verdicts.cjs"]
+    },
+    {
+      "id": "candidate",
+      "stage": "candidate-check",
+      "options": ["--p1-memory", "--candidate-paging"],
+      "directions": ["docs/NATIVE-MEMORY-CANDIDATES-20261017.md", "docs/NATIVE-MEMORY-CANDIDATE-BATCH-20261022.md"],
+      "productSources": ["native-ui/qml/ArchiveDrawer.qml", "native-ui/src/ArchiveEditor.*", "src/memory/**", "src/persona/state_scope.py"],
+      "fixtures": ["native-ui/tests/p1_memory_backend_bootstrap.py", "native-ui/tests/MemoryPageCheck.*", "native-ui/tests/MemoryRecallCheck.*", "native-ui/tests/MemoryCandidatePageCheck.*", "native-ui/tests/MemoryCandidateBatchCheck.*"],
+      "checkSources": ["native-ui/memory-candidate-batch-verdicts.cjs"]
+    },
+    {
+      "id": "ordinary",
+      "stage": "ordinary-check",
+      "options": ["--p1-memory"],
+      "directions": ["docs/NATIVE-MEMORY-PAGING-20261017.md", "docs/NATIVE-MEMORY-RECALL-20261017.md", "docs/NATIVE-MEMORY-BATCH-DELETE-20261019.md", "docs/NATIVE-SUMMARY-VIEW-20261019.md", "docs/NATIVE-MEMORY-BATCH-PIN-20261021.md"],
+      "productSources": ["native-ui/qml/ArchiveDrawer.qml", "native-ui/src/ArchiveEditor.*", "src/memory/**", "src/conversation_summary/**", "src/persona/state_scope.py"],
+      "fixtures": ["native-ui/tests/p1_memory_backend_bootstrap.py", "native-ui/tests/p1_summary_view_fixture.py", "native-ui/tests/MemoryPageCheck.*", "native-ui/tests/MemoryRecallCheck.*", "native-ui/tests/MemoryBatchDeleteCheck.*", "native-ui/tests/MemoryBatchPinCheck.*", "native-ui/tests/SummaryViewCheck.*", "native-ui/tests/SummaryInteractionProbe.h"],
+      "checkSources": ["native-ui/memory-batch-pin-verdicts.cjs", "native-ui/summary-view-verdicts.cjs"]
+    },
+    {
+      "id": "settings",
+      "stage": "settings-check",
+      "options": ["--p1-settings"],
+      "directions": ["docs/NATIVE-SETTINGS-20261014.md", "docs/NATIVE-SETTINGS-MEMORY-20261021.md", "docs/NATIVE-SETTINGS-EMOTION-20261021.md", "docs/NATIVE-SETTINGS-BUDGET-20261021.md"],
+      "productSources": ["native-ui/qml/TaskPanel.qml", "src/config/**", "src/memory/**", "src/emotion/**", "src/api/budget.py", "src/persona/flaws.py"],
+      "fixtures": ["native-ui/tests/p1_settings_backend_bootstrap.py", "native-ui/tests/SettingsSectionsCheck.*"],
+      "checkSources": []
+    }
+  ]
+}

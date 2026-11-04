@@ -106,9 +106,9 @@ function BootSplash() {
 }
 
 function AppShell() {
-  const bridge = useMvpBridge();
   const [mode, setMode] = useState<RoomMode>('mvp');
   const [modeKnown, setModeKnown] = useState(false);
+  const bridge = useMvpBridge(modeKnown && mode !== 'dream');
   const [bootTimedOut, setBootTimedOut] = useState(false);
   const bootSyncedRef = useRef(false);
   const intendedModeRef = useRef<RoomMode | null>(null);
@@ -159,6 +159,7 @@ function AppShell() {
       setModeKnown(true);
       return;
     }
+    if (mode === 'dream') return;
     if (!complete && !onboardingDismissed) {
       setMode('mvp');
       return;
@@ -236,10 +237,14 @@ function AppShell() {
         <span>正在布置她的房间…</span>
       </main>
     )}>
-      <DreamRoom />
+      <DreamRoom onModeChange={(next) => {
+        intendedModeRef.current = next;
+        setElectronUi(current => ({ ...current, mode: next }));
+        setMode(next);
+      }} />
     </Suspense>
   ) : (
-    <MvpRoom />
+    <MvpRoom bridge={bridge} />
   );
 
   // Before the Python host reports in, show a lightweight splash — never the

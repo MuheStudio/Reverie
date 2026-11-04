@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,11 +25,33 @@ from src.relationship.tracker import RelationshipTracker
 from src.user import UserManager
 
 
+async def _await_background_writer(awaitable):
+    """Cancelling a scheduler must also wait for its underlying file writer."""
+    worker = asyncio.create_task(awaitable)
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError as cancelled:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled():
+            worker.exception()
+        raise cancelled
+
+
+async def _await_thread_writer(callback, *args):
+    return await _await_background_writer(asyncio.to_thread(callback, *args))
+
+
 async def _memory_maintenance_loop(memory: MemoryManager, logger: logging.Logger) -> None:
     while True:
         try:
             await asyncio.sleep(24 * 60 * 60)
-            logger.info("Memory maintenance completed: %s", await memory.run_maintenance())
+            logger.info("Memory maintenance completed: %s", await _await_background_writer(memory.run_maintenance()))
         except asyncio.CancelledError:
             return
         except Exception:
@@ -68,7 +91,7 @@ async def _memory_reembedding_loop(memory: MemoryManager, logger: logging.Logger
     while True:
         try:
             await asyncio.sleep(30)
-            result = await asyncio.to_thread(memory.run_reembedding_batch)
+            result = await _await_thread_writer(memory.run_reembedding_batch)
             if result.get("processed") or result.get("failed"):
                 logger.info("Memory re-embedding batch: %s", result)
         except asyncio.CancelledError:
@@ -117,28 +140,6 @@ def get_active_desktop_runtime() -> "MvpDesktopRuntime | None":
 class MvpDesktopRuntime:
     """Own the minimal desktop object graph and its lifecycle."""
 
-    @staticmethod
-    def _build_hypa_compressor(adapter: Any, settings: Any) -> Any:
-        """Build the HypaMemory V3 compressor when the owner enables it."""
-        import asyncio
-
-        from src.memory.embedding import embed_query
-        from src.memory.hypa_v3 import HypaMemoryV3
-
-        embedding_model = str(getattr(settings.memory, "embedding_model", "") or "").strip() or None
-        lancedb_path = str(getattr(settings.memory, "lancedb_path", "") or "")
-
-        class _HypaEmbedder:
-            async def embed(self, text: str) -> list[float]:
-                kwargs = {"model_name": embedding_model} if embedding_model else {}
-                return list(embed_query(text, **kwargs))
-
-        return HypaMemoryV3(
-            adapter=adapter,
-            embedder=_HypaEmbedder(),
-            data_dir=Path(lancedb_path).parent / "hypa",
-        )
-
     def __init__(
         self,
         *,
@@ -157,6 +158,15 @@ class MvpDesktopRuntime:
         self._kernel_store = kernel_store
         self._module_registry = module_registry
         self._tasks: list[asyncio.Task[Any]] = []
+        self._closed = False
+        self._owner_thread = threading.get_ident()
+        self._restore_lock = asyncio.Lock()
+        self._restore_generation = 0
+        self._recovery_state = "clean"
+        self._recovery_reason = ""
+        self._startup_recovery_pending = False
+        self._startup_recovery_scheduled = False
+        self._legacy_restore_pending = False
         self._user_manager = None
         self._mount_graph(
             persona=persona,
@@ -178,7 +188,49 @@ class MvpDesktopRuntime:
         settings = self._settings
         kernel_store = self._kernel_store
         module_registry = self._module_registry
-        api_budget = ApiBudgetTracker(settings.features)
+        from src.backup import LocalBackupManager
+        from src.config.settings import WORLD_STATE_DB
+        from src.world_state_store import WorldStateStore
+
+        journal_path = persona_state.root / "restore" / "restore.sqlite3"
+        identity = persona.identity_envelope
+        restore_identity = {"persona_id": identity.persona_id, "fingerprint": identity.fingerprint,
+                            "identity_version": identity.version}
+        pending = None
+        try:
+            pending = WorldStateStore.peek_pending(journal_path)
+            for legacy_journal in (persona_state.root / "world" / WORLD_STATE_DB.name, WORLD_STATE_DB):
+                try:
+                    legacy_pending = WorldStateStore.peek_pending(legacy_journal)
+                except Exception:
+                    self._legacy_restore_pending = True
+                    raise
+                if legacy_pending is not None:
+                    self._legacy_restore_pending = True
+                    self._recovery_state = "recovery_required"
+                    self._recovery_reason = "An older recovery journal requires explicit migration"
+        except Exception as exc:
+            self._recovery_state = "recovery_required"
+            self._recovery_reason = str(exc)
+        deferred = pending is not None or self._recovery_state != "clean"
+        if pending is not None and self._recovery_state == "clean":
+            self._recovery_state = "recovering"
+        restore_store = None
+        try:
+            restore_state = persona_state.module("restore", legacy_path=None)
+            restore_store = WorldStateStore(restore_state.file("restore.sqlite3"), persona_identity=restore_identity)
+        except Exception as exc:
+            self._recovery_state = "recovery_required"
+            self._recovery_reason = str(exc)
+        deferred = deferred or self._recovery_state != "clean"
+        # Constructors load existing state first. Derived projection/seed work
+        # is allowed only after the journal decision has been replayed.
+        from src.conversation_summary.runtime import current_runtime_settings
+
+        api_budget = ApiBudgetTracker(
+            settings.features,
+            settings_provider=lambda: current_runtime_settings(settings).features,
+        )
         adapter = LLMAdapter(
             settings.llm,
             budget_tracker=api_budget,
@@ -190,10 +242,12 @@ class MvpDesktopRuntime:
             adapter=adapter,
             feature_settings=settings.features,
             state_scope=memory_state,
+            defer_startup_writes=True,
         )
         # The MVP stores only user-grounded interaction evidence. Autonomous
-        # extraction remains outside the packaged composition root.
-        memory.autonomous_enabled = False
+        # extraction remains outside the packaged composition root, including
+        # after a memory settings update re-applies the feature switches.
+        memory.pin_autonomous_gate_off()
         emotion = EmotionSystem(
             values=dict(persona.emotions),
             state_path=emotion_state.file("state.json"),
@@ -201,11 +255,14 @@ class MvpDesktopRuntime:
             enabled=settings.features.emotion_system_enabled,
             carryover_days=settings.features.emotion_carryover_days,
             inertia_factor=settings.features.emotion_inertia_factor,
+            pause_intervals=list(settings.features.emotion_pause_intervals),
+            defer_startup_writes=True,
         )
         relationship = RelationshipTracker(
             initial_intimacy=50,
             state_path=relationship_state.file("state.json"),
             document_store=kernel_store,
+            defer_startup_writes=True,
         )
         scheduler = MessageScheduler(
             reply_delay_min=settings.chat.reply_delay_min,
@@ -215,19 +272,24 @@ class MvpDesktopRuntime:
             status=settings.chat.status,
             allow_environment_description=settings.chat.allow_environment_description,
         )
-        user_manager = UserManager(document_store=kernel_store)
-        user_manager.on_session_start()
-        # Never turn the historical developer sample into a new user's
-        # identity or seed fabricated facts into long-term memory.
-        memory.sync_user_profile(user_manager)
+        user_manager = UserManager(document_store=kernel_store, defer_startup_writes=True)
 
-        hypa_compressor = None
-        if getattr(settings.features, "hypa_compression_enabled", False):
-            try:
-                hypa_compressor = self._build_hypa_compressor(adapter, settings)
-            except Exception:
-                self._logger.exception("HypaMemory V3 failed during startup; disabling it")
-                hypa_compressor = None
+        conversation_summary = None
+        try:
+            from src.conversation_summary.runtime import ConversationSummaryRuntime
+            from src.conversation_summary.store import SummaryStore
+
+            summary_token = persona_state.registry.token()
+            conversation_summary = ConversationSummaryRuntime(
+                SummaryStore(kernel_store, summary_token),
+                adapter,
+                registry=persona_state.registry,
+                token=summary_token,
+                enabled=lambda: bool(current_runtime_settings(settings).features.hypa_compression_enabled),
+                llm_settings_provider=lambda: current_runtime_settings(settings).llm,
+            )
+        except Exception:
+            self._logger.exception("Conversation summary unavailable; chat continues")
 
         # Web surfing + the "thought of you" ledger. Keyless web search results
         # reach chat only through ThoughtOfYouEngine, so the two ship together.
@@ -244,8 +306,8 @@ class MvpDesktopRuntime:
             from src.config.settings import WORLD_STATE_DB
             from src.world import WorldClock
 
-            world_clock = WorldClock("Asia/Shanghai")
             web_world_state = persona_state.module("world", legacy_path=WORLD_STATE_DB)
+            world_clock = WorldClock("Asia/Shanghai", defer_startup_writes=deferred)
             web_world_state_db = web_world_state.file(WORLD_STATE_DB.name)
             thought_engine = ThoughtOfYouEngine(
                 settings.features, path=web_world_state_db, world_clock=world_clock
@@ -274,7 +336,7 @@ class MvpDesktopRuntime:
                 self._logger.exception("Web surfing failed during startup; isolating it")
                 web_surfing = None
 
-        if web_surfing is not None and thought_engine is not None and world_clock is not None:
+        if not deferred and web_surfing is not None and thought_engine is not None and world_clock is not None:
             try:
                 thought_engine.ingest(web_surfing.approved_items(), now=world_clock.now())
             except Exception:
@@ -286,7 +348,7 @@ class MvpDesktopRuntime:
         # them into the chat prompt via ChatSession. Either may fail
         # independently and the chat keeps working without them.
         archive_store = None
-        lorebook_mgr = None
+        worldbook_runtime = None
         try:
             from src.archive import ArchiveStore
 
@@ -296,25 +358,17 @@ class MvpDesktopRuntime:
             self._logger.exception("Archive store failed during startup; isolating it")
             archive_store = None
         try:
-            from src.lorebook import LorebookManager
+            from src.worldbook.runtime import WorldbookRuntime, archive_available
             from src.persona.identity import GLOBAL_PERSONA_EPOCH
 
-            try:
-                persona_id = GLOBAL_PERSONA_EPOCH.token().persona_id
-            except Exception:
-                persona_id = str(getattr(persona, "name", "default") or "default")
-            lorebook_mgr = LorebookManager(persona_name=persona_id)
-            if archive_store is not None:
-                try:
-                    current = archive_store.get(persona_id)
-                    existing = current.get("archive") if current.get("exists") else None
-                    for book in (existing or {}).get("worldBooks", []):
-                        lorebook_mgr.load_world_book(book)
-                except Exception:
-                    self._logger.exception("World book load from archive failed; starting empty")
+            persona_id = GLOBAL_PERSONA_EPOCH.token().persona_id
+            worldbook_runtime = WorldbookRuntime(
+                archive_store, persona_id,
+                available=lambda: archive_available(module_registry),
+            )
         except Exception:
-            self._logger.exception("World book matcher failed during startup; isolating it")
-            lorebook_mgr = None
+            self._logger.exception("World book runtime failed during startup; isolating it")
+            worldbook_runtime = None
 
         session = ChatSession(
             persona=persona,
@@ -328,8 +382,8 @@ class MvpDesktopRuntime:
             web_surfing=web_surfing,
             world_clock=world_clock,
             thought_engine=thought_engine,
-            lorebook_mgr=lorebook_mgr,
-            hypa_compressor=hypa_compressor,
+            worldbook_runtime=worldbook_runtime,
+            conversation_summary=conversation_summary,
         )
 
         stickers = None
@@ -365,23 +419,11 @@ class MvpDesktopRuntime:
                 path=world_state_db,
                 state_scope=world_state,
                 memory=memory,
+                defer_startup_writes=True,
             )
-            social_universe.sync_persona_registry(PERSONA_DIR)
         except Exception:
             self._logger.exception("Social universe failed during startup; isolating it")
             social_universe = None
-
-        if getattr(settings.features, "neko_import_enabled", False):
-            try:
-                from src.memory import neko_import
-
-                source_dir = str(getattr(settings.features, "neko_import_source_dir", "") or "")
-                if source_dir:
-                    self._tasks.append(asyncio.create_task(
-                        asyncio.to_thread(neko_import.import_from_directory, memory, source_dir)
-                    ))
-            except Exception:
-                self._logger.exception("N.E.K.O import failed during startup; skipping it")
 
         immersion = None
         try:
@@ -432,6 +474,7 @@ class MvpDesktopRuntime:
                 emotion=emotion,
                 memory=memory,
                 state_scope=diary_state,
+                read_only_crypto=deferred,
             )
         except Exception:
             self._logger.exception("Diary manager failed during startup; isolating it")
@@ -461,10 +504,48 @@ class MvpDesktopRuntime:
                 diary_keys=None,
                 phrase_alignment=None,
                 social_universe=social_universe,
+                state_store=restore_store,
             )
+            if restore_store is None or self._recovery_state == "recovery_required":
+                self._recovery_state = "recovery_required"
+                backup_manager._lock_recovery(self._recovery_reason or "Encrypted recovery journal is unavailable")
+            elif self._recovery_state != "recovery_required":
+                status = backup_manager.recovery_status()
+                self._recovery_state = status.get("recovery_state", status.get("state", "recovery_required"))
+                self._startup_recovery_pending = pending is not None and self._recovery_state != "recovery_required"
+            if self._recovery_state == "clean" and not deferred:
+                memory.store.initialize_derivatives()
+                memory.layers._sync_permanent_identity()
+                emotion.defer_startup_writes = False
+                emotion.apply_daily_carryover()
+                user_manager.on_session_start()
+                memory.sync_user_profile(user_manager)
+                if social_universe is not None:
+                    social_universe._upsert_character(
+                        character_id="owner", name=persona.name,
+                        role=str(persona.identity.get("title", "")),
+                        personality="、".join(persona.personality_traits[:12]),
+                        speaking_style=str(persona.speaking_style.get("tone", "")), source="active_persona",
+                    )
+                    social_universe._ensure_default_thread()
+                    social_universe.sync_persona_registry(PERSONA_DIR)
         except Exception:
             self._logger.exception("Backup manager failed during startup; isolating it")
             backup_manager = None
+            self._recovery_state = "recovery_required"
+            self._recovery_reason = "Restore manager failed during startup"
+
+        if self._recovery_state == "clean" and not deferred and getattr(settings.features, "neko_import_enabled", False):
+            try:
+                from src.memory import neko_import
+
+                source_dir = str(getattr(settings.features, "neko_import_source_dir", "") or "")
+                if source_dir:
+                    self._tasks.append(asyncio.create_task(
+                        _await_thread_writer(neko_import.import_from_directory, memory, source_dir)
+                    ))
+            except Exception:
+                self._logger.exception("N.E.K.O import failed during startup; skipping it")
 
         self._adapter = adapter
         self._memory = memory
@@ -472,13 +553,15 @@ class MvpDesktopRuntime:
         self._user_manager = user_manager
         self._game_state_store = game_state_store
         self._archive_store = archive_store
-        self._lorebook_mgr = lorebook_mgr
+        self._worldbook_runtime = worldbook_runtime
         self._kernel_store = kernel_store
         self._diary = diary
         self._backup_manager = backup_manager
         self._web_surfing = web_surfing
         self._thought_engine = thought_engine
         self._world_clock = world_clock
+        session.restore_generation = self._restore_generation
+        session.require_runtime_writable = self.require_writable
         attach_bridge_state(
             session=session,
             adapter=adapter,
@@ -502,8 +585,11 @@ class MvpDesktopRuntime:
             thought_engine=thought_engine,
             world_clock=world_clock,
             archive_store=archive_store,
-            lorebook_mgr=lorebook_mgr,
+            worldbook_runtime=worldbook_runtime,
             backup_manager=backup_manager,
+            recovery_state=self._recovery_state,
+            recovery_reason=self._recovery_reason,
+            restore_coordinator=self,
         )
         try:
             from src.bridge.ws_bridge import _apply_imported_prompt_opts_from_archive
@@ -513,10 +599,12 @@ class MvpDesktopRuntime:
             self._logger.exception("Imported prompt opts failed to reload after remount")
 
     def _start_background_tasks(self) -> None:
-        self._tasks = [
+        if self._recovery_state != "clean" or getattr(self, "_closed", False):
+            return
+        self._tasks.extend([
             asyncio.create_task(_memory_maintenance_loop(self._memory, self._logger)),
             asyncio.create_task(_memory_reembedding_loop(self._memory, self._logger)),
-        ]
+        ])
         if self._diary is not None:
             self._tasks.append(asyncio.create_task(_diary_maintenance_loop(
                 self._diary,
@@ -532,14 +620,176 @@ class MvpDesktopRuntime:
                 self._logger,
             )))
 
+    def require_writable(self) -> None:
+        status = getattr(getattr(self, "_backup_manager", None), "recovery_status", None)
+        snapshot = status() if callable(status) else {}
+        if getattr(self, "_closed", False) or self._recovery_state != "clean" or snapshot.get("recovery_state", snapshot.get("state", "clean")) != "clean":
+            raise RuntimeError("Recovery state blocks runtime writes")
+
+    def start_startup_recovery(self) -> None:
+        """The transport publishes authenticated read-only ready before replay."""
+        if getattr(self, "_closed", False) or not self._startup_recovery_pending or self._startup_recovery_scheduled:
+            return
+        self._startup_recovery_scheduled = True
+        self._tasks.append(asyncio.create_task(self._recover_startup()))
+
+    async def _recover_startup(self) -> None:
+        from src.bridge import ws_bridge
+
+        if getattr(self, "_closed", False):
+            return
+        if threading.get_ident() != self._owner_thread:
+            raise RuntimeError("Startup recovery must run on the runtime owner thread")
+        try:
+            self._backup_manager.recover_interrupted_restore()
+            status = self._backup_manager.recovery_status()
+            self._recovery_state = status.get("recovery_state", status.get("state", "recovery_required"))
+            self._recovery_reason = str(status.get("reason", "") or "")
+        except Exception as exc:
+            self._recovery_state = "recovery_required"
+            self._recovery_reason = str(exc)
+        self._startup_recovery_pending = False
+        ws_bridge.bridge_state.recovery_state = self._recovery_state
+        ws_bridge.bridge_state.recovery_reason = self._recovery_reason
+        if self._recovery_state == "clean":
+            if self._diary is not None:
+                self._diary.read_only_crypto = False
+            self._start_background_tasks()
+        await ws_bridge.broadcast(ws_bridge.MsgType.RUNTIME_ACTIVITY, ws_bridge._runtime_activity_payload())
+
+    async def _quiesce_restore_writers(self) -> None:
+        from src.bridge import ws_bridge
+
+        tasks = set(self._tasks)
+        for task in tasks:
+            task.cancel()
+        coordinator = ws_bridge._chat_coordinator
+        if coordinator is not None:
+            await coordinator.cancel_all(reason="backup_restore")
+            tasks.update(task for task in coordinator.tasks.values() if not task.done())
+        summary = getattr(self._session, "conversation_summary", None)
+        if summary is not None:
+            for field in ("_task", "_provider_task"):
+                task = getattr(summary, field, None)
+                if isinstance(task, asyncio.Task) and not task.done():
+                    tasks.add(task)
+                    task.cancel()
+        for name in ("proactive", "work_manager"):
+            manager = getattr(ws_bridge.bridge_state, name, None)
+            stop = getattr(manager, "stop", None)
+            if callable(stop):
+                result = stop()
+                if asyncio.iscoroutine(result):
+                    await result
+            for field in ("_task", "task", "_provider_task"):
+                task = getattr(manager, field, None)
+                if isinstance(task, asyncio.Task) and not task.done():
+                    tasks.add(task)
+                    task.cancel()
+        if tasks:
+            # No journal or before-snapshot is created until every underlying
+            # writer has actually exited. Cancelling an await alone is not a
+            # statement about a thread or provider callback finishing.
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if summary is not None and not summary.cleanup_confirmed:
+            raise RuntimeError("Summary cleanup was not confirmed")
+        self._tasks.clear()
+
+    async def restore_file(self, path: Path, *, rescue: bool = False,
+                           expected_sha256: str | None = None,
+                           expected_file_bytes: int | None = None) -> dict[str, Any]:
+        """Inspect read-only, quiesce, then apply on the SQLite owner thread."""
+        from src.backup_inspection import BackupRestoreError, inspect_backup_file
+        from src.bridge import ws_bridge
+
+        if getattr(self, "_closed", False) or threading.get_ident() != self._owner_thread:
+            raise BackupRestoreError("Restore must run on the runtime owner thread", code="BACKUP_RESTORE_DISABLED")
+        inspection = await asyncio.to_thread(inspect_backup_file, path)
+        if self._backup_manager is None:
+            raise BackupRestoreError("Restore manager is unavailable", code="BACKUP_RESTORE_DISABLED")
+        if getattr(self, "_legacy_restore_pending", False):
+            raise BackupRestoreError("An older recovery journal requires migration", code="BACKUP_RECOVERY_REQUIRED")
+        if self._recovery_state != "clean" and not rescue:
+            raise BackupRestoreError("Recovery requires an explicit rescue import", code="BACKUP_RECOVERY_REQUIRED")
+        async with self._restore_lock:
+            try:
+                prepared = self._backup_manager.prepare_file(
+                    path, rescue=rescue, expected_sha256=expected_sha256 or inspection.sha256,
+                    expected_file_bytes=(expected_file_bytes if expected_file_bytes is not None else inspection.file_bytes),
+                )
+            except BaseException:
+                status = self._backup_manager.recovery_status()
+                state = status.get("recovery_state", status.get("state", "recovery_required"))
+                if state != "clean":
+                    async with ws_bridge._persona_effect_lock:
+                        self._recovery_state = "recovery_required"
+                        self._recovery_reason = "Backup preparation found an unresolved recovery state"
+                        ws_bridge.bridge_state.recovery_state = self._recovery_state
+                        self._restore_generation += 1
+                        self._session.restore_generation = self._restore_generation
+                        ws_bridge.bridge_state.model_epoch += 1
+                        try:
+                            await self._quiesce_restore_writers()
+                        finally:
+                            await ws_bridge.broadcast(ws_bridge.MsgType.RUNTIME_ACTIVITY, ws_bridge._runtime_activity_payload())
+                raise
+            try:
+                return await self._restore_prepared(prepared, rescue=rescue)
+            finally:
+                self._backup_manager.discard_prepared(prepared)
+
+    async def _restore_prepared(self, prepared: Any, *, rescue: bool) -> dict[str, Any]:
+        from src.backup_inspection import BackupRestoreError
+        from src.bridge import ws_bridge
+
+        async with ws_bridge._persona_effect_lock:
+            self._recovery_state = "recovering"
+            ws_bridge.bridge_state.recovery_state = "recovering"
+            self._restore_generation += 1
+            self._session.restore_generation = self._restore_generation
+            # Any cached pre-restore reply also carries this model scope.
+            ws_bridge.bridge_state.model_epoch += 1
+            await ws_bridge.broadcast(ws_bridge.MsgType.RUNTIME_ACTIVITY, ws_bridge._runtime_activity_payload())
+            try:
+                await self._quiesce_restore_writers()
+            except BaseException as exc:
+                self._recovery_state = "recovery_required"
+                self._recovery_reason = "Runtime writer quiescence was not confirmed"
+                self._backup_manager._lock_recovery(self._recovery_reason)
+                ws_bridge.bridge_state.recovery_state = self._recovery_state
+                ws_bridge.bridge_state.recovery_reason = self._recovery_reason
+                raise BackupRestoreError(self._recovery_reason, code="BACKUP_RECOVERY_REQUIRED") from exc
+            try:
+                # KernelStore contains thread-affine SQLite connections.
+                # This application intentionally never uses to_thread.
+                result = self._backup_manager.restore_prepared(prepared, rescue=rescue)
+                if not isinstance(result, dict) or result.get("outcome") not in {"committed", "rolled_back"}:
+                    self._backup_manager._lock_recovery("Restore did not return a confirmed terminal outcome")
+                    raise BackupRestoreError("Restore outcome could not be confirmed", code="BACKUP_RECOVERY_REQUIRED")
+                return result
+            finally:
+                status = self._backup_manager.recovery_status()
+                self._recovery_state = status.get("recovery_state", status.get("state", "recovery_required"))
+                self._recovery_reason = str(status.get("reason", "") or "")
+                ws_bridge.bridge_state.recovery_state = self._recovery_state
+                ws_bridge.bridge_state.recovery_reason = self._recovery_reason
+                if self._recovery_state == "clean":
+                    self._memory._pending_injection = []
+                    if self._diary is not None:
+                        self._diary.read_only_crypto = False
+                    self._start_background_tasks()
+                await ws_bridge.broadcast(ws_bridge.MsgType.RUNTIME_ACTIVITY, ws_bridge._runtime_activity_payload())
+
     async def _stop_persona_graph(self) -> None:
+        worldbook_cleanup_error = None
+        summary_cleanup_error = None
         for task in self._tasks:
             task.cancel()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         user_manager = getattr(self, "_user_manager", None)
-        if user_manager is not None:
+        if user_manager is not None and self._recovery_state == "clean":
             try:
                 user_manager.save()
             except Exception:
@@ -548,8 +798,14 @@ class MvpDesktopRuntime:
         if session is not None:
             try:
                 await session.close()
-            except Exception:
-                self._logger.exception("Provider client shutdown during persona remount failed")
+            except Exception as exc:
+                self._logger.exception("Session shutdown during persona remount failed")
+                worldbook = getattr(self, "_worldbook_runtime", None)
+                if worldbook is not None and not worldbook.cleanup_confirmed:
+                    worldbook_cleanup_error = exc
+                summary = getattr(session, "conversation_summary", None)
+                if summary is not None and not summary.cleanup_confirmed:
+                    summary_cleanup_error = exc
         memory = getattr(self, "_memory", None)
         if memory is not None:
             try:
@@ -569,8 +825,14 @@ class MvpDesktopRuntime:
             except Exception:
                 self._logger.exception("Archive store shutdown during persona remount failed")
 
+        if worldbook_cleanup_error is not None:
+            raise RuntimeError("Worldbook worker cleanup was not confirmed; persona remount blocked") from worldbook_cleanup_error
+        if summary_cleanup_error is not None:
+            raise RuntimeError("Summary provider cleanup was not confirmed; persona remount blocked") from summary_cleanup_error
+
     async def remount_persona(self, persona: Any) -> None:
         """Rebuild persona-scoped modules after a privileged identity switch."""
+        self.require_writable()
         from src.config.settings import (
             DATA_DIR,
             EMOTION_DIR,
@@ -642,19 +904,29 @@ class MvpDesktopRuntime:
             await self.close()
 
     async def close(self) -> None:
+        self._closed = True
+        worldbook_cleanup_error = None
+        summary_cleanup_error = None
         for task in self._tasks:
             task.cancel()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
-        try:
-            self._user_manager.save()
-        except Exception:
-            self._logger.exception("User profile save during shutdown failed")
+        if self._recovery_state == "clean":
+            try:
+                self._user_manager.save()
+            except Exception:
+                self._logger.exception("User profile save during shutdown failed")
         try:
             await self._session.close()
-        except Exception:
-            self._logger.exception("Provider client shutdown failed")
+        except Exception as exc:
+            self._logger.exception("Session shutdown failed")
+            worldbook = getattr(self, "_worldbook_runtime", None)
+            if worldbook is not None and not worldbook.cleanup_confirmed:
+                worldbook_cleanup_error = exc
+            summary = getattr(self._session, "conversation_summary", None)
+            if summary is not None and not summary.cleanup_confirmed:
+                summary_cleanup_error = exc
         try:
             self._memory.store.close()
         except Exception:
@@ -671,6 +943,11 @@ class MvpDesktopRuntime:
                 archive_store.close()
         except Exception:
             self._logger.exception("Archive store shutdown failed")
+
+        if worldbook_cleanup_error is not None:
+            raise RuntimeError("Worldbook worker cleanup was not confirmed") from worldbook_cleanup_error
+        if summary_cleanup_error is not None:
+            raise RuntimeError("Summary provider cleanup was not confirmed") from summary_cleanup_error
 
 
 async def run_mvp_desktop(

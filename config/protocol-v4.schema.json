@@ -614,9 +614,17 @@
             "type": "string"
           },
           "state": {
-            "additionalProperties": true,
-            "title": "State",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "State"
           }
         },
         "required": [
@@ -855,9 +863,52 @@
         "title": "MemoryCandidateDecisionPayload",
         "type": "object"
       },
+      "memory:candidates:decide_many": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Candidate Ids",
+            "type": "array"
+          },
+          "decision": {
+            "enum": [
+              "confirm",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_ids",
+          "decision"
+        ],
+        "title": "MemoryCandidateDecideManyPayload",
+        "type": "object"
+      },
       "memory:candidates:list": {
         "additionalProperties": false,
         "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 5,
+                "pattern": "^mc1\\.[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
           "limit": {
             "default": 100,
             "maximum": 200,
@@ -895,6 +946,25 @@
         "title": "MemoryCandidateDecisionPayload",
         "type": "object"
       },
+      "memory:candidates:status": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Candidate Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidate_ids"
+        ],
+        "title": "MemoryCandidateStatusPayload",
+        "type": "object"
+      },
       "memory:delete": {
         "additionalProperties": false,
         "properties": {
@@ -909,6 +979,25 @@
           "memory_id"
         ],
         "title": "MemoryTargetPayload",
+        "type": "object"
+      },
+      "memory:delete_many": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Memory Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "memory_ids"
+        ],
+        "title": "MemoryDeleteManyPayload",
         "type": "object"
       },
       "memory:edit": {
@@ -937,15 +1026,87 @@
       "memory:list": {
         "additionalProperties": false,
         "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 4,
+                "pattern": "^v1\\.[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
           "limit": {
             "default": 100,
             "maximum": 200,
             "minimum": 1,
             "title": "Limit",
             "type": "integer"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
           }
         },
         "title": "MemoryListPayload",
+        "type": "object"
+      },
+      "memory:pin_many": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Memory Ids",
+            "type": "array"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "memory_ids",
+          "pinned"
+        ],
+        "title": "MemoryPinManyPayload",
+        "type": "object"
+      },
+      "memory:pin_status": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Memory Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "memory_ids"
+        ],
+        "title": "MemoryPinStatusPayload",
         "type": "object"
       },
       "memory:query": {
@@ -1267,6 +1428,73 @@
           "json"
         ],
         "title": "PersonaImportPayload",
+        "type": "object"
+      },
+      "persona:list": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "persona:profile:get": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "title": "PersonaProfileGetPayload",
+        "type": "object"
+      },
+      "persona:profile:update": {
+        "additionalProperties": false,
+        "description": "The handler reports field/confirmation failures as editable receipts.\n\nUnknown outer keys are still forbidden.  Field values are not coerced or\nclipped by the transport before the editor can report the offending field.\nThe authoritative expected_persona_* proof is injected from the envelope.",
+        "properties": {
+          "actor": {
+            "default": null,
+            "title": "Actor"
+          },
+          "confirmed_profile_id": {
+            "default": null,
+            "title": "Confirmed Profile Id"
+          },
+          "expected_identity_fingerprint": {
+            "default": null,
+            "title": "Expected Identity Fingerprint"
+          },
+          "expected_identity_version": {
+            "default": null,
+            "title": "Expected Identity Version"
+          },
+          "fields": {
+            "default": null,
+            "title": "Fields"
+          },
+          "identity_change_confirmed": {
+            "default": null,
+            "title": "Identity Change Confirmed"
+          },
+          "profile_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "reason": {
+            "default": null,
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "title": "PersonaProfileUpdatePayload",
         "type": "object"
       },
       "relationship:get": {
@@ -1714,6 +1942,18 @@
             ],
             "default": null,
             "title": "Group Social Permanent Memory Enabled"
+          },
+          "hypa_compression_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Hypa Compression Enabled"
           },
           "immersion_closeups_enabled": {
             "anyOf": [
@@ -2952,6 +3192,87 @@
         "title": "StickerReactPayload",
         "type": "object"
       },
+      "summary:get": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "default": "dream-room",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "summary_id": {
+            "maxLength": 40,
+            "minLength": 40,
+            "pattern": "^summary_[0-9a-f]{32}$",
+            "title": "Summary Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "summary_id"
+        ],
+        "title": "SummaryGetPayload",
+        "type": "object"
+      },
+      "summary:legacy:import": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "content": {
+            "maxLength": 131072,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content",
+          "expected_sha256",
+          "confirmed"
+        ],
+        "title": "SummaryLegacyImportPayload",
+        "type": "object"
+      },
+      "summary:legacy:preview": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "maxLength": 131072,
+            "minLength": 1,
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "content"
+        ],
+        "title": "SummaryLegacyPreviewPayload",
+        "type": "object"
+      },
+      "summary:status": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "default": "dream-room",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          }
+        },
+        "title": "SummaryStatusPayload",
+        "type": "object"
+      },
       "timeline:request": {
         "additionalProperties": false,
         "properties": {},
@@ -3117,6 +3438,51 @@
         },
         "additionalProperties": false,
         "properties": {
+          "clear_fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "name",
+                    "nickname",
+                    "birthday",
+                    "identity",
+                    "schedule",
+                    "interests",
+                    "hobbies",
+                    "favorite_topics",
+                    "favorite_games",
+                    "favorite_anime",
+                    "age"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 11,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clear Fields"
+          },
+          "expected_profile_snapshot": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Profile Snapshot"
+          },
           "profile": {
             "anyOf": [
               {

@@ -13,11 +13,13 @@ function isInside(parent, child) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function regularFile(filePath, label) {
+function regularFile(filePath, label, { interpreter = false } = {}) {
   const resolved = path.resolve(String(filePath || ''));
   let stat;
   try {
-    stat = fs.lstatSync(resolved);
+    const entry = fs.lstatSync(resolved);
+    stat = interpreter && entry.isSymbolicLink() ? fs.statSync(resolved) : entry;
+    if (interpreter) fs.accessSync(resolved, fs.constants.X_OK);
   } catch {
     throw new Error(`${label} must be a non-empty regular file`);
   }
@@ -44,7 +46,10 @@ function parseTransformOutput(stdout) {
 }
 
 function createRuntimeTextureTransformer(options = {}) {
-  const pythonPath = regularFile(options.pythonPath, 'Live2D texture transform Python');
+  // The caller selects/probes the development or packaged interpreter. A
+  // valid venv entry may be a link; preserve that entry when spawning, while
+  // requiring its target to be a real executable. Scripts remain unlinked.
+  const pythonPath = regularFile(options.pythonPath, 'Live2D texture transform Python', { interpreter: true });
   const scriptPath = regularFile(options.scriptPath, 'Live2D texture transform script');
   const maxDimension = normalizeMaxDimension(options.maxDimension ?? DEFAULT_MAX_DIMENSION);
   const timeoutMs = Number.isInteger(options.timeoutMs)

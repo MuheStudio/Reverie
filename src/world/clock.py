@@ -121,6 +121,7 @@ class WorldClock:
         *,
         data_dir: Path | None = None,
         now_provider: Callable[[], datetime] | None = None,
+        defer_startup_writes: bool = False,
     ) -> None:
         self.timezone_name = timezone_name
         try:
@@ -129,8 +130,10 @@ class WorldClock:
             logger.warning("IANA timezone unavailable; using fixed China Standard Time")
             self.tz = timezone(timedelta(hours=8), name="Asia/Shanghai")
         self.data_dir = data_dir or (WORLD_DIR / "calendar")
+        self.defer_startup_writes = defer_startup_writes
         try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
+            if not defer_startup_writes:
+                self.data_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             logger.exception("Local calendar directory is not writable; using in-memory calendar")
         self._now_provider = now_provider
@@ -263,6 +266,17 @@ class WorldClock:
         return len(normalized["years"])
 
     def _load_or_seed_calendar(self) -> dict[str, Any]:
+        if self.defer_startup_writes:
+            payload = read_json_object(self.calendar_path)
+            if payload is None:
+                if self.calendar_path.exists() or self.calendar_path.with_suffix(".json.bak").exists():
+                    raise ValueError("Stored calendar could not be read during recovery")
+                return {"schema": "reverie.local_calendar.v1", "cloud_status": "开发中", "years": {}}
+            if not isinstance(payload.get("years"), dict):
+                raise ValueError("Stored calendar is invalid during recovery")
+            if not payload["years"]:
+                return {"schema": "reverie.local_calendar.v1", "cloud_status": "开发中", "years": {}}
+            return _sanitize_calendar_payload(payload)
         try:
             payload = read_json_object(self.calendar_path)
             if payload and isinstance(payload.get("years"), dict):

@@ -932,6 +932,17 @@ class ChatDeliveryCoordinator:
                 "delivery_id": item.get("delivery_id"),
             },
         )
+        # This hook follows the canonical transaction, never generation or
+        # accepted-user write-through. It only schedules background work.
+        summary = getattr(self.get_session(), "conversation_summary", None)
+        if summary is not None:
+            try:
+                summary.on_chat_committed(
+                    str(item.get("conversation_id") or "default"),
+                    command.request_id,
+                )
+            except Exception:
+                logger.exception("Summary scheduling failed; committed chat is unaffected")
 
     async def _deliver(self, request_id: str, *, immediate: bool) -> None:
         item = self.store.get_item(request_id)

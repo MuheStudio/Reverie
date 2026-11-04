@@ -8,6 +8,8 @@ Per requirements #9-10:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -22,6 +24,31 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger("reverie.user")
+
+PROFILE_CLEAR_FIELDS = (
+    "name", "nickname", "birthday", "identity", "schedule",
+    "interests", "hobbies", "favorite_topics",
+    "favorite_games", "favorite_anime", "age",
+)
+_PROFILE_CLEAR_LIST_FIELDS = frozenset({
+    "interests", "hobbies", "favorite_topics", "favorite_games", "favorite_anime",
+})
+# Matches UserProfileData in the protocol; every write path uses the same bounds.
+PROFILE_AGE_RANGE = (18, 120)
+
+
+def _profile_clear_default(key: str) -> object:
+    if key == "age":
+        return None
+    return [] if key in _PROFILE_CLEAR_LIST_FIELDS else ""
+
+
+class ProfileClearValidationError(ValueError):
+    """Explicit clearing was rejected before any profile mutation."""
+
+
+class ProfileSnapshotChangedError(ValueError):
+    """The profile changed after the owner reviewed it."""
 
 
 # ── Data structures ───────────────────────────────────────
@@ -193,6 +220,17 @@ def default_user_profile() -> UserProfile:
     )
 
 
+def user_profile_snapshot(profile: UserProfile) -> str:
+    """Hash the UI fields without including unrelated profile state."""
+    data = profile.to_dict()
+    values = {key: data.get(key, _profile_clear_default(key)) for key in PROFILE_CLEAR_FIELDS}
+    encoded = json.dumps(
+        values, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 # ── UserManager ───────────────────────────────────────────
 
 class UserManager:
@@ -212,10 +250,12 @@ class UserManager:
         data_dir: Path | None = None,
         *,
         document_store: Any | None = None,
+        defer_startup_writes: bool = False,
     ) -> None:
         self.data_dir = data_dir or USER_DIR
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.document_store = document_store
+        self.defer_startup_writes = defer_startup_writes
         self.profile = UserProfile()
         self.emotional_memories: list[EmotionalMemory] = []
         self._load()
@@ -252,9 +292,9 @@ class UserManager:
 
         Empty values never erase existing data: a client that submits a
         partial or blank profile (the onboarding finish commit being the
-        historical offender) updates only what it actually provides. There
-        is no feature that intentionally clears profile fields, so blank
-        payloads are treated as "not provided", not as "clear".
+        historical offender) updates only what it actually provides.
+        Explicit clearing uses clear_profile_fields; blank updates continue
+        to mean "not provided".
         """
         list_fields = {
             "interests", "hobbies", "favorite_topics", "favorite_games",
@@ -266,10 +306,12 @@ class UserManager:
                 setattr(self.profile, key, str(data[key]).strip())
         if "birthday" in data and str(data.get("birthday") or "").strip():
             self.profile.birthday = self._normalize_date(str(data["birthday"]).strip())
-        if "age" in data:
+        if "age" in data and not isinstance(data["age"], bool):
+            # Out-of-range ages, including ones extracted from chat, are not
+            # written; an existing value is left as it was.
             try:
                 age = int(data["age"])
-                if age > 0:
+                if PROFILE_AGE_RANGE[0] <= age <= PROFILE_AGE_RANGE[1]:
                     self.profile.age = age
             except (TypeError, ValueError):
                 pass
@@ -294,6 +336,42 @@ class UserManager:
             }
             if normalized:
                 self.profile.important_dates = normalized
+        self.save()
+        return self.profile
+
+    def profile_snapshot(self) -> str:
+        """Return an opaque revision for the eight fields shown by the UI.
+
+        Session counters, emotional memories and other profile metadata must
+        not invalidate an owner's pending field-clear confirmation.
+        """
+        return user_profile_snapshot(self.profile)
+
+    def clear_profile_fields(
+        self,
+        fields: list[str],
+        *,
+        expected_profile_snapshot: str,
+    ) -> UserProfile:
+        """Clear only explicitly selected UI fields after checking their revision.
+
+        Save failures propagate without a rollback claim: in-memory or durable
+        state may already have changed. The bridge acknowledges clearing only
+        after the subsequent profile-memory synchronization also succeeds.
+        """
+        if (
+            not isinstance(fields, list)
+            or not 1 <= len(fields) <= len(PROFILE_CLEAR_FIELDS)
+            or any(not isinstance(key, str) or key not in PROFILE_CLEAR_FIELDS for key in fields)
+            or len(fields) != len(set(fields))
+            or not isinstance(expected_profile_snapshot, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_profile_snapshot)
+        ):
+            raise ProfileClearValidationError("Invalid profile clear request")
+        if not hmac.compare_digest(expected_profile_snapshot, self.profile_snapshot()):
+            raise ProfileSnapshotChangedError("Profile snapshot changed")
+        for key in fields:
+            setattr(self.profile, key, _profile_clear_default(key))
         self.save()
         return self.profile
 
@@ -496,7 +574,7 @@ class UserManager:
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 self.profile = UserProfile.from_dict(json.load(f))
-            if self.document_store is not None:
+            if self.document_store is not None and not self.defer_startup_writes:
                 self.save()
                 if self.document_store.read_private_document("user_profile") != self.profile.to_dict():
                     raise RuntimeError("encrypted profile migration verification failed")
@@ -527,7 +605,7 @@ class UserManager:
                 for item in items
                 if isinstance(item, dict)
             ]
-            if self.document_store is not None:
+            if self.document_store is not None and not self.defer_startup_writes:
                 self._save_emotional_memories()
                 verified = self.document_store.read_private_document(
                     "user_emotional_memories",
@@ -539,7 +617,8 @@ class UserManager:
                 filepath.unlink()
         except Exception:
             logger.exception("Failed to load emotional memories")
-            self._quarantine_corrupt_emotional_memories(filepath)
+            if not self.defer_startup_writes:
+                self._quarantine_corrupt_emotional_memories(filepath)
 
     def _quarantine_corrupt_emotional_memories(self, filepath: Path) -> None:
         """Move an unreadable memories file aside so a later save cannot

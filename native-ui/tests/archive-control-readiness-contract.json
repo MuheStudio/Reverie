@@ -1,0 +1,205 @@
+{
+  "schema": "reverie.archive-control-readiness-contract.v1",
+  "evidenceSchema": "archive-control-readiness.v1",
+  "stabilityMs": 40,
+  "sampleLimit": 6,
+  "firstCycle": {
+    "interaction": [
+      {
+        "id": "scene-body-selection",
+        "step": "memory-editor-text-selection",
+        "control": "worldbookContent",
+        "region": 2,
+        "deadlineMs": 2500,
+        "shape": "flat",
+        "observationMs": 32
+      },
+      {
+        "id": "scene-body-wheel",
+        "step": "memory-editor-wheel-input",
+        "control": "worldbookContent",
+        "region": 3,
+        "deadlineMs": 2500,
+        "shape": "flat",
+        "observationMs": 100
+      }
+    ],
+    "moonroom": [
+      {
+        "id": "search-from-editor",
+        "step": 26,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "tab-visible-controls",
+        "step": 28,
+        "control": "worldbookName",
+        "region": 0,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "synthetic-preedit-begins",
+        "step": 29,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      }
+    ],
+    "archiveInteraction": [
+      {
+        "id": "initial-worldbook-body",
+        "step": 1,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "long-worldbook-wheel",
+        "step": 101,
+        "control": "worldbookContent",
+        "region": 3,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "reread-worldbook-body",
+        "step": 6,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      }
+    ],
+    "personaArchiveExtension": [
+      {
+        "id": "worldbook-scenario-body-0",
+        "step": 714,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "worldbook-scenario-body-1",
+        "step": 720,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "worldbook-scenario-body-2",
+        "step": 728,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "worldbook-scenario-body-3",
+        "step": 736,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "worldbook-scenario-body-4",
+        "step": 790,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      },
+      {
+        "id": "worldbook-scenario-body-5",
+        "step": 832,
+        "control": "worldbookContent",
+        "region": 1,
+        "deadlineMs": 4000,
+        "shape": "wrapped"
+      }
+    ]
+  },
+  "cycleActionCounts": {
+    "entry": [
+      8,
+      0
+    ],
+    "persona": [
+      14,
+      0
+    ],
+    "ordinary": [
+      8,
+      0
+    ]
+  },
+  "focusTraversal": {
+    "schema": "reverie.qt.archive-focus-traversal.v2",
+    "phase": "tab-visible-controls",
+    "step": 28,
+    "deadlineMs": 4000,
+    "keyCount": 24,
+    "reverseFromIndex": 12,
+    "minimumDistinctFocusItems": 3,
+    "maximumAncestry": 64,
+    "maximumScrolls": 8,
+    "inactiveBodies": [
+      "chatReadingSurface",
+      "chatComposerSurface",
+      "terminalTasks",
+      "characterTasks"
+    ],
+    "maximumClips": 63,
+    "focusReasons": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "maximumCausalEvents": 32,
+    "causalSchema": "archive-focus-causal.v1"
+  },
+  "contentCollected": false,
+  "nativeFocusEvidence": {
+    "schema": "reverie.native-archive-focus-evidence.v1",
+    "manifestSchema": "reverie.native-archive-focus-manifest.v1",
+    "proofSchema": "reverie.native-archive-focus-proof.v1",
+    "maximumRecordBytes": 1048576,
+    "cases": [
+      {
+        "caseId": "archive-focus-wide-inherit",
+        "filename": "archive-focus-wide-inherit.json",
+        "dataTag": "wide-entry-inherit-title",
+        "width": 1380,
+        "height": 900
+      },
+      {
+        "caseId": "archive-focus-compact-custom",
+        "filename": "archive-focus-compact-custom.json",
+        "dataTag": "compact-entry-custom-spinbox",
+        "width": 950,
+        "height": 760
+      },
+      {
+        "caseId": "archive-focus-narrow-body",
+        "filename": "archive-focus-narrow-body.json",
+        "dataTag": "narrow-long-body-backtab",
+        "width": 760,
+        "height": 650
+      }
+    ]
+  }
+}

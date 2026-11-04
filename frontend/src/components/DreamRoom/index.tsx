@@ -47,6 +47,7 @@ import {
   type TimelinePost,
   type GroupThread,
 } from '@/hooks/useReverieWS';
+import { worldbookNotice } from '@/lib/worldbookDiagnostics';
 import {
   formatDiaryPreview,
   formatEvidenceConnectionLine,
@@ -72,6 +73,10 @@ import CompanionDock, { type DockTab } from './CompanionDock';
 import { type CharacterActivity } from './avatarContracts';
 import { deriveCharacterActivity } from './characterActivity';
 import styles from './index.module.scss';
+import Workspace, { type MainSection } from '../Workspace/Workspace';
+import ModelManager from '../Workspace/ModelManager';
+import About from '../Workspace/About';
+import workspaceStyles from '../Workspace/Workspace.module.scss';
 
 const MiniGamePanel = React.lazy(() => import('./MiniGamePanel'));
 const AiSettingsPanel = React.lazy(() => import('./ArchivePanels').then(
@@ -201,6 +206,11 @@ const PANEL_META: Record<RoomPanelId, PanelMeta> = {
     title: '角色卡与世界书',
     subtitle: '创建、导入、导出 .json 档案，并选择多角色对话成员。',
     icon: LibraryBig,
+  },
+  worldBook: {
+    title: '世界书管理',
+    subtitle: '导入、管理和导出 SillyTavern 世界书。',
+    icon: BookOpen,
   },
   backup: {
     title: '备份',
@@ -478,6 +488,11 @@ export function PhoneChatPanel({
         </div>
       </header>
 
+      {worldbookNotice(ws.worldbookDiagnostics) && (
+        <p className={styles.statusNote} role="status" aria-live="polite" data-testid="worldbook-notice">
+          {worldbookNotice(ws.worldbookDiagnostics)}
+        </p>
+      )}
       <div className={styles.phoneMessages} role="log" aria-live="polite" aria-busy={ws.isTyping}>
         {ws.chatMessages.length === 0 && !ws.isTyping && (
           <div className={styles.phoneEmpty}>
@@ -606,7 +621,9 @@ function RoomDrawer({
   onClose,
   onRefresh,
   children,
+  active = true,
 }: {
+  active?: boolean;
   panel: RoomPanelId;
   connected: boolean;
   onClose: () => void;
@@ -618,62 +635,21 @@ function RoomDrawer({
   const sheetRef = useRef<HTMLElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const titleId = `room-drawer-title-${panel}`;
-  // Game boards and the phone shell dock to the right so the Live2D character
-  // on the central stage stays fully visible; the scrim turns transparent for
-  // those panels (it keeps its click-to-close hit area).
   const dockRight = panel === 'phone' || isGamePanel(panel);
-
   useEffect(() => {
-    returnFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    const shell = document.querySelector<HTMLElement>('[data-dream-shell-content]');
-    shell?.setAttribute('inert', '');
-    const sheet = sheetRef.current;
-    const nodes = sheet
-      ? Array.from(sheet.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ))
-      : [];
-    (nodes[0] || sheet)?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab' || !sheet) return;
-      const focusable = Array.from(sheet.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ));
-      if (!focusable.length) {
-        event.preventDefault();
-        sheet.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
+    if (!active) return;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    sheetRef.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
     document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      shell?.removeAttribute('inert');
-      document.removeEventListener('keydown', handleKeyDown);
-      returnFocusRef.current?.focus();
-    };
-  }, [onClose]);
+    return () => { document.removeEventListener('keydown', handleKeyDown); };
+  }, [active, onClose]);
 
   return (
     <div
       className={styles.roomDrawer}
-      role="dialog"
-      aria-modal="true"
+      role="region"
+      data-workspace-panel
       aria-labelledby={titleId}
       data-testid="dream-room-panel"
       data-align={dockRight ? 'right' : undefined}
@@ -1255,12 +1231,14 @@ function SettingsHubPanel({
   onOpenPanel,
   onRefreshDiary,
   onRefreshTimeline,
+  onReturnCore,
 }: {
   ws: ReturnType<typeof useReverieWS>;
   connected: boolean;
   onOpenPanel: (panel: RoomPanelId) => void;
   onRefreshDiary: () => void;
   onRefreshTimeline: () => void;
+  onReturnCore: () => Promise<void>;
 }) {
   const [modules, setModules] = useState<CapabilityModuleStatus[]>([]);
   const [moduleStatus, setModuleStatus] = useState('');
@@ -1366,8 +1344,7 @@ function SettingsHubPanel({
           type="button"
           disabled={!connected}
           onClick={() => {
-            ws.send(WSMsgType.SETTINGS_UPDATE, { section: 'ui', mode: 'mvp' });
-            window.location.reload();
+            void onReturnCore().catch(() => setModuleStatus('界面模式未保存，请稍后重试。'));
           }}
         >
           <SettingsIcon size={15} />
@@ -1824,15 +1801,29 @@ function GamePanel({
   );
 }
 
-export default function DreamRoom() {
+export default function DreamRoom({ onModeChange }: { onModeChange?: (mode: 'mvp' | 'dream') => void }) {
   const ws = useReverieWS();
   const { play: playSpeech, stop: stopSpeech } = useTTSPlayer();
   const { toasts, push: pushToast, dismiss: dismissToast } = useGlassToasts();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [dockTab, setDockTab] = useState<DockTab>('status');
+  const [dockTab, setDockTab] = useState<DockTab>('chat');
+  const [section, setSection] = useState<MainSection>('chat');
+  const [visitedPanels, setVisitedPanels] = useState(new Set<RoomPanelId>());
+  const [editNotice, setEditNotice] = useState('');
+  const edited = useRef(false);
+  useEffect(() => {
+    if (ws.settingsSnapshot.ui?.mode === 'mvp') onModeChange?.('mvp');
+  }, [ws.settingsSnapshot.ui?.mode, onModeChange]);
   const [focusActive, setFocusActive] = useState(false);
   const [companionWeather, setCompanionWeather] = useState<'none' | 'rain' | 'wind'>('none');
   const [activePanel, setActivePanel] = useState<RoomPanelId | null>(null);
+  const navigate = (next: MainSection) => {
+    setSection(next);
+    setEditNotice(edited.current ? '页面编辑内容已保留；未保存的修改请在原页面完成保存。' : '');
+    const panel: RoomPanelId | null = next === 'character' ? 'archive' : next === 'memory' ? 'worldBook' : next === 'activities' ? 'phone' : next === 'settings' ? 'settings' : null;
+    setActivePanel(panel);
+    if (panel) setVisitedPanels(current => new Set([...current, panel]));
+  };
   const [phoneAttention, setPhoneAttention] = useState(false);
   const previousTimelineRevision = useRef('');
   const timelineTrackingReady = useRef(false);
@@ -1950,6 +1941,10 @@ export default function DreamRoom() {
   }, [connected, timelineRevision]);
 
   const openPanel = useCallback((panel: RoomPanelId) => {
+    setSection(['archive','userProfile','personalitySettings'].includes(panel) ? 'character'
+      : ['worldBook','memorySettings','backup','memory'].includes(panel) ? 'memory'
+        : ['settings','ai','chatSettings','antiAiSettings','diarySettings','immersionSettings','voicePack'].includes(panel) ? 'settings' : 'activities');
+    setVisitedPanels(current => new Set([...current, panel]));
     if (panel === 'diary') ws.refreshDiary();
     if (panel === 'timeline') ws.refreshTimeline();
     if (panel === 'group') ws.refreshGroup();
@@ -1981,7 +1976,7 @@ export default function DreamRoom() {
     if (activePanel === 'group') ws.refreshGroup();
   }, [activePanel, ws]);
 
-  const closePanel = useCallback(() => setActivePanel(null), []);
+  const closePanel = useCallback(() => { setActivePanel(null); setSection('chat'); }, []);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -2050,16 +2045,20 @@ export default function DreamRoom() {
     requestStates: Object.values(ws.chatRequestStates).map((request) => request.state),
     needsAttention: phoneAttention || ws.ambient.pending_thoughts > 0,
   });
+  const selectedPanel = activePanel;
 
   return (
+    <Workspace section={section} onNavigate={navigate} name={personaName} connected={connected} notice={editNotice}>
+    <div className={workspaceStyles.dream}>
     <main
       className={styles.dreamShell}
       data-connection={ws.connState}
       data-emotion={mood.dominantEmotion}
       data-diary-writing={ws.runtimeActivity.diary_writing ? 'true' : 'false'}
       data-testid="dream-room"
+      data-main-section={section}
     >
-      <div className={styles.shellContent} data-dream-shell-content>
+      <div className={styles.shellContent} data-dream-shell-content data-visible={section === 'chat' && !activePanel}>
         <RoomScene
           mood={mood}
           personaName={personaName}
@@ -2092,8 +2091,13 @@ export default function DreamRoom() {
         />
       </div>
 
-      {activePanel && (
+      {[...visitedPanels].map(panelId => {
+        const visible = selectedPanel === panelId;
+        const activePanel = panelId;
+        const panelWs = { ...ws, viewActive: visible };
+        return <div key={`${ws.personaScope?.persona_id}:${panelId}`} hidden={!visible} onChangeCapture={() => { edited.current = true; }}>
         <RoomDrawer
+          active={visible}
           panel={activePanel}
           connected={connected}
           onClose={closePanel}
@@ -2105,6 +2109,7 @@ export default function DreamRoom() {
               <strong>正在加载本地模块…</strong>
             </div>
           )}>
+          {section === 'character' && activePanel === 'archive' && <ModelManager />}
           {activePanel === 'diary' && (
             <DiaryPanel
               entries={ws.diaryEntries}
@@ -2146,11 +2151,13 @@ export default function DreamRoom() {
           {activePanel && isGamePanel(activePanel) && !isEmbeddedGamePanel(activePanel) && (
             <MiniGamePanel
               game={activePanel}
+              active={visible}
               connected={connected}
               gameStateClient={ws}
               onInviteAI={inviteGameCompanion}
             />
           )}
+          {activePanel === 'settings' && <details><summary>关于与开源许可</summary><About /></details>}
           {activePanel === 'settings' && (
             <SettingsHubPanel
               ws={ws}
@@ -2158,6 +2165,12 @@ export default function DreamRoom() {
               onOpenPanel={openPanel}
               onRefreshDiary={ws.refreshDiary}
               onRefreshTimeline={ws.refreshTimeline}
+              onReturnCore={async () => {
+                const result = await ws.request<{ ok?: boolean }>(WSMsgType.SETTINGS_UPDATE,
+                  { section: 'ui', mode: 'mvp' }, { expectedType: WSMsgType.SETTINGS_UPDATE_RESULT });
+                if (result.ok !== true) throw new Error('UI mode was not saved');
+                onModeChange?.('mvp');
+              }}
             />
           )}
           {activePanel === 'status' && (
@@ -2169,20 +2182,20 @@ export default function DreamRoom() {
             />
           )}
           {activePanel === 'ai' && <AiSettingsPanel />}
-          {activePanel === 'chatSettings' && <ChatSettingsPanel ws={ws} />}
-          {activePanel === 'antiAiSettings' && <AntiAiSettingsPanel ws={ws} />}
-          {activePanel === 'diarySettings' && <DiarySettingsPanel ws={ws} />}
-          {activePanel === 'memorySettings' && <MemorySettingsPanel ws={ws} />}
-          {activePanel === 'personalitySettings' && <PersonalitySettingsPanel ws={ws} />}
-          {activePanel === 'immersionSettings' && <ImmersionSettingsPanel ws={ws} />}
-          {activePanel === 'userProfile' && <UserProfilePanel ws={ws} />}
-          {activePanel === 'archive' && <ArchiveManagerPanel ws={ws} />}
-          {activePanel === 'worldBook' && <ArchiveManagerPanel ws={ws} initialTab="worldBook" />}
-          {activePanel === 'backup' && <BackupPanel ws={ws} />}
+          {activePanel === 'chatSettings' && <ChatSettingsPanel ws={panelWs} />}
+          {activePanel === 'antiAiSettings' && <AntiAiSettingsPanel ws={panelWs} />}
+          {activePanel === 'diarySettings' && <DiarySettingsPanel ws={panelWs} />}
+          {activePanel === 'memorySettings' && <MemorySettingsPanel ws={panelWs} />}
+          {activePanel === 'personalitySettings' && <PersonalitySettingsPanel ws={panelWs} />}
+          {activePanel === 'immersionSettings' && <ImmersionSettingsPanel ws={panelWs} />}
+          {activePanel === 'userProfile' && <UserProfilePanel ws={panelWs} />}
+          {activePanel === 'archive' && <ArchiveManagerPanel ws={panelWs} />}
+          {activePanel === 'worldBook' && <ArchiveManagerPanel ws={panelWs} initialTab="worldBook" />}
+          {activePanel === 'backup' && <BackupPanel ws={panelWs} />}
           {activePanel === 'voicePack' && <VoicePackManagerPanel />}
           </React.Suspense>
         </RoomDrawer>
-      )}
+      </div>; })}
 
       <GlassCommandPalette
         items={paletteItems}
@@ -2191,5 +2204,7 @@ export default function DreamRoom() {
       />
       <GlassToastStack toasts={toasts} onDismiss={dismissToast} />
     </main>
+    </div>
+    </Workspace>
   );
 }

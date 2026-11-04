@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+// macOS /var aliases /private/var; fixtures must satisfy the real-directory contract.
+const temporaryDirectory = fs.realpathSync(os.tmpdir());
 const {
   ProviderConfigStore,
   providerBinding,
@@ -21,7 +23,7 @@ function fakeSafeStorage() {
 }
 
 test('provider metadata store persists a closed-world projection without credentials', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-config-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-config-'));
   const store = new ProviderConfigStore({ storageDir: root });
   const value = {
     llm: {
@@ -38,7 +40,7 @@ test('provider metadata store persists a closed-world projection without credent
 });
 
 test('persistent provider metadata and encrypted credential survive a simulated restart', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-restart-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-restart-'));
   const configDir = path.join(root, 'config');
   const credentialDir = path.join(root, 'credentials');
   const safeStorage = fakeSafeStorage();
@@ -75,7 +77,7 @@ test('persistent provider metadata and encrypted credential survive a simulated 
 });
 
 test('provider metadata store rejects credential fields even if a compromised renderer sends them', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-config-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-config-'));
   const store = new ProviderConfigStore({ storageDir: root });
   assert.throws(() => store.set({
     llm: {
@@ -89,7 +91,7 @@ test('provider metadata store rejects credential fields even if a compromised re
 });
 
 test('provider metadata rejects URL credentials, query strings, and fragments', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-config-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-config-'));
   const store = new ProviderConfigStore({ storageDir: root });
   for (const baseUrl of [
     'https://user:pass@example.com/v1',
@@ -105,7 +107,7 @@ test('provider metadata rejects URL credentials, query strings, and fragments', 
 });
 
 test('provider metadata replacement is repeatable on Windows and endpoint bindings are stable', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-replace-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-replace-'));
   const store = new ProviderConfigStore({ storageDir: root });
   const first = {
     llm: { provider: 'custom', baseUrl: 'https://api.example.com/v1', model: 'companion-a' },
@@ -140,7 +142,7 @@ test('untested metadata updates cannot change the LLM connection tuple', () => {
 });
 
 test('provider metadata accepts every supported provider and rejects unknown/top-level sections', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-closed-world-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-closed-world-'));
   const store = new ProviderConfigStore({ storageDir: root });
   for (const provider of [
     'openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'kimi', 'glm',
@@ -167,7 +169,7 @@ test('provider metadata accepts every supported provider and rejects unknown/top
 });
 
 test('provider metadata rejects private, link-local and metadata SSRF targets but keeps loopback', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reverie-provider-ssrf-'));
+  const root = fs.mkdtempSync(path.join(temporaryDirectory, 'reverie-provider-ssrf-'));
   const store = new ProviderConfigStore({ storageDir: root });
   const refused = [
     'http://169.254.169.254/latest/meta-data/',

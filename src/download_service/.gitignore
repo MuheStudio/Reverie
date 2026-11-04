@@ -1,6 +1,0 @@
-# 构建产物
-build/
-dist/
-*.crx
-*.zip
-*.pem

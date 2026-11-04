@@ -87,3 +87,15 @@ def test_build_move_messages_describes_per_game_reply_contract() -> None:
     ):
         messages = build_move_messages("星野幻月", game, {"board_text": "b", "side": "黑棋"})
         assert marker in messages[0]["content"], game
+
+
+@pytest.mark.asyncio
+async def test_xiangqi_prompt_delivers_piece_identity_and_coordinates_to_adapter() -> None:
+    adapter = FakeAdapter('{"move":"0,6,0,5","comment":"轮到你了"}')
+    board = "x 0 1 2 3 4 5 6 7 8\ny=9 黑车 黑马 黑象 黑士 黑将帅 黑士 黑象 黑马 黑车\ny=0 红车 红马 红象 红士 红将帅 红士 红象 红马 红车"
+    await choose_move(adapter, "合成人格", "xiangqi", {"board_text": board, "side": "黑棋", "history_text": "1 手"})
+    messages = adapter.calls[0]["messages"]
+    assert board in messages[1]["content"]
+    assert "颜色和棋种" in messages[1]["content"]
+    assert "▲" not in messages[1]["content"]
+    assert "0 为红方底线" in messages[0]["content"]

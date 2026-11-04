@@ -29,9 +29,6 @@ importers:
       chess.js:
         specifier: ^1.4.0
         version: 1.4.0
-      elephantops:
-        specifier: ^0.1.1
-        version: 0.1.1
       i18next:
         specifier: ^26.3.6
         version: 26.3.6(typescript@5.9.3)
@@ -190,9 +187,6 @@ packages:
   '@babel/types@7.29.7':
     resolution: {integrity: sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA==}
     engines: {node: '>=6.9.0'}
-
-  '@badrap/result@0.2.13':
-    resolution: {integrity: sha512-Qvyzz0dmGY0h8pwvBFo1BznAKf5Y5NXIDiqhPALWtfU7oHbAToCtPu4FlYQ3uysskSWLx8GUiyhe0nv0nDd/7Q==}
 
   '@electron-internal/extract-zip@1.0.4':
     resolution: {integrity: sha512-Zr1Vs7E9tpCNhZHDAbFVXc2gEVCG9RqPDjrno5+bdgB6LRAuvgyMHJut4NCVyYwtAieapMzc3fiQ3CSTi75ARg==}
@@ -1558,9 +1552,6 @@ packages:
     resolution: {integrity: sha512-nEoyciv2iC6gTvCbkQ3eP5tjAOo28wfm0adZaMYTns92MyODHeD1TlrGt4E35d4tJfDlmv+BHOuz0QIkJ63c6w==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
-
-  elephantops@0.1.1:
-    resolution: {integrity: sha512-dx8MzOqJd+/hAejMSj4QP4llIEOttsnMPq3TBa/XU0C96mMdTVASlLgtNP++uVF8rxxyXbafkvue/UM+54tT0w==}
 
   emoji-regex@8.0.0:
     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
@@ -2963,8 +2954,6 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@badrap/result@0.2.13': {}
-
   '@electron-internal/extract-zip@1.0.4': {}
 
   '@electron/asar@3.4.1':
@@ -4355,10 +4344,6 @@ snapshots:
       '@types/node': 24.13.2
     transitivePeerDependencies:
       - supports-color
-
-  elephantops@0.1.1:
-    dependencies:
-      '@badrap/result': 0.2.13
 
   emoji-regex@8.0.0: {}
 

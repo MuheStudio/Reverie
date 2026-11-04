@@ -1,0 +1,47 @@
+{
+  "schema": "reverie.macos-toolchain.v1",
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": {
+    "version": "24.19.0",
+    "url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz",
+    "sha256": "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d"
+  },
+  "uv": {
+    "version": "0.12.17",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.12.17/uv-aarch64-apple-darwin.tar.gz",
+    "sha256": "85f00cbdc6dd3e97eba4c31b4d014375a9fdfe8f570023b84e5102fc3456896b"
+  },
+  "pnpm": {
+    "version": "11.7.0",
+    "url": "https://registry.npmjs.org/pnpm/-/pnpm-11.7.0.tgz",
+    "integrity": "sha512-GcyFLBIMcSV2DyRD7mvgyltA+fUFmN4aCaHxd1A+AQ5Xwjx3ZG4B52HeWb+HT7IqM5jDOrlpH8E+uUa28PTWIA=="
+  },
+  "python": {
+    "version": "3.12.14",
+    "build": "20260901",
+    "key": "cpython-3.12.14-darwin-aarch64-none",
+    "download": {
+      "name": "cpython",
+      "arch": { "family": "aarch64", "variant": null },
+      "os": "darwin",
+      "libc": "none",
+      "major": 3,
+      "minor": 12,
+      "patch": 14,
+      "prerelease": "",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.12.14%2B20260901-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b",
+      "variant": null,
+      "build": "20260901"
+    }
+  },
+  "development": {
+    "pytest": "9.1.1",
+    "hypothesis": "6.168.0",
+    "playwright": "1.63.0",
+    "pytest-playwright": "0.9.0",
+    "textual": "8.2.8",
+    "pyyaml": "6.0.3"
+  }
+}

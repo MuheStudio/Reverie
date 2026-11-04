@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Metadata-only inventory of tracked files before independent worldbook replacement; no source archive or relicensing proof.",
+  "sourceTreeCommit": "321b59b17834d78e7fa28a641ff1235ffaeef3af",
+  "capturedOn": "2026-10-05",
+  "oldDirectory": "src/lorebook",
+  "fileCount": 1,
+  "totalBytes": 25529,
+  "files": [
+    {
+      "path": "src/lorebook/__init__.py",
+      "bytes": 25529,
+      "sha256": "877a76bd87977c2640b55688d6f64bcb35c177afec0fbe63eb260e2fe333470d"
+    }
+  ]
+}

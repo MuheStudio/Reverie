@@ -15,7 +15,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from .anti_ai import (
     build_retry_prompt,
@@ -25,7 +25,7 @@ from .anti_ai import (
 )
 from .scheduler import MessageScheduler
 from ..local_mode import LocalModeBlocked
-from ..memory.cognitive_decay import FUZZY_RECALL_PREFIX
+from ..memory.cognitive_decay import FUZZY_RECALL_PREFIX, conversational_recall
 
 if TYPE_CHECKING:
     from ..api.adapter import LLMAdapter
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from ..ambient import AmbientPresence, ThoughtOfYouEngine
     from ..social.universe import SocialUniverse
     from .reflex import ReflexSystem
+    from ..worldbook.engine import DepthEntry
 
 logger = logging.getLogger("reverie.chat.session")
 
@@ -74,6 +75,39 @@ def _content_chars(content: Any) -> int:
                 total += len(str(part))
         return total
     return len(json.dumps(content, ensure_ascii=False, default=str))
+
+
+def _worldbook_history_messages(
+    history: list[dict], depth_entries: Sequence["DepthEntry"],
+) -> list[dict]:
+    """Place request-only entries around the actual, already bounded history.
+
+    Entries arrive in engine output order. Clamp first so entries with different
+    saved depths that reach the same boundary retain that order. Merge only
+    adjacent equal-role entries at that boundary, never with real history.
+    """
+    from ..persona.prompt_builder import _world_setting_block
+
+    boundaries: dict[int, list["DepthEntry"]] = {}
+    for entry in depth_entries:
+        boundary = len(history) - min(entry.depth, len(history))
+        boundaries.setdefault(boundary, []).append(entry)
+    messages: list[dict] = []
+    for boundary in range(len(history) + 1):
+        groups: list[tuple[str, list[str]]] = []
+        for entry in boundaries.get(boundary, ()):
+            if groups and groups[-1][0] == entry.role:
+                groups[-1][1].append(entry.content)
+            else:
+                groups.append((entry.role, [entry.content]))
+        for role, contents in groups:
+            content = "\n\n".join(contents)
+            if role == "system":
+                content = _world_setting_block(content, "IN CONVERSATION")
+            messages.append({"role": role, "content": content})
+        if boundary < len(history):
+            messages.append(history[boundary])
+    return messages
 
 
 class ProviderCallFailed(RuntimeError):
@@ -236,10 +270,8 @@ class ChatSession:
         ambient_presence: "AmbientPresence | None" = None,
         thought_engine: "ThoughtOfYouEngine | None" = None,
         social_universe: "SocialUniverse | None" = None,
-        lorebook_mgr: "Any | None" = None,
-        hypa_compressor: "Any | None" = None,
-        hypa_max_context_tokens: int = 2000,
-        hypa_compress_cooldown_seconds: int = 300,
+        worldbook_runtime: "Any | None" = None,
+        conversation_summary: "Any | None" = None,
         imported_prompt_opts: dict | None = None,
     ) -> None:
         self.persona = persona
@@ -260,14 +292,8 @@ class ChatSession:
         self.ambient_presence = ambient_presence
         self.thought_engine = thought_engine
         self.social_universe = social_universe
-        self.lorebook_mgr = lorebook_mgr
-        # Optional HypaMemory V3 long-context compression (Risuai GPL port).
-        # Consumes API through the adapter's memory_summary consent purpose, so
-        # it is only ever active when the owner enables hypa_compression_enabled.
-        self.hypa_compressor = hypa_compressor
-        self._hypa_max_context_tokens = int(hypa_max_context_tokens or 2000)
-        self._hypa_cooldown = float(hypa_compress_cooldown_seconds or 0.0)
-        self._hypa_last_compress = 0.0
+        self.worldbook_runtime = worldbook_runtime
+        self.conversation_summary = conversation_summary
         # 卡作者提示词运行时开关（默认关闭）。由 bridge 在导入/更新时注入。
         self.imported_prompt_opts: dict = dict(imported_prompt_opts or {})
         if speech_habit_engine is None:
@@ -402,6 +428,9 @@ class ChatSession:
                 "injection_detected": bool,
             }
         """
+        # Capture the committed archive before this turn can yield to a save.
+        worldbook_capture = (self.worldbook_runtime.capture(request_id)
+                             if self.worldbook_runtime is not None else None)
         logger.info("User: %s", user_message[:100])
 
         # ── Step 1: Input pre-processing ──────────────────
@@ -422,7 +451,8 @@ class ChatSession:
         # ── Step 2: Memory retrieval ──────────────────────
         if guard.memory_safe:
             try:
-                memories = self.memory.retrieve_relevant(user_message)
+                with conversational_recall():
+                    memories = self.memory.retrieve_relevant(user_message)
                 self._last_safe_memories = [
                     memory for memory in memories
                     if not memory.startswith(FUZZY_RECALL_PREFIX)
@@ -654,25 +684,19 @@ class ChatSession:
             current_time = datetime.now()
             calendar_context = f"当前时间：{current_time.strftime('%Y-%m-%d %H:%M')}；节假日状态未知，不得猜测"
 
-        # World book (lorebook) injection: active entries are matched against
-        # the current user message plus the recent conversation tail. The
-        # in-flight user message is not yet in history at prompt-assembly time,
-        # so append it explicitly — world books activate on what the user just
-        # said. Any failure degrades to empty context — never chat.
+        # The captured immutable archive belongs to this turn. Later saves are
+        # visible to the next turn without mutating this prompt's snapshot.
+        conversation_tail = self._prompt_tail(conversation_id)
         lorebook_context = ""
-        if self.lorebook_mgr is not None:
-            try:
-                lore_tail = self._prompt_tail(conversation_id)
-                match_window = list(lore_tail)
-                match_window.append({"role": "user", "content": user_message})
-                if match_window:
-                    lorebook_context = self.lorebook_mgr.assemble_lorebook_prompt(
-                        match_window,
-                        max_tokens=800,
-                    )
-            except Exception:
-                logger.exception("World book context failed; continuing without it")
-                lorebook_context = ""
+        after_char_context = ""
+        depth_entries = ()
+        if self.worldbook_runtime is not None and worldbook_capture is not None:
+            match_window = list(conversation_tail)
+            match_window.append({"role": "user", "content": user_message})
+            worldbook_result = await self.worldbook_runtime.evaluate_grouped(worldbook_capture, match_window)
+            lorebook_context = worldbook_result.before_char_text
+            after_char_context = worldbook_result.after_char_text
+            depth_entries = worldbook_result.depth_entries
 
         try:
             allow_environment_description = bool(getattr(self.scheduler, "allow_environment_description", False))
@@ -708,22 +732,24 @@ class ChatSession:
                 availability_context=availability_context,
                 allow_environment_description=allow_environment_description,
                 lorebook_context=lorebook_context,
+                after_char_context=after_char_context,
                 imported_prompt_opts=self.imported_prompt_opts,
             )
         except Exception:
             logger.exception("Full prompt assembly failed; using identity-safe minimal prompt")
             system_prompt = self._minimal_system_prompt(current_time, current_emotions, intimacy)
+            depth_entries = ()
 
         # ── Step 5: LLM call ──────────────────────────────
-        conversation_tail = self._prompt_tail(conversation_id)
+        request_history = _worldbook_history_messages(conversation_tail, depth_entries)
+        post_history = self._imported_post_history_block()
 
-        # Optional HypaMemory V3 long-context summary enrichment.
-        hypa_summary_block = ""
-        if self.hypa_compressor is not None:
-            try:
-                hypa_summary_block = await self._hypa_context(user_message, conversation_tail)
-            except Exception:
-                logger.exception("HypaV3 context enrichment failed; continuing without it")
+        # Summary retrieval is local and uses only previously committed output.
+        summary_block = ""
+        if self.conversation_summary is not None:
+            summary_block = self.conversation_summary.capture_context(
+                conversation_id or "default", user_message
+            )
 
         raw_reply = ""
         attempt = 0
@@ -756,10 +782,9 @@ class ChatSession:
             messages = [
                 {"role": "system", "content": f"{system_prompt}\n\n{retry_prompt}".strip()},
             ]
-            if hypa_summary_block:
-                messages.append({"role": "system", "content": hypa_summary_block})
-            messages.extend(conversation_tail)
-            post_history = self._imported_post_history_block()
+            if summary_block:
+                messages.append({"role": "system", "content": summary_block})
+            messages.extend(request_history)
             if post_history:
                 messages.append({"role": "system", "content": post_history})
             messages.append(_build_vision_user_turn(
@@ -1162,6 +1187,7 @@ class ChatSession:
             return result
         result["side_effects_deferred"] = True
         result["_commit_context"] = {
+            "restore_generation": int(getattr(self, "restore_generation", 0)),
             "request_id": str(request_id or ""),
             "conversation_id": str(conversation_id or ""),
             "memory_safe": bool(getattr(guard, "memory_safe", False)),
@@ -1201,6 +1227,11 @@ class ChatSession:
         context = result.get("_commit_context")
         if not isinstance(context, dict):
             raise ValueError("deferred chat result is missing commit context")
+        write_guard = getattr(self, "require_runtime_writable", None)
+        if callable(write_guard):
+            write_guard()
+        if int(context.get("restore_generation", 0)) != int(getattr(self, "restore_generation", 0)):
+            raise RuntimeError("Deferred chat result belongs to the state before restore")
         context_request = str(context.get("request_id") or "")
         if context_request and context_request != request_id:
             raise ValueError("deferred chat result request scope mismatch")
@@ -1342,11 +1373,23 @@ class ChatSession:
 
     async def close(self) -> None:
         """Clean up session resources."""
-        close = getattr(self.adapter, "close", None)
-        if callable(close):
-            result = close()
-            if hasattr(result, "__await__"):
-                await result
+        summary_cleanup_error = None
+        if self.conversation_summary is not None:
+            try:
+                await self.conversation_summary.aclose()
+            except Exception as exc:
+                summary_cleanup_error = exc
+        try:
+            if self.worldbook_runtime is not None:
+                await self.worldbook_runtime.aclose()
+        finally:
+            close = getattr(self.adapter, "close", None)
+            if callable(close):
+                result = close()
+                if hasattr(result, "__await__"):
+                    await result
+        if summary_cleanup_error is not None:
+            raise summary_cleanup_error
 
     def _optional_context(self, manager, method_name: str) -> str:
         if manager is None:
@@ -1356,34 +1399,6 @@ class ChatSession:
         except Exception:
             logger.exception("Optional context module failed: %s", method_name)
             return ""
-
-    async def _hypa_context(self, user_message: str, conversation_tail: list[dict]) -> str:
-        """Compress an oversized tail and inject relevant HypaMemory summaries.
-
-        The summarization call goes through the adapter's ``memory_summary``
-        consent purpose, so local mode / usage policy vetoes apply normally.
-        A cooldown prevents re-summarising the same tail on every turn.
-        """
-        from ..memory.hypa_v3 import _estimate_tokens
-
-        tokens = sum(
-            _estimate_tokens(str(message.get("content") or ""))
-            for message in conversation_tail
-        )
-        now = time.time()
-        if self._hypa_cooldown <= 0.0 or now - self._hypa_last_compress >= self._hypa_cooldown:
-            await self.hypa_compressor.compress(
-                conversation_tail,
-                current_tokens=tokens,
-                max_context_tokens=self._hypa_max_context_tokens,
-            )
-            self._hypa_last_compress = now
-        relevant = await self.hypa_compressor.query(
-            user_message,
-            recent_messages=conversation_tail,
-            top_k=3,
-        )
-        return str(self.hypa_compressor.format_for_prompt(relevant) or "")
 
     def _safe_addressing(self, text: str) -> str:
         try:
@@ -1526,6 +1541,12 @@ class ChatSession:
         ).strip()
         if not raw:
             return ""
+        from ..persona.prompt_builder import _escape_prompt_data
+        from ..persona.sillytavern_import import author_prompt_flags
+
+        # Flagged text is never sent, whatever an older archive switch says.
+        if author_prompt_flags(raw):
+            return ""
         # 只支持 {{original}} 宏且只替换一次；其余 {{...}} 被转义。
         expanded = raw.replace("{{original}}", "", 1)
         import re as _re
@@ -1535,7 +1556,7 @@ class ChatSession:
             "=== CARD AUTHOR POST-HISTORY INSTRUCTIONS (user-enabled) ===\n"
             "Apply the character card author's style guidance to your reply "
             "below, while keeping the IDENTITY and transparency rules above.\n\n"
-            + expanded[:4000]
+            + _escape_prompt_data(expanded)[:4000]
         )
 
     def _minimal_system_prompt(

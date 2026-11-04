@@ -13,7 +13,7 @@ import re
 from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, StrictBool, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
 
 PROTOCOL_VERSION = 4
@@ -36,16 +36,28 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("MEMORY_LIST", "memory:list"),
     ("MEMORY_EDIT", "memory:edit"),
     ("MEMORY_DELETE", "memory:delete"),
+    ("MEMORY_DELETE_MANY", "memory:delete_many"),
+    ("MEMORY_PIN_STATUS", "memory:pin_status"),
+    ("MEMORY_PIN_MANY", "memory:pin_many"),
     ("MEMORY_SETTINGS_GET", "memory:settings:get"),
     ("MEMORY_STORE", "memory:store"),
     ("MEMORY_REINFORCE", "memory:reinforce"),
     ("MEMORY_CANDIDATE_LIST", "memory:candidates:list"),
     ("MEMORY_CANDIDATE_CONFIRM", "memory:candidates:confirm"),
     ("MEMORY_CANDIDATE_REJECT", "memory:candidates:reject"),
+    ("MEMORY_CANDIDATE_STATUS", "memory:candidates:status"),
+    ("MEMORY_CANDIDATE_DECIDE_MANY", "memory:candidates:decide_many"),
     ("EMOTION_GET", "emotion:get"),
     ("PERSONA_GET", "persona:get"),
     ("PERSONA_IMPORT", "persona:import"),
     ("PERSONA_ACTIVATE", "persona:activate"),
+    ("PERSONA_LIST", "persona:list"),
+    ("PERSONA_PROFILE_GET", "persona:profile:get"),
+    ("PERSONA_PROFILE_UPDATE", "persona:profile:update"),
+    ("SUMMARY_STATUS", "summary:status"),
+    ("SUMMARY_GET", "summary:get"),
+    ("SUMMARY_LEGACY_PREVIEW", "summary:legacy:preview"),
+    ("SUMMARY_LEGACY_IMPORT", "summary:legacy:import"),
     ("ARCHIVE_GET", "archive:get"),
     ("ARCHIVE_PUT", "archive:put"),
     ("ARCHIVE_MIGRATE", "archive:migrate"),
@@ -106,6 +118,10 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("MEMORY_CANDIDATE_RESULT", "memory:candidates:result"),
     ("PERSONA_DATA", "persona:data"),
     ("PERSONA_IMPORT_RESULT", "persona:import:result"),
+    ("PERSONA_LIST_RESULT", "persona:list:result"),
+    ("PERSONA_PROFILE_GET_RESULT", "persona:profile:get:result"),
+    ("PERSONA_PROFILE_UPDATE_RESULT", "persona:profile:update:result"),
+    ("SUMMARY_RESULT", "summary:result"),
     ("ARCHIVE_RESULT", "archive:result"),
     ("MODULE_RESULT", "module:result"),
     ("GAME_STATE_RESULT", "game_state:result"),
@@ -150,10 +166,15 @@ MVP_COMMAND_NAMES = frozenset(
         "MEMORY_REINFORCE",
         "MEMORY_EDIT",
         "MEMORY_DELETE",
+        "MEMORY_DELETE_MANY",
+        "MEMORY_PIN_STATUS",
+        "MEMORY_PIN_MANY",
         "MEMORY_SETTINGS_GET",
         "MEMORY_CANDIDATE_LIST",
         "MEMORY_CANDIDATE_CONFIRM",
         "MEMORY_CANDIDATE_REJECT",
+        "MEMORY_CANDIDATE_STATUS",
+        "MEMORY_CANDIDATE_DECIDE_MANY",
         "GROUP_REQUEST",
         "GROUP_SEND",
         "STICKER_LIST",
@@ -168,6 +189,10 @@ MVP_COMMAND_NAMES = frozenset(
         "IMMERSION_SMART_HOME",
         "AMBIENT_GET",
         "API_BUDGET_GET",
+        "SUMMARY_STATUS",
+        "SUMMARY_GET",
+        "SUMMARY_LEGACY_PREVIEW",
+        "SUMMARY_LEGACY_IMPORT",
         "ARCHIVE_GET",
         "ARCHIVE_PUT",
         "ARCHIVE_MIGRATE",
@@ -187,6 +212,9 @@ MVP_COMMAND_NAMES = frozenset(
         "PERSONA_GET",
         "PERSONA_IMPORT",
         "PERSONA_ACTIVATE",
+        "PERSONA_LIST",
+        "PERSONA_PROFILE_GET",
+        "PERSONA_PROFILE_UPDATE",
         "RELATIONSHIP_GET",
         "SETTINGS_UPDATE",
         "SETTINGS_GET",
@@ -225,6 +253,7 @@ MVP_EVENT_NAMES = frozenset(
         "IMMERSION_RESULT",
         "AMBIENT_RESULT",
         "API_BUDGET_RESULT",
+        "SUMMARY_RESULT",
         "ARCHIVE_RESULT",
         "MODULE_RESULT",
         "DIARY_RESULT",
@@ -237,6 +266,9 @@ MVP_EVENT_NAMES = frozenset(
         "RUNTIME_ACTIVITY",
         "PERSONA_DATA",
         "PERSONA_IMPORT_RESULT",
+        "PERSONA_LIST_RESULT",
+        "PERSONA_PROFILE_GET_RESULT",
+        "PERSONA_PROFILE_UPDATE_RESULT",
         "AI_USAGE_RESULT",
         "RELATIONSHIP_DATA",
         "USER_PROFILE_RESULT",
@@ -544,6 +576,29 @@ class PersonaActivatePayload(_PayloadModel):
         return value
 
 
+class PersonaProfileGetPayload(_PayloadModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    profile_id: str = Field(min_length=1, max_length=160)
+
+
+class PersonaProfileUpdatePayload(PersonaProfileGetPayload):
+    """The handler reports field/confirmation failures as editable receipts.
+
+    Unknown outer keys are still forbidden.  Field values are not coerced or
+    clipped by the transport before the editor can report the offending field.
+    The authoritative expected_persona_* proof is injected from the envelope.
+    """
+
+    expected_identity_version: Any = None
+    expected_identity_fingerprint: Any = None
+    fields: Any = None
+    identity_change_confirmed: Any = None
+    confirmed_profile_id: Any = None
+    actor: Any = None
+    reason: Any = None
+
+
 class KeepsakeAddPayload(_PayloadModel):
     kind: str = Field(default="text", min_length=1, max_length=40)
     title: str = Field(default="", max_length=80)
@@ -559,6 +614,40 @@ class ArchivePutPayload(_PayloadModel):
 
     archive: dict[str, Any] = Field(default_factory=dict)
     expected_revision: StrictInt = Field(default=0, ge=0)
+
+
+class SummaryStatusPayload(_PayloadModel):
+    conversation_id: str = Field(default="dream-room", min_length=1, max_length=128)
+
+
+class SummaryGetPayload(SummaryStatusPayload):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+    summary_id: str = Field(min_length=40, max_length=40, pattern=r"^summary_[0-9a-f]{32}$")
+
+
+class SummaryLegacyPreviewPayload(_PayloadModel):
+    # Content only: the backend cannot use this command to read a filesystem path.
+    content: str = Field(min_length=1, max_length=131072)
+
+    @field_validator("content")
+    @classmethod
+    def bounded_utf8(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 128 * 1024:
+            raise ValueError("Legacy summary file exceeds 128 KiB")
+        return value
+
+
+class SummaryLegacyImportPayload(SummaryLegacyPreviewPayload):
+    expected_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    confirmed: StrictBool
+
+    @field_validator("confirmed")
+    @classmethod
+    def explicit_confirmation(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("Explicit inactive import confirmation is required")
+        return value
 
 
 class ModuleControlPayload(_PayloadModel):
@@ -590,6 +679,21 @@ class MemoryQueryPayload(_PayloadModel):
 
 class MemoryListPayload(_PayloadModel):
     limit: int = Field(default=100, ge=1, le=200)
+    # Opaque keyset position from the previous page of the same query.
+    cursor: str | None = Field(default=None, min_length=4, max_length=512,
+                               pattern=r"^v1\.[A-Za-z0-9_-]+$")
+    # A literal substring of the confirmed text, not a semantic query.
+    query: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned or any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned):
+            raise ValueError("memory list query must be visible text")
+        return cleaned
 
 
 class MemoryTargetPayload(_PayloadModel):
@@ -601,6 +705,37 @@ class MemoryTargetPayload(_PayloadModel):
         if not _ID_PATTERN.fullmatch(value):
             raise ValueError("memory_id contains unsupported characters")
         return value
+
+
+class MemoryDeleteManyPayload(_PayloadModel):
+    memory_ids: list[str] = Field(min_length=1, max_length=100, strict=True)
+
+    @field_validator("memory_ids")
+    @classmethod
+    def validate_memory_ids(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("memory_ids must be unique")
+        for value in values:
+            if not _ID_PATTERN.fullmatch(value):
+                raise ValueError("memory_ids contains unsupported characters")
+        return values
+
+
+class MemoryPinStatusPayload(_PayloadModel):
+    memory_ids: list[StrictStr] = Field(min_length=1, max_length=100, strict=True)
+
+    @field_validator("memory_ids")
+    @classmethod
+    def validate_memory_ids(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("memory_ids must be unique")
+        if any(not _ID_PATTERN.fullmatch(value) for value in values):
+            raise ValueError("memory_ids contains unsupported characters")
+        return values
+
+
+class MemoryPinManyPayload(MemoryPinStatusPayload):
+    pinned: StrictBool
 
 
 class StandardMemoryStorePayload(_PayloadModel):
@@ -673,10 +808,29 @@ class MemoryReinforcePayload(MemoryTargetPayload):
 class MemoryCandidateListPayload(_PayloadModel):
     status: Literal["pending", "confirmed", "rejected", "all"] = "pending"
     limit: int = Field(default=100, ge=1, le=200)
+    cursor: str | None = Field(default=None, min_length=5, max_length=512,
+                               pattern=r"^mc1\.[A-Za-z0-9_-]+$")
 
 
 class MemoryCandidateDecisionPayload(_PayloadModel):
     candidate_id: str = Field(pattern=_CANDIDATE_ID_PATTERN.pattern)
+
+
+class MemoryCandidateStatusPayload(_PayloadModel):
+    candidate_ids: list[StrictStr] = Field(min_length=1, max_length=100, strict=True)
+
+    @field_validator("candidate_ids")
+    @classmethod
+    def validate_candidate_ids(cls, values: list[str]) -> list[str]:
+        if len(set(values)) != len(values):
+            raise ValueError("candidate_ids must be unique")
+        if any(not _CANDIDATE_ID_PATTERN.fullmatch(value) for value in values):
+            raise ValueError("candidate_ids contains an invalid memory candidate id")
+        return values
+
+
+class MemoryCandidateDecideManyPayload(MemoryCandidateStatusPayload):
+    decision: Literal["confirm", "reject"]
 
 
 class GroupSendPayload(_PayloadModel):
@@ -726,7 +880,7 @@ class GameStateGetPayload(_PayloadModel):
 class GameStatePutPayload(GameStateGetPayload):
     """Persist bounded state for one local mini-game."""
 
-    state: dict[str, Any] = Field(default_factory=dict)
+    state: dict[str, Any] | list[Any] = Field(default_factory=dict)
     expected_revision: int = Field(default=0, ge=0, le=1_000_000)
 
 
@@ -922,6 +1076,7 @@ class SettingsUpdatePayload(_PayloadModel):
     late_night_enabled: bool | None = None
     late_night_message_enabled: bool | None = None
     late_night_probability: float | None = Field(default=None, ge=0.01, le=0.30)
+    hypa_compression_enabled: bool | None = None
     video_download_enabled: bool | None = None
     video_download_disclaimer_acknowledged: bool | None = None
     video_max_size_mb: int | None = Field(default=None, ge=1, le=4096)
@@ -1084,6 +1239,7 @@ class SettingsUpdatePayload(_PayloadModel):
                 "late_night_enabled",
                 "late_night_message_enabled",
                 "late_night_probability",
+                "hypa_compression_enabled",
                 "video_download_enabled",
                 "video_download_disclaimer_acknowledged",
                 "video_max_size_mb",
@@ -1195,9 +1351,40 @@ class UserProfileData(_PayloadModel):
 class UserProfileUpdatePayload(_PayloadModel):
     profile: UserProfileData | None = None
     restore_default: StrictBool | None = None
+    clear_fields: list[Literal[
+        "name", "nickname", "birthday", "identity", "schedule",
+        "interests", "hobbies", "favorite_topics",
+        "favorite_games", "favorite_anime", "age",
+    ]] | None = Field(default=None, min_length=1, max_length=11)
+    expected_profile_snapshot: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_clear_presence(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if "clear_fields" in value:
+            if "profile" in value or "restore_default" in value:
+                raise ValueError("profile clearing cannot include profile or restore_default")
+            if value.get("clear_fields") is None or value.get("expected_profile_snapshot") is None:
+                raise ValueError("profile clearing requires fields and a profile snapshot")
+        elif "expected_profile_snapshot" in value:
+            raise ValueError("a profile snapshot requires explicit clear_fields")
+        return value
+
+    @field_validator("clear_fields")
+    @classmethod
+    def validate_unique_clear_fields(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("profile clear_fields must be unique")
+        return value
 
     @model_validator(mode="after")
     def validate_restore_or_profile(self) -> "UserProfileUpdatePayload":
+        if self.clear_fields is not None:
+            return self
         if self.restore_default is True:
             return self
         if self.profile is None:
@@ -1219,10 +1406,15 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "memory:reinforce": MemoryReinforcePayload,
     "memory:edit": MemoryEditPayload,
     "memory:delete": MemoryTargetPayload,
+    "memory:delete_many": MemoryDeleteManyPayload,
+    "memory:pin_status": MemoryPinStatusPayload,
+    "memory:pin_many": MemoryPinManyPayload,
     "memory:settings:get": EmptyPayload,
     "memory:candidates:list": MemoryCandidateListPayload,
     "memory:candidates:confirm": MemoryCandidateDecisionPayload,
     "memory:candidates:reject": MemoryCandidateDecisionPayload,
+    "memory:candidates:status": MemoryCandidateStatusPayload,
+    "memory:candidates:decide_many": MemoryCandidateDecideManyPayload,
     "group:request": EmptyPayload,
     "group:send": GroupSendPayload,
     "sticker:list": StickerListPayload,
@@ -1237,6 +1429,10 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "immersion:smart_home": ImmersionSmartHomePayload,
     "ambient:get": EmptyPayload,
     "api:budget:get": EmptyPayload,
+    "summary:status": SummaryStatusPayload,
+    "summary:get": SummaryGetPayload,
+    "summary:legacy:preview": SummaryLegacyPreviewPayload,
+    "summary:legacy:import": SummaryLegacyImportPayload,
     "archive:get": EmptyPayload,
     "archive:put": ArchivePutPayload,
     "archive:migrate": ArchivePutPayload,
@@ -1256,6 +1452,9 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "persona:get": EmptyPayload,
     "persona:import": PersonaImportPayload,
     "persona:activate": PersonaActivatePayload,
+    "persona:list": EmptyPayload,
+    "persona:profile:get": PersonaProfileGetPayload,
+    "persona:profile:update": PersonaProfileUpdatePayload,
     "relationship:get": EmptyPayload,
     "settings:update": SettingsUpdatePayload,
     "settings:get": EmptyPayload,
@@ -1272,20 +1471,25 @@ MUTATING_COMMAND_NAMES = frozenset(
         "video:download",
         "memory:candidates:confirm",
         "memory:candidates:reject",
+        "memory:candidates:decide_many",
         "memory:store",
         "memory:edit",
         "memory:delete",
+        "memory:delete_many",
+        "memory:pin_many",
         "group:send",
         "sticker:collect",
         "sticker:react",
         "sticker:import",
         "game_state:put",
+        "summary:legacy:import",
         "archive:put",
         "archive:migrate",
         "module:control",
         "keepsake:add",
         "persona:import",
         "persona:activate",
+        "persona:profile:update",
         "ai_usage:grant",
         "ai_usage:revoke",
         "backup:import",

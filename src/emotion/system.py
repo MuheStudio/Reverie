@@ -8,6 +8,8 @@ Key design principles:
   - Emotions have inertia — they don't change instantly
   - Chat content, memories, and events all affect emotions
   - Emotions influence reply style, diary content, and proactive chat
+  - enabled, carryover_days and inertia_factor are global settings: a persona
+    snapshot or backup restores values, baseline and time, never these
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -64,13 +66,17 @@ class EmotionSystem:
     enabled: bool = True
     inertia_factor: float = INERTIA_FACTOR
     carryover_days: int = 3
+    # Global (start, end) wall times when updates were off; carryover skips them.
+    pause_intervals: list[tuple[str, str]] = field(default_factory=list)
+    defer_startup_writes: bool = False
     _last_updated: str = field(default="", init=False)
     world_clock: Any = field(default=None, init=True, repr=False)
 
     def __post_init__(self):
         self._normalise_all()
         self._load_state()
-        self.apply_daily_carryover()
+        if not self.defer_startup_writes:
+            self.apply_daily_carryover()
         self._clamp_all()
 
     def _now_local(self) -> datetime:
@@ -78,6 +84,22 @@ class EmotionSystem:
         if self.world_clock is not None:
             return self.world_clock.now().replace(tzinfo=None)
         return datetime.now()
+
+    def wall_time(self) -> str:
+        """The current wall time as recorded in ``pause_intervals``."""
+        return self._now_local().isoformat()
+
+    def _paused_between(self, start: datetime, end: datetime) -> timedelta:
+        paused = timedelta()
+        for begin_text, finish_text in self.pause_intervals:
+            try:
+                low = max(start, datetime.fromisoformat(begin_text))
+                high = min(end, datetime.fromisoformat(finish_text))
+            except (TypeError, ValueError):
+                continue
+            if high > low:
+                paused += high - low
+        return paused
 
     # ── Read state ───────────────────────────────────────
 
@@ -181,12 +203,7 @@ class EmotionSystem:
                     self.baseline[name] = float(data["baseline"][name])
         if isinstance(data.get("last_updated"), str):
             self._last_updated = data["last_updated"]
-        if isinstance(data.get("enabled"), bool):
-            self.enabled = data["enabled"]
-        if data.get("carryover_days") is not None:
-            self.carryover_days = int(data["carryover_days"])
-        if data.get("inertia_factor") is not None:
-            self.inertia_factor = float(data["inertia_factor"])
+        # enabled, carryover_days and inertia_factor stay the global settings.
         self._normalise_all()
         self._clamp_all()
         self._save_state()
@@ -206,7 +223,13 @@ class EmotionSystem:
         return changes
 
     def apply_daily_carryover(self, now: datetime | None = None) -> None:
-        """Drift emotions by calendar days so yesterday still has residue."""
+        """Drift emotions by calendar days so yesterday still has residue.
+
+        Nothing drifts while updates are off, and time spent off never counts:
+        switching on continues from the kept values for every persona.
+        """
+        if not self.enabled:
+            return
         now = now or self._now_local()
         if not self._last_updated:
             self._last_updated = now.isoformat()
@@ -216,7 +239,8 @@ class EmotionSystem:
             previous = datetime.fromisoformat(self._last_updated)
         except ValueError:
             previous = now
-        days = (now.date() - previous.date()).days
+        counted = now - self._paused_between(previous, now)
+        days = (counted.date() - previous.date()).days
         if days <= 0:
             return
 
@@ -257,7 +281,7 @@ class EmotionSystem:
             if not isinstance(data, dict):
                 raise ValueError("emotion state root must be an object")
             self._apply_state(data)
-            if self.document_store is not None:
+            if self.document_store is not None and not self.defer_startup_writes:
                 self._save_state()
                 if (
                     self.document_store.read_private_document("persona_emotion_state")
@@ -297,12 +321,8 @@ class EmotionSystem:
                     self.baseline[name] = float(data["baseline"][name])
         if isinstance(data.get("last_updated"), str):
             self._last_updated = data["last_updated"]
-        if isinstance(data.get("enabled"), bool):
-            self.enabled = data["enabled"]
-        if data.get("carryover_days") is not None:
-            self.carryover_days = int(data["carryover_days"])
-        if data.get("inertia_factor") is not None:
-            self.inertia_factor = float(data["inertia_factor"])
+        # Older snapshots carry enabled, carryover_days and inertia_factor; they
+        # stay readable but the global settings passed in keep precedence.
         self._normalise_all()
 
     def _state_payload(self) -> dict[str, Any]:

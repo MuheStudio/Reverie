@@ -15,6 +15,7 @@ build/
 venv/
 .venv/
 env/
+.tools/
 
 # IDE
 .vscode/
@@ -29,6 +30,7 @@ Thumbs.db
 nul
 
 # JavaScript package managers and build output
+.pnpm-store/
 node_modules/
 frontend/node_modules/
 frontend/dist/
@@ -36,6 +38,10 @@ frontend/coverage/
 frontend/.vite/
 frontend/.vitest/
 *.tsbuildinfo
+
+# Generated macOS application and disk-image artifacts.
+*.app/
+*.dmg
 
 # Project data (user-generated, local only). The whole directory is local;
 # only keep placeholder files (.gitkeep) so empty directories survive clones.
@@ -65,7 +71,18 @@ frontend/.installer-source/
 frontend/.runtime-cache/
 frontend/.package-smoke/
 frontend/.desktop-smoke/
+frontend/.desktop-core-smoke/
 frontend/.visual-check/
+frontend/.macos-installer-app/
+frontend/.macos-installer-resources/
+frontend/.macos-runtime-dev/
+frontend/.package-smoke-macos/
+frontend/.dmg-smoke-macos/
+frontend/release-macos/
 
 # Ephemeral local resolver state; requirements-runtime.lock is authoritative.
 uv.lock
+
+# Vendored MIT renderer distribution is a source dependency, not build output.
+!frontend/vendor/pixi-live2d-display/dist/
+!frontend/vendor/pixi-live2d-display/dist/*.js

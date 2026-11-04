@@ -46,7 +46,9 @@ describe('MVP renderer boundary', () => {
       bridge.indexOf('socket.onmessage = (event) => {'),
       bridge.indexOf('socket.onerror = () => {'),
     );
-    expect(handler).toContain('if (!EVENT_NAMES.has(frame.type)) return;');
+    expect(handler).toContain('!EVENT_NAMES.has(frame.type)');
+    expect(handler).toContain('!listeners.current.has(frame.type)');
+    expect(handler).toContain('!pendingResultsRef.current.has(stringValue(frame.request_id))) return;');
     expect(handler).not.toContain("throw new Error('undeclared event')");
   });
 

@@ -57,6 +57,7 @@ export interface ReverieCharacterCard {
 
 export type SelectiveLogic = 'and_any' | 'and_all' | 'not_any' | 'not_all';
 export type LoreInjectionRole = 'system' | 'user' | 'assistant';
+export type WorldBookPosition = 'before_char' | 'after_char' | 'at_depth';
 
 export interface WorldBookEntry {
   id: string;
@@ -66,7 +67,7 @@ export interface WorldBookEntry {
   content: string;
   enabled: boolean;
   alwaysActive: boolean;
-  position: 'before_char' | 'after_char';
+  position: WorldBookPosition;
   insertionOrder: number;
   priority: number;
   caseSensitive: boolean;
@@ -573,8 +574,9 @@ function asSelectiveLogic(value: unknown): SelectiveLogic {
     : 'and_any';
 }
 
-function asEntryPosition(value: unknown): 'before_char' | 'after_char' {
-  return asString(value).toLowerCase() === 'after_char' ? 'after_char' : 'before_char';
+function asEntryPosition(value: unknown): WorldBookPosition {
+  const position = asString(value).toLowerCase();
+  return position === 'after_char' || position === 'at_depth' ? position : 'before_char';
 }
 
 function asKeywordArray(value: unknown): string[] {
@@ -662,7 +664,9 @@ function normalizeSillyTavernWorldBookEntry(value: unknown): WorldBookEntry | nu
     content,
     alwaysActive: value.constant === true,
     enabled: value.enabled !== false && value.disable !== true,
-    position: asEntryPosition(value.position),
+    // The native archive extension is preserved above, but external-format
+    // position conversion remains the existing two-position contract.
+    position: asString(value.position).toLowerCase() === 'after_char' ? 'after_char' : 'before_char',
     insertionOrder: toNonNegativeInt(value.insertion_order, value.insertionOrder, 100),
     priority: toNonNegativeInt(value.priority, undefined, 0),
     caseSensitive: value.case_sensitive === true || value.caseSensitive === true,

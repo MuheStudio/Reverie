@@ -1,0 +1,1616 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Metadata-only inventory of tracked files before source removal; not a source archive or proof of relicensing.",
+  "sourceTreeCommit": "db891cd853ce9ccaa43caf76471925ef27448230",
+  "capturedOn": "2026-10-05",
+  "oldDirectory": "src/anime_service",
+  "fileCount": 321,
+  "totalBytes": 17950156,
+  "files": [
+    {
+      "path": "src/anime_service/.gitattributes",
+      "bytes": 1415,
+      "sha256": "0fc5e38a72997b0a5e83528b5470e8c5b18b81bb233edbb2b1746cc79d48f012"
+    },
+    {
+      "path": "src/anime_service/.gitignore",
+      "bytes": 959,
+      "sha256": "0a3a9c11d77d4fbf6623a4e8bdb22cc776ddd33f9f330891a6942e91e85b43d3"
+    },
+    {
+      "path": "src/anime_service/.gitmodules",
+      "bytes": 283,
+      "sha256": "3a37e425490305dcb3113df97bcfc53e9ff2e288099565ce952350f416c2a237"
+    },
+    {
+      "path": "src/anime_service/.metadata",
+      "bytes": 1706,
+      "sha256": "e36151c5e5cebdd98131a65ab4d4c2fdde1f57e71987bb6b78dfe094d30a021c"
+    },
+    {
+      "path": "src/anime_service/LICENSE",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "src/anime_service/README.md",
+      "bytes": 8527,
+      "sha256": "bb6a11159979c8655c6ac136dd9de7dfe2ead0497d47641c8a7f5e822c9fd100"
+    },
+    {
+      "path": "src/anime_service/analysis_options.yaml",
+      "bytes": 1587,
+      "sha256": "49e2bdae13054712b4d9bf9d0a2f8039418590fd30300e3d633f096085b2e480"
+    },
+    {
+      "path": "src/anime_service/assets/bbcode/BBCode.g4",
+      "bytes": 790,
+      "sha256": "508967e7b611e679c21dd88982dbcc0883c8fbd23ffd9e983a3abfeaf5160ed1"
+    },
+    {
+      "path": "src/anime_service/assets/fonts/MiSans-Regular.ttf",
+      "bytes": 8122324,
+      "sha256": "9c120f0a849bc0aa5048daae2a3c0f6eecd828b5b33fce682a9622833f5feea6"
+    },
+    {
+      "path": "src/anime_service/assets/images/danmaku_off.svg",
+      "bytes": 1823,
+      "sha256": "b3353290846198cd41a2e3308386d98165348ce0d0581b18d1ab32553eeb7d77"
+    },
+    {
+      "path": "src/anime_service/assets/images/danmaku_setting.svg",
+      "bytes": 2279,
+      "sha256": "b6f5b666c6ae6ab254250023316213d4d2df5b88b707652a6c3c933fa196367d"
+    },
+    {
+      "path": "src/anime_service/assets/images/forward_80.png",
+      "bytes": 4719,
+      "sha256": "a31408fb148043f11b186b4a6d96b4bcb4c3a238facb9ac9af65c8176867b726"
+    },
+    {
+      "path": "src/anime_service/assets/images/loading.png",
+      "bytes": 3028,
+      "sha256": "38907a7e7c5ca4e9411c2a6c62447dd215fd131e093839625fb8386c90de2934"
+    },
+    {
+      "path": "src/anime_service/assets/images/logo/logo_android.png",
+      "bytes": 434051,
+      "sha256": "35205669868ac048287ef9e4043c8e081e84734e5a29add54aed8bf6ba7d77b5"
+    },
+    {
+      "path": "src/anime_service/assets/images/logo/logo_ios.png",
+      "bytes": 434051,
+      "sha256": "35205669868ac048287ef9e4043c8e081e84734e5a29add54aed8bf6ba7d77b5"
+    },
+    {
+      "path": "src/anime_service/assets/images/logo/logo_lanczos.ico",
+      "bytes": 89695,
+      "sha256": "a0b849b2e518f8d72b546115fcfbf608944e19cf9c140b554311d8def95c6c72"
+    },
+    {
+      "path": "src/anime_service/assets/images/logo/logo_linux.png",
+      "bytes": 159060,
+      "sha256": "ef2c8e75e6a12f2fd2d399ee59b1fc0293a23f3ac3cf9388e3503e2435f3d125"
+    },
+    {
+      "path": "src/anime_service/assets/images/logo/logo_rounded.png",
+      "bytes": 642478,
+      "sha256": "60ca92b2322a5485203a9b2dfff1f0980f87c073e95bd4379e0e77aaf6ab3acc"
+    },
+    {
+      "path": "src/anime_service/assets/images/logo/logo_windows.ico",
+      "bytes": 500761,
+      "sha256": "55705d76d75351d0039cc4e5f428e0b142a4c9e2485b48ae5d16c7f091b6e90d"
+    },
+    {
+      "path": "src/anime_service/assets/images/noface.jpeg",
+      "bytes": 3719,
+      "sha256": "824be2d5b27ae6c2b8c2b4b63545a187e38ce6cab33bdb56d65b2d04485c03bb"
+    },
+    {
+      "path": "src/anime_service/assets/images/playing.gif",
+      "bytes": 33012,
+      "sha256": "a9a5e8996dcccdaf6492e901c38701b3ad5b71d4d15f5e1cb148e41b24214761"
+    },
+    {
+      "path": "src/anime_service/assets/plugins/AGE.json",
+      "bytes": 527,
+      "sha256": "2efccfe75fdc3011d10a14df6f642385abd50874e3471fb93c04a8214727272a"
+    },
+    {
+      "path": "src/anime_service/assets/plugins/DM84.json",
+      "bytes": 485,
+      "sha256": "4fed81571de82cc91fe23ce0034da9641cc64e91e2e8c432ddb2444f3419813c"
+    },
+    {
+      "path": "src/anime_service/assets/plugins/enlie.json",
+      "bytes": 613,
+      "sha256": "65e4951baa7179eba231ea4628fb4f343d8c25edc6172a753a06e0d71db396bc"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_AutoDownscalePre_x2.glsl",
+      "bytes": 1560,
+      "sha256": "8c58291740146bd766a4d73f132775a797fe80f7d07919b5d767e27a5dc85656"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_AutoDownscalePre_x4.glsl",
+      "bytes": 1568,
+      "sha256": "5af62d8cd844916dc1126613e13bad3beab195787f93a71200b47c6ec78f2e41"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Clamp_Highlights.glsl",
+      "bytes": 2795,
+      "sha256": "a2a9bf7fbc1d75d09660ca2e701e4d7fb0cf5457b94da47e1825032fa2b3671a"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Restore_CNN_M.glsl",
+      "bytes": 35916,
+      "sha256": "67ea3ed26539e8de3b7d307688535d2ff17e8d147e11dda0247da7770dbecf41"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Restore_CNN_S.glsl",
+      "bytes": 17136,
+      "sha256": "97c24dc370ab300c108bfaa09db7f175aeff343674842c299cf3940a3d330427"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Restore_CNN_VL.glsl",
+      "bytes": 144075,
+      "sha256": "35036722733305cd4d4e57660b883bbe2569ba2914033c254327107d7b77e35e"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Upscale_CNN_x2_M.glsl",
+      "bytes": 37685,
+      "sha256": "716e02098a68f0d648761f2b96b4dd139e1cb09b174bb369fca3aa34328fff7e"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Upscale_CNN_x2_S.glsl",
+      "bytes": 18638,
+      "sha256": "4c53ec2e287908f7ee7bcb266b0170421626d663576468b7d7dafc62962649a4"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/Anime4K_Upscale_CNN_x2_VL.glsl",
+      "bytes": 146743,
+      "sha256": "5638fe31c37c151a3443fea3451a3ef91af073f4dbb9615f6c0d1e29db11493d"
+    },
+    {
+      "path": "src/anime_service/assets/shaders/LICENSE",
+      "bytes": 1062,
+      "sha256": "edc7f247e1189b61c2d5970d162a14f6affbf03d8f5eb65930d5389c69372867"
+    },
+    {
+      "path": "src/anime_service/assets/statements/statements.txt",
+      "bytes": 1771,
+      "sha256": "e8f37dc5e553f7df07351fe12717aae2ab2847d045c95270496ec8f98b6a8553"
+    },
+    {
+      "path": "src/anime_service/devtools_options.yaml",
+      "bytes": 12,
+      "sha256": "71f23818bc26afbfa474035eb3decce2b11c46d61cf79b9746dcd95c47bd29a9"
+    },
+    {
+      "path": "src/anime_service/lib/app_module.dart",
+      "bytes": 249,
+      "sha256": "3d68edfe0305b4f368a370e9b62795ecba479c304de844cc96a56ad06453ce40"
+    },
+    {
+      "path": "src/anime_service/lib/app_widget.dart",
+      "bytes": 11711,
+      "sha256": "94850234f20a9d38fca8d8743a81210b5e6dc9c8dde7faf1ee62b76d75e19191"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/README.md",
+      "bytes": 2122,
+      "sha256": "960df3d740f6213b2e0d0daf00565f22b2280b717c09ae2d7ddb73ef1c7047e1"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/bbcode_base_listener.dart",
+      "bytes": 6573,
+      "sha256": "61054875bc5ce2fe5dbbd974511a1b86a15289f4d960b624bcc7eaf6a0e16417"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/bbcode_elements.dart",
+      "bytes": 1313,
+      "sha256": "3a4d85aef37294df030e0e5debdcd199464986e93b29627bc3bfdbdc1a2f2d9a"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/bbcode_widget.dart",
+      "bytes": 7749,
+      "sha256": "6f76661a0e0521b4fbb6661de573985915fcdb695f190aa3ad29e3b54bd7c6a9"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/generated/BBCode.tokens",
+      "bytes": 561,
+      "sha256": "e9478fda57132a41163b890a796f787fd9d10d44ef15138d37655aa91ea077ce"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/generated/BBCodeLexer.dart",
+      "bytes": 8643,
+      "sha256": "3e7913551ec1ddc1344c15b493c297aee32189074a6f15cd4d1cc20f6a3ea8e9"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/generated/BBCodeListener.dart",
+      "bytes": 2104,
+      "sha256": "0ffcae7247fd079c9d6449ca224b4ac8fc08c08a853d739ac4138b8f9124943e"
+    },
+    {
+      "path": "src/anime_service/lib/bbcode/generated/BBCodeParser.dart",
+      "bytes": 15416,
+      "sha256": "224c5c0ea69edbe970c953ca880a772ff058286b1eae95d27c09599f9fb05e02"
+    },
+    {
+      "path": "src/anime_service/lib/bean/appbar/drag_to_move_bar.dart",
+      "bytes": 911,
+      "sha256": "280abb2821b366c1fee9211f1819d5e4257c72f24b67a3838466440a7bca3064"
+    },
+    {
+      "path": "src/anime_service/lib/bean/appbar/safe_mediaquery_warpper.dart",
+      "bytes": 1280,
+      "sha256": "003f2ba02bf03214369c31b8033c1c2e345d1a7b0ad62800c8b87083ffd8450b"
+    },
+    {
+      "path": "src/anime_service/lib/bean/appbar/sys_app_bar.dart",
+      "bytes": 3777,
+      "sha256": "70442ca7617cd3f71a6fd71daaab20b35ba533dd9accd10622ae25379e5e0275"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/bangumi_card.dart",
+      "bytes": 3287,
+      "sha256": "38c00e8f6204c7cacfdfc5cdcdac2ea23f1510c7f3903d462ee49c9ee7e22f0c"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/bangumi_history_card.dart",
+      "bytes": 13477,
+      "sha256": "b568339ccadc50c2875fdd202a8cfccf647527c3380b1aecca8c2da087bb2075"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/bangumi_info_card.dart",
+      "bytes": 11127,
+      "sha256": "e21632ccb16dcf6bcc60e0f62579f61281ff4e631c67e14949a429bed43d9bd0"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/bangumi_timeline_card.dart",
+      "bytes": 6816,
+      "sha256": "77548704942c2fbdd4ce325713e1f17f7124562bd61f1ec33131cf94e94c3b56"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/character_card.dart",
+      "bytes": 1526,
+      "sha256": "5cd6821343379a2286ca4305c29f59198a9f844f75045f6e4b0a0f02b9fa1e02"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/character_comments_card.dart",
+      "bytes": 3382,
+      "sha256": "c536285750faa851ff25e8fb6c82351c36b4a62a7dc17e8e2bb20124b74fd188"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/comments_card.dart",
+      "bytes": 3680,
+      "sha256": "46c7f213e2589f890a8a03a38923b65d60e9c93197e041d9d69ca881aa03fb45"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/episode_comments_card.dart",
+      "bytes": 3571,
+      "sha256": "30a06c2553f975704c768f303db2f99b5034413498ebeab7399635a891b87b51"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/network_img_layer.dart",
+      "bytes": 4856,
+      "sha256": "d6e538d8b7c5371fbc27f4a36c6bdfbf2552511561a46cf9aadc4e5ba302d7ce"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/palette_card.dart",
+      "bytes": 2596,
+      "sha256": "373116b7e4071e486ebd17e904d5c7389ed265611565d298a2afb08991194299"
+    },
+    {
+      "path": "src/anime_service/lib/bean/card/staff_card.dart",
+      "bytes": 932,
+      "sha256": "9d3d794e010c46aef8fa12ff3d70c38d5b7e1db5c19bfd62956000873fc6cbf5"
+    },
+    {
+      "path": "src/anime_service/lib/bean/dialog/dialog_helper.dart",
+      "bytes": 13518,
+      "sha256": "bb9e89b385e92f8f2b5561e51d4bbfbd058e0ef2cb448068190462c49ea088a6"
+    },
+    {
+      "path": "src/anime_service/lib/bean/settings/color_type.dart",
+      "bytes": 542,
+      "sha256": "ce8a4c0f3a27582bb35c95399cbe60c69965bcdb507c68020b2e3c44b1b9fe4a"
+    },
+    {
+      "path": "src/anime_service/lib/bean/settings/theme_provider.dart",
+      "bytes": 1374,
+      "sha256": "821a0b1a8738fcfbd89296128d3e475017dbc79550eef1578da7dcfa4be7ed1a"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/bangumi_mirror_error_widget.dart",
+      "bytes": 1085,
+      "sha256": "2a482058e61b60848d3b1487d052a4c2270338863b6b327e8fbb2b0c9c1f829b"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/collect_button.dart",
+      "bytes": 4379,
+      "sha256": "03854663bbe070db2ba66e26ac0a97075256ec8a02e56d5da6c9d66151608b22"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/custom_dropdown_menu.dart",
+      "bytes": 4090,
+      "sha256": "3883c970b11375c7ec55c0d0271b11232df38b336d355bfd4256f67c6b2064dd"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/embedded_native_control_area.dart",
+      "bytes": 1228,
+      "sha256": "2bed1912a69dea13c6a4b0ce74959e35fef44217cd8c31897d829cea09297926"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/error_widget.dart",
+      "bytes": 1764,
+      "sha256": "cb0e2d6026a7b66598d40ea063fa89a5a32aefe4a6a72e27fe50cd109d59df3a"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/image_preview.dart",
+      "bytes": 11043,
+      "sha256": "61205ce85726bd3417e6fd88ba3a5623821de22e30e7f75631547dec9b972798"
+    },
+    {
+      "path": "src/anime_service/lib/bean/widget/scrollable_wrapper.dart",
+      "bytes": 1257,
+      "sha256": "74b77e1182a2c588ddb9ed0b43d55c9f5a46ba1ac733fffcbeed0817cf7c8bd4"
+    },
+    {
+      "path": "src/anime_service/lib/hive_registrar.g.dart",
+      "bytes": 1529,
+      "sha256": "1fcda27fb5e836b643ff01a22377a243da8a296ff95c87662111053e9d5d1e2d"
+    },
+    {
+      "path": "src/anime_service/lib/main.dart",
+      "bytes": 3592,
+      "sha256": "7dc50197fdaab184a2129e7f9b52a54d0988ef25f6b3fb3ff0f27c9b7acbafb7"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_collection.dart",
+      "bytes": 2370,
+      "sha256": "ef4e38309fcb76c3bd892b0f1e8095c657a6e3e52fd3decede6206aeefefaaea"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_collection_type.dart",
+      "bytes": 583,
+      "sha256": "a523499081c83495f6b937c0dc06e7c2902c8aa3187bf4e38477f650eda90a5d"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_interest.dart",
+      "bytes": 2482,
+      "sha256": "072ee1bf7c0f75168e686e57fee4d86bd7e62e2539832fe2f2790dbc34aa58e2"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_item.dart",
+      "bytes": 5105,
+      "sha256": "a82f6a13e4bc792f0d2d3c2efe9c3993bcbd445bd50b83d749350604e32dc8b9"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_item.g.dart",
+      "bytes": 2461,
+      "sha256": "e973cf585ba6988bb72d9bc8ae7c7a1da3a2632a67c0e7dd92093003d866a519"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_tag.dart",
+      "bytes": 655,
+      "sha256": "ab044e79cc330746094f60ef841bf0748576eef8bcf15f4b15fef67d544a84ae"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/bangumi_tag.g.dart",
+      "bytes": 1209,
+      "sha256": "3849e2f6fa04062ecd9640ffefb6544f1320038b4a1b7c9af58b799e1e6883f3"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/episode_item.dart",
+      "bytes": 940,
+      "sha256": "394d6b40d028ee87d053e356e043864245738398b4c4e0d0d0c315181642b3d3"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/sync_priority.dart",
+      "bytes": 397,
+      "sha256": "b05fc07d7ff452f24f610e369c10aac53df8eca4705f4609f3cd75c4edf21e73"
+    },
+    {
+      "path": "src/anime_service/lib/modules/bangumi/weekday_item.dart",
+      "bytes": 297,
+      "sha256": "d07126685d4876c66f701f8e73acd16c71c4730a66d76a9955cf44614186c757"
+    },
+    {
+      "path": "src/anime_service/lib/modules/character/character_full_item.dart",
+      "bytes": 1000,
+      "sha256": "6e347aa4357d57bf5849398c05a7fe26a9685f9775978c1e54fe76a209f2049f"
+    },
+    {
+      "path": "src/anime_service/lib/modules/characters/actor_item.dart",
+      "bytes": 1239,
+      "sha256": "61ccf343c043fe742ad441ddeeb047d4d031ffcb61c5c19ad1c92fb76d27ddaf"
+    },
+    {
+      "path": "src/anime_service/lib/modules/characters/character_item.dart",
+      "bytes": 2342,
+      "sha256": "d7513da33aaef5df5340352643c3bbd4361efa44ea18378a00c1a3304f9efd07"
+    },
+    {
+      "path": "src/anime_service/lib/modules/characters/characters_response.dart",
+      "bytes": 918,
+      "sha256": "79a49f078ed7c6fd2654167b6169572df032c86698c73f39f46848fa62735722"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_change_module.dart",
+      "bytes": 911,
+      "sha256": "621cdef7fccbbc1061491a8e4129fa32aec1331e3d792ee82d8305a88f0a4134"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_change_module.g.dart",
+      "bytes": 1438,
+      "sha256": "acb93aab85f1b800561f65f6d1abe1186a207ac0ea014502df499223b6969f48"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_module.dart",
+      "bytes": 738,
+      "sha256": "9f6dd772e1e2450b3e920c34f68e292a1d19f8eb0cf65b0ff8c5c79f8ebdb406"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_module.g.dart",
+      "bytes": 1223,
+      "sha256": "0a6498b86f53f13f8aaf70d6634986e6425b237ae051cf2cf06af0071eae74b7"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_sync_merger.dart",
+      "bytes": 6514,
+      "sha256": "98a3394c40e6deaa42554aedb9f38dd77e8d122049d3f2d0035c85327e507b85"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_sync_plan.dart",
+      "bytes": 721,
+      "sha256": "f4d885997804ea7ee64c23f4884709e46a91eb7389e82577759f05de700b6f83"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_type.dart",
+      "bytes": 764,
+      "sha256": "90fc9c5b6f602d4bb1b6d941d0badbd2aa16a9abeeab14aff8626c17f917b752"
+    },
+    {
+      "path": "src/anime_service/lib/modules/collect/collect_type_mapper.dart",
+      "bytes": 1394,
+      "sha256": "fc50d4be366d5f7b1ed06f799ca6c7300d4d2cdece8f4d02b7d2ffce9197afe7"
+    },
+    {
+      "path": "src/anime_service/lib/modules/comments/comment_item.dart",
+      "bytes": 4686,
+      "sha256": "0ce5fead2a4dce5bfdcd3ab205008f7b2ee7d734fa95a81e97788388ae5ff061"
+    },
+    {
+      "path": "src/anime_service/lib/modules/comments/comment_response.dart",
+      "bytes": 2105,
+      "sha256": "624f663083b26a0ca33b21a18223d5fc819137b54efc8c804b690616163faba0"
+    },
+    {
+      "path": "src/anime_service/lib/modules/danmaku/danmaku_episode_response.dart",
+      "bytes": 1657,
+      "sha256": "01c9242f5d89478fd624a7fd16f59b6534202563b8f26eea10733082afbdcf04"
+    },
+    {
+      "path": "src/anime_service/lib/modules/danmaku/danmaku_module.dart",
+      "bytes": 1373,
+      "sha256": "5026225ecb9abc024dc632baa34df316e32ecea684597e153a8f112bb82010d1"
+    },
+    {
+      "path": "src/anime_service/lib/modules/danmaku/danmaku_search_response.dart",
+      "bytes": 2150,
+      "sha256": "44c5e6609914ba5b6f7e8f64337a031aa110c91ff3d1176d10864a5b4b13d5f2"
+    },
+    {
+      "path": "src/anime_service/lib/modules/download/download_module.dart",
+      "bytes": 2136,
+      "sha256": "37f95e99d25d560cae2249fa98c313b0f8e9a9e5b4aa623e67168ad389a0281e"
+    },
+    {
+      "path": "src/anime_service/lib/modules/download/download_module.g.dart",
+      "bytes": 3722,
+      "sha256": "24f1f0db0449df5e7fc00593bf1308a06445003bbbd65104c405f51f851f56bd"
+    },
+    {
+      "path": "src/anime_service/lib/modules/history/history_module.dart",
+      "bytes": 4063,
+      "sha256": "e383f18b3b7a1b88d560dba24ca7630b376ec28b0496093af068d61a1a023f52"
+    },
+    {
+      "path": "src/anime_service/lib/modules/history/history_module.g.dart",
+      "bytes": 2898,
+      "sha256": "78dd1534bcc9207272a82f99d8073eadc0f01e36819b204d94a5c476c85ea851"
+    },
+    {
+      "path": "src/anime_service/lib/modules/history/history_sync.dart",
+      "bytes": 26307,
+      "sha256": "3d510e9ca66cf48d691664d51302e95b01fc18f9f5cf576134bbaa2c41921b65"
+    },
+    {
+      "path": "src/anime_service/lib/modules/plugin/plugin_http_module.dart",
+      "bytes": 912,
+      "sha256": "1e6c34b01ad459de1dc7367f543b28520033ec32861889f3fe0ec002d899be30"
+    },
+    {
+      "path": "src/anime_service/lib/modules/roads/road_module.dart",
+      "bytes": 172,
+      "sha256": "43e4ffc6d0376d2e959a566df07a56b4806b4e3b3dea5cd89008d4ff132871fc"
+    },
+    {
+      "path": "src/anime_service/lib/modules/search/image_search_module.dart",
+      "bytes": 11341,
+      "sha256": "0de07d882bcfc8bf9ef22b164dfdd301748c40db8547465e1e8e147ace6b9155"
+    },
+    {
+      "path": "src/anime_service/lib/modules/search/plugin_search_module.dart",
+      "bytes": 676,
+      "sha256": "d92308d74c0676f1620657d5ad0b19bdbd90cb4dd7f932c4e199a604b51bafc9"
+    },
+    {
+      "path": "src/anime_service/lib/modules/search/search_history_module.dart",
+      "bytes": 421,
+      "sha256": "009319993d88af03b09c667e29f2828c81c3a665dfe358fe5effc0d11045eff5"
+    },
+    {
+      "path": "src/anime_service/lib/modules/search/search_history_module.g.dart",
+      "bytes": 1134,
+      "sha256": "b2adb5e44bf30df15fd19b8ac6198c9ddf7aeb654b19fc0850145d7a758f46e4"
+    },
+    {
+      "path": "src/anime_service/lib/modules/staff/staff_item.dart",
+      "bytes": 4346,
+      "sha256": "8083828da9daaecbac125a0d8629f303b65ecde473a777020fe873bc73ce6159"
+    },
+    {
+      "path": "src/anime_service/lib/modules/staff/staff_response.dart",
+      "bytes": 770,
+      "sha256": "7420073e24802411c6e2f215a07df1f1c1554e7a6c3361d94c37cdbaa9b7e257"
+    },
+    {
+      "path": "src/anime_service/lib/pages/about/about_module.dart",
+      "bytes": 687,
+      "sha256": "227a0c4d4e3853a4724d74ccc554cc91f00260b6824e659739954db33c02a4e9"
+    },
+    {
+      "path": "src/anime_service/lib/pages/about/about_page.dart",
+      "bytes": 12377,
+      "sha256": "7446981e958f7cb1fdb174830872ff47e455cba073d29428e0e312400008fb52"
+    },
+    {
+      "path": "src/anime_service/lib/pages/bangumi/bangumi_module.dart",
+      "bytes": 281,
+      "sha256": "fd26dc0145d2f375b0b17b1d429b2f2a3c0d0264044384222bb02f9d75fbc429"
+    },
+    {
+      "path": "src/anime_service/lib/pages/bangumi/bangumi_setting.dart",
+      "bytes": 13473,
+      "sha256": "358c54adbf414668622cdbdf34356ab03bfb1ff4383dab4e012ddc5c9a0ff89e"
+    },
+    {
+      "path": "src/anime_service/lib/pages/collect/collect_controller.dart",
+      "bytes": 12374,
+      "sha256": "9228978a74b32bcf5ba2eadf3e24485ef8dfdcc86e61c976344ed5ab95d38963"
+    },
+    {
+      "path": "src/anime_service/lib/pages/collect/collect_controller.g.dart",
+      "bytes": 1675,
+      "sha256": "45dbffd06b53bdcbe3b8ebc6f7725fa6f910d11d76aa6f9023d62d332a254447"
+    },
+    {
+      "path": "src/anime_service/lib/pages/collect/collect_module.dart",
+      "bytes": 240,
+      "sha256": "d7a383f83a8ced3eb588001507fa713efe49c687f287d1868c6f8904dd787b1f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/collect/collect_page.dart",
+      "bytes": 14306,
+      "sha256": "abb75feced833ca0b300dc9b55cf344de7a3f73fee1b6b6d044ca78a5d9ac039"
+    },
+    {
+      "path": "src/anime_service/lib/pages/download/download_controller.dart",
+      "bytes": 34143,
+      "sha256": "77f9b98237cb94af7a38f6091a31daa4bf787ea9b3838129737ece97775bcb8f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/download/download_controller.g.dart",
+      "bytes": 1476,
+      "sha256": "dc092b22489d6b14f89649f82662052bec46be8f5c4b77842ba921993ec81d2e"
+    },
+    {
+      "path": "src/anime_service/lib/pages/download/download_episode_sheet.dart",
+      "bytes": 9728,
+      "sha256": "0bb378e6342bfc5ee9e6eb7ff5110abf6629bdd2d4b23d0bafa638a4a6a7ccb7"
+    },
+    {
+      "path": "src/anime_service/lib/pages/download/download_page.dart",
+      "bytes": 14545,
+      "sha256": "6dd6c1ee1a34f6cf2f9d8016761227ae7715ec38a5add6449adebd3e1ad5bd35"
+    },
+    {
+      "path": "src/anime_service/lib/pages/download/download_page_module.dart",
+      "bytes": 244,
+      "sha256": "31d5c1dd2715ac2046e9487b9fbc9c9e69279c501babe9b4c2a5725a926a8802"
+    },
+    {
+      "path": "src/anime_service/lib/pages/error/storage_error_page.dart",
+      "bytes": 1305,
+      "sha256": "79c9f0912c11efc9c46797f1bb9179bae3103437fb38712e48f9086738254a21"
+    },
+    {
+      "path": "src/anime_service/lib/pages/history/history_controller.dart",
+      "bytes": 2022,
+      "sha256": "c4af6f651dbe6f9da76805b0b65be0bb8d58b795a0bb3a46a40a7d0be171c09a"
+    },
+    {
+      "path": "src/anime_service/lib/pages/history/history_controller.g.dart",
+      "bytes": 1045,
+      "sha256": "3087d80e37d39c8f078c8ebfbac485d0c72d54edd95d421d38878149158569c5"
+    },
+    {
+      "path": "src/anime_service/lib/pages/history/history_module.dart",
+      "bytes": 240,
+      "sha256": "bac981d368c9847d020b035d94e6b60cd6e91305c8e7cc88db333152aa50a3d9"
+    },
+    {
+      "path": "src/anime_service/lib/pages/history/history_page.dart",
+      "bytes": 5442,
+      "sha256": "5ca1d19d22edfce1149c7171111e4d2f150d1b87ebcf947dd8a7367fd1e21943"
+    },
+    {
+      "path": "src/anime_service/lib/pages/index_module.dart",
+      "bytes": 3686,
+      "sha256": "82eac0b21fa06d17cb4f90cdbbad7bdb601cac9868a67d8f1ec2b882cf1bdf6d"
+    },
+    {
+      "path": "src/anime_service/lib/pages/index_page.dart",
+      "bytes": 432,
+      "sha256": "cc9ac1b4b50134a6a8fa3d3e617cb9796a3e26db9ab2241a2b60a0e4b473b824"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/character_page.dart",
+      "bytes": 12259,
+      "sha256": "5e43e71a5585b13ae2673958ac47f73913aa3cccf9f304b1c7e0d6943228ee65"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/info_controller.dart",
+      "bytes": 7226,
+      "sha256": "36b17afa2769b667e892cb7a0826d126afba2cb5726d5c729373195c3e04d92c"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/info_controller.g.dart",
+      "bytes": 3460,
+      "sha256": "8f01c2a7f98f6abb28082edcadf75ef22dee55bbfd4a1853c81515bbfdfc562f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/info_module.dart",
+      "bytes": 228,
+      "sha256": "297f7ac37dd31de1a0f2946b8a1892cfc25591595b1399b1778ba554c4d438a9"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/info_page.dart",
+      "bytes": 23380,
+      "sha256": "a0877162402704e63941facf684d998e29069f11978bc309c4010d6c0198d8ce"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/info_tabview.dart",
+      "bytes": 22313,
+      "sha256": "b5f98f535f7e2e94dceb435975e18967593ba94728356dc30b4916b5097d0251"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/rating_review_dialog.dart",
+      "bytes": 24175,
+      "sha256": "a020416ef04716507d4997c57028da386a37daac64a0a6717f2df28fcfa825fe"
+    },
+    {
+      "path": "src/anime_service/lib/pages/info/source_sheet.dart",
+      "bytes": 31557,
+      "sha256": "83c36d0a8daaf13ea305511f00047bcd4812351a7e070916499947b23cb1f0d2"
+    },
+    {
+      "path": "src/anime_service/lib/pages/init_page.dart",
+      "bytes": 13243,
+      "sha256": "33d6229fea7ea31aff4ac2e148da7c88cbe041dd6e803a030fc239f3ed7bb8ae"
+    },
+    {
+      "path": "src/anime_service/lib/pages/logs/logs_page.dart",
+      "bytes": 5900,
+      "sha256": "46ac40dca0120540b675b7da251ecdec48cfe62921df6ccfcf11027c42da2eed"
+    },
+    {
+      "path": "src/anime_service/lib/pages/menu/menu.dart",
+      "bytes": 6704,
+      "sha256": "b260d25f6e5ec4d22adfe5c382a81a55ce230554698e722caa0dd59a78ed10d1"
+    },
+    {
+      "path": "src/anime_service/lib/pages/my/my_controller.dart",
+      "bytes": 2380,
+      "sha256": "59ef0fa6ce72a4734b3741e814796af5a5bd59f18385e66e2196b8cc1ee42307"
+    },
+    {
+      "path": "src/anime_service/lib/pages/my/my_controller.g.dart",
+      "bytes": 1034,
+      "sha256": "2d177725e43eb4a219aa850ef87853c4f07b8bfaf6213df958291537aef0d7c0"
+    },
+    {
+      "path": "src/anime_service/lib/pages/my/my_module.dart",
+      "bytes": 220,
+      "sha256": "e5d5892f402e196f280bffffdcbc2c8d5e7c35117e943a505d6c5fd8a43dced4"
+    },
+    {
+      "path": "src/anime_service/lib/pages/my/my_page.dart",
+      "bytes": 7585,
+      "sha256": "408c6dfa3b2b69d33994fa150b3f8cfbb1345f3035c3e4407522f9fe78df41c2"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_danmaku_controller.dart",
+      "bytes": 9726,
+      "sha256": "a21d265570cc77d8a13189f809794c1fcbcb05d8efd445a68ed0d488dd9bf821"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_danmaku_controller.g.dart",
+      "bytes": 3834,
+      "sha256": "926a221d65be3358f260c48e83b3e0cca7bed5bb0ed968b24f8a47d49d450ebc"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_debug_controller.dart",
+      "bytes": 5121,
+      "sha256": "c4d2ab79d55a039a8c0898d2c6b7bb2b91a48f30bf27ab51943e2453e8cbd31b"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_debug_controller.g.dart",
+      "bytes": 5146,
+      "sha256": "e1b568ca3c1b8049c58b379cd668a0041ee7c80dafc76bf6af6c17dd0ecb440e"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_models.dart",
+      "bytes": 1215,
+      "sha256": "0bb56b7f940336f199918f8619d1c1bbe4f4cdf87b0368e95e00bffdec41a82a"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_panel_controller.dart",
+      "bytes": 1198,
+      "sha256": "d45f97ce38d591e645d1ba7bfc95a9c0d9d1be20327a31b18e92de7ed2cfdea5"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_panel_controller.g.dart",
+      "bytes": 5791,
+      "sha256": "9ffd8e4186b519a9e4b2a3bf5d334d990cd8caa890d7e1e90a0a779a18af4df3"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_playback_controller.dart",
+      "bytes": 14179,
+      "sha256": "5c84ddeedbeb365a3debbdd4eabf2c9e18967475ec4cba4de8d04f22beec6ac7"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_playback_controller.g.dart",
+      "bytes": 6090,
+      "sha256": "713a90456053b6ee657c2670c52ad23e4134c20f00c01a935a39b5a65ca42b1d"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_syncplay_controller.dart",
+      "bytes": 10165,
+      "sha256": "12a0d2759c44903c62001c630c919c4a7232c821636b0ee3efbcd72e03ff9aa8"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/controller/player_syncplay_controller.g.dart",
+      "bytes": 1761,
+      "sha256": "8f245312450544ab82cd52e9eb0eca07881cda494f2fccdfa4ae38089c3afdef"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/episode_comments_sheet.dart",
+      "bytes": 10562,
+      "sha256": "1995781011bf40f9e7b44decd01366f28bba971a17f108a222e07558864c82b3"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_adjustment_hud.dart",
+      "bytes": 29813,
+      "sha256": "7f98f53b1280554581e7330d780d7b774c0e70d3f8d30f3e201e5455d81ebb66"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_controller.dart",
+      "bytes": 10846,
+      "sha256": "0b8ee6ede17aff9fccccc0d87b206feaee3daf854295ae4dbf3fa2bc4cc5ad51"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_item.dart",
+      "bytes": 77390,
+      "sha256": "d59708b8edb57fe34b2c3c4e887a63d24df7b9e7db822ec31cad2cf3d0e270ed"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_item_panel.dart",
+      "bytes": 54617,
+      "sha256": "21c509730cfd660fbc5ad3790a6b788d26d3b221b63e0fe28db4360269314c3e"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_item_surface.dart",
+      "bytes": 2156,
+      "sha256": "31581aa247aa57d6d70f154865f24e0e2920b01e15577bc32378ef07749cac0a"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_panel_hold.dart",
+      "bytes": 4105,
+      "sha256": "ea2430d2772d90c0b836c85e0f885ba51126daf3b1e7fca6c717b72d08510b4b"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_pointer_interaction.dart",
+      "bytes": 640,
+      "sha256": "2fac9f1865b42d18131c4fe00aa3514c8d024da6b9173eb2699cc59dba8939b7"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/player_screenshot_feedback_overlay.dart",
+      "bytes": 4128,
+      "sha256": "e4027be5acaf608348ccde67add2816cd40e17b85fb51dc8990a91bebf44cc78"
+    },
+    {
+      "path": "src/anime_service/lib/pages/player/smallest_player_item_panel.dart",
+      "bytes": 34560,
+      "sha256": "094f28cf2d3efaf893d14880af47b80feed7e8ab8a40a05168747308352aed48"
+    },
+    {
+      "path": "src/anime_service/lib/pages/plugin_editor/plugin_editor_page.dart",
+      "bytes": 27831,
+      "sha256": "86a764e9fde440600550a3e0f8f5db13f42c39fc5f28a76f00ab8b27d88b7d77"
+    },
+    {
+      "path": "src/anime_service/lib/pages/plugin_editor/plugin_module.dart",
+      "bytes": 795,
+      "sha256": "cd37f04cfc6cf360e65e9433a8887eaddb9c70583fd614ae7897c0c1296f2d08"
+    },
+    {
+      "path": "src/anime_service/lib/pages/plugin_editor/plugin_shop_page.dart",
+      "bytes": 9836,
+      "sha256": "d4a2f428dae6cd1c0741292d3d853db49ff263dbdf6f3b5fc0d144106818440b"
+    },
+    {
+      "path": "src/anime_service/lib/pages/plugin_editor/plugin_test_page.dart",
+      "bytes": 18084,
+      "sha256": "df3ae24ce19a2cfee0e342ff9d682087061287ce74556f1f352b2309273c4801"
+    },
+    {
+      "path": "src/anime_service/lib/pages/plugin_editor/plugin_view_page.dart",
+      "bytes": 21051,
+      "sha256": "520092b251336547184beb69be97c4d138920c1cc031943ef613f3d193504ce0"
+    },
+    {
+      "path": "src/anime_service/lib/pages/popular/popular_controller.dart",
+      "bytes": 2046,
+      "sha256": "61e67550728790f1c5bf13a28899e5ede4fd3fb47120dca044565267669649e4"
+    },
+    {
+      "path": "src/anime_service/lib/pages/popular/popular_controller.g.dart",
+      "bytes": 2676,
+      "sha256": "24537b031357d4c9d5491a988996cb07367f397724cdf18e83f272cc56ea5c5c"
+    },
+    {
+      "path": "src/anime_service/lib/pages/popular/popular_module.dart",
+      "bytes": 240,
+      "sha256": "a747db62c49749b69dff57cc0021527ff23414e9e6738bccae47a61396ecfc25"
+    },
+    {
+      "path": "src/anime_service/lib/pages/popular/popular_page.dart",
+      "bytes": 12047,
+      "sha256": "1feacfa84153a9d4d8395db6e8d65b14dfa2bad99e0f3dc0b3c5144d4f66e67f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/router.dart",
+      "bytes": 1154,
+      "sha256": "4bd907db70fa2fe199626e72c7fd07034a548a096b84f87b8f85e78006b70f30"
+    },
+    {
+      "path": "src/anime_service/lib/pages/search/image_search_page.dart",
+      "bytes": 26727,
+      "sha256": "adc8d9febfb22f810d9e86832b80d6f1b6b4ad069ee86b873f7114c8082d16a8"
+    },
+    {
+      "path": "src/anime_service/lib/pages/search/search_controller.dart",
+      "bytes": 5566,
+      "sha256": "0d229a62459a941f3c5e1c61cf13712007d6f8c65b83e6346025a64893184c60"
+    },
+    {
+      "path": "src/anime_service/lib/pages/search/search_controller.g.dart",
+      "bytes": 7788,
+      "sha256": "9ce9a976ce790784f410e85dc0a55332a9e1c44366b9c274f574a57f6f3c2caa"
+    },
+    {
+      "path": "src/anime_service/lib/pages/search/search_module.dart",
+      "bytes": 438,
+      "sha256": "756ccbdbeb5835ac92deb0aa61931449cb446f28162ea0e67d0cd1d3659383ec"
+    },
+    {
+      "path": "src/anime_service/lib/pages/search/search_page.dart",
+      "bytes": 38059,
+      "sha256": "652d0d38f026589a686f6bf1cedce37737127ac5ee5fa54a4fc86cc50160865d"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/danmaku/danmaku_module.dart",
+      "bytes": 439,
+      "sha256": "6b753b0f168206ffca9982dff3939d1b7300224186c4ef353bf8d6aefba16da4"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/danmaku/danmaku_settings.dart",
+      "bytes": 17384,
+      "sha256": "44b956270670ba9a16bc4c7d10e2cf6997bd30c1c47f58568efad8d2e756481d"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/danmaku/danmaku_settings_sheet.dart",
+      "bytes": 11022,
+      "sha256": "c8f49005ec74628b92418d52e66d9575148faedb053ff0d01c871facea8a355f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/danmaku/danmaku_shield_settings.dart",
+      "bytes": 3312,
+      "sha256": "a75f881730cf1b7b5d12a910027a6cf73e9cf34ed5b4075005f028fc99f0b4f1"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/danmaku/danmaku_shield_settings_sheet.dart",
+      "bytes": 3295,
+      "sha256": "ab526f0d39d02ac8e0219107c5569645c950a9b649154892c4784daa832083ad"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/decoder_settings.dart",
+      "bytes": 2077,
+      "sha256": "b97c6abda05821363de41e419c1edf4a61465159764e2e0115a3dd4c2ac3a5d1"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/displaymode_settings.dart",
+      "bytes": 3485,
+      "sha256": "f192af21b754266739f1011512da520a38cc2fd24265f3eb7e7d38449ea67d9a"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/download_settings.dart",
+      "bytes": 4943,
+      "sha256": "0c51d9d04029906872ffa2273cd0029b3729af95b0fcbffeaf8397026c7c8a7d"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/interface_settings.dart",
+      "bytes": 4844,
+      "sha256": "a8e14993c755e4272e0bc13e00fdae267db01667e3f64c18d625570dd0e15f27"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/keyboard_settings.dart",
+      "bytes": 7262,
+      "sha256": "4ba62e4b52551f46b0f57c895379c10113281e98e8417245d60358c5a850d305"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/player_settings.dart",
+      "bytes": 27501,
+      "sha256": "0913f881732a4da243b7dfe90255228925d8eadca4ddf5c353bb5d6ee4dead6a"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/proxy/proxy_editor_page.dart",
+      "bytes": 4766,
+      "sha256": "67c73971ce72d799726a7672531d6b21ff3800ac984c0f12ad29414f7e8b229c"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/proxy/proxy_module.dart",
+      "bytes": 422,
+      "sha256": "4307e60c118d7630026b8d7b7ae013e6e57a629ee3b04bcd51edbb2d41b47e2e"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/proxy/proxy_settings_page.dart",
+      "bytes": 3196,
+      "sha256": "4a97a463054848300378c5125b1401a98d490c151a5623f31f63d951bc3be5d3"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/renderer_settings.dart",
+      "bytes": 2099,
+      "sha256": "64e5b08079c90dbbed7ed350454da7c2aea7cde3daa6976cca810a3c8d037f85"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/settings_module.dart",
+      "bytes": 2266,
+      "sha256": "bf8dc3a1dbc66495c4bf405fac2fd71164fb345ec05eb20c6ba74c03421e784f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/super_resolution_settings.dart",
+      "bytes": 4802,
+      "sha256": "a2ab35846e5b118fe22d934539c5a2548de2e670b4ee3fecb80adb0e3af6305c"
+    },
+    {
+      "path": "src/anime_service/lib/pages/settings/theme_settings_page.dart",
+      "bytes": 17397,
+      "sha256": "35bdd84575f237234813cdac8b8b61db74a8d252f97c79853fcad879609270ba"
+    },
+    {
+      "path": "src/anime_service/lib/pages/timeline/timeline_controller.dart",
+      "bytes": 5106,
+      "sha256": "c1480e886f5ebf6b603766d1be75765cae168126805110be8bb15311e715d0c4"
+    },
+    {
+      "path": "src/anime_service/lib/pages/timeline/timeline_controller.g.dart",
+      "bytes": 5496,
+      "sha256": "3ab644ce190a246a3e6863c30870ee562654c4ff26efa9855c606bfb954c0fdd"
+    },
+    {
+      "path": "src/anime_service/lib/pages/timeline/timeline_module.dart",
+      "bytes": 244,
+      "sha256": "ff9b59b50a87bf6f3553e862fe0025c202cb9dd4a95344e4131244437a65fcec"
+    },
+    {
+      "path": "src/anime_service/lib/pages/timeline/timeline_page.dart",
+      "bytes": 30441,
+      "sha256": "2f576e4d6a147d9c698b60a7b8b6630c3d6ef7b8b77ce23c12a75f2b44729739"
+    },
+    {
+      "path": "src/anime_service/lib/pages/video/video_controller.dart",
+      "bytes": 28302,
+      "sha256": "611a81d65eb7f6aa957459e702e142fb4fb5f2a21382a96ad3ed647189b64b3e"
+    },
+    {
+      "path": "src/anime_service/lib/pages/video/video_controller.g.dart",
+      "bytes": 6193,
+      "sha256": "3d5517c40c724c305b0f105f15269393e7e0a1fd17470ce0844180b8ac6fb8a9"
+    },
+    {
+      "path": "src/anime_service/lib/pages/video/video_module.dart",
+      "bytes": 370,
+      "sha256": "54fd1596e9d6514779fc15e0007d0ce326ddbf57307b19616ce101cd67abbff8"
+    },
+    {
+      "path": "src/anime_service/lib/pages/video/video_page.dart",
+      "bytes": 43865,
+      "sha256": "f2c1f2445a946a56a06017cf1c6524dc2d9c144b1cd715ef662830f1ac4b301b"
+    },
+    {
+      "path": "src/anime_service/lib/pages/webdav_editor/webdav_editor_page.dart",
+      "bytes": 4331,
+      "sha256": "f354ee31f6b2726fceb44d2d5b51950fd90eafc929e45974f89151ff4cccc87f"
+    },
+    {
+      "path": "src/anime_service/lib/pages/webdav_editor/webdav_module.dart",
+      "bytes": 438,
+      "sha256": "8b7ed4615361cbf3c53fbdd85d538d1866dcc9c8a8d356923c15bbfd4bc20fba"
+    },
+    {
+      "path": "src/anime_service/lib/pages/webdav_editor/webdav_setting.dart",
+      "bytes": 10937,
+      "sha256": "8a01696f1b1c4785f90364d27e3edb92c8f9ef20ac6732383bc817c3ed62fd1d"
+    },
+    {
+      "path": "src/anime_service/lib/plugins/anti_crawler_config.dart",
+      "bytes": 4588,
+      "sha256": "b98ef75511e654c05ff087a04a0526fbbf5fefc9591ce0166662b96730a991df"
+    },
+    {
+      "path": "src/anime_service/lib/plugins/plugins.dart",
+      "bytes": 14136,
+      "sha256": "d11eda1b60c77e001a509aec7f3724de03252c6ad49d355b0fb9afe14bcaeaff"
+    },
+    {
+      "path": "src/anime_service/lib/plugins/plugins_controller.dart",
+      "bytes": 7696,
+      "sha256": "0781d1b6392bfb150e8c9e4f82f7e2430f91f3736f42c1f82f41c056b8a54c73"
+    },
+    {
+      "path": "src/anime_service/lib/plugins/plugins_controller.g.dart",
+      "bytes": 1535,
+      "sha256": "d9cec9acb903f0b6c77367a2bc0cde7b8c9ffddb53f5e68762ae2da0968993e6"
+    },
+    {
+      "path": "src/anime_service/lib/repositories/collect_crud_repository.dart",
+      "bytes": 4879,
+      "sha256": "b9d3bb45ba583ae464983d8098c77cbd679d4a6d4dd7453dad2a070a3d424d2a"
+    },
+    {
+      "path": "src/anime_service/lib/repositories/collect_repository.dart",
+      "bytes": 5938,
+      "sha256": "a6b3993f0b0ad042d1da497faf7ab179709e14abec4e0cbe842f9dacf320bd5a"
+    },
+    {
+      "path": "src/anime_service/lib/repositories/download_repository.dart",
+      "bytes": 8029,
+      "sha256": "fa0d273eb3ed991c199eaa2bc5011f6fe734b9f27fa2e9ce1a094fd16e5d37d7"
+    },
+    {
+      "path": "src/anime_service/lib/repositories/history_repository.dart",
+      "bytes": 12292,
+      "sha256": "2fcf9d56862b5eb7f231222c745374a5386722fafd3d4a8be60021c2ac33f976"
+    },
+    {
+      "path": "src/anime_service/lib/repositories/search_history_repository.dart",
+      "bytes": 3971,
+      "sha256": "7d0271f674c47ae2e82e8f16e7dcdba18e601807651ad9348caf9038d388d468"
+    },
+    {
+      "path": "src/anime_service/lib/request/apis/bangumi_api.dart",
+      "bytes": 21204,
+      "sha256": "777770f704bd636e7f09d68b9c5bb9a2b26c26da37d8f2edada2d4e1d586707f"
+    },
+    {
+      "path": "src/anime_service/lib/request/apis/danmaku_api.dart",
+      "bytes": 5035,
+      "sha256": "b4959a8403e37bf332e2ae321002cd3293a73b8a4cdd7293a7ddc427d6efa6d7"
+    },
+    {
+      "path": "src/anime_service/lib/request/apis/plugin_catalog_api.dart",
+      "bytes": 1378,
+      "sha256": "20f967495c9abbf49de880a5a4e3f4e7c70d61c51ed4ab65d1036c9dad823962"
+    },
+    {
+      "path": "src/anime_service/lib/request/apis/trace_api.dart",
+      "bytes": 1145,
+      "sha256": "8c5545fe11ed77b02e8199bb84af4b5424a7211b1416a8f264f85dd8cf3e8e55"
+    },
+    {
+      "path": "src/anime_service/lib/request/clients/bangumi_client.dart",
+      "bytes": 3450,
+      "sha256": "2e389188def13d3c3b39293701eef0b5b7c2fc9ae169a2787656553247e0d498"
+    },
+    {
+      "path": "src/anime_service/lib/request/clients/danmaku_client.dart",
+      "bytes": 1302,
+      "sha256": "a70947686bf072a85329fde27f0b1ef36cc29cfa0367f3969081138e640739ea"
+    },
+    {
+      "path": "src/anime_service/lib/request/clients/download_http_client.dart",
+      "bytes": 2010,
+      "sha256": "0bc34df6e58b3648aa2eeaaea4eabd5ad8bef44559a16dbf68224ebe6f693b67"
+    },
+    {
+      "path": "src/anime_service/lib/request/clients/github_client.dart",
+      "bytes": 1438,
+      "sha256": "8b193602813cc270210eb3d079e060da0076eeba4290f1076d4ee5581ec6bb4d"
+    },
+    {
+      "path": "src/anime_service/lib/request/clients/plugin_site_client.dart",
+      "bytes": 1712,
+      "sha256": "b7d1b88a45bf45e1e1c839fb2147a7920e5b17882ab3258458206079e18b9e78"
+    },
+    {
+      "path": "src/anime_service/lib/request/clients/trace_client.dart",
+      "bytes": 791,
+      "sha256": "5fff91da06bb8e9c8af91fbcaf09bf922905f4fa141336b95a0ab0dbb0418982"
+    },
+    {
+      "path": "src/anime_service/lib/request/config/api_endpoints.dart",
+      "bytes": 4229,
+      "sha256": "24210fef74d373f16304041a46d264a003f9fa8926552f3cf15e33b285965504"
+    },
+    {
+      "path": "src/anime_service/lib/request/core/dio_factory.dart",
+      "bytes": 4273,
+      "sha256": "7d79f650c874182aef08fcdee27cf346ccd1a286ef78053854b4716c344754a9"
+    },
+    {
+      "path": "src/anime_service/lib/request/core/dio_logger_interceptor.dart",
+      "bytes": 1509,
+      "sha256": "ce39eefc8a93183daeea12b8afa9d075b26b20ce58091b63766b27520fab3dea"
+    },
+    {
+      "path": "src/anime_service/lib/request/core/network_config.dart",
+      "bytes": 3007,
+      "sha256": "694afbe0a78c3bfdac4992b48985497323e13e2c2b57e3f9b8e6b37485f5aa67"
+    },
+    {
+      "path": "src/anime_service/lib/request/core/network_error_mapper.dart",
+      "bytes": 3608,
+      "sha256": "61015d6d0c4145792255f37ca541eced5fb85d26239035e1485b551a60355386"
+    },
+    {
+      "path": "src/anime_service/lib/request/core/network_exception.dart",
+      "bytes": 664,
+      "sha256": "8879242111bc8bbfd66f94ee2b3945417dd4c7874c9d4c9e2158941783421d94"
+    },
+    {
+      "path": "src/anime_service/lib/services/download/background_download_service.dart",
+      "bytes": 7556,
+      "sha256": "0d8de57a5240005ed9c9915601e5af7cd189687c42f14bcc1c946ef5da35a2d2"
+    },
+    {
+      "path": "src/anime_service/lib/services/download/download_manager.dart",
+      "bytes": 29916,
+      "sha256": "dae4c25c2f5eede2b9411be4c843a3c4b7c41a861d1e1998ad1431d2636baf0f"
+    },
+    {
+      "path": "src/anime_service/lib/services/logging/logger.dart",
+      "bytes": 7271,
+      "sha256": "5336cbc385fabaf9776c2b3dec1651ffe66d840c45afd1c11dae8fa0c154f299"
+    },
+    {
+      "path": "src/anime_service/lib/services/network/proxy_aware_image_cache_manager.dart",
+      "bytes": 4477,
+      "sha256": "02c3ed205a7b45c24ae240f8b79410e6a72591eb7924f00e63a2dbe5a866c7b6"
+    },
+    {
+      "path": "src/anime_service/lib/services/network/proxy_manager.dart",
+      "bytes": 966,
+      "sha256": "87a2f0021ea194ffbfac4b361666d05a6f9ba951acfafa0253b7d2d3b974c731"
+    },
+    {
+      "path": "src/anime_service/lib/services/network/proxy_utils.dart",
+      "bytes": 1190,
+      "sha256": "b208b13e4e9fce6802fe2db6f749922e705cfcf8c3e1b49afbdf275e1a9e7a73"
+    },
+    {
+      "path": "src/anime_service/lib/services/platform/display_mode_service.dart",
+      "bytes": 2791,
+      "sha256": "546c57e6872e7dbc791efb293a3eb5b4b5c93f3300e275ed87a315d8327900f2"
+    },
+    {
+      "path": "src/anime_service/lib/services/platform/platform_environment_service.dart",
+      "bytes": 1261,
+      "sha256": "51b6cc404e80237be53aaee61e489f85495634995c2fe51cfd25540a9acc78f8"
+    },
+    {
+      "path": "src/anime_service/lib/services/platform/player_menu_service.dart",
+      "bytes": 756,
+      "sha256": "01506fef41447d9fb9312f18fefdfed09aade1b17e6fe3417c18f31685eecd10"
+    },
+    {
+      "path": "src/anime_service/lib/services/platform/webview_feature_service.dart",
+      "bytes": 565,
+      "sha256": "8626c87ca23deacc50d56cb506b9adb35eee7c21812804b6a0165c64150473f6"
+    },
+    {
+      "path": "src/anime_service/lib/services/platform/windows_shortcut.dart",
+      "bytes": 507,
+      "sha256": "192bcafabed6dfc475325b8bafd5c08a4ef1e652da2013a8b5bcffbe9d6eca96"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/audio_controller.dart",
+      "bytes": 9538,
+      "sha256": "946ff8948132d88ec67980d699f5c11ba9e21aaf22553887fd5c4001bf518f7c"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/external_playback_launcher.dart",
+      "bytes": 1962,
+      "sha256": "93d64c8b810bb4c6ceef79e8ae5ddf3163f6a3479ee95e9d911bfc6f29acd537"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/external_player.dart",
+      "bytes": 1257,
+      "sha256": "e76bd93ca4fea8cf4380f8c28b9226e9e87bc09b60e5e62c026f68f8e764f8ac"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/pip_utils.dart",
+      "bytes": 5001,
+      "sha256": "660ea8e44ebf25a628b11bfe06362e71840320ccf1e0b81bf5a53e6a6061f3cb"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/player_screenshot_service.dart",
+      "bytes": 3517,
+      "sha256": "e2c09a032cc8d30abf589e63e397a93d4927dc2bd1ff04ac3fd47117a3498692"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/remote.dart",
+      "bytes": 4397,
+      "sha256": "b4fa5f92a5806f54fdbc4f944e7ff11be26d51fd3c72590020b7dd2c1332b7f5"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/syncplay_client.dart",
+      "bytes": 19161,
+      "sha256": "900cf21fd0490af6db02ce5b9d69ae1f542abe08cf40906907eafdcd3c6bacbb"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/syncplay_endpoint.dart",
+      "bytes": 1127,
+      "sha256": "8fd74b7c5d8d5909e95350cb4756f566fcf201a24d4983e1c1bd4267e0285c84"
+    },
+    {
+      "path": "src/anime_service/lib/services/player/timed_shutdown_service.dart",
+      "bytes": 9955,
+      "sha256": "7557851bafe9017106d806b85e560231e26eb30c1e9979993bafb11d63398728"
+    },
+    {
+      "path": "src/anime_service/lib/services/plugin/captcha_verification_service.dart",
+      "bytes": 8420,
+      "sha256": "13f44443f7ae359cc336054b8acae36d1ce8111c0eb7cef760bfae91d8c0e8e3"
+    },
+    {
+      "path": "src/anime_service/lib/services/plugin/plugin_cookie_manager.dart",
+      "bytes": 2017,
+      "sha256": "f9efe4520e38c1b1de947c9e9feba920882f63eae880ffe0c3a4058a5ae9806e"
+    },
+    {
+      "path": "src/anime_service/lib/services/plugin/plugin_install_time_tracker.dart",
+      "bytes": 489,
+      "sha256": "eb33322e8d7ed883f93f4ae0271e164460ba8ed275db2359fc13f1125421d294"
+    },
+    {
+      "path": "src/anime_service/lib/services/plugin/plugin_search_service.dart",
+      "bytes": 4327,
+      "sha256": "3b6130068d282cfb1fbda930c77d33f2bcc55564125814a04d668f5ad6812c7e"
+    },
+    {
+      "path": "src/anime_service/lib/services/plugin/plugin_validity_tracker.dart",
+      "bytes": 573,
+      "sha256": "8245291b68d0289ab5e96f06f091f306143a85613eaf2011f38b38b4e071e728"
+    },
+    {
+      "path": "src/anime_service/lib/services/shaders/shader_asset_service.dart",
+      "bytes": 1812,
+      "sha256": "5b3afe00c214f5003133ccec33412cbbc47e43f2aff13bbef1cf777abd03f8f9"
+    },
+    {
+      "path": "src/anime_service/lib/services/storage/settings_keys.dart",
+      "bytes": 19801,
+      "sha256": "7008d8d0c91ed00d1b1e037cf3ea64abc2a4c34ff90f43772b1bc95c66d2c9cf"
+    },
+    {
+      "path": "src/anime_service/lib/services/storage/storage.dart",
+      "bytes": 12477,
+      "sha256": "d5b51822e418adc521dd5ccd764f83177031e3ff831e81f7df7ed86c89df0fb1"
+    },
+    {
+      "path": "src/anime_service/lib/services/sync/bangumi_sync_service.dart",
+      "bytes": 7960,
+      "sha256": "7d042ac0651eaa22032f2459f7eb55e5a4e6dd386b8c4f379197c6088825474e"
+    },
+    {
+      "path": "src/anime_service/lib/services/sync/history_sync_service.dart",
+      "bytes": 6926,
+      "sha256": "107843dcca29a6ef28e60077f6446a7aa7c90a81644c5cacec314c25fee31023"
+    },
+    {
+      "path": "src/anime_service/lib/services/sync/webdav.dart",
+      "bytes": 12809,
+      "sha256": "a0a18729acea7876c5f96e1dab53d1902b37185e29a553ffa2f0849133c26a32"
+    },
+    {
+      "path": "src/anime_service/lib/services/update/auto_updater.dart",
+      "bytes": 28301,
+      "sha256": "cad039bb12be0948592a24aadaa0c8a605fe342e56c77db365c325b31a28fb4e"
+    },
+    {
+      "path": "src/anime_service/lib/services/video_source/services.dart",
+      "bytes": 166,
+      "sha256": "366401819fdd2c4cc254325bb499cb4d7c61a7f5865d58908ba6c7d8069cbcc3"
+    },
+    {
+      "path": "src/anime_service/lib/services/video_source/video_source_resolver_pool.dart",
+      "bytes": 3906,
+      "sha256": "46fe8c416c1dbd4b460f6bfab7b51124ef03e97d682543bdd0177b026b89e986"
+    },
+    {
+      "path": "src/anime_service/lib/services/video_source/video_source_service.dart",
+      "bytes": 2432,
+      "sha256": "b0d9260e12a3ae6db922df42ec2131dcce7eaf3128fd10908739ea6469771829"
+    },
+    {
+      "path": "src/anime_service/lib/services/video_source/webview_video_source_service.dart",
+      "bytes": 4271,
+      "sha256": "0d002dd3054af01e31426c54324e85da1949a1d2f53c7c0292934ef4f0730675"
+    },
+    {
+      "path": "src/anime_service/lib/utils/anime_season.dart",
+      "bytes": 1729,
+      "sha256": "7837fc83914a3c1d3ba69e0801109e90dbc1f7375e9131416a5feffcf23f0694"
+    },
+    {
+      "path": "src/anime_service/lib/utils/bangumi_mirror_credentials.dart",
+      "bytes": 295,
+      "sha256": "104cacf4273a1e3a18dc240c664bb87f655747d5e7d6208acf333ef8f4dfe044"
+    },
+    {
+      "path": "src/anime_service/lib/utils/constants.dart",
+      "bytes": 10554,
+      "sha256": "64529e9d1f81b8e2573501c6b0f5347dd3746db468e378f4df72188372e0691f"
+    },
+    {
+      "path": "src/anime_service/lib/utils/crypto.dart",
+      "bytes": 1166,
+      "sha256": "d024d0d6de87f1692046d206469f6e5430af4926cd6a95257d814087e21b73c9"
+    },
+    {
+      "path": "src/anime_service/lib/utils/dandan_credentials.dart",
+      "bytes": 296,
+      "sha256": "f8b571721a464b3c948f0913c52c7709debea53fdb51c93bdf7643afafa5d4f3"
+    },
+    {
+      "path": "src/anime_service/lib/utils/danmaku.dart",
+      "bytes": 2517,
+      "sha256": "920fad8459555122a36646638a583136816a4b286a1fbf342c22a631562d65ec"
+    },
+    {
+      "path": "src/anime_service/lib/utils/date_time.dart",
+      "bytes": 3451,
+      "sha256": "0356f9bf80de2557e8e1fc75998f5df61917f631f8cd93bfed1c529719d5fa7b"
+    },
+    {
+      "path": "src/anime_service/lib/utils/device.dart",
+      "bytes": 1110,
+      "sha256": "de09bd9b5d80ec877be655685fe213e676add7901be37bcd4a14f3cc3fbbd83e"
+    },
+    {
+      "path": "src/anime_service/lib/utils/encoding.dart",
+      "bytes": 380,
+      "sha256": "ed71fd0f6643be9bde5738458922afe4c31348aa30a971a87343f9d7e86fc34e"
+    },
+    {
+      "path": "src/anime_service/lib/utils/episode_url.dart",
+      "bytes": 2558,
+      "sha256": "9e299e1034f7525863d7252742a664111b6feb9b431fb40868bd707d6aff3c6a"
+    },
+    {
+      "path": "src/anime_service/lib/utils/format.dart",
+      "bytes": 1168,
+      "sha256": "8cbed0fda03d12ed8fa15b52d6b9bf585f6aa656851d26c2576c55412df63c8e"
+    },
+    {
+      "path": "src/anime_service/lib/utils/http_headers.dart",
+      "bytes": 298,
+      "sha256": "9131cfee0b9c9a2228383b7952a7dbded99ed39c00530c49008d12078fc10063"
+    },
+    {
+      "path": "src/anime_service/lib/utils/image_extension.dart",
+      "bytes": 190,
+      "sha256": "75f42a36100acb199461e53f0bdea900feefffbbd5c7257554d3599c4ca11871"
+    },
+    {
+      "path": "src/anime_service/lib/utils/m3u8_ad_filter.dart",
+      "bytes": 2450,
+      "sha256": "ac4d4ec2a1afe323e73f0a2dcc5a9fba36788d6175f8b2cddb32f8146fe00a9c"
+    },
+    {
+      "path": "src/anime_service/lib/utils/m3u8_parser.dart",
+      "bytes": 9901,
+      "sha256": "b33219f5b5315b753ec424470a47a06f5c57b186956ee94a694012c8e9a91036"
+    },
+    {
+      "path": "src/anime_service/lib/utils/media.dart",
+      "bytes": 1239,
+      "sha256": "298cf96eb1579f4f57102b45ee85a26dfc4ed847c99625d34a8683f42977099a"
+    },
+    {
+      "path": "src/anime_service/lib/utils/search_parser.dart",
+      "bytes": 8971,
+      "sha256": "4d99f83fa0c8e59c8ad66dcdd262a77ac40e4ab7c2b58440fd7fbcd7171e6021"
+    },
+    {
+      "path": "src/anime_service/lib/utils/string_similarity.dart",
+      "bytes": 1023,
+      "sha256": "9fd7baf8caab86c405ca29263b058edd6feb1deb9f2aeef9525c65519f65585e"
+    },
+    {
+      "path": "src/anime_service/lib/utils/theme.dart",
+      "bytes": 368,
+      "sha256": "ba38195464e372f14bda6eefb5116dbddda88ff7a5a4bdc3878edd0d8aa70997"
+    },
+    {
+      "path": "src/anime_service/lib/utils/version.dart",
+      "bytes": 659,
+      "sha256": "abd238b7622b4f11ec0bdd3a32b3ba002a6be0483fa2d5d78ec855334f7d5ccd"
+    },
+    {
+      "path": "src/anime_service/lib/webview/captcha/captcha_webview_controller.dart",
+      "bytes": 3814,
+      "sha256": "f34f9b4df5a8e8da60f88cc58fe8ffc7f847bf3b04d9f961e302ed7e2990c03f"
+    },
+    {
+      "path": "src/anime_service/lib/webview/captcha/impl/captcha_webview_inappwebview_impl.dart",
+      "bytes": 16374,
+      "sha256": "33cf488ee99d5be3d7160d73de515ab46f3feb6bad3722b39a3f8d4fa9099ce9"
+    },
+    {
+      "path": "src/anime_service/lib/webview/captcha/impl/captcha_webview_linux_impl.dart",
+      "bytes": 14451,
+      "sha256": "d4d75ad783654ffc7a5307817c31799c67370025be864d2f681ca6807d29d17f"
+    },
+    {
+      "path": "src/anime_service/lib/webview/captcha/impl/captcha_webview_windows_impl.dart",
+      "bytes": 15576,
+      "sha256": "3866acca45c64e9f7e616ba9a53f04281167f80b205060ca04548fa2e1ec1126"
+    },
+    {
+      "path": "src/anime_service/lib/webview/video/impl/video_webview_android_impl.dart",
+      "bytes": 12630,
+      "sha256": "3ec6a864c44d5acd1991a56dde0f0a6151e8cd26cfa19c2461b299cf9b2ee1b2"
+    },
+    {
+      "path": "src/anime_service/lib/webview/video/impl/video_webview_apple_impl.dart",
+      "bytes": 13254,
+      "sha256": "084dcd13bbd3590a4dbe8765e3e9ec996d57a90061be6e56a0852fa7f3dd86f8"
+    },
+    {
+      "path": "src/anime_service/lib/webview/video/impl/video_webview_impl.dart",
+      "bytes": 19957,
+      "sha256": "aa3089715d7571577d0766db0f5f9b3ed538ed79cdc381e8efe575f96df0a268"
+    },
+    {
+      "path": "src/anime_service/lib/webview/video/impl/video_webview_linux_impl.dart",
+      "bytes": 7455,
+      "sha256": "e56a65826be54f6f803afb8fe24c1f2b9a296f69e11fd1731bd24c30cfddaa38"
+    },
+    {
+      "path": "src/anime_service/lib/webview/video/impl/video_webview_windows_impl.dart",
+      "bytes": 3762,
+      "sha256": "c15c38cdbd3156a38171cfbf9492d296575ba9c3f175c02a039900a10c58cbdc"
+    },
+    {
+      "path": "src/anime_service/lib/webview/video/video_webview_controller.dart",
+      "bytes": 2950,
+      "sha256": "04b1df5c870bd015ec8d99ff8ca0c318a11f41c544aadce861b759c958af7bcc"
+    },
+    {
+      "path": "src/anime_service/pubspec.yaml",
+      "bytes": 9144,
+      "sha256": "0d0416bfe17281c77acf3dbaadea1db6dfd065b217407398eb71bf7593bdc8a4"
+    },
+    {
+      "path": "src/anime_service/static/screenshot/img_1.png",
+      "bytes": 1644273,
+      "sha256": "c4fc20bf47b72133ad31fc8ff98793cf4b36befec68c007e0cb32ffbecfc1169"
+    },
+    {
+      "path": "src/anime_service/static/screenshot/img_2.png",
+      "bytes": 1577533,
+      "sha256": "475148f6debf841f726b30546b258a5cacc2ae4ec2c1a905a32de6d372d41607"
+    },
+    {
+      "path": "src/anime_service/static/screenshot/img_3.png",
+      "bytes": 749145,
+      "sha256": "a88beba70836f433be8f0c3c610bf9f0ae71e24cfa7a54a83d187a60d47eb68f"
+    },
+    {
+      "path": "src/anime_service/static/screenshot/img_4.png",
+      "bytes": 601018,
+      "sha256": "3df035dae24679939df00fa158ae065b80b52a986aebf4865d6b3d186e9b8a3e"
+    },
+    {
+      "path": "src/anime_service/static/screenshot/img_5.png",
+      "bytes": 236547,
+      "sha256": "e3eb317950a50fa78cefd8e9eaf84cf9cc911f5af6ed332c1375737fafe8fa42"
+    },
+    {
+      "path": "src/anime_service/static/screenshot/img_6.png",
+      "bytes": 379920,
+      "sha256": "c9637e41d7063f3ee8a7e89639c41d4b5a2ff09e2e58b98762cc83eb18a59acd"
+    },
+    {
+      "path": "src/anime_service/static/svg/get_it_on_github.svg",
+      "bytes": 8696,
+      "sha256": "5752039f65ebd98c0101be9433c1bbcf1de0f5692c605141edcb88e436fee63c"
+    },
+    {
+      "path": "src/anime_service/test/bangumi_search_params_test.dart",
+      "bytes": 1597,
+      "sha256": "ba9915f8e51a891e22b5a8f76d25b8fa705b88d9f1d2979ac971e039c2c3858a"
+    },
+    {
+      "path": "src/anime_service/test/collect_sync_test.dart",
+      "bytes": 7371,
+      "sha256": "80bf5dd748c2fd1392e90a180018ab8106696a4c355b9aeaee2356a1ba373786"
+    },
+    {
+      "path": "src/anime_service/test/episode_url_test.dart",
+      "bytes": 3555,
+      "sha256": "e5ec27f2f8c7523d78f1293d9b42eef4a8324e9966684c75e240a3ba4d525e0a"
+    },
+    {
+      "path": "src/anime_service/test/history_repository_test.dart",
+      "bytes": 6549,
+      "sha256": "520485bb5efa7d331f5ed0b8d1ac5cfb73d88acd744b0474f0689993610cc482"
+    },
+    {
+      "path": "src/anime_service/test/history_sync_test.dart",
+      "bytes": 23221,
+      "sha256": "8955a3031f959bfd6365782642daa46d7c6054e9991ef2ec70f73c49dc6186ac"
+    },
+    {
+      "path": "src/anime_service/test/m3u8_parser_test.dart",
+      "bytes": 7411,
+      "sha256": "2230e17e3088a647e8a2b81992bbe4537d7947de62b5f3d60e1b12cf8f294d74"
+    },
+    {
+      "path": "src/anime_service/test/resolved_episode_test.dart",
+      "bytes": 3229,
+      "sha256": "8847bbc2f00c0ea9adf294bcf8d50beeb8f57e3e0260f0d1fbce0c21f633c9bb"
+    },
+    {
+      "path": "src/anime_service/test/search_parser_test.dart",
+      "bytes": 3009,
+      "sha256": "2200cb7fa291356cd0829c7e93147a14d9e152cc801418aae4eb9cc3242175f9"
+    },
+    {
+      "path": "src/anime_service/test/widget_test.dart",
+      "bytes": 509,
+      "sha256": "cf0dfdf72c9db9f9534994d3de6dc1a651df30c2c1deaa689b0aebad290c9739"
+    },
+    {
+      "path": "src/anime_service/在Reverie中的用途.txt",
+      "bytes": 573,
+      "sha256": "f92ba2e572c59147db57a75c8314d909413dfcb903d689386cf1f0b60a10719f"
+    }
+  ]
+}

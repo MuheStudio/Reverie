@@ -95,16 +95,32 @@ def test_video_download_pair_survives_envelope(monkeypatch, tmp_path) -> None:
     assert settings.features.video_download_enabled is True
 
 
-def test_persona_prompt_opts_survive_envelope(monkeypatch, tmp_path) -> None:
+def test_persona_prompt_opts_survive_envelope_but_cannot_switch_prompts_on(monkeypatch, tmp_path) -> None:
+    from src.archive import ArchiveStore
+
     settings = _wire(monkeypatch, tmp_path)
+    store = ArchiveStore(tmp_path / "archive.sqlite3")
+    monkeypatch.setattr(ws_bridge.bridge_state, "archive_store", store)
+    monkeypatch.setattr(ws_bridge.bridge_state, "persona", None)
+    monkeypatch.setattr(ws_bridge, "_active_persona_id", lambda: "persona_test")
     session = ws_bridge.bridge_state.session
-    result = _dispatch({
-        "section": "persona_prompt_opts",
-        "use_imported_system_prompt": True,
+    try:
+        result = _dispatch({
+            "section": "persona_prompt_opts",
+            "use_imported_system_prompt": True,
+            "use_imported_post_history_instructions": False,
+        }, request_id="request_settings_loop_prompt")
+    finally:
+        store.close()
+    # The switches live on the persona's archive card; this command re-applies
+    # and reports them, and a request alone cannot turn either one on.
+    assert result == {
+        "ok": True,
+        "source": "archive",
+        "use_imported_system_prompt": False,
         "use_imported_post_history_instructions": False,
-    }, request_id="request_settings_loop_prompt")
-    assert result["ok"] is True
-    assert session.imported_prompt_opts["use_imported_system_prompt"] is True
+    }
+    assert session.imported_prompt_opts["use_imported_system_prompt"] is False
     assert session.imported_prompt_opts["use_imported_post_history_instructions"] is False
     assert settings is ws_bridge.bridge_state.settings
 

@@ -31,6 +31,9 @@ class StorageKeyVault {
     this.storageDir = path.resolve(options.storageDir);
     this.vaultPath = path.join(this.storageDir, 'database-key.vault');
     this.safeStorage = options.safeStorage;
+    this.platform = options.platform || process.platform;
+    this.existingDataDir = this.platform === 'darwin' && options.existingDataDir
+      ? path.resolve(options.existingDataDir) : null;
     this.fs = options.fs || fs;
   }
 
@@ -41,7 +44,9 @@ class StorageKeyVault {
     } catch {}
     if (!available) {
       throw storageKeyError(
-        'Windows user-bound encryption is unavailable; database startup was refused',
+        this.platform === 'darwin'
+          ? 'macOS Keychain encryption is unavailable; database startup was refused'
+          : 'Windows user-bound encryption is unavailable; database startup was refused',
       );
     }
   }
@@ -70,7 +75,9 @@ class StorageKeyVault {
       value = JSON.parse(this.safeStorage.decryptString(encrypted));
     } catch {
       throw storageKeyError(
-        'The encrypted database key is corrupt or belongs to another Windows user',
+        this.platform === 'darwin'
+          ? 'The encrypted database key could not be decrypted with macOS Keychain'
+          : 'The encrypted database key is corrupt or belongs to another Windows user',
         'REVERIE_STORAGE_KEY_CORRUPT',
       );
     }
@@ -83,6 +90,42 @@ class StorageKeyVault {
       );
     }
     return Buffer.from(value.keyHex, 'hex');
+  }
+
+  _assertNoDatabaseBeforeNewKey() {
+    if (!this.existingDataDir) return;
+    const pending = [this.existingDataDir];
+    try {
+      const rootStat = this.fs.lstatSync(this.existingDataDir);
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('unsafe data directory');
+      while (pending.length) {
+        const current = pending.pop();
+        const stat = this.fs.lstatSync(current);
+        if (stat.isSymbolicLink() || normalizedPath(this.fs.realpathSync(current)) !== normalizedPath(current)) {
+          throw new Error('redirected data path');
+        }
+        if (stat.isDirectory()) {
+          this.fs.accessSync(current, fs.constants.R_OK | fs.constants.X_OK);
+          for (const name of this.fs.readdirSync(current)) pending.push(path.join(current, name));
+        } else if (stat.isFile()) {
+          // Sidecars and backup suffixes are evidence of an existing database
+          // even if the main file is absent or empty. Never mint a replacement
+          // identity over such data merely because the vault was deleted.
+          if (/\.(?:db|sqlite|sqlite3)(?:[-.].*)?$/i.test(path.basename(current))) {
+            throw storageKeyError(
+              'The database key is missing while existing database data remains; startup was refused',
+              'REVERIE_STORAGE_KEY_MISSING',
+            );
+          }
+        } else throw new Error('unsupported data file type');
+      }
+    } catch (error) {
+      if (error?.code === 'REVERIE_STORAGE_KEY_MISSING') throw error;
+      throw storageKeyError(
+        'Existing data could not be safely checked before creating a database key',
+        'REVERIE_STORAGE_KEY_IO',
+      );
+    }
   }
 
   _readExisting() {
@@ -127,7 +170,9 @@ class StorageKeyVault {
       if (!matches) throw new Error('round-trip mismatch');
     } catch {
       throw storageKeyError(
-        'Windows could not safely encrypt the database key',
+        this.platform === 'darwin'
+          ? 'macOS Keychain could not safely encrypt the database key'
+          : 'Windows could not safely encrypt the database key',
         'REVERIE_STORAGE_KEY_ENCRYPT_FAILED',
       );
     }
@@ -180,6 +225,7 @@ class StorageKeyVault {
     this._ensureSafeStorageDirectory();
     const existing = this._readExisting();
     if (existing) return existing;
+    this._assertNoDatabaseBeforeNewKey();
     const created = crypto.randomBytes(STORAGE_KEY_BYTES);
     try {
       this._commit(created);

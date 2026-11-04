@@ -319,6 +319,52 @@ class PersonaEpochRegistry:
             self._epoch += 1
             return self._token_locked(), commit_result
 
+    def commit_inactive_update_with_commit(
+        self,
+        persona: "Persona",
+        authorization: IdentityUpdateAuthorization,
+        commit_callback: Callable[[], _CommitResult],
+    ) -> _CommitResult:
+        """Use an owner capability for an inactive profile without activating it.
+
+        The capability is scoped to the unchanged live identity, just like an
+        activation capability.  Only the callback may perform the durable
+        profile update; the live envelope and epoch are never replaced here.
+        """
+        if not callable(commit_callback):
+            raise TypeError("Identity update commit callback must be callable")
+        envelope = persona.seal_identity()
+        with self._lock:
+            issued = self._authorizations.pop(authorization.token, None)
+            if issued != authorization:
+                raise PermissionError("Identity update authorization is invalid, reused, or expired")
+            try:
+                expires_at = datetime.fromisoformat(issued.expires_at_utc)
+            except ValueError as exc:
+                raise PermissionError("Identity update authorization has invalid expiry") from exc
+            if datetime.now(timezone.utc) >= expires_at:
+                raise PermissionError("Identity update authorization expired")
+            if (
+                self._active is None
+                or self._epoch != issued.expected_epoch
+                or not secrets.compare_digest(self._active.fingerprint, issued.expected_fingerprint)
+            ):
+                raise PermissionError("Identity changed after this update was authorized")
+            if envelope.persona_id == self._active.persona_id:
+                raise PersonaIdentityViolation("The active persona cannot be edited")
+            context_token = _IDENTITY_COMMIT_CONTEXT.set(
+                _IdentityCommitContext(
+                    authorization_token=issued.token,
+                    persona_id=envelope.persona_id,
+                    fingerprint=envelope.fingerprint,
+                    identity_version=envelope.version,
+                )
+            )
+            try:
+                return commit_callback()
+            finally:
+                _IDENTITY_COMMIT_CONTEXT.reset(context_token)
+
     def token(self) -> PersonaEpochToken:
         with self._lock:
             if self._active is None:

@@ -25,6 +25,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from .embedding import EmbeddingUnavailable
 from .versioned_store import VersionedVectorStore
 
 if TYPE_CHECKING:
@@ -36,13 +37,14 @@ logger = logging.getLogger("reverie.memory.layers")
 class MemoryLayers:
     """Manages the three-layer memory hierarchy."""
 
-    def __init__(self, store: VersionedVectorStore, persona: "Persona") -> None:
+    def __init__(self, store: VersionedVectorStore, persona: "Persona", *, defer_startup_writes: bool = False) -> None:
         self.store = store
         self.persona = persona
         # Identity anchors are a derived cache of the active sealed persona.
         # Synchronize even when other permanent memories already exist so a
         # deliberate persona switch cannot leave the previous identity active.
-        self._sync_permanent_identity()
+        if not defer_startup_writes:
+            self._sync_permanent_identity()
 
     # ── Permanent memory ─────────────────────────────────
 
@@ -186,6 +188,24 @@ class MemoryLayers:
 
     def search_all(self, query: str, k: int = 8) -> list[str]:
         """Search across all layers, prioritizing permanent > long > short."""
-        qv = self.store.embed_query(query)
-        results = self.store.search(qv, k=k)
+        return self._search_all(query, k=k)
+
+    def _search_all(
+        self,
+        query: str,
+        k: int = 8,
+        *,
+        observation: dict[str, str] | None = None,
+    ) -> list[str]:
+        try:
+            qv = self.store.embed_query(query)
+        except EmbeddingUnavailable:
+            if observation is not None:
+                observation.update(mode="lexical_fallback", reason="model_unavailable")
+            raise
+        # Ordinary/chat callers keep their existing public search boundary.
+        if observation is None:
+            results = self.store.search(qv, k=k)
+        else:
+            results = self.store._search(qv, k=k, observation=observation)
         return [r["text"] for r in results]

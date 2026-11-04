@@ -170,7 +170,7 @@ def _world_entry(value: Any) -> dict[str, Any]:
     if selective_logic not in _SELECTIVE_LOGIC_VALUES:
         raise ValueError("world-book selectiveLogic is invalid")
     position = value.get("position", "before_char")
-    if position not in {"before_char", "after_char"}:
+    if position not in {"before_char", "after_char", "at_depth"}:
         raise ValueError("world-book position is invalid")
     role = value.get("role", "system")
     if role not in _LORE_INJECTION_ROLES:

@@ -40,64 +40,66 @@ TA不会主动声称自己是人工智能。只有用户直接追问身份时，
 
 ## 开源协议
 
-**单机客户端整体以 GNU GPLv3 开源。** 许可证全文见 [`LICENSE`](LICENSE)。
+**当前单机客户端整体仍以 GNU GPLv3 开源。** 许可证全文见 [`LICENSE`](LICENSE)。原作者已支持交接与宽松许可迁移；目标优先 Apache-2.0，MIT 为备选，不自动双许可。正式切换须完成具体来源和授权覆盖核验，见 [许可迁移记录](docs/LICENSE-MIGRATION.md)。
 
 Apache-2.0 上游的通知合并在 [`NOTICE`](NOTICE)。第三方许可证原件在 [`LICENSES_CREDITS/`](LICENSES_CREDITS/)，逐项说明在 [`CREDITS.md`](CREDITS.md)。AGPL 组件的排除清单见 [`AGPL_EXCLUDED.md`](AGPL_EXCLUDED.md)。
 
 预留的云端接口（备份、算力托管、联机）是独立的商业服务，**不在 GPLv3 源码范围内**。单机必须在完全离线、只用用户自己的 API Key 或 Ollama 时可用。
 
-## 借鉴致谢：代码 vs 思路
+## 来源致谢：代码、依赖与参考
 
-Reverie 是[hoshinohatsuka](https://github.com/hoshinohatsuka)的第一个大项目。所以借鉴了许多优质开源项目。下表是对用户、对原作者都该看清的边界：**「借鉴了代码」** 表示运行时里有该项目的源码、移植或 vendored 副本；**「借鉴了思路」** 表示只读公开规格 / 论文 / 架构，Reverie 侧是洁室重写，没有拷他们的源文件。
+Reverie 由 [hoshinohatsuka](https://github.com/hoshinohatsuka)发起，现由获交接支持的维护者继续开发。下表区分当前源码证据与历史参考；不能仅凭“借鉴”一词判断是否并入第三方实现。详细路径、处理状态和验收见 [`source-provenance.json`](LICENSES_CREDITS/source-provenance.json) 和 [`CREDITS.md`](CREDITS.md)。
 
-### 借鉴了代码
+### 当前保留与已移除的来源组件
 
-| 项目 | 许可证 | Reverie 里实际落了什么 |
-|---|---|---|
-| [cat-catch（猫抓）](https://github.com/xifangczy/cat-catch) | GPL-3.0 | `src/download_service/` 为 vendored 适配；Electron 侧 `sniff:*` / `download:*` IPC。聊天用的 HLS 解析与合并是 Reverie 自写的 `src/video_download/`，不跑猫抓的外部 ffmpeg 服务器 |
-| [Risuai](https://github.com/kwaroran/Risuai) | GPL-3.0 | 世界书匹配思路与 HypaMemory V3 压缩流程按 GPL 在 Python 侧重写：`src/lorebook/`、`src/memory/hypa_v3.py`（文件头保留原作者与许可证） |
-| [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) 0.4.0 | MIT | `frontend/vendor/pixi-live2d-display`，只留 Cubism 4 运行所需文件 |
-| [sqlite-vec](https://github.com/asg017/sqlite-vec) | MIT OR Apache-2.0 | 发行包按 MIT 分发，作为本机向量索引扩展 |
-| [ddgs](https://github.com/deedy5/ddgs) + [primp](https://github.com/deedy5/primp) | MIT | 免 Key 搜索的直接/传递依赖，哈希锁在 `requirements-runtime.lock` |
-| [trafilatura](https://github.com/adbar/trafilatura) / courlan / htmldate | Apache-2.0 | 网页正文抽取；缺库时降级为内置剥标签 |
+| 项目 | 许可证 | 范围与处理 |
+| --- | --- | --- |
+| [cat-catch](https://github.com/xifangczy/cat-catch) | GPL-3.0 | 旧 `src/download_service/` 已移除，现有有限下载 IPC 改用第一方媒体服务；保留历史来源，新包验收状态见迁移登记 |
+| [Kazumi](https://github.com/Predidit/Kazumi) | GPL-3.0 | 旧 `src/anime_service/` 是未集成工程，原生产 staging 已排除；已在本地首批提交 `e84c994` 移除，不作为可用追番功能 |
+| [Risuai](https://github.com/kwaroran/Risuai) | GPL-3.0 | 旧世界书与 Hypa 源码已分别由独立世界书、对话摘要模块替换；历史来源记录保留，当前摘要边界与验收见 `docs/CONVERSATION-SUMMARY.md` |
+| [elephantops](https://github.com/lucaferranti/elephantops) 0.1.1 | GPL-3.0-or-later | 历史象棋依赖已由独立90格引擎替换，已从锁、生产图和新应用退役；见第四阶段验收 |
+| [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) | Apache-2.0 | 记忆导入与互操作桥声明提取及修改了上游逻辑；保留原 NOTICE 和修改说明，不统称仅思想参考 |
+| [Project AIRI](https://github.com/moeru-ai/airi) | MIT | Live2DAdapter 声明由 AIRI 组件改编；保留版权和许可 |
+| [foxgirls.club](https://github.com/foxgirlsorg/foxgirls.club) | MIT | `src/image_service/` 为 vendored 服务及包装；图片版权另论 |
+| [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) 0.4.0 | MIT | `frontend/vendor/pixi-live2d-display` 保留 Cubism 4 所需运行文件；合规保留，不属于必须重写项 |
 
-N.E.K.O（Apache-2.0）在 NOTICE 中按协议保留了原 NOTICE 全文。若某份源文件是从 Apache-2.0 树改过来的，文件头会有 Muhe Studio 的修改说明。
+Python 聊天视频链路 `src/video_download/` 与 Electron 下载服务分离，现有头部声明独立实现但引用旧适配器结构。本轮保留功能并单独核对来源，不仅凭“运行时未共享代码”认定审查完成。
 
-### 借鉴了思路（洁室，未拷源码）
+### 合规保留的运行依赖
 
-| 项目 | 许可证 | 借了什么，没借什么 |
-|---|---|---|
-| [N.E.K.O](https://github.com/Project-N-E-K-O/N.E.K.O) | Apache-2.0 | 五维记忆、主动陪伴、本地人格伴侣的产品形状 |
-| [Project AIRI](https://github.com/moeru-ai/airi) | MIT | VRM/Live2D 作为可见形象、多 LLM 提供商、语音管道的产品形状 |
-| [OpenRoom / VibeApps](https://github.com/MiniMax-AI/OpenRoom) | MIT | 桌面房间、日记/音乐等「她也有自己的应用」的骨架思路 |
-| [Luna](https://github.com/Alan-Yu-2077/Luna) | MIT（Cubism Core 除外） | 头部中心、按距离缩放的鼠标视线；Cubism Core 本身是 Live2D Inc. 专有文件，不进 git |
-| [SillyTavern](https://github.com/SillyTavern/SillyTavern) | AGPL-3.0 | **只**参考并兼容公开的 Character Card V2 / 世界书 JSON 。不拷 `.js`，不使用源代码。|
-| [Character Card V2](https://github.com/malfoyslastname/character-card-spec-v2) / [V3 草案](https://github.com/kwaroran/character-card-spec-v3) | 开放规格 | `chara` / `ccv3` PNG 块、`character_book.entries` 字段名 |
-| [ALTM](https://github.com/cuiyuestar/Autonomous-Long-Term-Memory-System) | Apache-2.0 | 驻留/查询分、预算压力、引用反馈、证据链、折叠 worker |
-| [Mem0](https://github.com/mem0ai/mem0) | Apache-2.0 | 轻量实体共现、检索时解冲突 |
-| [Letta / MemGPT](https://github.com/letta-ai/letta) | Apache-2.0 | 分层记忆、空闲期离线整理 |
-| HippoRAG / A-MEM / Generative Agents / LongMemEval | 论文 | 联想检索、原子笔记、recency+importance+relevance、评测口径 |
-| [Kazumi](https://github.com/Predidit/Kazumi) | GPL-3.0 | 一起追番 / 规则引擎的产品方向（完整追番栈未作为本版卖点，请等待后续更新） |
-| [NachoBot]((https://github.com/Big-Sh0t114/NachoBot)) | GPLv3 | 多平台适配的远期方向；其 AGPL 插件子树已排除 |
-| [foxgirls.club](https://github.com/foxgirlsorg/foxgirls.club) | MIT | 随机二次元图的情绪价值 |
-| liquidglass-oss | MIT | 玻璃拟态 CSS 观感 |
-| wigolo | AGPL-3.0 | **仅**联网搜索架构灵感；代码零并入 |
+| 项目 | 许可证 | 用途 |
+| --- | --- | --- |
+| [sqlite-vec](https://github.com/asg017/sqlite-vec) | MIT OR Apache-2.0 | 发行包按 MIT 保留通知，本机向量索引 |
+| [ddgs](https://github.com/deedy5/ddgs) / [primp](https://github.com/deedy5/primp) | MIT | 搜索的直接／传递依赖，版本和哈希见运行锁文件 |
+| [trafilatura](https://github.com/adbar/trafilatura) / courlan / htmldate | Apache-2.0 | 网页正文抽取；保留许可证及适用通知 |
 
-目前Reverie向上兼容酒馆（[SillyTavern](https://github.com/SillyTavern/SillyTavern)）的角色卡与世界书，此为核心聊天功能，可正常运行，为了保证开箱即用，Reverie内置了星野幻月角色（是[hoshinohatsuka](https://github.com/hoshinohatsuka)的OC）。
+### 参考声明与待核对来源
 
-但实际上上述某些功能并未真正能正常运行，因为时至今日，Reverie仍然是半成品。请等待后续更新。
+Luna-ts、OpenRoom 与 liquidglass 的既有文字在“适配”和“灵感”分类上不一致，现保留通知并逐文件核对，不把所有相关功能都宣称为源码复用或独立重写。NachoBot 保留历史致谢；本次未定位到当前集成源码，不代表 QQ 适配已完成。
 
-**一句话：Reverie是吃百家饭长大的**
+Character Card V2/V3、PNG、SillyTavern 格式、ALTM、Mem0、Letta/MemGPT 与记忆论文继续作为已有格式／设计参考登记；具体资料和原声明见 CREDITS。这些声明不构成对整个代码树的独立实现保证。
 
-**Live2D Inc. Cubism Core** 不是开源项目。公开安装器只分发持有出版许可的 `Live2DCubismCore.js`，不附带任何 `.moc3` / 纹理 / 动作。用户导入的模型版权归模型作者。
+Reverie 兼容酒馆角色卡与世界书；产品仍有未完成和未充分验证的功能，来源表不代表对应上游的全部能力已经移植。
 
-**不会并入：** 任何商业 DRM 破解。
+**Live2D Cubism Core** 由 Live2D Inc. 单独许可，不属于 MIT 或宿主许可。保持现有出版门禁；用户模型、声音、角色与其他资产权利单独登记，不随宿主改许可自动改变。
 
 ## 用户：安装发行版
 
 双击安装 [`Reverie0.5.5-Setup-0.5.5-x64.exe`](https://github.com/Muhe-Studio/Reverie/releases)默认装到 `C:\Program Files\Reverie`。第一次打开走新手引导：填 API、导入你自己的 Live2D、可选导入角色卡/世界书。卸载或重装不应抹掉 `%APPDATA%` 里已有的记忆和日记。
 
 ## 二次开发
+
+macOS Apple Silicon 开发环境使用项目内固定工具链：先运行 `./script/setup-macos.sh`，
+再运行 `./script/check-macos.sh` 验收，使用 `./script/dev-macos.sh` 启动。
+详见 [macOS 开发环境说明](docs/MACOS-DEVELOPMENT.md)。该流程用于源码运行。
+
+独立 macOS arm64 核心测试应用使用 `./script/package-macos.sh` 构建，
+以 `./script/check-macos-package.sh` 验证；详见 [macOS 打包说明](docs/MACOS-PACKAGING.md)。
+当前产物采用本地测试签名，不是正式分发或公证安装包。
+
+已验收的应用可用 `./script/package-macos-dmg.sh` 封装为测试 DMG，
+再用 `./script/check-macos-dmg.sh` 验证镜像内启动及复制、推出镜像后的重启恢复。
+本轮结果见 [macOS 测试 DMG 验收摘要](docs/MACOS-ACCEPTANCE.md)。
 
 欢迎大家对本项目做贡献， Reverie 本身是纯 Vibe coding 出来的。
 

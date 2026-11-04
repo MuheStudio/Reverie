@@ -59,8 +59,12 @@ def build_move_messages(persona_name: str, game: str, state: dict[str, Any]) -> 
         f"{_move_instruction(game, state)}"
         " comment 是一句不超过 18 个字的、符合你性格的短评，不要提及格式本身。"
     )
+    board_description = (
+        "当前棋盘（格内标明红黑颜色和棋种，·为空格；按表中x/y坐标选择走法）"
+        if game == "xiangqi" else "当前棋盘（你的棋子用 ▲ 表示，用户棋子用 △ 表示）"
+    )
     user = (
-        f"当前棋盘（你的棋子用 ▲ 表示，用户棋子用 △ 表示）：\n{_board_section(state)}\n"
+        f"{board_description}：\n{_board_section(state)}\n"
         + (f"走子记录：{history_text}\n" if history_text else "")
         + "请只输出 JSON。"
     )

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import hashlib
 from pathlib import Path
 import re
 import sqlite3
@@ -57,6 +58,19 @@ def _utc_now() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _command_audit_json(command: CommandEnvelopeV4) -> str:
+    """Bind explicit legacy import bytes without duplicating private source text."""
+    original = command.model_dump_json()
+    if command.command != "summary:legacy:import":
+        return original
+    data = json.loads(original)
+    content = data["payload"].pop("content")
+    encoded = content.encode("utf-8")
+    data["payload"]["content_identity"] = {"sha256": hashlib.sha256(encoded).hexdigest(),
+                                               "bytes": len(encoded), "kind": "utf8-file-bytes"}
+    return _json(data)
 
 
 def connect_sqlite(path: Path, *, read_only: bool = False) -> sqlite3.Connection:
@@ -440,7 +454,7 @@ class KernelStore:
         return bool(row and row["enabled"] and row["acknowledged_at_utc"])
 
     def begin_command(self, command: CommandEnvelopeV4) -> CommandRecord:
-        request_json = command.model_dump_json()
+        request_json = _command_audit_json(command)
         now = _utc_now()
         with self.transaction() as connection:
             by_key = connection.execute(
@@ -494,7 +508,7 @@ class KernelStore:
     ) -> CommandRecord:
         """Atomically cache the result of a non-chat idempotent command."""
 
-        request_json = command.model_dump_json()
+        request_json = _command_audit_json(command)
         now = _utc_now()
         with self.transaction() as connection:
             row = connection.execute(

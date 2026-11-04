@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import argparse
+import hashlib
 import logging
 import os
+import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 # Ensure src is importable
@@ -48,6 +51,50 @@ from src.persona.sillytavern_import import (
     migrate_known_legacy_default_persona,
 )
 from src.utils.logger import setup_logger
+
+
+def _legacy_restore_pending_for_bootstrap(path: Path, *, allow_plaintext: bool) -> bool:
+    """Inspect existing legacy intent without migrating or loading its payload."""
+    from src.world_state_store import WorldStateStore
+
+    path = Path(path)
+    if not path.exists():
+        return False
+    if allow_plaintext:
+        with path.open("rb") as source:
+            plaintext_sqlite = source.read(16) == b"SQLite format 3\x00"
+        if plaintext_sqlite:
+            # An unfinished SQLite transaction is not evidence of a clean
+            # journal. Refuse it rather than replaying it during this probe.
+            if any(Path(f"{path}{suffix}").exists() for suffix in ("-journal", "-wal", "-shm")):
+                raise RuntimeError("Legacy database transaction state is unconfirmed")
+            with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, isolation_level=None)) as connection:
+                connection.execute("PRAGMA query_only=ON")
+                table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='restore_journal'"
+                ).fetchone()
+                if table is None:
+                    return False
+                return connection.execute("SELECT 1 FROM restore_journal LIMIT 1").fetchone() is not None
+    return WorldStateStore.peek_pending(path) is not None
+
+
+def _startup_restore_pending(persona_root: Path, *, desktop_bridge: bool,
+                             legacy_paths: tuple[Path, ...] | None = None) -> bool:
+    """Admit bootstrap only when every existing recovery location is confirmed."""
+    from src.world_state_store import WorldStateStore
+
+    try:
+        if WorldStateStore.peek_pending(Path(persona_root) / "restore" / "restore.sqlite3") is not None:
+            return True
+        candidates = legacy_paths if legacy_paths is not None else (
+            Path(persona_root) / "world" / WORLD_STATE_DB.name, WORLD_STATE_DB,
+        )
+        return any(_legacy_restore_pending_for_bootstrap(path, allow_plaintext=not desktop_bridge)
+                   for path in candidates)
+    except Exception:
+        logging.getLogger("reverie.recovery").warning("Restore journal is unconfirmed; startup projections are deferred")
+        return True
 
 
 MAINTENANCE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -185,27 +232,34 @@ async def main():
     from src.kernel.storage import KernelStore
 
     identity_envelope = GLOBAL_PERSONA_EPOCH.envelope()
+    # The restore journal decides whether bootstrap may project state into
+    # the kernel. Read it before command recovery or identity activation.
+    restore_persona_root = DATA_DIR / "personas" / hashlib.sha256(persona_token.persona_id.encode("utf-8")).hexdigest()
+    restore_pending = _startup_restore_pending(restore_persona_root, desktop_bridge=desktop_bridge)
+    if restore_pending and not desktop_bridge:
+        raise RuntimeError("Developer TUI startup is blocked by an unresolved restore journal")
     kernel_store = KernelStore(DATA_DIR / "runtime" / "kernel.sqlite3")
     # Crash-recovery closure: rows left generating/dispatched by a dead
     # process must be settled to a terminal ambiguous state before any
     # dispatch can replay them, otherwise the idempotency ledger never
     # reaches the state its guarantees assume.
-    recovered_commands = kernel_store.recover_ambiguous_commands()
+    recovered_commands = 0 if restore_pending else kernel_store.recover_ambiguous_commands()
     if recovered_commands:
         logging.getLogger("reverie.kernel").warning(
             "Settled %d interrupted command(s) to PROVIDER_OUTCOME_UNKNOWN", recovered_commands
         )
-    kernel_store.activate_persona(
-        PersonaScopeV4(
-            persona_id=persona_token.persona_id,
-            epoch=persona_token.epoch,
-            fingerprint=persona_token.fingerprint,
-        ),
-        identity=identity_envelope.core_identity,
-        identity_version=identity_envelope.version,
-        actor="bootstrap",
-        reason="authoritative persona registry startup",
-    )
+    if not restore_pending:
+        kernel_store.activate_persona(
+            PersonaScopeV4(
+                persona_id=persona_token.persona_id,
+                epoch=persona_token.epoch,
+                fingerprint=persona_token.fingerprint,
+            ),
+            identity=identity_envelope.core_identity,
+            identity_version=identity_envelope.version,
+            actor="bootstrap",
+            reason="authoritative persona registry startup",
+        )
     if kernel_store.integrity_check() != "ok":
         kernel_store.close()
         raise RuntimeError("Persona kernel integrity check failed")
@@ -371,9 +425,13 @@ async def main():
         kernel_store.close()
         return
     from src.api.budget import ApiBudgetTracker
+    from src.conversation_summary.runtime import current_runtime_settings
     # API cost limits are owner/application scoped, not persona scoped; an
     # identity switch must never reset or bypass the global usage ledger.
-    api_budget = ApiBudgetTracker(settings.features)
+    api_budget = ApiBudgetTracker(
+        settings.features,
+        settings_provider=lambda: current_runtime_settings(settings).features,
+    )
     adapter = LLMAdapter(
         settings.llm,
         budget_tracker=api_budget,
@@ -393,6 +451,7 @@ async def main():
         enabled=settings.features.emotion_system_enabled,
         carryover_days=settings.features.emotion_carryover_days,
         inertia_factor=settings.features.emotion_inertia_factor,
+        pause_intervals=list(settings.features.emotion_pause_intervals),
     )
     relationship = RelationshipTracker(
         initial_intimacy=50,
@@ -517,24 +576,22 @@ async def main():
     )
 
     # Create session after optional managers are initialized.
-    hypa_compressor = None
-    if settings.features.hypa_compression_enabled:
-        from src.memory.hypa_v3 import HypaMemoryV3
-        from src.memory.embedding import embed_query
+    conversation_summary = None
+    try:
+        from src.conversation_summary.runtime import ConversationSummaryRuntime
+        from src.conversation_summary.store import SummaryStore
 
-        class _HypaEmbedder:
-            async def embed(self, text: str):
-                return list(embed_query(text))
-
-        try:
-            hypa_compressor = HypaMemoryV3(
-                adapter=adapter,
-                embedder=_HypaEmbedder(),
-                data_dir=Path(settings.memory.lancedb_path).parent / "hypa",
-            )
-        except Exception:
-            logger.exception("HypaMemory V3 failed during startup; disabling it")
-            hypa_compressor = None
+        summary_token = GLOBAL_PERSONA_EPOCH.token()
+        conversation_summary = ConversationSummaryRuntime(
+            SummaryStore(kernel_store, summary_token),
+            adapter,
+            registry=GLOBAL_PERSONA_EPOCH,
+            token=summary_token,
+            enabled=lambda: bool(current_runtime_settings(settings).features.hypa_compression_enabled),
+            llm_settings_provider=lambda: current_runtime_settings(settings).llm,
+        )
+    except Exception:
+        logger.exception("Conversation summary unavailable; chat continues")
 
     session = ChatSession(
         persona=persona,
@@ -557,7 +614,7 @@ async def main():
         ambient_presence=ambient_presence,
         thought_engine=thought_engine,
         social_universe=social_universe,
-        hypa_compressor=hypa_compressor,
+        conversation_summary=conversation_summary,
         # 卡作者提示词默认关闭；由用户在 DreamRoom 档案编辑器中手动开启。
         imported_prompt_opts={},
     )
@@ -625,10 +682,9 @@ async def main():
     if timeline is None:
         timeline = UnavailableTimeline("Timeline module is missing or failed startup")
 
-    # Recover an interrupted multi-module restore before any autonomous task
-    # can observe or mutate a partially applied world state.
+    # The developer TUI exports ordinary backup data. Complete restore belongs
+    # to the desktop owner coordinator and its separate encrypted journal.
     from src.backup import LocalBackupManager
-    from src.world_state_store import WorldStateStore
 
     if diary:
         backup_manager = LocalBackupManager(
@@ -642,7 +698,7 @@ async def main():
             interest_tracker=interest_tracker,
             affair_manager=affair_manager,
             world_clock=world_clock,
-            state_store=WorldStateStore(path=world_state_db),
+            state_store=None,
             ambient_presence=ambient_presence,
             thought_engine=thought_engine,
             diary_keys=diary_keys,
@@ -653,9 +709,6 @@ async def main():
         backup_manager = UnavailableBackupManager(
             "Complete backup is unavailable while the required diary section is missing"
         )
-    if backup_manager.recover_interrupted_restore():
-        logger.warning("Recovered an interrupted world-state restore")
-    backup_manager.checkpoint()
 
     # ── ProactiveChat: background task for character-initiated messages
     def ordinary_chat_busy() -> bool:
@@ -882,10 +935,14 @@ async def main():
             reflex.close()
         except Exception:
             logger.exception("Reflex system shutdown failed")
+        summary_cleanup_error = None
         try:
             await session.close()
-        except Exception:
+        except Exception as exc:
             logger.exception("Provider client shutdown failed")
+            summary = getattr(session, "conversation_summary", None)
+            if summary is not None and not summary.cleanup_confirmed:
+                summary_cleanup_error = exc
         try:
             memory.store.close()
         except Exception:
@@ -909,6 +966,8 @@ async def main():
         logger.info("Shutting down...")
         from src.config.settings import save_settings
         save_settings(settings)
+        if summary_cleanup_error is not None:
+            raise RuntimeError("Summary provider cleanup was not confirmed") from summary_cleanup_error
         logger.info("Goodbye!")
 
 

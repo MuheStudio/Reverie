@@ -50,7 +50,7 @@ def test_packager_ships_the_core_companion_artifacts() -> None:
     ).read_text(encoding="utf-8")
     for module in (
         "diary", "games", "immersion", "notifications", "stickers",
-        "social", "keepsakes", "web", "ambient", "archive", "lorebook",
+        "social", "keepsakes", "web", "ambient", "archive", "worldbook",
         "backup",
     ):
         assert f"'{module}'" not in source
@@ -62,9 +62,9 @@ def test_packager_ships_the_core_companion_artifacts() -> None:
     assert "from src.web import WebSurfingManager" in runtime
     assert "from src.ambient import ThoughtOfYouEngine" in runtime
     assert "from src.archive import ArchiveStore" in runtime
-    assert "from src.lorebook import LorebookManager" in runtime
+    assert "from src.worldbook.runtime import WorldbookRuntime" in runtime
     assert "from src.backup import LocalBackupManager" in runtime
-    assert "lorebook_mgr=lorebook_mgr" in runtime
+    assert "worldbook_runtime=worldbook_runtime" in runtime
     assert "archive_store=archive_store" in runtime
     assert "backup_manager=backup_manager" in runtime
 
