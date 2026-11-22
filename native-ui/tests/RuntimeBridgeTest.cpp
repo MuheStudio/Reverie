@@ -2,13 +2,24 @@
 #include "../src/ArchiveEditor.h"
 #include "../src/PersonaCardReader.h"
 #include "../src/Keychain.h"
+#include "CheckContract.h"
+#include "SummaryInteractionProbe.h"
 #include <QCryptographicHash>
 #include <QDate>
+#include <QDir>
 #include <QFile>
 #include <QUrl>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QImage>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlEngine>
+#include <QQuickItem>
+#include <QQuickStyle>
+#include <QQuickWindow>
 #include <QSignalSpy>
+#include <QRandomGenerator>
 #include <QTemporaryDir>
 #include <QtEndian>
 #include <QtTest>
@@ -442,7 +453,599 @@ class RuntimeBridgeTest : public QObject {
         bridge.acceptFrame(controlResult(lastControl(frames, "credentials:set")["requestId"].toString(), "credentials:set",
                                          {{"ok", applied}, {"applied", QJsonObject{{"llm", applied}}}}));
     }
+    static QJsonObject relationshipSnapshot(int number = 1, int intimacy = 54) {
+        const QJsonArray thresholds{
+            QJsonObject{{"key", "initial"}, {"label", "初识期"}, {"min", 0}, {"max", 99}},
+            QJsonObject{{"key", "familiar"}, {"label", "熟悉期"}, {"min", 100}, {"max", 499}},
+            QJsonObject{{"key", "trusted"}, {"label", "信任期"}, {"min", 500}, {"max", 1999}},
+            QJsonObject{{"key", "enduring"}, {"label", "长久陪伴期"}, {"min", 2000}, {"max", QJsonValue::Null}}};
+        const auto stage = thresholds[number - 1].toObject();
+        return {{"intimacy", intimacy}, {"stage", stage["label"]}, {"stage_key", stage["key"]},
+                {"stage_number", number}, {"stage_detail", "<b>保持原文</b>"},
+                {"interaction_count", 1}, {"thresholds", thresholds}};
+    }
+    static QJsonObject diarySettings(bool enabled) {
+        auto snapshot = settingsSnapshot();
+        auto features = snapshot["features"].toObject();
+        features["diary_enabled"] = enabled;
+        snapshot["features"] = features;
+        return snapshot;
+    }
+    static QJsonObject diaryPermissions(bool allowed, const QString &origin = "current") {
+        auto snapshot = permissions(origin, allowed);
+        const auto grant = snapshot["features"].toObject().value("summary");
+        snapshot["features"] = QJsonObject{{"diary_generation", grant}};
+        return snapshot;
+    }
+    static QString diaryDate(int days = 0) {
+        return QDate::currentDate().addDays(days).toString(Qt::ISODate);
+    }
+    static QJsonObject diaryListPayload(const RuntimeBridge &bridge, const QJsonArray &rows = {}) {
+        auto payload = personaScope(bridge);
+        payload["today"] = diaryDate();
+        payload["writing"] = false;
+        payload["entries"] = rows;
+        return payload;
+    }
+    static QJsonObject diaryEntryPayload(const RuntimeBridge &bridge, const QString &date,
+                                         bool fallback = false) {
+        auto payload = personaScope(bridge);
+        payload["ok"] = true;
+        payload["entry"] = QJsonObject{{"date", date}, {"title", "一篇测试日记"},
+            {"content", "<b>原样显示</b>\n" + QString(240, QLatin1Char('x'))},
+            {"created_at", date + "T19:02:00"},
+            {"consistency_status", fallback ? "grounded_fallback" : "passed"}};
+        return payload;
+    }
+
   private slots:
+    void diarySwitchSaveUsesOnlyTheRequestedSetting() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, diarySettings(false));
+        knownPermissions(bridge, diaryPermissions(false));
+        const auto frames = sentFrames(bridge);
+        bridge.openPanel("diary");
+        QCOMPARE(commandCount(*frames, "diary:request"), 1);
+        QVERIFY(bridge.diaryView().value("switchAvailable").toBool());
+        QVERIFY(!bridge.diaryView().value("enabled").toBool());
+
+        bridge.setDiaryEnabled(true);
+        auto save = lastCommand(*frames, "settings:update");
+        const auto failedId = save.take("requestId").toString();
+        QVERIFY(!failedId.isEmpty());
+        QCOMPARE(save, (QJsonObject{{"section", "features"}, {"diary_enabled", true}}));
+        QVERIFY(bridge.diaryView().value("switchPending").toBool());
+        QVERIFY(!bridge.diaryView().value("switchAvailable").toBool());
+        bridge.setDiaryEnabled(true);
+        QCOMPARE(commandCount(*frames, "settings:update"), 1);
+        bridge.event(frame("settings:update:result", failedId, {{"ok", false}, {"error", "private marker"}}));
+        QVERIFY(!bridge.diaryView().value("enabled").toBool());
+        QVERIFY(!bridge.diaryView().value("switchPending").toBool());
+        QCOMPARE(bridge.diaryView().value("saveNotice").toString(), QString("没能保存"));
+
+        bridge.setDiaryEnabled(true);
+        const auto savedId = lastCommand(*frames, "settings:update").value("requestId").toString();
+        QVERIFY(!savedId.isEmpty() && savedId != failedId);
+        bridge.event(frame("settings:update:result", savedId,
+                           {{"ok", true}, {"features", QJsonObject{{"diary_enabled", true}}}}));
+        QVERIFY(bridge.diaryView().value("enabled").toBool());
+        QVERIFY(bridge.diaryView().value("saveNotice").toString().isEmpty());
+        QCOMPARE(bridge.diaryView().value("writeBlocker").toString(), QString("还需要授权这项费用"));
+    }
+    void diaryWriteReceiptsAndTimeout_data() {
+        QTest::addColumn<QString>("code");
+        QTest::addColumn<QString>("notice");
+        QTest::addColumn<bool>("refreshes");
+        QTest::newRow("success-opens-entry") << "success" << "" << true;
+        QTest::newRow("already-exists") << "diary_already_exists" << "今天已经写过了" << true;
+        QTest::newRow("another-write-running") << "diary_writing" << "她正在写，稍后再看" << false;
+        QTest::newRow("off-or-unauthorized") << "diary_not_allowed" << "日记开关或费用授权尚未生效" << false;
+        QTest::newRow("write-failed") << "diary_write_failed" << "没写成，没有保存任何内容。可以稍后再试。" << false;
+        QTest::newRow("timeout") << "timeout" << "还没收到结果，稍后回来看看。" << true;
+    }
+    void diaryWriteReceiptsAndTimeout() {
+        QFETCH(QString, code);
+        QFETCH(QString, notice);
+        QFETCH(bool, refreshes);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, diarySettings(true));
+        knownPermissions(bridge, diaryPermissions(true));
+        const auto frames = sentFrames(bridge);
+        bridge.openPanel("diary");
+        const auto listId = controlId(bridge, "diary:request");
+        QVERIFY(!listId.isEmpty());
+        bridge.event(frame("diary:result", listId, diaryListPayload(bridge)));
+        QVERIFY(bridge.diaryView().value("writeBlocker").toString().isEmpty());
+        QVERIFY(bridge.request("diary:write", {{"date", diaryDate(-1)}}).isEmpty());
+        QCOMPARE(commandCount(*frames, "diary:write"), 0);
+
+        bridge.writeDiary();
+        auto write = lastCommand(*frames, "diary:write");
+        const auto id = write.take("requestId").toString();
+        QVERIFY(!id.isEmpty());
+        QVERIFY(write.isEmpty());
+        QVERIFY(bridge.diaryView().value("writing").toBool());
+        QCOMPARE(bridge.diaryView().value("writeBlocker").toString(), QString("正在写…"));
+        QCOMPARE(bridge.diaryView().value("writeNotice").toString(), QString("正在写…"));
+        bridge.writeDiary();
+        QCOMPARE(commandCount(*frames, "diary:write"), 1);
+
+        const auto success = diaryEntryPayload(bridge, diaryDate());
+        if (code == "timeout") {
+            QCOMPARE(RuntimeBridge::DiaryWriteTimeoutMs, 120000);
+            bridge.expirePending(id);
+        } else if (code == "success") {
+            bridge.event(frame("diary:result", id, success));
+        } else {
+            bridge.event(frame("diary:result", id,
+                               {{"ok", false}, {"code", code}, {"error", "private marker"}}));
+        }
+        const auto settled = bridge.diaryView();
+        QVERIFY(!settled.value("writing").toBool());
+        QCOMPARE(settled.value("writeNotice").toString(), notice);
+        QCOMPARE(commandCount(*frames, "diary:request"), refreshes ? 2 : 1);
+        QCOMPARE(commandCount(*frames, "diary:write"), 1);
+        const auto entry = settled.value("entry").toMap();
+        if (code == "success") {
+            QCOMPARE(entry.value("date").toString(), diaryDate());
+            QCOMPARE(entry.value("content").toString(), success["entry"].toObject()["content"].toString());
+        } else {
+            QVERIFY(entry.isEmpty());
+        }
+        bridge.event(frame("diary:result", id, success));
+        QCOMPARE(bridge.diaryView(), settled);
+    }
+    void diaryMoodLabels_data() {
+        QTest::addColumn<QString>("mood");
+        QTest::addColumn<QString>("label");
+        QTest::newRow("happy") << "happy" << "开心";
+        QTest::newRow("peaceful") << "peaceful" << "平静";
+        QTest::newRow("excited") << "excited" << "兴奋";
+        QTest::newRow("sad") << "sad" << "难过";
+        QTest::newRow("angry") << "angry" << "生气";
+        QTest::newRow("anxious") << "anxious" << "焦虑";
+        QTest::newRow("upset") << "upset" << "委屈";
+        QTest::newRow("moved") << "moved" << "感动";
+        QTest::newRow("low-energy") << "low-energy" << "没精神";
+        QTest::newRow("unknown") << "future-mood" << "";
+    }
+    void diaryMoodLabels() {
+        QFETCH(QString, mood);
+        QFETCH(QString, label);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.openPanel("diary");
+        const auto id = controlId(bridge, "diary:request");
+        QVERIFY(!id.isEmpty());
+        const auto older = diaryDate(-2);
+        const auto newer = diaryDate(-1);
+        bridge.event(frame("diary:result", id, diaryListPayload(bridge, {
+            QJsonObject{{"date", older}, {"mood", "peaceful"}},
+            QJsonObject{{"date", newer}, {"mood", mood}, {"content", "not list metadata"}}})));
+        const auto state = bridge.diaryView();
+        QCOMPARE(state.value("listStatus").toString(), QString("ready"));
+        QCOMPARE(state.value("listRequestId").toString(), id);
+        const auto rows = state.value("entries").toList();
+        QCOMPARE(rows.size(), 2);
+        QCOMPARE(rows[0].toMap(), (QVariantMap{{"date", newer}, {"mood", mood},
+            {"label", label.isEmpty() ? newer : newer + " · " + label}}));
+        QCOMPARE(rows[1].toMap().value("date").toString(), older);
+    }
+    void diaryScopeChangeDiscardsOldReceipts_data() {
+        QTest::addColumn<bool>("reconnect");
+        QTest::newRow("persona-switch") << false;
+        QTest::newRow("connection-generation") << true;
+    }
+    void diaryScopeChangeDiscardsOldReceipts() {
+        QFETCH(bool, reconnect);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, diarySettings(true));
+        knownPermissions(bridge, diaryPermissions(true));
+        const auto frames = sentFrames(bridge);
+        bridge.openPanel("diary");
+        const auto date = diaryDate(-1);
+        const auto prior = diaryDate(-2);
+        const auto oldList = diaryListPayload(bridge, {
+            QJsonObject{{"date", date}, {"mood", "peaceful"}},
+            QJsonObject{{"date", prior}, {"mood", "moved"}}});
+        bridge.event(frame("diary:result", controlId(bridge, "diary:request"), oldList));
+        bridge.readDiary(date);
+        auto readId = lastCommand(*frames, "diary:request").value("requestId").toString();
+        auto oldRead = diaryEntryPayload(bridge, date);
+        bridge.event(frame("diary:result", readId, oldRead));
+        QCOMPARE(bridge.diaryView().value("entry").toMap().value("date").toString(), date);
+        bridge.writeDiary();
+        const auto writeId = controlId(bridge, "diary:write");
+        QVERIFY(!writeId.isEmpty());
+        const auto oldWrite = diaryEntryPayload(bridge, diaryDate());
+        if (reconnect) {
+            bridge.readDiary(prior);
+            readId = lastCommand(*frames, "diary:request").value("requestId").toString();
+            QVERIFY(bridge.m_pending.contains(readId));
+            oldRead = diaryEntryPayload(bridge, prior);
+        }
+        bridge.refreshDiary();
+        const auto listId = lastCommand(*frames, "diary:request").value("requestId").toString();
+        QVERIFY(bridge.m_pending.contains(listId) && listId != readId);
+
+        if (reconnect) {
+            const auto persona = bridge.m_persona;
+            const auto generation = bridge.generation();
+            bridge.m_connected = false;
+            bridge.acceptFrame({{"kind", "ready"}, {"schema", "reverie.bridge.stdio.ready.v4"},
+                {"protocolVersion", 4}, {"pid", QJsonValue(bridge.m_process.processId())},
+                {"secretSha256", QString::fromLatin1(QCryptographicHash::hash(
+                    bridge.m_secret.toUtf8(), QCryptographicHash::Sha256).toHex())},
+                {"personaId", persona["persona_id"]}, {"personaEpoch", persona["epoch"]},
+                {"personaFingerprint", persona["fingerprint"]}, {"recoveryState", "clean"},
+                {"writesBlocked", false}, {"runtimeWritable", true}});
+            QCOMPARE(bridge.generation(), generation + 1);
+        } else {
+            bridge.m_state["personas"] = QVariantMap{{"profiles", QVariantList{
+                QVariantMap{{"id", "persona-next"}, {"name", "晴"}, {"active", false}}}}};
+            bridge.selectPersona("persona-next");
+            QVERIFY(bridge.personaChanging());
+            const auto switching = bridge.diaryView();
+            QCOMPARE(switching.value("listStatus").toString(), QString("loading"));
+            QVERIFY(switching.value("entry").toMap().isEmpty());
+            QVERIFY(switching.value("entries").toList().isEmpty());
+            bridge.event(frame("persona:scope", {}, {{"persona_id", "persona-next"}, {"epoch", 4},
+                {"fingerprint", "next-proof"}}));
+        }
+        const auto id = lastCommand(*frames, "diary:request").value("requestId").toString();
+        QVERIFY(!id.isEmpty() && id != listId);
+        const auto loading = bridge.diaryView();
+        QCOMPARE(loading.value("listStatus").toString(), QString("loading"));
+        QVERIFY(loading.value("entries").toList().isEmpty());
+        QVERIFY(loading.value("entry").toMap().isEmpty());
+        QVERIFY(!loading.value("writing").toBool());
+        bridge.event(frame("diary:result", listId, oldList));
+        bridge.event(frame("diary:result", readId, oldRead));
+        bridge.event(frame("diary:result", writeId, oldWrite));
+        QCOMPARE(bridge.diaryView(), loading);
+
+        auto foreign = oldList;
+        foreign["persona_id"] = "wrong-persona";
+        bridge.event(frame("diary:result", id, foreign));
+        QCOMPARE(bridge.diaryView(), loading);
+        bridge.event(frame("diary:result", id, diaryListPayload(bridge)));
+        QCOMPARE(bridge.diaryView().value("listStatus").toString(), QString("ready"));
+        QCOMPARE(bridge.diaryView().value("listRequestId").toString(), id);
+        QVERIFY(bridge.diaryView().value("entry").toMap().isEmpty());
+        QVERIFY(bridge.diaryView().value("entries").toList().isEmpty());
+    }
+    void diaryReadFailureClearsThePreviousBody() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.openPanel("diary");
+        const auto first = diaryDate(-1);
+        const auto second = diaryDate(-2);
+        bridge.event(frame("diary:result", controlId(bridge, "diary:request"), diaryListPayload(bridge, {
+            QJsonObject{{"date", first}, {"mood", "happy"}}, QJsonObject{{"date", second}, {"mood", "sad"}}})));
+        bridge.readDiary(first);
+        auto read = lastCommand(*frames, "diary:request");
+        const auto firstId = read.take("requestId").toString();
+        QVERIFY(!firstId.isEmpty());
+        QCOMPARE(read, (QJsonObject{{"action", "read"}, {"date", first}}));
+        bridge.event(frame("diary:result", firstId, diaryEntryPayload(bridge, first)));
+        QCOMPARE(bridge.diaryView().value("entry").toMap().value("date").toString(), first);
+        bridge.readDiary(second);
+        const auto id = lastCommand(*frames, "diary:request").value("requestId").toString();
+        QVERIFY(!id.isEmpty() && id != firstId);
+        QVERIFY(bridge.diaryView().value("entry").toMap().isEmpty());
+        bridge.event(frame("diary:result", id, {{"ok", false}, {"code", "diary_not_found"},
+            {"error", "private marker"}}));
+        const auto failed = bridge.diaryView();
+        QCOMPARE(failed.value("readNotice").toString(), QString("日记暂时读不到"));
+        QVERIFY(failed.value("entry").toMap().isEmpty());
+        bridge.event(frame("diary:result", id, diaryEntryPayload(bridge, second)));
+        QCOMPARE(bridge.diaryView(), failed);
+    }
+    void diaryPageAt760ShowsStatesAndLiteralBody() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, diarySettings(false));
+        knownPermissions(bridge, diaryPermissions(false));
+        bridge.openPanel("diary");
+        bridge.event(frame("diary:result", controlId(bridge, "diary:request"), diaryListPayload(bridge)));
+
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                SceneNavigation { id: nav; currentFeature: "activities"; currentSubentry: "diary" }
+                TaskPanel { anchors.fill: parent; page: "activities"; navigation: nav }
+            }
+        )qml", QUrl("qrc:/xiangqi/diary-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        const auto item = [&](const QString &name) { return root->findChild<QQuickItem *>(name); };
+        auto *view = item("memoryPageScroll");
+        auto *panel = item("diaryPanel");
+        auto *toggle = item("diaryEnabled");
+        auto *empty = item("diaryEmpty");
+        auto *needsAuthorization = item("diaryAuthorizationNeeded");
+        auto *write = item("diaryWrite");
+        QVERIFY(view && panel && toggle && empty && needsAuthorization && write);
+        QTRY_VERIFY(panel->isVisible());
+        QVERIFY(!toggle->property("checked").toBool());
+        QVERIFY(!needsAuthorization->isVisible());
+        QVERIFY(!write->isEnabled());
+        QVERIFY(empty->isVisible());
+        QCOMPARE(empty->property("text").toString(), QString("还没有日记。"));
+
+        knownSettings(bridge, diarySettings(true));
+        QTRY_VERIFY(toggle->property("checked").toBool());
+        QTRY_VERIFY(needsAuthorization->isVisible());
+        QCOMPARE(needsAuthorization->property("text").toString(), QString("还需要授权这项费用"));
+        QVERIFY(!write->isEnabled());
+        knownPermissions(bridge, diaryPermissions(true));
+        QTRY_VERIFY(!needsAuthorization->isVisible());
+        QTRY_VERIFY(write->isEnabled());
+        knownPermissions(bridge, diaryPermissions(false, "replacement"));
+        QTRY_VERIFY(needsAuthorization->isVisible());
+        QTRY_VERIFY(!write->isEnabled());
+        knownPermissions(bridge, diaryPermissions(true, "replacement"));
+        QTRY_VERIFY(write->isEnabled());
+
+        bridge.writeDiary();
+        const auto writeId = controlId(bridge, "diary:write");
+        QVERIFY(!writeId.isEmpty());
+        QTRY_VERIFY(!write->isEnabled());
+        bridge.event(frame("diary:result", writeId, {{"ok", false}, {"code", "diary_write_failed"}}));
+        bridge.refreshDiary();
+        const auto date = diaryDate(-1);
+        bridge.event(frame("diary:result", controlId(bridge, "diary:request"), diaryListPayload(bridge,
+            {QJsonObject{{"date", date}, {"mood", "peaceful"}}})));
+        QTRY_VERIFY(!empty->isVisible());
+        knownSettings(bridge, diarySettings(false));
+        QTRY_VERIFY(!toggle->property("checked").toBool());
+        bridge.readDiary(date);
+        const auto entry = diaryEntryPayload(bridge, date, true);
+        bridge.event(frame("diary:result", controlId(bridge, "diary:request"), entry));
+        QTRY_VERIFY(item("diaryContent") && item("diaryContent")->isVisible());
+        auto *title = item("diaryTitle");
+        auto *createdAt = item("diaryCreatedAt");
+        QVERIFY(title && title->isVisible() && createdAt && createdAt->isVisible());
+        QCOMPARE(title->property("text").toString(), QString("一篇测试日记"));
+        QCOMPARE(createdAt->property("text").toString(), date + "T19:02:00");
+        auto *body = item("diaryContent");
+        QCOMPARE(body->property("text").toString(), entry["entry"].toObject()["content"].toString());
+        QCOMPARE(body->property("textFormat").toInt(), int(Qt::PlainText));
+        auto *fallback = item("diaryFallback");
+        QVERIFY(fallback && fallback->isVisible());
+        QCOMPARE(fallback->property("text").toString(), QString("这一篇核对没通过，只按已记下的事来写。"));
+        QTRY_VERIFY(body->width() > 0);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QVERIFY(frame.wait());
+        const auto extent = body->mapRectToItem(view, body->boundingRect());
+        QVERIFY2(extent.left() >= 0 && extent.right() <= view->width(),
+            qPrintable(QString("body left=%1 right=%2 viewport width=%3")
+                .arg(extent.left()).arg(extent.right()).arg(view->width())));
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+    }
+    void relationshipDisplaysSuppliedStageAndDistance_data() {
+        QTest::addColumn<int>("stageNumber");
+        QTest::addColumn<int>("intimacy");
+        QTest::addColumn<QString>("stage");
+        QTest::addColumn<QString>("distance");
+        QTest::newRow("initial") << 1 << 54 << "关系：初识期" << "亲密度 54，到「熟悉期」还差 46";
+        QTest::newRow("familiar") << 2 << 152 << "关系：熟悉期" << "亲密度 152，到「信任期」还差 348";
+        QTest::newRow("trusted") << 3 << 700 << "关系：信任期" << "亲密度 700，到「长久陪伴期」还差 1300";
+        QTest::newRow("long-term") << 4 << 2002 << "关系：长久陪伴期" << "亲密度 2002";
+    }
+    void relationshipDisplaysSuppliedStageAndDistance() {
+        QFETCH(int, stageNumber);
+        QFETCH(int, intimacy);
+        QFETCH(QString, stage);
+        QFETCH(QString, distance);
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto id = bridge.request("relationship:get");
+        bridge.event(frame("relationship:data", id, relationshipSnapshot(stageNumber, intimacy)));
+        QCOMPARE(bridge.relationshipStatus(), (QVariantMap{{"status", "ready"}, {"requestId", id},
+            {"stage", stage}, {"detail", "<b>保持原文</b>"}, {"intimacy", distance},
+            {"note", "随聊天慢慢变化，离开多久都不会减少。"}}));
+    }
+    void relationshipMalformedSnapshotHidesNumbers_data() {
+        QTest::addColumn<QString>("field");
+        QTest::addColumn<QJsonValue>("value");
+        QTest::newRow("missing-detail") << "stage_detail" << QJsonValue(QJsonValue::Undefined);
+        QTest::newRow("wrong-intimacy-type") << "intimacy" << QJsonValue("54");
+        QTest::newRow("unknown-stage") << "stage" << QJsonValue("未知阶段");
+        QTest::newRow("inconsistent-score") << "intimacy" << QJsonValue(100);
+        QTest::newRow("missing-thresholds") << "thresholds" << QJsonValue(QJsonValue::Undefined);
+    }
+    void relationshipMalformedSnapshotHidesNumbers() {
+        QFETCH(QString, field);
+        QFETCH(QJsonValue, value);
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.event(frame("relationship:data", bridge.request("relationship:get"), relationshipSnapshot()));
+        QVERIFY(bridge.relationshipStatus().contains("intimacy"));
+        auto malformed = relationshipSnapshot();
+        malformed.insert(field, value);
+        bridge.event(frame("relationship:data", bridge.request("relationship:get"), malformed));
+        QCOMPARE(bridge.relationshipStatus(), (QVariantMap{{"status", "unavailable"},
+            {"message", "关系状态暂时读不到"}}));
+    }
+    void relationshipReadsOnPageEntryAndNormalReplyOnly() {
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        activeChat(bridge);
+        auto frames = sentFrames(bridge);
+        bridge.setRelationshipPageVisible(true);
+        bridge.setRelationshipPageVisible(true);
+        QCOMPARE(commandCount(*frames, "relationship:get"), 1);
+        bridge.event(frame("chat:done", "chat-current", {}));
+        bridge.event(frame("chat:status", "chat-current", {{"state", "done"}}));
+        QCOMPARE(commandCount(*frames, "relationship:get"), 2);
+        bridge.setRelationshipPageVisible(false);
+        activeChat(bridge);
+        frames = sentFrames(bridge);
+        bridge.event(frame("chat:done", "chat-current", {}));
+        QCOMPARE(commandCount(*frames, "relationship:get"), 0);
+        activeChat(bridge);
+        frames = sentFrames(bridge);
+        bridge.setRelationshipPageVisible(true);
+        bridge.event(frame("chat:cancelled", "chat-current", {{"ok", true}}));
+        QCOMPARE(commandCount(*frames, "relationship:get"), 1);
+    }
+    void relationshipSwitchClearsAndRejectsForeignReceipts() {
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        bridge.event(frame("relationship:data", bridge.request("relationship:get"), relationshipSnapshot()));
+        const auto oldId = bridge.request("relationship:get");
+        bridge.m_state["personas"] = QVariantMap{{"profiles", QVariantList{
+            QVariantMap{{"id", "persona-next"}, {"name", "晴"}, {"active", false}}}}};
+        bridge.selectPersona("persona-next");
+        QVERIFY(bridge.personaChanging());
+        const QVariantMap loading{{"status", "loading"}, {"message", "正在读取…"}};
+        QCOMPARE(bridge.relationshipStatus(), loading);
+        bridge.event(frame("relationship:data", oldId, relationshipSnapshot(2, 152)));
+        QCOMPARE(bridge.relationshipStatus(), loading);
+        bridge.event(frame("persona:scope", {}, {{"persona_id", "persona-next"}, {"epoch", 4},
+            {"fingerprint", "next-proof"}}));
+        const auto id = lastCommand(*frames, "relationship:get")["requestId"].toString();
+        QVERIFY(!id.isEmpty() && id != oldId);
+        bridge.event(frame("relationship:data", oldId, relationshipSnapshot(2, 152)));
+        auto foreign = relationshipSnapshot(2, 152);
+        foreign["persona_id"] = "persona-current";
+        bridge.event(frame("relationship:data", id, foreign));
+        QCOMPARE(bridge.relationshipStatus(), loading);
+        bridge.event(frame("relationship:data", id, relationshipSnapshot(3, 700)));
+        QCOMPARE(bridge.relationshipStatus().value("stage").toString(), QString("关系：信任期"));
+        QCOMPARE(bridge.relationshipStatus().value("requestId").toString(), id);
+    }
+    void relationshipReconnectIgnoresOldGeneration() {
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        const auto oldId = bridge.request("relationship:get");
+        const auto persona = bridge.m_persona;
+        const auto generation = bridge.generation();
+        bridge.m_connected = false;
+        bridge.acceptFrame({{"kind", "ready"}, {"schema", "reverie.bridge.stdio.ready.v4"},
+            {"protocolVersion", 4}, {"pid", QJsonValue(bridge.m_process.processId())},
+            {"secretSha256", QString::fromLatin1(QCryptographicHash::hash(
+                bridge.m_secret.toUtf8(), QCryptographicHash::Sha256).toHex())},
+            {"personaId", persona["persona_id"]}, {"personaEpoch", persona["epoch"]},
+            {"personaFingerprint", persona["fingerprint"]}, {"recoveryState", "clean"},
+            {"writesBlocked", false}, {"runtimeWritable", true}});
+        QCOMPARE(bridge.generation(), generation + 1);
+        const auto id = lastCommand(*frames, "relationship:get")["requestId"].toString();
+        QVERIFY(!id.isEmpty() && id != oldId);
+        bridge.event(frame("relationship:data", oldId, relationshipSnapshot()));
+        QCOMPARE(bridge.relationshipStatus().value("status").toString(), QString("loading"));
+        bridge.event(frame("relationship:data", id, relationshipSnapshot(2, 152)));
+        QCOMPARE(bridge.relationshipStatus().value("requestId").toString(), id);
+    }
+    void relationshipFailureAndTimeoutUseOnlyOwnLastValue_data() {
+        QTest::addColumn<bool>("hasPrevious");
+        QTest::addColumn<bool>("timeout");
+        QTest::newRow("failed-first-read") << false << false;
+        QTest::newRow("first-read-times-out") << false << true;
+        QTest::newRow("failed-refresh-keeps-value") << true << false;
+        QTest::newRow("refresh-times-out-keeps-value") << true << true;
+    }
+    void relationshipFailureAndTimeoutUseOnlyOwnLastValue() {
+        QFETCH(bool, hasPrevious);
+        QFETCH(bool, timeout);
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        if (hasPrevious)
+            bridge.event(frame("relationship:data", bridge.request("relationship:get"), relationshipSnapshot()));
+        auto expected = bridge.relationshipStatus();
+        const auto id = bridge.request("relationship:get");
+        if (timeout)
+            bridge.expirePending(id);
+        else
+            bridge.event(frame("relationship:data", id, {{"error", "unavailable"}, {"intimacy", 0}}));
+        if (hasPrevious)
+            expected["refreshNote"] = "没能更新，显示的是上一次读到的";
+        QCOMPARE(bridge.relationshipStatus(), expected);
+        bridge.event(frame("relationship:data", id, relationshipSnapshot(2, 152)));
+        QCOMPARE(bridge.relationshipStatus(), expected);
+    }
+    void relationshipViewAt760() {
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.event(frame("relationship:data", bridge.request("relationship:get"), relationshipSnapshot()));
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                TaskPanel { anchors.fill: parent; page: "character" }
+            }
+        )qml", QUrl("qrc:/xiangqi/relationship-status-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        auto *view = root->findChild<QQuickItem *>("memoryPageScroll");
+        auto *block = root->findChild<QQuickItem *>("relationshipStatus");
+        auto *detail = root->findChild<QQuickItem *>("relationshipDetail");
+        QVERIFY(view && block && detail);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        QTRY_VERIFY(block->width() > 0);
+        const auto extent = block->mapRectToItem(view, block->boundingRect());
+        QVERIFY(extent.left() >= 0 && extent.right() <= view->width());
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        QCOMPARE(detail->property("text").toString(), QString("<b>保持原文</b>"));
+        QCOMPARE(detail->property("textFormat").toInt(), int(Qt::PlainText));
+    }
     void prioritySaveUsesCurrentTransportIdentityAndReturnedValue_data() {
         QTest::addColumn<QString>("mode");
         QTest::newRow("matched-save") << "matched";
@@ -883,6 +1486,106 @@ class RuntimeBridgeTest : public QObject {
         QVERIFY(!bridge.chatFeedback().contains("cancel"));
         QVERIFY(!bridge.chatFeedback().value("text").toString().contains("raw terminal"));
     }
+    void chatFailureReasonFeedback_data() {
+        QTest::addColumn<QJsonValue>("code");
+        QTest::addColumn<QJsonValue>("http");
+        QTest::addColumn<QString>("status");
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QString>("eventCode");
+        QTest::addColumn<bool>("preview");
+        QTest::addColumn<QString>("providerName");
+        QTest::addColumn<QString>("frameType");
+        const QJsonValue missing(QJsonValue::Undefined);
+        const QString auth = "服务拒绝了密钥，请检查 API Key。";
+        const QString connection = "无法连接到服务或连接超时；结果未知，未自动重试。";
+        const QString content = "服务返回的内容无法显示；未自动重试。";
+        const QList<QPair<QString, QString>> messages{
+            {"PROVIDER_UNAUTHORIZED", auth}, {"PROVIDER_AUTH_FAILED", auth},
+            {"PROVIDER_RATE_LIMITED", "服务暂时限流；未自动重试。"},
+            {"PROVIDER_TIMEOUT", connection}, {"PROVIDER_UNREACHABLE", connection},
+            {"PROVIDER_CONNECTION_FAILED", connection},
+            {"PROVIDER_INVALID_RESPONSE", content}, {"PROVIDER_INVALID_RESPONSE_SCHEMA", content},
+            {"PROVIDER_EMPTY_RESPONSE", content}, {"PROVIDER_REASONING_ONLY_RESPONSE", content},
+            {"PROVIDER_TOOL_ONLY_RESPONSE", content}, {"PROVIDER_OUTPUT_TRUNCATED", content},
+            {"PROVIDER_CONTENT_FILTERED", content}};
+        const auto add = [&](const QString &name, QJsonValue failure, QJsonValue httpStatus,
+                             const QString &state, const QString &expected, const QString &event,
+                             bool inPreview = true, const QString &provider = "custom", const QString &type = "chat:state") {
+            QTest::newRow(name.toUtf8().constData()) << failure << httpStatus << state << expected << event << inPreview << provider << type;
+        };
+        for (const QString &state : QStringList{"failed", "failed_uncertain"}) {
+            const QString fallback = state == "failed" ? "本次回复失败，可检查回复服务后重新发送。" : "回复结果未知；未自动重试。";
+            for (const auto &entry : messages)
+                add(entry.first + '-' + state, entry.first, 401, state, entry.second + "（HTTP 401）", entry.first);
+            add("rejected-499-" + state, "PROVIDER_REJECTED", 499, state, "服务拒绝了这次请求；未自动重试。（HTTP 499）", "PROVIDER_REJECTED");
+            add("rejected-500-" + state, "PROVIDER_REJECTED", 500, state, "服务出错；结果未知，未自动重试。（HTTP 500）", "PROVIDER_REJECTED");
+            add("unknown-" + state, "PROVIDER_FUTURE_REASON", missing, state, fallback, "PROVIDER_FUTURE_REASON");
+            add("missing-" + state, missing, missing, state, fallback, {});
+            add("missing-with-http-" + state, missing, 401, state, fallback + "（HTTP 401）", {});
+            add("null-code-" + state, QJsonValue(QJsonValue::Null), missing, state, fallback, {});
+            add("lowercase-" + state, "provider_unauthorized", missing, state, fallback, {});
+            add("non-string-code-" + state, 401, missing, state, fallback, {});
+            add("trailing-newline-" + state, "PROVIDER_TIMEOUT\n", missing, state, fallback, {});
+            add("overlong-code-" + state, "PROVIDER_" + QString(49, 'A'), missing, state, fallback, {});
+            add("rejected-missing-status-" + state, "PROVIDER_REJECTED", missing, state, fallback, "PROVIDER_REJECTED");
+        }
+        const QList<QPair<QString, QJsonValue>> invalidHttp{
+            {"99", 99}, {"600", 600}, {"true", true}, {"false", false},
+            {"string", "401"}, {"fractional", 401.5}, {"null", QJsonValue(QJsonValue::Null)}, {"missing", missing}};
+        for (const auto &entry : invalidHttp)
+            add("invalid-http-" + entry.first, "PROVIDER_UNAUTHORIZED", entry.second, "failed_uncertain", auth, "PROVIDER_UNAUTHORIZED");
+        add("http-lower-bound", "PROVIDER_UNAUTHORIZED", 100, "failed", auth + "（HTTP 100）", "PROVIDER_UNAUTHORIZED");
+        add("http-upper-bound", "PROVIDER_UNAUTHORIZED", 599, "failed", auth + "（HTTP 599）", "PROVIDER_UNAUTHORIZED");
+        add("non-preview", "PROVIDER_UNAUTHORIZED", 401, "failed_uncertain", auth + "（HTTP 401）", "PROVIDER_UNAUTHORIZED", false);
+        add("legacy-status", "PROVIDER_UNAUTHORIZED", 401, "failed", "本次回复失败，可检查回复服务后重新发送。", {}, true, "custom", "chat:status");
+        for (const QString &provider : QStringList{"", "openai", "anthropic", "gemini", "grok", "deepseek", "kimi", "glm", "ollama", "custom"})
+            add("service-number-" + (provider.isEmpty() ? QString("unknown") : provider), "PROVIDER_AUTH_FAILED", 401,
+                "failed", auth + "（HTTP 401）", "PROVIDER_AUTH_FAILED", true, provider);
+    }
+    void chatFailureReasonFeedback() {
+        QFETCH(QJsonValue, code); QFETCH(QJsonValue, http); QFETCH(QString, status); QFETCH(QString, text);
+        QFETCH(QString, eventCode); QFETCH(bool, preview); QFETCH(QString, providerName); QFETCH(QString, frameType);
+        QTemporaryDir data;
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge); activeChat(bridge);
+        bridge.m_previewMode = preview;
+        bridge.m_state["provider"] = QVariantMap{{"provider", providerName}};
+        const auto subject = bridge.m_chatId;
+        QJsonObject value{{"request_id", subject}, {"state", status}, {"error", "PRIVATE_FAILURE_CANARY <raw backend details>"}};
+        if (!code.isUndefined()) value["failure_code"] = code;
+        if (!http.isUndefined()) value["http_status"] = http;
+        QSignalSpy diagnostics(&bridge, &RuntimeBridge::previewEvent);
+        QSignalSpy changes(&bridge, &RuntimeBridge::changed);
+        const auto before = bridge.chatFeedback();
+        auto stale = value; stale["persona_id"] = "persona-old";
+        bridge.event(frame(frameType, subject, stale));
+        QCOMPARE(bridge.chatFeedback(), before);
+        QCOMPARE(changes.count(), 0);
+        QCOMPARE(diagnostics.count(), 0);
+        QVERIFY(bridge.busy());
+        bridge.event(frame(frameType, subject, value));
+        QCOMPARE(bridge.chatFeedback().value("status").toString(), status);
+        QCOMPARE(bridge.chatFeedback().value("text").toString(), text);
+        QCOMPARE(bridge.chatFeedback().value("requestId").toString(), subject);
+        QVERIFY(!bridge.chatFeedback().value("text").toString().contains("PRIVATE_FAILURE_CANARY"));
+        QVERIFY(!bridge.busy());
+        QVERIFY(bridge.m_chatId.isEmpty());
+        QVERIFY(!bridge.m_pending.contains(subject));
+        const int events = preview && !eventCode.isEmpty() ? 1 : 0;
+        QCOMPARE(diagnostics.count(), events);
+        if (events) {
+            QCOMPARE(diagnostics[0][0].toString(), QString("service_failure"));
+            QCOMPARE(diagnostics[0][1].toString(), eventCode);
+            const QStringList providers{"openai", "anthropic", "gemini", "grok", "deepseek", "kimi", "glm", "ollama", "custom"};
+            QCOMPARE(diagnostics[0][2].toLongLong(), qint64(providers.indexOf(providerName) + 1));
+        }
+        const auto settled = bridge.chatFeedback();
+        const int commands = bridge.m_commands;
+        bridge.event(frame(frameType, subject, value));
+        QCOMPARE(bridge.chatFeedback(), settled);
+        QCOMPARE(diagnostics.count(), events);
+        QCOMPARE(bridge.m_commands, commands);
+    }
     void terminalChatStatesSettleOnlyCurrentRequest_data() {
         QTest::addColumn<QString>("status");
         for (const auto &status : {"failed", "failed_uncertain", "done", "cancelled"})
@@ -915,6 +1618,43 @@ class RuntimeBridgeTest : public QObject {
         QCOMPARE(bridge.messages(), before);
         QCOMPARE(bridge.chatFeedback(), feedbackBefore);
         QCOMPARE(bridge.m_commands, commandsBefore);
+    }
+    void completedChatKeepsHistoryPendingUntilItsResult_data() {
+        QTest::addColumn<QString>("eventType");
+        QTest::newRow("chat-done") << QString("chat:done");
+        QTest::newRow("chat-state-done") << QString("chat:state");
+    }
+    void completedChatKeepsHistoryPendingUntilItsResult() {
+        QFETCH(QString, eventType);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        activeChat(bridge);
+        const auto historyPending = [&bridge] {
+            bool pending = false;
+            for (const auto &value : bridge.diagnostics().value("pendingCommands").toList())
+                pending = pending || value.toMap().value("command").toString() == "chat:history";
+            return pending;
+        };
+        QVERIFY(bridge.busy());
+        QVERIFY(!historyPending());
+        const auto subject = bridge.m_chatId;
+        bridge.event(frame(eventType, subject, {{"request_id", subject}, {"state", "done"}}));
+
+        QVERIFY(!bridge.busy());
+        QVERIFY(historyPending());
+        const auto historyId = controlId(bridge, "chat:history");
+        QVERIFY(!historyId.isEmpty());
+        const QJsonArray items{QJsonObject{{"id", "history-reply"}, {"role", "assistant"},
+                                          {"content", "已保存的回复"}}};
+        bridge.event(frame("chat:history:result", historyId, {{"items", items}}));
+
+        QVERIFY(!bridge.busy());
+        QVERIFY(!historyPending());
+        QVERIFY(!bridge.m_pending.contains(historyId));
+        QCOMPARE(bridge.messages(), items.toVariantList());
+        QCOMPARE(bridge.m_process.state(), QProcess::NotRunning);
     }
     void progressStatesKeepCorrelationAndTimerDoesNotRetry() {
         QTemporaryDir data;
@@ -8532,6 +9272,301 @@ class RuntimeBridgeTest : public QObject {
         QCOMPARE(frames->size(), before);
         QCOMPARE(memoryReceipt(bridge, "action"), action);
     }
+    void avatarRemovalRejectsEveryBlockedState_data() {
+        QTest::addColumn<QString>("condition");
+        for (const auto &condition : QStringList{"current", "only-current", "damaged", "busy", "candidate",
+                 "readonly", "disconnected", "stopping", "pending", "refreshing", "unknown", "invalid-id", "empty-id", "duplicate-id"})
+            QTest::newRow(qPrintable(condition)) << condition;
+    }
+    void avatarRemovalRejectsEveryBlockedState() {
+        QFETCH(QString, condition);
+        QTemporaryDir data; QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python")); online(bridge);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        QVariantMap first{{"id", active}, {"name", "当前形象"}, {"status", "ready"}};
+        QVariantMap second{{"id", other}, {"name", "其他形象"}, {"status", condition == "damaged" ? "unavailable" : "ready"}};
+        QVariantList records{first, second};
+        QString target = other;
+        if (condition == "current" || condition == "only-current") target = active;
+        if (condition == "only-current") records = {first};
+        if (condition == "duplicate-id") records.append(second);
+        bridge.m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", records}};
+        if (condition == "busy") bridge.m_avatarBusy = true;
+        if (condition == "candidate") bridge.m_candidate = {{"importId", "unconfirmed"}};
+        if (condition == "readonly") bridge.m_runtimeWritable = false;
+        if (condition == "disconnected") bridge.m_connected = false;
+        if (condition == "stopping") bridge.m_stopping = true;
+        if (condition == "pending" || condition == "refreshing") bridge.m_avatarRemovalFeedback = {{"status", condition}};
+        if (condition == "unknown") target = "33333333-3333-4333-8333-333333333333";
+        if (condition == "invalid-id") target = "../outside";
+        if (condition == "empty-id") target.clear();
+        const auto blocker = bridge.modelRemovalBlocker(target);
+        QVERIFY(!blocker.isEmpty());
+        if (condition == "current" || condition == "only-current") QCOMPARE(blocker, QString("先切换到其他形象，再删除。"));
+        else if (condition == "damaged") QCOMPARE(blocker, QString("这个形象的记录已损坏，暂时不能删除。"));
+        else if (QStringList{"busy", "candidate", "readonly", "disconnected", "stopping", "pending", "refreshing"}.contains(condition))
+            QCOMPARE(blocker, QString("请等待当前操作完成。"));
+        const auto processes = bridge.findChildren<QProcess *>().size();
+        bridge.removeModel(target);
+        QCoreApplication::processEvents();
+        QCOMPARE(bridge.findChildren<QProcess *>().size(), processes);
+        QCOMPARE(bridge.diagnostics().value("avatarJobs").toMap().value("dispatched").toULongLong(), qulonglong(0));
+        QCOMPARE(bridge.m_process.state(), QProcess::NotRunning);
+        QCOMPARE(bridge.m_state.value("avatars").toMap().value("records").toList(), records);
+    }
+    void avatarRemovalProcessesOnceAndKeepsCurrentModel_data() {
+        QTest::addColumn<QString>("outcome");
+        for (const auto &outcome : QStringList{"success", "render-failed", "remove-error", "readback-error", "failed-start"})
+            QTest::newRow(qPrintable(outcome)) << outcome;
+    }
+    void avatarRemovalProcessesOnceAndKeepsCurrentModel() {
+        QFETCH(QString, outcome);
+        QTemporaryDir data; QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python")); online(bridge);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        const QString entry = data.filePath("current.model3.json");
+        const QString name = "<b>待删除形象</b>";
+        const QJsonObject first{{"id", active}, {"name", "当前形象"}, {"status", "ready"}};
+        const QJsonObject second{{"id", other}, {"name", name}, {"status", "ready"}};
+        bridge.m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", QJsonArray{first, second}.toVariantList()}};
+        bridge.m_avatarPath = entry; bridge.m_avatarReloadToken = 4;
+        bridge.m_avatarRender = outcome == "render-failed" ? RuntimeBridge::AvatarRender::Failed : RuntimeBridge::AvatarRender::Ready;
+        bridge.m_avatarState = outcome == "render-failed" ? "合成载入失败" : "形象已就绪";
+        const auto helperDir = data.filePath(".tools/node/bin");
+        if (outcome != "failed-start") {
+            QVERIFY(QDir().mkpath(helperDir));
+            const auto write = [](const QString &path, const QByteArray &bytes) {
+                QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+            };
+            const bool succeeds = outcome == "success" || outcome == "render-failed";
+            const QJsonObject success{{"ok", true}, {"entryPath", entry},
+                {"list", QJsonObject{{"activeId", active}, {"records", QJsonArray{first}}}}};
+            const QJsonObject unchanged{{"ok", true}, {"entryPath", entry},
+                {"list", QJsonObject{{"activeId", active}, {"records", QJsonArray{first, second}}}}};
+            const QJsonObject failure{{"ok", false}, {"error", "PRIVATE_AVATAR_ERROR"}};
+            QVERIFY(write(helperDir + "/remove.json", QJsonDocument(succeeds ? success : failure).toJson(QJsonDocument::Compact)));
+            QVERIFY(write(helperDir + "/list.json", QJsonDocument(outcome == "readback-error" ? failure : unchanged).toJson(QJsonDocument::Compact)));
+            QByteArray script = "#!/bin/sh\nbase=$(/usr/bin/dirname \"$0\")\ninput=$(/bin/cat)\nprintf '%s\\n' \"$input\" >> \"$base/jobs.jsonl\"\ncase \"$input\" in\n";
+            script += "  *'\"action\":\"remove\"'*) /bin/cat \"$base/remove.json\"; exit " + QByteArray(succeeds ? "0" : "1") + " ;;\n";
+            script += "  *'\"action\":\"list\"'*) /bin/cat \"$base/list.json\"; exit " + QByteArray(outcome == "readback-error" ? "1" : "0") + " ;;\n";
+            script += "  *) exit 2 ;;\nesac\n";
+            QVERIFY(write(helperDir + "/node", script));
+            QVERIFY(QFile::setPermissions(helperDir + "/node", QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        }
+        QVERIFY(bridge.modelRemovalBlocker(other).isEmpty());
+        bridge.removeModel(other);
+        if (outcome != "failed-start")
+            QCOMPARE(bridge.avatarRemovalFeedback().value("status").toString(), QString("pending"));
+        if (bridge.avatarBusy() || QStringList{"pending", "refreshing"}.contains(bridge.avatarRemovalFeedback().value("status").toString()))
+            bridge.removeModel(other);
+        const bool succeeds = outcome == "success" || outcome == "render-failed";
+        const int expectedJobs = succeeds ? 1 : 2;
+        QTRY_COMPARE(bridge.diagnostics().value("avatarJobs").toMap().value("completed").toInt(), expectedJobs);
+        QVERIFY(!bridge.avatarBusy());
+        const auto feedback = bridge.avatarRemovalFeedback();
+        QCOMPARE(feedback.value("status").toString(), succeeds ? QString("success") : QString("error"));
+        QCOMPARE(feedback.value("id").toString(), other);
+        QCOMPARE(feedback.value("name").toString(), name);
+        QCOMPARE(feedback.value("listReloaded").toBool(), succeeds || outcome == "remove-error");
+        if (succeeds) QCOMPARE(feedback.value("text").toString(), "已删除「" + name + "」。");
+        if (outcome == "remove-error") QCOMPARE(feedback.value("text").toString(), QString("形象没有删除，列表已重新读取。"));
+        QCOMPARE(bridge.avatarPath(), entry);
+        QCOMPARE(bridge.avatarReloadToken(), outcome == "render-failed" ? 5 : 4);
+        QCOMPARE(bridge.avatarState(), outcome == "render-failed" ? QString("正在载入形象…") : QString("形象已就绪"));
+        const auto jobs = bridge.diagnostics().value("avatarJobs").toMap();
+        QCOMPARE(jobs.value("dispatched").toInt(), expectedJobs);
+        QCOMPARE(jobs.value("started").toInt(), outcome == "failed-start" ? 0 : expectedJobs);
+        QVERIFY(!jobs.value("truncated").toBool());
+        const auto records = jobs.value("records").toList(); QCOMPARE(records.size(), expectedJobs);
+        for (int index = 0; index < records.size(); ++index) {
+            const auto record = records[index].toMap();
+            QCOMPARE(record.value("serial").toInt(), index + 1);
+            QCOMPARE(record.value("action").toString(), index == 0 ? QString("remove") : QString("list"));
+            QCOMPARE(record.value("id").toString(), index == 0 ? other : QString());
+            QCOMPARE(record.value("status").toString(), outcome == "failed-start" ? QString("failed-to-start") : QString("completed"));
+            if (outcome == "failed-start") QVERIFY(record.value("exitCode").isNull());
+            else QCOMPARE(record.value("exitCode").toInt(), index == 0 ? (succeeds ? 0 : 1) : (outcome == "readback-error" ? 1 : 0));
+            QCOMPARE(record.value("ok").toBool(), index == 0 ? succeeds : outcome == "remove-error");
+        }
+        if (succeeds) {
+            QCOMPARE(records[0].toMap().value("activeId").toString(), active);
+            QCOMPARE(records[0].toMap().value("recordIds").toStringList(), QStringList{active});
+        }
+        const auto diagnostic = QJsonDocument::fromVariant(jobs).toJson();
+        QVERIFY(!diagnostic.contains(entry.toUtf8()));
+        QVERIFY(!diagnostic.contains("PRIVATE_AVATAR_ERROR"));
+        if (outcome != "failed-start") {
+            QFile log(helperDir + "/jobs.jsonl"); QVERIFY(log.open(QIODevice::ReadOnly));
+            const auto lines = log.readAll().trimmed().split('\n'); QCOMPARE(lines.size(), expectedJobs);
+            QCOMPARE(QJsonDocument::fromJson(lines[0]).object()["action"].toString(), QString("remove"));
+            if (!succeeds) QCOMPARE(QJsonDocument::fromJson(lines[1]).object()["action"].toString(), QString("list"));
+        }
+    }
+    void worldbookFileDroppedFieldAllowlist_data() {
+        QTest::addColumn<QJsonObject>("dropped");
+        QTest::addColumn<bool>("accepted");
+        for (const auto &key : QStringList{"position", "selectiveLogic", "keysecondary", "probability"})
+            QTest::newRow(qPrintable(key)) << QJsonObject{{key, 1}} << true;
+        QTest::newRow("three-new-fields") << QJsonObject{{"position", 1}, {"selectiveLogic", 2}, {"keysecondary", 3}} << true;
+        QTest::newRow("unknown-field") << QJsonObject{{"PRIVATE_UNLISTED_SETTING", 1}} << false;
+        QTest::newRow("known-plus-unknown") << QJsonObject{{"position", 1}, {"PRIVATE_UNLISTED_SETTING", 1}} << false;
+    }
+    void worldbookFileDroppedFieldAllowlist() {
+        QFETCH(QJsonObject, dropped); QFETCH(bool, accepted);
+        QTemporaryDir data; QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python")); online(bridge);
+        const auto frames = sentFrames(bridge);
+        auto archive = personaScope(bridge);
+        archive["ok"] = true; archive["revision"] = 4;
+        archive["archive"] = QJsonObject{{"worldBooks", QJsonArray{}}};
+        bridge.event(frame("archive:result", bridge.request("archive:get"), archive));
+        const auto source = data.filePath("worldbook.json");
+        QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("{}"), qint64(2)); file.close();
+        bridge.inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        const auto sent = lastControl(*frames, "worldbook:file:inspect");
+        const auto id = sent["requestId"].toString(); QVERIFY(!id.isEmpty());
+        const auto before = frames->size();
+        bridge.acceptFrame(controlResult(id, "worldbook:file:inspect", {
+            {"ok", true}, {"book_name", "设置报告夹具"}, {"importable_entry_count", 3},
+            {"skipped", QJsonObject{}}, {"dropped_fields", dropped}, {"disabled_regex_entry_count", 0},
+            {"cleaned_entry_count", 0}, {"sha256", QString(64, 'a')}, {"file_bytes", 2}}));
+        QCOMPARE(bridge.worldbookFileState().value("status").toString(), accepted ? QString("confirmation") : QString("unknown"));
+        if (accepted)
+            QCOMPARE(QJsonObject::fromVariantMap(bridge.worldbookFileState().value("dropped_fields").toMap()), dropped);
+        else
+            QVERIFY(!QJsonDocument::fromVariant(bridge.worldbookFileState()).toJson().contains("PRIVATE_UNLISTED_SETTING"));
+        QCOMPARE(frames->size(), before);
+        QCOMPARE(bridge.m_process.state(), QProcess::NotRunning);
+    }
+    void worldbookFileControlLifecycle_data() {
+        QTest::addColumn<QString>("operation"); QTest::addColumn<QString>("outcome");
+        for (const auto &operation : QStringList{"inspect", "import", "export"})
+            for (const auto &outcome : QStringList{"success", "refused", "extra-body", "bad-count", "timeout", "not-sent", "old-generation", "old-persona"})
+                QTest::newRow(qPrintable(operation + "-" + outcome)) << operation << outcome;
+        QTest::newRow("import-archive-unavailable") << QString("import") << QString("archive-unavailable");
+    }
+    void worldbookFileControlLifecycle() {
+        QFETCH(QString, operation); QFETCH(QString, outcome);
+        QTemporaryDir data; QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python")); online(bridge);
+        const auto frames = sentFrames(bridge);
+        const auto book = QJsonObject{{"id", "file-book"}, {"name", "文件书"},
+            {"entries", QJsonArray{QJsonObject{{"id", "file-entry"}, {"content", "PRIVATE_FILE_BODY"}}}}};
+        const auto readArchive = [&](int revision, const QJsonObject &value) {
+            auto payload = personaScope(bridge);
+            payload["ok"] = true; payload["revision"] = revision;
+            payload["archive"] = QJsonObject{{"worldBooks", QJsonArray{value}}};
+            bridge.event(frame("archive:result", bridge.request("archive:get"), payload));
+        };
+        readArchive(4, book);
+        QVERIFY(bridge.worldbookFileAvailable());
+        const auto source = data.filePath("source.json"), target = data.filePath("target.json");
+        QFile sourceFile(source); QVERIFY(sourceFile.open(QIODevice::WriteOnly));
+        QVERIFY(sourceFile.write("{}") == 2); sourceFile.close();
+        const auto inspected = QJsonObject{{"ok", true}, {"book_name", "新文件书"}, {"importable_entry_count", 1},
+            {"skipped", QJsonObject{{"empty", 1}}}, {"dropped_fields", QJsonObject{{"probability", 1}}},
+            {"disabled_regex_entry_count", 1}, {"cleaned_entry_count", 1},
+            {"sha256", QString(64, 'a')}, {"file_bytes", 2}};
+        if (operation == "import") {
+            bridge.inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+            const auto id = lastControl(*frames, "worldbook:file:inspect")["requestId"].toString();
+            bridge.acceptFrame(controlResult(id, "worldbook:file:inspect", inspected));
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("confirmation"));
+        }
+        if (outcome == "not-sent") bridge.m_frameWriter = [](const QByteArray &) { return qint64(-1); };
+        if (operation == "inspect") bridge.inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        else if (operation == "import") bridge.confirmWorldbookFileImport(4);
+        else bridge.exportWorldbookFile(QUrl::fromLocalFile(target), "file-book", 4);
+        if (outcome == "not-sent") {
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("error"));
+            QVERIFY(!bridge.worldbookFileBusy());
+            return;
+        }
+        const auto command = "worldbook:file:" + operation;
+        const auto sent = lastControl(*frames, command);
+        const auto id = sent["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QStringList fields{"kind", "schema", "type", "requestId", "path", "persona_id", "persona_epoch",
+                           "persona_fingerprint", "archive_revision"};
+        if (operation == "import") fields += QStringList{"sha256", "file_bytes"};
+        if (operation == "export") fields += QStringList{"world_book_id"};
+        fields.sort(); QCOMPARE(sent.keys(), fields);
+        QCOMPARE(sent["archive_revision"].toInt(), 4);
+        QCOMPARE(sent["persona_id"], bridge.m_persona["persona_id"]);
+        QCOMPARE(sent["persona_epoch"], bridge.m_persona["epoch"]);
+        QCOMPARE(sent["persona_fingerprint"], bridge.m_persona["fingerprint"]);
+        QCOMPARE(sent["path"].toString(), operation == "export" ? target : source);
+        QVERIFY(bridge.worldbookFileBusy());
+        QVERIFY(!bridge.worldbookFileAvailable());
+        const int dispatched = frames->size();
+        bridge.inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        bridge.exportWorldbookFile(QUrl::fromLocalFile(target), "file-book", 4);
+        bridge.selectPersona("another-persona");
+        QVERIFY(bridge.request("persona:activate", {{"profile_id", "another-persona"}}).isEmpty());
+        bridge.choosePersonaCard(QUrl::fromLocalFile(source));
+        QCOMPARE(frames->size(), dispatched);
+        if (outcome == "timeout") {
+            bridge.expirePending(id);
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("unknown"));
+            QCOMPARE(frames->size(), dispatched);
+            return;
+        }
+        auto result = operation == "inspect" ? inspected : operation == "import"
+            ? QJsonObject{{"ok", true}, {"revision", 5}, {"world_book_id", "new-file-book"},
+                {"book_name", "新文件书"}, {"imported_entry_count", 1}}
+            : QJsonObject{{"ok", true}, {"world_book_id", "file-book"}, {"book_name", "文件书"},
+                {"entry_count", 1}, {"file_name", "target.json"}, {"bytes", 42}, {"sha256", QString(64, 'b')}};
+        if (outcome == "refused")
+            result = {{"ok", false}, {"code", "archive_changed"}, {"error", "PRIVATE_FILE_BODY"}};
+        else if (outcome == "archive-unavailable")
+            result = {{"ok", false}, {"code", "archive_unavailable"}, {"error", "PRIVATE_FILE_BODY"}};
+        else if (outcome == "extra-body") result["archive"] = QJsonObject{{"content", "PRIVATE_FILE_BODY"}};
+        else if (outcome == "bad-count")
+            result[operation == "inspect" ? "importable_entry_count" : operation == "import" ? "imported_entry_count" : "entry_count"] = true;
+        else if (outcome == "old-generation") ++bridge.m_generation;
+        else if (outcome == "old-persona") bridge.m_persona["epoch"] = 99;
+        bridge.acceptFrame(controlResult(id, command, result));
+        if (outcome != "success") {
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), outcome == "refused" ? QString("error") : QString("unknown"));
+            QVERIFY(!QJsonDocument::fromVariant(bridge.worldbookFileState()).toJson().contains("PRIVATE_FILE_BODY"));
+            const auto state = bridge.worldbookFileState();
+            bridge.acceptFrame(controlResult(id, command, inspected));
+            QCOMPARE(bridge.worldbookFileState(), state);
+            QCOMPARE(frames->size(), dispatched);
+            return;
+        }
+        if (operation == "inspect") {
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("confirmation"));
+            bridge.cancelWorldbookFileImport();
+            QVERIFY(!bridge.worldbookFileBusy());
+        } else if (operation == "import") {
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("imported"));
+            auto imported = book; imported["id"] = "new-file-book"; imported["name"] = "新文件书";
+            readArchive(5, imported);
+            bridge.acknowledgeWorldbookFileImportReadback("new-file-book", 5, true);
+            QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("success"));
+            QCOMPARE(bridge.worldbookFileState().value("selectedWorldBookId").toString(), QString("new-file-book"));
+        } else QCOMPARE(bridge.worldbookFileState().value("status").toString(), QString("success"));
+        QCOMPARE(bridge.m_process.state(), QProcess::NotRunning);
+    }
+    void worldbookFileStaleRevisionAndEmptyBookRefuseDispatch() {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python")); online(bridge);
+        const auto frames = sentFrames(bridge);
+        auto archive = personaScope(bridge);
+        archive["ok"] = true; archive["revision"] = 4;
+        archive["archive"] = QJsonObject{{"worldBooks", QJsonArray{QJsonObject{{"id", "empty"},
+            {"name", "空书"}, {"entries", QJsonArray{}}}}}};
+        bridge.event(frame("archive:result", bridge.request("archive:get"), archive));
+        bridge.exportWorldbookFile(QUrl::fromLocalFile(data.filePath("empty.json")), "empty", 4);
+        QCOMPARE(bridge.worldbookFileState().value("code").toString(), QString("empty_book"));
+        bridge.inspectWorldbookFile(QUrl::fromLocalFile(data.filePath("missing.json")), 3);
+        QCOMPARE(controlCount(*frames, "worldbook:file:inspect"), 0);
+        QCOMPARE(controlCount(*frames, "worldbook:file:export"), 0);
+        QVERIFY(!QFileInfo::exists(data.filePath("empty.json")));
+    }
     void cardExportDispatchAndReceipt_data() {
         QTest::addColumn<QString>("outcome");
         for (const auto &outcome : QStringList{"book", "none", "rejected", "card_not_importable",
@@ -9013,7 +10048,4039 @@ class RuntimeBridgeTest : public QObject {
         QCOMPARE(commandCount(*frames, "persona:profile:update"), 0);
         QCOMPARE(bridge.personaProfileState().value("status").toString(), QString("error"));
     }
+
+    static QJsonArray xiangqiRedMove() {
+        return {QJsonObject{{"from", 25}, {"to", 22}}};
+    }
+
+    static QJsonArray xiangqiTwoMoves() {
+        auto moves = xiangqiRedMove();
+        moves.append(QJsonObject{{"from", 54}, {"to", 45}});
+        return moves;
+    }
+
+    static void xiangqiReceipt(RuntimeBridge &bridge, const QString &id, const QJsonArray &moves, int revision) {
+        bridge.event(frame("game_state:result", id,
+            {{"ok", true}, {"exists", true}, {"revision", revision}, {"state", moves}}));
+    }
+
+    static void openXiangqi(RuntimeBridge &bridge, const QJsonArray &moves, int revision) {
+        bridge.openPanel("activities");
+        xiangqiReceipt(bridge, controlId(bridge, "game_state:get"), moves, revision);
+    }
+
+    void xiangqiRead_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"new", "existing", "unplayable", "read-failed", "read-only"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void xiangqiRead() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        if (scenario == "read-only")
+            bridge.m_runtimeWritable = false;
+        bridge.openPanel("activities");
+        const auto get = controlId(bridge, "game_state:get");
+        QVERIFY(!get.isEmpty());
+        QCOMPARE(bridge.gameStatus(), QString("正在读取棋局…"));
+        if (scenario == "existing") {
+            xiangqiReceipt(bridge, get, xiangqiTwoMoves(), 8);
+            QCOMPARE(bridge.gameMoves(), xiangqiTwoMoves().toVariantList());
+            QCOMPARE(bridge.gameRevision(), 8);
+            QVERIFY(bridge.gameReady());
+        } else if (scenario == "unplayable") {
+            xiangqiReceipt(bridge, get, {QJsonObject{{"from", 0}, {"to", 1}}}, 6);
+            QCOMPARE(bridge.gameStatus(), QString("棋谱无法完整重放；原记录保留。可以选择重新开始。"));
+            QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanRead());
+            QVERIFY(bridge.gameCanReset());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameReset();
+            const auto reset = lastCommand(*frames, "game_state:put");
+            QCOMPARE(reset["expected_revision"].toInt(), 6);
+            QCOMPARE(reset["state"], QJsonValue(QJsonArray{}));
+            xiangqiReceipt(bridge, reset["requestId"].toString(), {}, 7);
+            QVERIFY(bridge.gameReady());
+        } else if (scenario == "read-failed") {
+            bridge.event(frame("game_state:result", get, {{"ok", false}, {"code", "module_unavailable"}}));
+            QCOMPARE(bridge.gameStatus(), QString("棋局读取失败，原记录没有改动。"));
+            QVERIFY(bridge.gameCanRead() && !bridge.gameCanReset());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameRead();
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+        } else {
+            bridge.event(frame("game_state:result", get,
+                {{"ok", true}, {"exists", false}, {"revision", 0}, {"state", QJsonValue::Null}}));
+            if (scenario == "read-only") {
+                QVERIFY(!bridge.gameReady() && !bridge.gameCanReset());
+                bridge.gameReset();
+                bridge.gameModeChanged(true);
+                QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+                QCOMPARE(commandCount(*frames, "game:move"), 0);
+            } else {
+                const auto put = lastCommand(*frames, "game_state:put");
+                QCOMPARE(put["expected_revision"].toInt(-1), 0);
+                QCOMPARE(put["state"], QJsonValue(QJsonArray{}));
+                QVERIFY(!bridge.gameReady());
+                xiangqiReceipt(bridge, put["requestId"].toString(), {}, 1);
+                QCOMPARE(bridge.gameRevision(), 1);
+                QVERIFY(bridge.gameReady() && !bridge.gameCanUndo());
+            }
+        }
+    }
+
+    void xiangqiSave_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"success", "conflict", "refused", "expired", "malformed"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void xiangqiSave() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openXiangqi(bridge, {}, 4);
+        bridge.gameClick(25);
+        QVERIFY(bridge.gameBoard().at(22).toMap().value("destination").toBool());
+        bridge.gameClick(22);
+        const auto put = lastCommand(*frames, "game_state:put");
+        const auto id = put["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(put["expected_revision"].toInt(), 4);
+        QCOMPARE(put["state"], QJsonValue(xiangqiRedMove()));
+        QCOMPARE(bridge.gameMoves().size(), 1);
+        QCOMPARE(bridge.gameStatus(), QString("正在保存…"));
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset());
+        if (scenario == "success") {
+            xiangqiReceipt(bridge, id, xiangqiRedMove(), 5);
+            QCOMPARE(bridge.gameRevision(), 5);
+            QVERIFY(bridge.gameCanUndo());
+        } else if (scenario == "conflict") {
+            bridge.event(frame("game_state:result", id,
+                {{"ok", false}, {"code", "conflict"}, {"exists", true},
+                 {"state", xiangqiTwoMoves()}, {"revision", 11}}));
+            QCOMPARE(bridge.gameRevision(), 11);
+            QCOMPARE(bridge.gameMoves(), xiangqiTwoMoves().toVariantList());
+            QCOMPARE(bridge.gameFeedback(), QString("棋局已在别处改动，已读取当前棋局。"));
+            QVERIFY(bridge.gameReady());
+        } else {
+            if (scenario == "expired")
+                bridge.expirePending(id);
+            else if (scenario == "malformed")
+                xiangqiReceipt(bridge, id, {}, 5);
+            else
+                bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_degraded"}}));
+            QCOMPARE(bridge.gameRevision(), 4);
+            QVERIFY(bridge.gameMoves().isEmpty() && bridge.gameCanRead());
+            QCOMPARE(bridge.gameStatus(), QString("这一步的保存结果未确认，没有自动重复提交。请重新读取。"));
+            xiangqiReceipt(bridge, id, xiangqiRedMove(), 5);
+            QVERIFY(bridge.gameMoves().isEmpty() && !bridge.gameReady());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+            bridge.gameRead();
+            xiangqiReceipt(bridge, controlId(bridge, "game_state:get"), {}, 4);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void xiangqiPracticeAndUndo() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.m_rules.evaluate("Math.random = () => 0");
+        openXiangqi(bridge, {}, 1);
+        bridge.gameClick(25);
+        bridge.gameClick(22);
+        const auto first = controlId(bridge, "game_state:put");
+        QTest::qWait(350);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        QCOMPARE(bridge.gameMoves().size(), 1);
+        xiangqiReceipt(bridge, first, xiangqiRedMove(), 2);
+        QTRY_COMPARE(commandCount(*frames, "game_state:put"), 2);
+        auto expected = xiangqiRedMove();
+        expected.append(QJsonObject{{"from", 64}, {"to", 1}});
+        QCOMPARE(lastCommand(*frames, "game_state:put")["state"], QJsonValue(expected));
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+        const auto second = controlId(bridge, "game_state:put");
+        xiangqiReceipt(bridge, second, expected, 3);
+        bridge.gameUndo();
+        QVERIFY(bridge.gameMoves().isEmpty());
+        QCOMPARE(lastCommand(*frames, "game_state:put")["expected_revision"].toInt(), 3);
+        xiangqiReceipt(bridge, second, expected, 3);
+        QVERIFY(bridge.gameMoves().isEmpty());
+        xiangqiReceipt(bridge, controlId(bridge, "game_state:put"), {}, 4);
+        QVERIFY(bridge.gameReady());
+
+        openXiangqi(bridge, xiangqiRedMove(), 5);
+        QTRY_COMPARE(commandCount(*frames, "game_state:put"), 4);
+        QCOMPARE(lastCommand(*frames, "game_state:put")["state"], QJsonValue(expected));
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void xiangqiOpponent_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"legal", "retry-legal", "twice-illegal", "refused", "error", "expired"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void xiangqiOpponent() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.m_rules.evaluate("Math.random = () => 0");
+        bridge.m_state["persona"] = QVariantMap{{"name", "<b>同伴"}};
+        bridge.gameModeChanged(true);
+        openXiangqi(bridge, xiangqiRedMove(), 3);
+        QCOMPARE(bridge.gameStatus(), QString("「<b>同伴」正在想…"));
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto request = lastCommand(*frames, "game:move");
+        QVERIFY(!request.contains("retry_note"));
+        QCOMPARE(request["game"].toString(), QString("xiangqi"));
+        const QString expected = QString::fromUtf8(R"board(坐标：x=0…8从左到右，y=0为红方底线，y=9为黑方底线。
+每格显示颜色和棋种，·为空格。
+x  0 1 2 3 4 5 6 7 8
+y=9 黑车 黑马 黑象 黑士 黑将帅 黑士 黑象 黑马 黑车
+y=8 · · · · · · · · ·
+y=7 · 黑炮 · · · · · 黑炮 ·
+y=6 黑兵卒 · 黑兵卒 · 黑兵卒 · 黑兵卒 · 黑兵卒
+y=5 · · · · · · · · ·
+y=4 · · · · · · · · ·
+y=3 红兵卒 · 红兵卒 · 红兵卒 · 红兵卒 · 红兵卒
+y=2 · 红炮 · · 红炮 · · · ·
+y=1 · · · · · · · · ·
+y=0 红车 红马 红象 红士 红将帅 红士 红象 红马 红车)board");
+        const QJsonObject expectedState{{"board_text", expected}, {"side", "黑棋"}, {"history_text", "1 手"}};
+        QCOMPARE(request["state"].toObject(), expectedState);
+
+        auto id = request["requestId"].toString();
+        const bool retry = scenario == "retry-legal" || scenario == "twice-illegal";
+        const bool legal = scenario == "legal" || scenario == "retry-legal";
+        if (retry) {
+            bridge.event(frame("game:move:result", id, {{"ok", true}, {"move", "9,9,8,8"}}));
+            const auto second = lastCommand(*frames, "game:move");
+            QVERIFY(second["requestId"].toString() != id);
+            id = second["requestId"].toString();
+            QCOMPARE(second["state"].toObject(), expectedState);
+            QCOMPARE(second["retry_note"].toString(), QString("坐标超出棋盘"));
+        }
+        if (scenario == "expired")
+            bridge.expirePending(id);
+        else if (scenario == "error")
+            bridge.event(frame("error", id, {{"code", "unavailable"}}));
+        else if (scenario == "refused")
+            bridge.event(frame("game:move:result", id, {{"ok", false}, {"error", "unavailable"}}));
+        else
+            bridge.event(frame("game:move:result", id,
+                {{"ok", true}, {"move", legal ? "0,6,0,5" : "9,9,8,8"}, {"comment", "<b>短评</b>"}}));
+        QCOMPARE(commandCount(*frames, "game:move"), retry ? 2 : 1);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        auto expectedMoves = xiangqiRedMove();
+        expectedMoves.append(legal ? QJsonObject{{"from", 54}, {"to", 45}} : QJsonObject{{"from", 64}, {"to", 1}});
+        QCOMPARE(lastCommand(*frames, "game_state:put")["state"], QJsonValue(expectedMoves));
+        QCOMPARE(bridge.gameFeedback(), legal ? QString("<b>同伴：<b>短评</b>")
+            : scenario == "twice-illegal" ? QString("「<b>同伴」这步没走成，由陪练代走。")
+                                           : QString("「<b>同伴」暂时不能走子，由陪练代走。"));
+    }
+
+    void xiangqiLateReply_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto *name : {"undo", "reset", "mode", "persona", "recovery"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void xiangqiLateReply() {
+        QFETCH(QString, action);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.gameModeChanged(true);
+        openXiangqi(bridge, xiangqiRedMove(), 3);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto old = controlId(bridge, "game:move");
+        if (action == "undo")
+            bridge.gameUndo();
+        else if (action == "reset")
+            bridge.gameReset();
+        else if (action == "mode")
+            bridge.gameModeChanged(false);
+        else if (action == "persona")
+            bridge.event(frame("bridge:persona_scope", "", {{"persona_id", "new"}, {"epoch", 4}, {"fingerprint", "new"}}));
+        else
+            bridge.event(frame("runtime:activity", "", {{"writes_blocked", true}, {"recovery_state", "recovering"},
+                                                        {"runtime_writable", false}}));
+        const int writes = commandCount(*frames, "game_state:put");
+        const auto moves = bridge.gameMoves();
+        bridge.event(frame("game:move:result", old, {{"ok", true}, {"move", "0,6,0,5"}}));
+        QCOMPARE(bridge.gameMoves(), moves);
+        QCOMPARE(commandCount(*frames, "game_state:put"), writes);
+        if (action == "undo" || action == "reset") {
+            QVERIFY(moves.isEmpty());
+            QCOMPARE(writes, 1);
+        } else {
+            QCOMPARE(writes, 0);
+        }
+        if (action == "persona") {
+            QVERIFY(moves.isEmpty());
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+            QVERIFY(bridge.gameBoard().isEmpty());
+            xiangqiReceipt(bridge, controlId(bridge, "game_state:get"), {}, 1);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void xiangqiOldSaveDoesNotReachReplacementPersona() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openXiangqi(bridge, {}, 2);
+        bridge.gameClick(25);
+        bridge.gameClick(22);
+        const auto old = controlId(bridge, "game_state:put");
+        QVERIFY(!old.isEmpty());
+        bridge.event(frame("bridge:persona_scope", "", {{"persona_id", "new"}, {"epoch", 4}, {"fingerprint", "new"}}));
+        QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+        xiangqiReceipt(bridge, old, xiangqiRedMove(), 3);
+        QCOMPARE(bridge.gameRevision(), 0);
+        QVERIFY(bridge.gameMoves().isEmpty());
+        xiangqiReceipt(bridge, controlId(bridge, "game_state:get"), xiangqiTwoMoves(), 9);
+        QCOMPARE(bridge.gameRevision(), 9);
+        QCOMPARE(bridge.gameMoves(), xiangqiTwoMoves().toVariantList());
+        QVERIFY(bridge.gameReady());
+    }
+
+    void xiangqiTerminalText_data() {
+        QTest::addColumn<QString>("reason");
+        QTest::addColumn<QString>("winner");
+        QTest::addColumn<QString>("status");
+        QTest::newRow("checkmate") << QString("checkmate") << QString("red") << QString("你赢了（将死）");
+        QTest::newRow("stalemate") << QString("stalemate") << QString("black") << QString("你输了（困毙）");
+        QTest::newRow("king-missing") << QString("king-missing") << QString("red") << QString("你赢了（将帅被吃）");
+        QTest::newRow("quiet-limit") << QString("quiet-limit") << QString() << QString("和棋（50 个半回合没有吃子，判和）");
+        QTest::newRow("material") << QString("material") << QString() << QString("和棋（双方都无法取胜，判和）");
+    }
+
+    void xiangqiTerminalText() {
+        QFETCH(QString, reason);
+        QFETCH(QString, winner);
+        QFETCH(QString, status);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openXiangqi(bridge, {}, 1);
+        bridge.m_gameOutcome = bridge.m_rules.toScriptValue(QVariantMap{
+            {"reason", reason}, {"winner", winner.isEmpty() ? QVariant::fromValue(nullptr) : QVariant(winner)},
+        });
+        QCOMPARE(bridge.gameStatus(), "本局结束：" + status);
+        QVERIFY(!bridge.gameReady());
+        bridge.scheduleOpponent();
+        QVERIFY(!bridge.m_opponentPending);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void xiangqiViewAt760() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        openXiangqi(bridge, {}, 1);
+        bridge.m_gameFeedback = "<b>同伴：短评</b>";
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                SceneNavigation { id: nav }
+                TaskPanel { anchors.fill: parent; page: "activities"; navigation: nav }
+            }
+        )qml", QUrl("qrc:/xiangqi/fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        auto *nav = root->findChild<QObject *>("sceneNavigation");
+        QVERIFY(nav);
+        QVariant available;
+        QVERIFY(QMetaObject::invokeMethod(nav, "isAvailable", Q_RETURN_ARG(QVariant, available),
+            Q_ARG(QVariant, QVariant("activities")), Q_ARG(QVariant, QVariant("xiangqi"))));
+        QVERIFY(available.toBool());
+        auto *view = root->findChild<QQuickItem *>("memoryPageScroll");
+        auto *board = root->findChild<QQuickItem *>("xiangqiBoard");
+        auto *feedback = root->findChild<QQuickItem *>("xiangqiFeedback");
+        QVERIFY(view && board && feedback);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        QTRY_VERIFY(board->width() > 0);
+        const auto extent = board->mapRectToItem(view, board->boundingRect());
+        QVERIFY2(extent.left() >= 0 && extent.right() <= view->width(),
+            qPrintable(QString("board left=%1 right=%2 width=%3 viewport width=%4")
+                .arg(extent.left()).arg(extent.right()).arg(board->width()).arg(view->width())));
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        QCOMPARE(feedback->property("text").toString(), QString("<b>同伴：短评</b>"));
+        QCOMPARE(feedback->property("textFormat").toInt(), int(Qt::PlainText));
+        for (auto *item : root->findChildren<QQuickItem *>())
+            QVERIFY(item->property("text").toString() != "读取今日手记" &&
+                    item->property("text").toString() != "读取共同经历");
+        auto *panel = root->findChild<QQuickItem *>("xiangqiPanel");
+        auto *reset = root->findChild<QQuickItem *>("xiangqiReset");
+        QVERIFY(panel && reset);
+        QVERIFY(QMetaObject::invokeMethod(reset, "clicked"));
+        QTRY_VERIFY(panel->property("resetOpen").toBool());
+        QQuickItem *cancel = nullptr;
+        QList<QQuickItem *> items{window->contentItem()};
+        while (!items.isEmpty()) {
+            auto *item = items.takeLast();
+            if (item->objectName() == "xiangqiResetCancel" && item->isVisible()) {
+                QVERIFY(!cancel);
+                cancel = item;
+            }
+            items.append(item->childItems());
+        }
+        QVERIFY(cancel);
+        const auto cancelExtent = cancel->mapRectToItem(window->contentItem(), cancel->boundingRect());
+        QVERIFY(window->contentItem()->boundingRect().contains(cancelExtent));
+        QVERIFY(QMetaObject::invokeMethod(cancel, "clicked"));
+        QTRY_VERIFY(!panel->property("resetOpen").toBool());
+        QCOMPARE(bridge.gameRevision(), 1);
+    }
+
+    static void gomokuReceipt(RuntimeBridge &bridge, const QString &id, const QJsonValue &record, int revision) {
+        bridge.event(frame("game_state:result", id,
+            {{"ok", true}, {"exists", true}, {"revision", revision}, {"state", record}}));
+    }
+
+    static void openGomoku(RuntimeBridge &bridge, const QJsonArray &record, int revision) {
+        bridge.openPanel("gomoku");
+        gomokuReceipt(bridge, controlId(bridge, "game_state:get"), record, revision);
+    }
+
+    static QJsonArray gomokuBlackWin(const QList<int> &stones) {
+        const QList<int> white{210, 212, 214, 216, 218};
+        QJsonArray record;
+        for (int index = 0; index < stones.size(); ++index) {
+            if (index)
+                record.append(white.at(index - 1));
+            record.append(stones.at(index));
+        }
+        return record;
+    }
+
+    static QJsonArray gomokuDrawRecord() {
+        // This filled pattern has 113 black and 112 white cells. Along each
+        // axis the colors alternate or repeat twice, so no prefix can win.
+        QList<int> black, white;
+        for (int square = 0; square < 225; ++square) {
+            const bool blackCell = (square / 15 + 2 * (square % 15)) % 4 < 2;
+            (blackCell ? black : white).append(square);
+        }
+        QJsonArray record;
+        for (int index = 0; index < white.size(); ++index) {
+            record.append(black.at(index));
+            record.append(white.at(index));
+        }
+        record.append(black.constLast());
+        return record;
+    }
+
+    void gomokuRules_data() {
+        QTest::addColumn<QJsonArray>("record");
+        QTest::addColumn<int>("winner");
+        QTest::newRow("horizontal") << gomokuBlackWin({0, 1, 2, 3, 4}) << 1;
+        QTest::newRow("vertical") << gomokuBlackWin({0, 15, 30, 45, 60}) << 1;
+        QTest::newRow("diagonal-down-right") << gomokuBlackWin({0, 16, 32, 48, 64}) << 1;
+        QTest::newRow("diagonal-down-left") << gomokuBlackWin({14, 28, 42, 56, 70}) << 1;
+        QTest::newRow("six-in-a-row") << gomokuBlackWin({0, 1, 2, 4, 5, 3}) << 1;
+        QTest::newRow("draw-full-board") << gomokuDrawRecord() << 0;
+    }
+
+    void gomokuRules() {
+        QFETCH(QJsonArray, record);
+        QFETCH(int, winner);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        openGomoku(bridge, record, 9);
+        QCOMPARE(bridge.gameMoves(), record.toVariantList());
+        QCOMPARE(bridge.gameBoard().size(), 225);
+        QCOMPARE(bridge.m_position.property("winner").toInt(), winner);
+        QCOMPARE(bridge.m_position.property("draw").toBool(), winner == 0);
+        const auto board = bridge.m_position.property("board");
+        QCOMPARE(bridge.m_gomoku.property("gomokuWinner").call({board, record.last().toInt()}).toInt(), winner);
+        QVERIFY(!bridge.gameReady());
+    }
+
+    void gomokuPracticeChoosesCenterAndBlocksImmediateWin() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        const auto empty = bridge.m_gomoku.property("newGomokuState").call();
+        const auto choose = bridge.m_gomoku.property("chooseGomokuMove");
+        QVERIFY(empty.isObject() && choose.isCallable());
+        QCOMPARE(choose.call({empty}).toInt(), 112);
+        online(bridge);
+        openGomoku(bridge, {0, 30, 1, 31, 2, 32, 3}, 2);
+        QCOMPARE(choose.call({bridge.m_position}).toInt(), 4);
+    }
+
+    void gomokuRead_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"new", "existing", "not-array", "out-of-range", "fractional", "duplicate", "after-win", "read-failed"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void gomokuRead() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        QVERIFY(!bridge.gameCompanion());
+        bridge.openPanel("gomoku");
+        const auto get = lastCommand(*frames, "game_state:get");
+        QCOMPARE(get["game_id"].toString(), QString("gomoku"));
+        const auto id = get["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(bridge.gameStatus(), QString("正在读取棋局…"));
+
+        if (scenario == "new") {
+            bridge.event(frame("game_state:result", id,
+                {{"ok", true}, {"exists", false}, {"revision", 0}, {"state", QJsonValue::Null}}));
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(put["game_id"].toString(), QString("gomoku"));
+            QCOMPARE(put["expected_revision"].toInt(-1), 0);
+            QCOMPARE(put["state"], QJsonValue(QJsonArray{}));
+            QVERIFY(!bridge.gameReady());
+            gomokuReceipt(bridge, put["requestId"].toString(), QJsonArray{}, 1);
+            QCOMPARE(bridge.gameRevision(), 1);
+            QCOMPARE(bridge.gameBoard().size(), 225);
+            QCOMPARE(bridge.gameStatus(), QString("轮到你执黑落子"));
+            QVERIFY(bridge.gameReady() && !bridge.gameCanUndo());
+            return;
+        }
+        if (scenario == "existing") {
+            const QJsonArray record{112, 113};
+            gomokuReceipt(bridge, id, record, 8);
+            QCOMPARE(bridge.gameMoves(), record.toVariantList());
+            QCOMPARE(bridge.gameRevision(), 8);
+            QCOMPARE(bridge.gameBoard().size(), 225);
+            const auto black = bridge.gameBoard().at(112).toMap();
+            const auto white = bridge.gameBoard().at(113).toMap();
+            QCOMPARE(black.value("color").toString(), QString("black"));
+            QCOMPARE(black.value("label").toString(), QString("黑子"));
+            QCOMPARE(white.value("color").toString(), QString("white"));
+            QCOMPARE(white.value("label").toString(), QString("白子"));
+            QVERIFY(!black.value("last").toBool() && white.value("last").toBool());
+            QVERIFY(bridge.gameReady());
+            bridge.gameClick(113);
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            return;
+        }
+        if (scenario == "read-failed") {
+            bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_unavailable"}}));
+            QCOMPARE(bridge.gameStatus(), QString("棋局读取失败，原记录没有改动。"));
+            QVERIFY(bridge.gameCanRead() && !bridge.gameCanReset());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameRead();
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+            QCOMPARE(lastCommand(*frames, "game_state:get")["game_id"].toString(), QString("gomoku"));
+            return;
+        }
+
+        QJsonValue bad;
+        if (scenario == "not-array")
+            bad = QJsonObject{{"board", QJsonArray{}}};
+        else if (scenario == "out-of-range")
+            bad = QJsonArray{225};
+        else if (scenario == "fractional")
+            bad = QJsonArray{0.5};
+        else if (scenario == "duplicate")
+            bad = QJsonArray{112, 112};
+        else {
+            auto afterWin = gomokuBlackWin({0, 1, 2, 3, 4});
+            afterWin.append(224);
+            bad = afterWin;
+        }
+        gomokuReceipt(bridge, id, bad, 6);
+        QCOMPARE(bridge.gameStatus(), QString("棋谱无法完整重放；原记录保留。可以选择重新开始。"));
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanRead());
+        QVERIFY(bridge.gameCanReset());
+        bridge.gameClick(112);
+        bridge.gameUndo();
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        bridge.gameReset();
+        const auto reset = lastCommand(*frames, "game_state:put");
+        QCOMPARE(reset["game_id"].toString(), QString("gomoku"));
+        QCOMPARE(reset["expected_revision"].toInt(), 6);
+        QCOMPARE(reset["state"], QJsonValue(QJsonArray{}));
+        gomokuReceipt(bridge, reset["requestId"].toString(), QJsonArray{}, 7);
+        QVERIFY(bridge.gameReady());
+        QCOMPARE(bridge.gameRevision(), 7);
+    }
+
+    void gomokuSave_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"success", "conflict", "refused", "expired", "malformed"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void gomokuSave() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonArray previous{0, 224};
+        const QJsonArray played{0, 224, 112};
+        openGomoku(bridge, previous, 4);
+        bridge.gameClick(112);
+        const auto put = lastCommand(*frames, "game_state:put");
+        const auto id = put["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(put["game_id"].toString(), QString("gomoku"));
+        QCOMPARE(put["expected_revision"].toInt(), 4);
+        QCOMPARE(put["state"], QJsonValue(played));
+        QCOMPARE(bridge.gameMoves(), played.toVariantList());
+        QCOMPARE(bridge.gameRevision(), 4);
+        QCOMPARE(bridge.gameStatus(), QString("正在保存…"));
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset());
+        bridge.gameClick(97);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        if (scenario == "success") {
+            gomokuReceipt(bridge, id, played, 9);
+            QCOMPARE(bridge.gameRevision(), 9);
+            QVERIFY(bridge.gameCanUndo());
+        } else if (scenario == "conflict") {
+            const QJsonArray current{112, 113};
+            bridge.event(frame("game_state:result", id,
+                {{"ok", false}, {"code", "conflict"}, {"exists", true},
+                 {"state", current}, {"revision", 11}}));
+            QCOMPARE(bridge.gameRevision(), 11);
+            QCOMPARE(bridge.gameMoves(), current.toVariantList());
+            QCOMPARE(bridge.gameFeedback(), QString("棋局已在别处改动，已读取当前棋局。"));
+            QVERIFY(bridge.gameReady());
+        } else {
+            if (scenario == "expired")
+                bridge.expirePending(id);
+            else if (scenario == "malformed")
+                gomokuReceipt(bridge, id, previous, 5);
+            else
+                bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_degraded"}}));
+            QCOMPARE(bridge.gameRevision(), 4);
+            QCOMPARE(bridge.gameMoves(), previous.toVariantList());
+            QVERIFY(bridge.gameCanRead() && !bridge.gameReady());
+            QCOMPARE(bridge.gameStatus(), QString("这一步的保存结果未确认，没有自动重复提交。请重新读取。"));
+            gomokuReceipt(bridge, id, played, 5);
+            QCOMPARE(bridge.gameMoves(), previous.toVariantList());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+            bridge.gameRead();
+            gomokuReceipt(bridge, controlId(bridge, "game_state:get"), previous, 4);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+    void gomokuPracticeAndUndo() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonArray previous{0, 30, 1, 31, 2, 32};
+        const QJsonArray threat{0, 30, 1, 31, 2, 32, 3};
+        const QJsonArray blocked{0, 30, 1, 31, 2, 32, 3, 4};
+        openGomoku(bridge, previous, 1);
+        bridge.gameClick(3);
+        const auto first = controlId(bridge, "game_state:put");
+        QVERIFY(!first.isEmpty());
+        QTest::qWait(350);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        QCOMPARE(bridge.gameMoves(), threat.toVariantList());
+        QCOMPARE(bridge.gameStatus(), QString("正在保存…"));
+        gomokuReceipt(bridge, first, threat, 2);
+        QCOMPARE(bridge.gameStatus(), QString("陪练思考中…"));
+        bridge.gameClick(7);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        QTRY_COMPARE(commandCount(*frames, "game_state:put"), 2);
+        const auto practice = lastCommand(*frames, "game_state:put");
+        QCOMPARE(practice["game_id"].toString(), QString("gomoku"));
+        QCOMPARE(practice["expected_revision"].toInt(), 2);
+        QCOMPARE(practice["state"], QJsonValue(blocked));
+        gomokuReceipt(bridge, practice["requestId"].toString(), blocked, 3);
+        QCOMPARE(bridge.gameStatus(), QString("轮到你执黑落子"));
+        bridge.gameUndo();
+        const auto undo = lastCommand(*frames, "game_state:put");
+        QCOMPARE(undo["expected_revision"].toInt(), 3);
+        QCOMPARE(undo["state"], QJsonValue(previous));
+        gomokuReceipt(bridge, undo["requestId"].toString(), previous, 4);
+        QVERIFY(bridge.gameReady());
+
+        bridge.openPanel("diary");
+        openGomoku(bridge, threat, 6);
+        QCOMPARE(bridge.gameStatus(), QString("陪练思考中…"));
+        QTRY_COMPARE(commandCount(*frames, "game_state:put"), 4);
+        const auto resumed = lastCommand(*frames, "game_state:put");
+        QCOMPARE(resumed["state"], QJsonValue(blocked));
+        QCOMPARE(resumed["expected_revision"].toInt(), 6);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void gomokuTerminalText_data() {
+        QTest::addColumn<QJsonArray>("record");
+        QTest::addColumn<QString>("status");
+        QTest::newRow("black-wins") << gomokuBlackWin({0, 1, 2, 3, 4}) << QString("本局结束：你赢了（五子连珠）");
+        QTest::newRow("white-wins") << QJsonArray{210, 0, 212, 1, 214, 2, 216, 3, 218, 4}
+                                   << QString("本局结束：你输了（五子连珠）");
+        QTest::newRow("draw") << gomokuDrawRecord() << QString("本局结束：和棋（棋盘已满）");
+    }
+
+    void gomokuTerminalText() {
+        QFETCH(QJsonArray, record);
+        QFETCH(QString, status);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openGomoku(bridge, record, 4);
+        QCOMPARE(bridge.gameStatus(), status);
+        QVERIFY(!bridge.gameReady() && !bridge.m_opponentPending);
+        bridge.gameClick(100);
+        bridge.gameModeChanged(true);
+        QVERIFY(!bridge.m_opponentPending);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void gomokuOpponent_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"legal", "retry-non-integer", "retry-out-of-range", "retry-occupied",
+                                "twice-illegal", "refused", "error", "expired"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void gomokuOpponent() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.m_state["persona"] = QVariantMap{{"name", "<b>同伴</b>"}};
+        const QJsonArray record{0, 224, 112};
+        openGomoku(bridge, record, 3);
+        bridge.gameModeChanged(true);
+        QCOMPARE(bridge.gameStatus(), QString("「<b>同伴</b>」正在想…"));
+        QVERIFY(!bridge.gameReady());
+        bridge.gameClick(113);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto request = lastCommand(*frames, "game:move");
+        auto id = request["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        const auto board = QString::fromUtf8(R"board(坐标：行 0–14 从上到下，列 0–14 从左到右，格子编号 = 行 × 15 + 列。
+△ 为用户的黑子，▲ 为你的白子，· 为空格。
+列 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14
+行0 △ · · · · · · · · · · · · · ·
+行1 · · · · · · · · · · · · · · ·
+行2 · · · · · · · · · · · · · · ·
+行3 · · · · · · · · · · · · · · ·
+行4 · · · · · · · · · · · · · · ·
+行5 · · · · · · · · · · · · · · ·
+行6 · · · · · · · · · · · · · · ·
+行7 · · · · · · · △ · · · · · · ·
+行8 · · · · · · · · · · · · · · ·
+行9 · · · · · · · · · · · · · · ·
+行10 · · · · · · · · · · · · · · ·
+行11 · · · · · · · · · · · · · · ·
+行12 · · · · · · · · · · · · · · ·
+行13 · · · · · · · · · · · · · · ·
+行14 · · · · · · · · · · · · · · ▲)board");
+        const QJsonObject state{{"board_text", board}, {"side", "白棋"}, {"history_text", "3 手"}};
+        QCOMPARE(request, (QJsonObject{{"requestId", id}, {"game", "gomoku"}, {"state", state}}));
+
+        const bool retry = scenario.startsWith("retry-") || scenario == "twice-illegal";
+        const bool legal = scenario == "legal" || scenario.startsWith("retry-");
+        if (retry) {
+            const bool occupied = scenario == "retry-occupied";
+            const QString invalid = occupied ? "112" : scenario == "retry-out-of-range" ? "225" : "12.5";
+            const QString note = occupied ? "那个位置已经有棋子" : "格子编号要是 0–224 的整数";
+            bridge.event(frame("game:move:result", id, {{"ok", true}, {"move", invalid}}));
+            const auto second = lastCommand(*frames, "game:move");
+            const auto secondId = second["requestId"].toString();
+            QVERIFY(!secondId.isEmpty() && secondId != id);
+            id = secondId;
+            QCOMPARE(second, (QJsonObject{{"requestId", id}, {"game", "gomoku"}, {"state", state}, {"retry_note", note}}));
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        }
+        const auto practice = bridge.m_gomoku.property("chooseGomokuMove").call({bridge.m_position}).toInt();
+        if (scenario == "expired")
+            bridge.expirePending(id);
+        else if (scenario == "error")
+            bridge.event(frame("error", id, {{"code", "unavailable"}}));
+        else if (scenario == "refused")
+            bridge.event(frame("game:move:result", id, {{"ok", false}, {"error", "unavailable"}}));
+        else
+            bridge.event(frame("game:move:result", id,
+                {{"ok", true}, {"move", legal ? " 113 \n" : "224"}, {"comment", "<b>短评</b>"}}));
+
+        QCOMPARE(commandCount(*frames, "game:move"), retry ? 2 : 1);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        auto expected = record;
+        expected.append(legal ? 113 : practice);
+        const auto put = lastCommand(*frames, "game_state:put");
+        QCOMPARE(put["game_id"].toString(), QString("gomoku"));
+        QCOMPARE(put["expected_revision"].toInt(), 3);
+        QCOMPARE(put["state"], QJsonValue(expected));
+        QCOMPARE(bridge.gameFeedback(), legal ? QString("<b>同伴</b>：<b>短评</b>")
+            : scenario == "twice-illegal" ? QString("「<b>同伴</b>」这步没走成，由陪练代走。")
+                                           : QString("「<b>同伴</b>」暂时不能走子，由陪练代走。"));
+        QVERIFY(!bridge.gameReady());
+        gomokuReceipt(bridge, put["requestId"].toString(), expected, 4);
+        QVERIFY(bridge.gameReady());
+        QCOMPARE(bridge.gameRevision(), 4);
+    }
+
+    void gomokuOpponentReplyAfterScopeChange_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto *name : {"undo", "reset", "mode", "persona", "leave"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void gomokuOpponentReplyAfterScopeChange() {
+        QFETCH(QString, action);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonArray original{0, 224, 112};
+        openGomoku(bridge, original, 5);
+        bridge.gameModeChanged(true);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto old = controlId(bridge, "game:move");
+        QVERIFY(!old.isEmpty());
+        if (action == "undo")
+            bridge.gameUndo();
+        else if (action == "reset")
+            bridge.gameReset();
+        else if (action == "mode")
+            bridge.gameModeChanged(false);
+        else if (action == "persona")
+            bridge.event(frame("bridge:persona_scope", "", {{"persona_id", "replacement"}, {"epoch", 4}, {"fingerprint", "replacement"}}));
+        else
+            bridge.openPanel("diary");
+
+        const auto writes = commandCount(*frames, "game_state:put");
+        const auto moves = bridge.gameMoves();
+        const auto feedback = bridge.gameFeedback();
+        bridge.event(frame("game:move:result", old, {{"ok", true}, {"move", "113"}, {"comment", "旧回执"}}));
+        QCOMPARE(bridge.gameMoves(), moves);
+        QCOMPARE(bridge.gameFeedback(), feedback);
+        QCOMPARE(commandCount(*frames, "game_state:put"), writes);
+        QCOMPARE(commandCount(*frames, "game:move"), 1);
+        if (action == "undo" || action == "reset") {
+            QCOMPARE(writes, 1);
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(put["expected_revision"].toInt(), 5);
+            QCOMPARE(put["state"], QJsonValue(action == "undo" ? QJsonArray{0, 224} : QJsonArray{}));
+        } else {
+            QCOMPARE(writes, 0);
+        }
+        if (action == "persona") {
+            QVERIFY(moves.isEmpty() && bridge.gameBoard().isEmpty());
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+            QCOMPARE(lastCommand(*frames, "game_state:get")["game_id"].toString(), QString("gomoku"));
+            gomokuReceipt(bridge, controlId(bridge, "game_state:get"), QJsonArray{}, 1);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void gomokuReadOnlyDuringRecovery() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.event(frame("runtime:activity", "", {{"writes_blocked", true}, {"recovery_state", "recovering"},
+                                                      {"runtime_writable", false}}));
+        openGomoku(bridge, {112}, 3);
+        QCOMPARE(bridge.gameMoves(), QJsonArray{112}.toVariantList());
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset());
+        bridge.gameClick(113);
+        bridge.gameUndo();
+        bridge.gameReset();
+        bridge.gameModeChanged(true);
+        QVERIFY(!bridge.m_opponentPending);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void gomokuOldSaveIsIgnored_data() {
+        QTest::addColumn<QString>("action");
+        QTest::newRow("undo") << QString("undo");
+        QTest::newRow("persona") << QString("persona");
+    }
+
+    void gomokuOldSaveIsIgnored() {
+        QFETCH(QString, action);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openGomoku(bridge, {}, 3);
+        bridge.gameClick(112);
+        const auto old = controlId(bridge, "game_state:put");
+        QVERIFY(!old.isEmpty());
+        if (action == "undo") {
+            gomokuReceipt(bridge, old, QJsonArray{112}, 4);
+            bridge.gameUndo();
+            const auto undo = controlId(bridge, "game_state:put");
+            QVERIFY(!undo.isEmpty() && undo != old);
+            gomokuReceipt(bridge, old, QJsonArray{112}, 5);
+            QCOMPARE(bridge.gameRevision(), 4);
+            QVERIFY(bridge.gameMoves().isEmpty() && !bridge.gameReady());
+            gomokuReceipt(bridge, undo, QJsonArray{}, 5);
+            QCOMPARE(bridge.gameRevision(), 5);
+        } else {
+            bridge.event(frame("bridge:persona_scope", "", {{"persona_id", "replacement"}, {"epoch", 4}, {"fingerprint", "replacement"}}));
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+            gomokuReceipt(bridge, old, QJsonArray{112}, 4);
+            QCOMPARE(bridge.gameRevision(), 0);
+            QVERIFY(bridge.gameMoves().isEmpty());
+            gomokuReceipt(bridge, controlId(bridge, "game_state:get"), QJsonArray{7, 8}, 9);
+            QCOMPARE(bridge.gameRevision(), 9);
+            QCOMPARE(bridge.gameMoves(), (QJsonArray{7, 8}).toVariantList());
+        }
+        QVERIFY(bridge.gameReady());
+    }
+
+    void gomokuAndXiangqiRecordsStaySeparate() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openXiangqi(bridge, {}, 7);
+        bridge.gameClick(25);
+        bridge.gameClick(22);
+        const auto red = lastCommand(*frames, "game_state:put");
+        QCOMPARE(red["game_id"].toString(), QString("xiangqi"));
+        QCOMPARE(red["expected_revision"].toInt(), 7);
+        QCOMPARE(red["state"], QJsonValue(xiangqiRedMove()));
+        xiangqiReceipt(bridge, red["requestId"].toString(), xiangqiRedMove(), 8);
+
+        openGomoku(bridge, {}, 2);
+        QCOMPARE(lastCommand(*frames, "game_state:get")["game_id"].toString(), QString("gomoku"));
+        QVERIFY(bridge.gameMoves().isEmpty() && bridge.gameFeedback().isEmpty());
+        QCOMPARE(bridge.gameRevision(), 2);
+        bridge.gameModeChanged(true);
+        bridge.gameClick(112);
+        const auto black = lastCommand(*frames, "game_state:put");
+        QCOMPARE(black["game_id"].toString(), QString("gomoku"));
+        QCOMPARE(black["expected_revision"].toInt(), 2);
+        QCOMPARE(black["state"], QJsonValue(QJsonArray{112}));
+        gomokuReceipt(bridge, black["requestId"].toString(), QJsonArray{112}, 3);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto old = lastCommand(*frames, "game:move");
+        QCOMPARE(old["game"].toString(), QString("gomoku"));
+
+        bridge.openPanel("activities");
+        QCOMPARE(lastCommand(*frames, "game_state:get")["game_id"].toString(), QString("xiangqi"));
+        QCOMPARE(commandCount(*frames, "game_state:get"), 3);
+        QCOMPARE(bridge.gameStatus(), QString("正在读取棋局…"));
+        xiangqiReceipt(bridge, controlId(bridge, "game_state:get"), xiangqiRedMove(), 8);
+        QVERIFY(!bridge.gameCompanion());
+        bridge.event(frame("game:move:result", old["requestId"].toString(), {{"ok", true}, {"move", "113"}, {"comment", "旧五子棋"}}));
+        QCOMPARE(bridge.gameMoves(), xiangqiRedMove().toVariantList());
+        QCOMPARE(bridge.gameRevision(), 8);
+        QVERIFY(bridge.gameFeedback().isEmpty());
+        QCOMPARE(commandCount(*frames, "game_state:put"), 2);
+    }
+
+    static QQuickItem *gomokuItem(QQuickItem *root, const QString &name) {
+        QList<QQuickItem *> pending{root};
+        while (!pending.isEmpty()) {
+            auto *item = pending.takeLast();
+            if (item->objectName() == name)
+                return item;
+            pending.append(item->childItems());
+        }
+        return nullptr;
+    }
+
+    void gomokuViewAt760() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.m_state["persona"] = QVariantMap{{"name", "<b>同伴</b>"}};
+        bridge.openPanel("gomoku");
+        bridge.event(frame("game_state:result", controlId(bridge, "game_state:get"), {{"ok", false}}));
+
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                SceneNavigation { id: nav; currentFeature: "activities"; currentSubentry: "gomoku" }
+                TaskPanel { anchors.fill: parent; page: "activities"; navigation: nav }
+            }
+        )qml", QUrl("qrc:/xiangqi/gomoku-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        auto *nav = root->findChild<QObject *>("sceneNavigation");
+        QVERIFY(nav);
+        QVariant available;
+        QVERIFY(QMetaObject::invokeMethod(nav, "isAvailable", Q_RETURN_ARG(QVariant, available),
+            Q_ARG(QVariant, QVariant("activities")), Q_ARG(QVariant, QVariant("gomoku"))));
+        QVERIFY(available.toBool());
+        QVariant defaultEntry;
+        QVERIFY(QMetaObject::invokeMethod(nav, "defaultSubentry", Q_RETURN_ARG(QVariant, defaultEntry),
+            Q_ARG(QVariant, QVariant("activities"))));
+        QCOMPARE(defaultEntry.toString(), QString("xiangqi"));
+        const auto entryList = [](const QVariant &value) {
+            if (value.metaType() == QMetaType::fromType<QJSValue>())
+                return value.value<QJSValue>().toVariant().toList();
+            return value.toList();
+        };
+        QStringList activities;
+        for (const auto &row : entryList(nav->property("entries"))) {
+            const auto entry = row.toMap();
+            if (entry.value("feature").toString() == "activities")
+                activities.append(entry.value("subentry").toString());
+        }
+        QCOMPARE(activities, (QStringList{"xiangqi", "gomoku", "chess", "go", "diary"}));
+        QVERIFY(nav->setProperty("query", QString("gomoku")));
+        const auto filtered = entryList(nav->property("filteredEntries"));
+        QCOMPARE(filtered.size(), 1);
+        const auto entry = filtered.constFirst().toMap();
+        QCOMPARE(entry.value("label").toString(), QString("五子棋"));
+        QCOMPARE(entry.value("detail").toString(), QString("和角色下一盘，或本地练习"));
+        QCOMPARE(entry.value("keywords").toString(), QString("棋 五子棋 gomoku"));
+
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        const auto item = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        auto *view = item("memoryPageScroll");
+        auto *panel = item("gomokuPanel");
+        auto *board = item("gomokuBoard");
+        auto *mode = item("gomokuMode");
+        auto *status = item("gomokuStatus");
+        auto *feedback = item("gomokuFeedback");
+        auto *read = item("gomokuRead");
+        auto *reset = item("gomokuReset");
+        QVERIFY(view && panel && board && mode && status && feedback && read && reset);
+        QTRY_VERIFY(panel->isVisible());
+        QCOMPARE(mode->property("currentIndex").toInt(), 0);
+        QCOMPARE(status->property("text").toString(), QString("棋局读取失败，原记录没有改动。"));
+        QVERIFY(read->isVisible() && read->isEnabled());
+        QCOMPARE(read->property("text").toString(), QString("重新读取"));
+        QVERIFY(QMetaObject::invokeMethod(read, "clicked"));
+        QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+        gomokuReceipt(bridge, controlId(bridge, "game_state:get"), QJsonArray{}, 1);
+        QTRY_VERIFY(board->width() > 0);
+        QSignalSpy swapped(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QVERIFY(swapped.wait());
+        const auto extent = board->mapRectToItem(view, board->boundingRect());
+        QVERIFY2(view->boundingRect().contains(extent),
+            qPrintable(QString("board l=%1 t=%2 r=%3 b=%4 viewport=%5x%6")
+                .arg(extent.left()).arg(extent.top()).arg(extent.right()).arg(extent.bottom())
+                .arg(view->width()).arg(view->height())));
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        for (int square = 0; square < 225; ++square) {
+            auto *cell = item(QString("gomoku-%1").arg(square));
+            QVERIFY(cell && cell->isVisible());
+            QVERIFY(cell->width() >= 28 && cell->height() >= 28);
+        }
+        const auto origin = item("gomoku-0")->mapToItem(board, QPointF());
+        const auto topRight = item("gomoku-14")->mapToItem(board, QPointF());
+        const auto bottomLeft = item("gomoku-210")->mapToItem(board, QPointF());
+        QCOMPARE(origin.x(), bottomLeft.x());
+        QCOMPARE(origin.y(), topRight.y());
+        QVERIFY(origin.x() < topRight.x() && origin.y() < bottomLeft.y());
+
+        QVERIFY(QMetaObject::invokeMethod(reset, "clicked"));
+        QTRY_VERIFY(item("gomokuResetCancel") && item("gomokuResetCancel")->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(item("gomokuResetCancel"), "clicked"));
+        QTRY_VERIFY(!item("gomokuResetCancel") || !item("gomokuResetCancel")->isVisible());
+        QCOMPARE(bridge.gameRevision(), 1);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+
+        bridge.gameModeChanged(true);
+        QVERIFY(QMetaObject::invokeMethod(item("gomoku-112"), "clicked"));
+        gomokuReceipt(bridge, controlId(bridge, "game_state:put"), QJsonArray{112}, 2);
+        QCOMPARE(status->property("text").toString(), QString("「<b>同伴</b>」正在想…"));
+        QCOMPARE(status->property("textFormat").toInt(), int(Qt::PlainText));
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        bridge.event(frame("game:move:result", controlId(bridge, "game:move"),
+            {{"ok", true}, {"move", "113"}, {"comment", "<b>短评</b>"}}));
+        QTRY_VERIFY(feedback->isVisible());
+        QCOMPARE(feedback->property("text").toString(), QString("<b>同伴</b>：<b>短评</b>"));
+        QCOMPARE(feedback->property("textFormat").toInt(), int(Qt::PlainText));
+    }
+
+    static constexpr int chessSquare(char file, int rank) { return (8 - rank) * 8 + file - 'a'; }
+
+    static void strategicReceipt(RuntimeBridge &bridge, const QString &id, const QJsonValue &record, int revision) {
+        bridge.event(frame("game_state:result", id,
+            {{"ok", true}, {"exists", true}, {"revision", revision}, {"state", record}}));
+    }
+
+    static void openChess(RuntimeBridge &bridge, const QJsonArray &record, int revision) {
+        bridge.openPanel("chess");
+        strategicReceipt(bridge, controlId(bridge, "game_state:get"), record, revision);
+    }
+
+    static void chessE4(RuntimeBridge &bridge) {
+        bridge.gameClick(chessSquare('e', 2));
+        bridge.gameClick(chessSquare('e', 4));
+    }
+
+    void chessRules() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        const auto create = bridge.m_chess.property("createChess");
+        const auto parse = bridge.m_chess.property("parseChessMove");
+        const auto play = bridge.m_chess.property("playChess");
+        const auto fen = bridge.m_chess.property("chessFen");
+        QVERIFY(create.isCallable() && parse.isCallable() && play.isCallable() && fen.isCallable());
+        const auto start = create.call();
+        QVERIFY(start.isObject());
+        QCOMPARE(bridge.m_chess.property("chessPerft").call({start, 2}).toInt(), 400);
+        const QList<QStringList> examples{
+            {"r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "0-0!", "e1g1", "O-O",
+                "r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1"},
+            {"4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2", "exd6", "e5d6", "exd6",
+                "4k3/8/3P4/8/8/8/8/4K3 b - - 0 2"},
+            {"7k/P7/8/8/8/8/8/7K w - - 0 1", "a8=N", "a7a8n", "a8=N",
+                "N6k/8/8/8/8/8/8/7K b - - 0 1"},
+        };
+        for (const auto &example : examples) {
+            const auto position = create.call({example[0]});
+            QVERIFY2(position.isObject() && !position.isError(), qPrintable(position.toString()));
+            QCOMPARE(parse.call({position, example[1]}).toString(), example[2]);
+            const auto next = play.call({position, example[2]});
+            QVERIFY(next.isObject() && !next.isError());
+            QCOMPARE(next.property("history").property(0).property("san").toString(), example[3]);
+            QCOMPARE(fen.call({next}).toString(), example[4]);
+        }
+    }
+
+    void chessRead_data() {
+        QTest::addColumn<QString>("scenario");
+        QTest::addColumn<QJsonValue>("record");
+        QTest::newRow("new") << QString("new") << QJsonValue(QJsonValue::Null);
+        QTest::newRow("existing") << QString("existing") << QJsonValue(QJsonArray{"e2e4", "e7e5"});
+        QTest::newRow("read-failed") << QString("read-failed") << QJsonValue(QJsonValue::Null);
+        QTest::newRow("non-array") << QString("invalid") << QJsonValue(QJsonObject{{"moves", QJsonArray{}}});
+        QTest::newRow("bad-format") << QString("invalid") << QJsonValue(QJsonArray{"E2E4"});
+        QTest::newRow("illegal") << QString("invalid") << QJsonValue(QJsonArray{"e2e5"});
+        QTest::newRow("after-mate") << QString("invalid") << QJsonValue(QJsonArray{"f2f3", "e7e5", "g2g4", "d8h4", "a2a3"});
+    }
+
+    void chessRead() {
+        QFETCH(QString, scenario);
+        QFETCH(QJsonValue, record);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.openPanel("chess");
+        QCOMPARE(bridge.gameStatus(), QString("正在读取棋局…"));
+        QVERIFY(!bridge.gameCompanion());
+        const auto get = lastCommand(*frames, "game_state:get");
+        QCOMPARE(get["game_id"].toString(), QString("chess"));
+        const auto id = get["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        if (scenario == "new") {
+            bridge.event(frame("game_state:result", id,
+                {{"ok", true}, {"exists", false}, {"revision", 0}, {"state", QJsonValue::Null}}));
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(put["game_id"].toString(), QString("chess"));
+            QCOMPARE(put["expected_revision"].toInt(-1), 0);
+            QCOMPARE(put["state"], QJsonValue(QJsonArray{}));
+            QVERIFY(!bridge.gameReady());
+            strategicReceipt(bridge, put["requestId"].toString(), QJsonArray{}, 1);
+            QCOMPARE(bridge.gameRevision(), 1);
+            QCOMPARE(bridge.gameBoard().size(), 64);
+            QCOMPARE(bridge.gameStatus(), QString("轮到你执白走棋"));
+            QVERIFY(bridge.gameReady() && !bridge.gameCanUndo());
+        } else if (scenario == "read-failed") {
+            bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_unavailable"}}));
+            QCOMPARE(bridge.gameStatus(), QString("棋局读取失败，原记录没有改动。"));
+            QVERIFY(bridge.gameCanRead() && !bridge.gameCanReset());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameRead();
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+        } else {
+            strategicReceipt(bridge, id, record, 8);
+            QCOMPARE(bridge.gameRevision(), 8);
+            if (scenario == "existing") {
+                QCOMPARE(bridge.gameMoves(), record.toArray().toVariantList());
+                QCOMPARE(bridge.gameBoard().size(), 64);
+                QVERIFY(bridge.gameReady() && bridge.gameCanUndo());
+                return;
+            }
+            QCOMPARE(bridge.gameStatus(), QString("棋谱无法完整重放；原记录保留。可以选择重新开始。"));
+            QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanRead());
+            QVERIFY(bridge.gameCanReset());
+            chessE4(bridge);
+            bridge.gameUndo();
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameReset();
+            const auto reset = lastCommand(*frames, "game_state:put");
+            QCOMPARE(reset["game_id"].toString(), QString("chess"));
+            QCOMPARE(reset["expected_revision"].toInt(), 8);
+            QCOMPARE(reset["state"], QJsonValue(QJsonArray{}));
+            strategicReceipt(bridge, reset["requestId"].toString(), QJsonArray{}, 9);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void chessSave_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"success", "conflict", "refused", "expired", "malformed"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void chessSave() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonArray played{"e2e4"};
+        openChess(bridge, {}, 4);
+        chessE4(bridge);
+        const auto put = lastCommand(*frames, "game_state:put");
+        const auto id = put["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(put["game_id"].toString(), QString("chess"));
+        QCOMPARE(put["expected_revision"].toInt(), 4);
+        QCOMPARE(put["state"], QJsonValue(played));
+        QCOMPARE(bridge.gameMoves(), played.toVariantList());
+        QCOMPARE(bridge.gameRevision(), 4);
+        QCOMPARE(bridge.gameStatus(), QString("正在保存…"));
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset());
+        chessE4(bridge);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        if (scenario == "success") {
+            strategicReceipt(bridge, id, played, 9);
+            QCOMPARE(bridge.gameRevision(), 9);
+            QVERIFY(bridge.gameCanUndo());
+        } else if (scenario == "conflict") {
+            const QJsonArray current{"d2d4", "d7d5"};
+            bridge.event(frame("game_state:result", id,
+                {{"ok", false}, {"code", "conflict"}, {"exists", true}, {"state", current}, {"revision", 11}}));
+            QCOMPARE(bridge.gameRevision(), 11);
+            QCOMPARE(bridge.gameMoves(), current.toVariantList());
+            QCOMPARE(bridge.gameFeedback(), QString("棋局已在别处改动，已读取当前棋局。"));
+            QVERIFY(bridge.gameReady());
+        } else {
+            if (scenario == "expired")
+                bridge.expirePending(id);
+            else if (scenario == "malformed")
+                strategicReceipt(bridge, id, QJsonArray{}, 5);
+            else
+                bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_degraded"}}));
+            QCOMPARE(bridge.gameRevision(), 4);
+            QVERIFY(bridge.gameMoves().isEmpty());
+            QVERIFY(bridge.gameCanRead() && !bridge.gameReady());
+            QCOMPARE(bridge.gameStatus(), QString("这一步的保存结果未确认，没有自动重复提交。请重新读取。"));
+            strategicReceipt(bridge, id, played, 5);
+            QVERIFY(bridge.gameMoves().isEmpty());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+            bridge.gameRead();
+            strategicReceipt(bridge, controlId(bridge, "game_state:get"), QJsonArray{}, 4);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void chessPracticeAndUndo() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonArray player{"e2e4"};
+        openChess(bridge, {}, 1);
+        chessE4(bridge);
+        const auto playerId = controlId(bridge, "game_state:put");
+        QVERIFY(!playerId.isEmpty());
+        QTest::qWait(350);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+        strategicReceipt(bridge, playerId, player, 2);
+        QCOMPARE(bridge.gameStatus(), QString("陪练思考中…"));
+        const auto choice = bridge.m_chess.property("chooseChessMove").call({bridge.m_position}).toString();
+        QVERIFY(!choice.isEmpty());
+        QTRY_COMPARE(commandCount(*frames, "game_state:put"), 2);
+        const auto practice = lastCommand(*frames, "game_state:put");
+        const QJsonArray played{"e2e4", choice};
+        QCOMPARE(practice["game_id"].toString(), QString("chess"));
+        QCOMPARE(practice["expected_revision"].toInt(), 2);
+        QCOMPARE(practice["state"], QJsonValue(played));
+        strategicReceipt(bridge, practice["requestId"].toString(), played, 3);
+        QVERIFY(bridge.gameReady());
+        bridge.gameUndo();
+        const auto undo = lastCommand(*frames, "game_state:put");
+        QCOMPARE(undo["expected_revision"].toInt(), 3);
+        QCOMPARE(undo["state"], QJsonValue(QJsonArray{}));
+        strategicReceipt(bridge, undo["requestId"].toString(), QJsonArray{}, 4);
+        QVERIFY(bridge.gameReady());
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void chessHumanPromotion() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        QJsonArray record{"a2a4", "h7h5", "a4a5", "h5h4", "a5a6", "h4h3", "a6b7", "h3g2"};
+        openChess(bridge, record, 4);
+        QVERIFY(bridge.gameReady());
+        bridge.gameClick(chessSquare('b', 7));
+        bridge.gameClick(chessSquare('a', 8));
+        record.append("b7a8q");
+        QCOMPARE(lastCommand(*frames, "game_state:put")["state"], QJsonValue(record));
+        QCOMPARE(bridge.m_position.property("board").property(0).toString(), QString("Q"));
+    }
+
+    void chessCheckAndLastMoveMarkers() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        openChess(bridge, {"e2e4", "e7e5", "d2d4", "f8b4"}, 4);
+        QVERIFY(bridge.gameReady());
+        QCOMPARE(bridge.gameStatus(), QString("将军，轮到你"));
+        const auto board = bridge.gameBoard();
+        QCOMPARE(board.size(), 64);
+        QVERIFY(board.at(chessSquare('e', 1)).toMap().value("check").toBool());
+        QVERIFY(board.at(chessSquare('f', 8)).toMap().value("last").toBool());
+        QVERIFY(board.at(chessSquare('b', 4)).toMap().value("last").toBool());
+        QVERIFY(!board.at(chessSquare('e', 8)).toMap().value("check").toBool());
+    }
+
+    void chessOpponent_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"san", "coordinate", "retry-format", "retry-illegal", "twice-illegal", "refused", "expired"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void chessOpponent() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.m_state["persona"] = QVariantMap{{"name", "<b>同伴</b>"}};
+        const QJsonArray record{"e2e4"};
+        openChess(bridge, record, 3);
+        bridge.gameModeChanged(true);
+        QCOMPARE(bridge.gameStatus(), QString("「<b>同伴</b>」正在想…"));
+        QVERIFY(!bridge.gameReady());
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto request = lastCommand(*frames, "game:move");
+        auto id = request["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        const auto board = QString::fromUtf8(R"board(坐标：列 a–h 从左到右，行 8–1 从上到下；你执黑，在上方。
+△ 开头的是用户的白棋，▲ 开头的是你的黑棋；K 王 Q 后 R 车 B 象 N 马 P 兵；· 为空格。
+FEN：rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1
+   a  b  c  d  e  f  g  h
+8 ▲R ▲N ▲B ▲Q ▲K ▲B ▲N ▲R
+7 ▲P ▲P ▲P ▲P ▲P ▲P ▲P ▲P
+6 · · · · · · · ·
+5 · · · · · · · ·
+4 · · · · △P · · ·
+3 · · · · · · · ·
+2 △P △P △P △P · △P △P △P
+1 △R △N △B △Q △K △B △N △R)board");
+        const QJsonObject state{{"board_text", board}, {"side", "黑棋"}, {"history_text", "1. e4"}};
+        QCOMPARE(request, (QJsonObject{{"requestId", id}, {"game", "chess"}, {"state", state}}));
+        const bool retry = scenario.startsWith("retry-") || scenario == "twice-illegal";
+        const bool fallback = scenario == "twice-illegal" || scenario == "refused" || scenario == "expired";
+        if (retry) {
+            const auto invalid = scenario == "retry-format" ? "try Nf6" : "e7e4";
+            bridge.event(frame("game:move:result", id, {{"ok", true}, {"move", invalid}}));
+            const auto second = lastCommand(*frames, "game:move");
+            const auto secondId = second["requestId"].toString();
+            QVERIFY(!secondId.isEmpty() && secondId != id);
+            id = secondId;
+            QCOMPARE(second, (QJsonObject{{"requestId", id}, {"game", "chess"}, {"state", state},
+                {"retry_note", "这不是当前局面的合法走法，请用 SAN，例如 Nf6"}}));
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        }
+        const auto practice = bridge.m_chess.property("chooseChessMove").call({bridge.m_position}).toString();
+        QVERIFY(!practice.isEmpty());
+        if (scenario == "expired") {
+            bridge.expirePending(id);
+        } else if (scenario == "refused") {
+            bridge.event(frame("game:move:result", id, {{"ok", false}, {"error", "unavailable"}}));
+        } else {
+            const auto reply = scenario == "twice-illegal" ? "e7e4" : scenario == "coordinate" ? "g8f6" : " Nf6?! \n";
+            bridge.event(frame("game:move:result", id, {{"ok", true}, {"move", reply}, {"comment", "<b>短评</b>"}}));
+        }
+        QCOMPARE(commandCount(*frames, "game:move"), retry ? 2 : 1);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        const QJsonArray expected{"e2e4", fallback ? practice : QString("g8f6")};
+        const auto put = lastCommand(*frames, "game_state:put");
+        QCOMPARE(put["game_id"].toString(), QString("chess"));
+        QCOMPARE(put["expected_revision"].toInt(), 3);
+        QCOMPARE(put["state"], QJsonValue(expected));
+        if (!fallback) QCOMPARE(bridge.gameFeedback(), QString("<b>同伴</b>：<b>短评</b>"));
+        QVERIFY(!bridge.gameReady());
+        strategicReceipt(bridge, put["requestId"].toString(), expected, 4);
+        QCOMPARE(bridge.gameRevision(), 4);
+        QVERIFY(bridge.gameReady());
+    }
+
+    void chessLateOpponent_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto *name : {"undo", "reset", "mode", "persona", "leave"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void chessLateOpponent() {
+        QFETCH(QString, action);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openChess(bridge, {"e2e4", "e7e5", "g1f3"}, 5);
+        bridge.gameModeChanged(true);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto old = controlId(bridge, "game:move");
+        QVERIFY(!old.isEmpty());
+        if (action == "undo")
+            bridge.gameUndo();
+        else if (action == "reset")
+            bridge.gameReset();
+        else if (action == "mode")
+            bridge.gameModeChanged(false);
+        else if (action == "persona")
+            bridge.event(frame("bridge:persona_scope", "", {{"persona_id", "replacement"}, {"epoch", 4}, {"fingerprint", "replacement"}}));
+        else
+            bridge.openPanel("diary");
+        const auto writes = commandCount(*frames, "game_state:put");
+        const auto moves = bridge.gameMoves();
+        const auto feedback = bridge.gameFeedback();
+        const auto revision = bridge.gameRevision();
+        bridge.event(frame("game:move:result", old, {{"ok", true}, {"move", "Nc6"}, {"comment", "旧回执"}}));
+        QCOMPARE(bridge.gameMoves(), moves);
+        QCOMPARE(bridge.gameFeedback(), feedback);
+        QCOMPARE(bridge.gameRevision(), revision);
+        QCOMPARE(commandCount(*frames, "game_state:put"), writes);
+        QCOMPARE(commandCount(*frames, "game:move"), 1);
+        if (action == "undo" || action == "reset") {
+            QCOMPARE(writes, 1);
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(put["expected_revision"].toInt(), 5);
+            QCOMPARE(put["state"], QJsonValue(action == "undo" ? QJsonArray{"e2e4", "e7e5"} : QJsonArray{}));
+        } else {
+            QCOMPARE(writes, 0);
+        }
+        if (action == "persona") {
+            QVERIFY(moves.isEmpty() && bridge.gameBoard().isEmpty());
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+            QCOMPARE(lastCommand(*frames, "game_state:get")["game_id"].toString(), QString("chess"));
+        }
+    }
+
+    void chessReadOnlyDuringRecovery() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.event(frame("runtime:activity", "", {{"writes_blocked", true}, {"recovery_state", "recovering"},
+                                                      {"runtime_writable", false}}));
+        openChess(bridge, {"e2e4"}, 3);
+        QCOMPARE(bridge.gameMoves(), QJsonArray{"e2e4"}.toVariantList());
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset());
+        chessE4(bridge);
+        bridge.gameUndo();
+        bridge.gameReset();
+        bridge.gameModeChanged(true);
+        QVERIFY(!bridge.m_opponentPending);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void chessTerminalText_data() {
+        QTest::addColumn<QJsonArray>("record");
+        QTest::addColumn<QString>("fen");
+        QTest::addColumn<QString>("status");
+        QTest::newRow("white-wins") << QJsonArray{"e2e4", "e7e5", "f1c4", "b8c6", "d1h5", "g8f6", "h5f7"}
+                                    << QString() << QString("本局结束：你赢了（将死）");
+        QTest::newRow("black-wins") << QJsonArray{"f2f3", "e7e5", "g2g4", "d8h4"}
+                                    << QString() << QString("本局结束：你输了（将死）");
+        QTest::newRow("stalemate") << QJsonArray{} << QString("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+                                   << QString("本局结束：和棋（逼和）");
+        QTest::newRow("repetition") << QJsonArray{"g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8"}
+                                    << QString() << QString("本局结束：和棋（三次重复）");
+        QTest::newRow("fifty-move") << QJsonArray{} << QString("kn6/8/8/8/8/8/8/KN6 w - - 100 1")
+                                    << QString("本局结束：和棋（五十回合）");
+        QTest::newRow("material") << QJsonArray{} << QString("8/7k/8/8/8/B7/8/B6K w - - 0 1")
+                                  << QString("本局结束：和棋（子力不足）");
+    }
+
+    void chessTerminalText() {
+        QFETCH(QJsonArray, record);
+        QFETCH(QString, fen);
+        QFETCH(QString, status);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openChess(bridge, record, 4);
+        if (!fen.isEmpty()) {
+            bridge.m_position = bridge.m_chess.property("createChess").call({fen});
+            QVERIFY(bridge.m_position.isObject() && !bridge.m_position.isError());
+            bridge.m_gameOutcome = bridge.m_chess.property("chessOutcome").call({bridge.m_position});
+        }
+        QCOMPARE(bridge.gameStatus(), status);
+        QVERIFY(!bridge.gameReady() && !bridge.m_opponentPending);
+        chessE4(bridge);
+        bridge.gameModeChanged(true);
+        QVERIFY(!bridge.m_opponentPending);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void chessViewAt760() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openChess(bridge, {}, 1);
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                SceneNavigation { id: nav; currentFeature: "activities"; currentSubentry: "chess" }
+                TaskPanel { anchors.fill: parent; page: "activities"; navigation: nav }
+            }
+        )qml", QUrl("qrc:/xiangqi/chess-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        const auto item = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        QTRY_VERIFY(item("chessBoard") && item("chessBoard")->width() > 0);
+        auto *board = item("chessBoard");
+        auto *view = item("memoryPageScroll");
+        auto *reset = item("chessReset");
+        auto *status = item("chessStatus");
+        QVERIFY(view && reset && status);
+        QSignalSpy swapped(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QVERIFY(swapped.wait());
+        const auto extent = board->mapRectToItem(view, board->boundingRect());
+        QVERIFY2(view->boundingRect().contains(extent),
+            qPrintable(QString("board l=%1 t=%2 r=%3 b=%4 viewport=%5x%6")
+                .arg(extent.left()).arg(extent.top()).arg(extent.right()).arg(extent.bottom())
+                .arg(view->width()).arg(view->height())));
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        for (int rank = 1; rank <= 8; ++rank) {
+            for (char file = 'a'; file <= 'h'; ++file) {
+                auto *square = item(QString("chess-%1%2").arg(QLatin1Char(file)).arg(rank));
+                QVERIFY(square && square->isVisible() && square->width() >= 28 && square->height() >= 28);
+            }
+        }
+        const auto a8 = item("chess-a8")->mapToItem(board, QPointF());
+        const auto h8 = item("chess-h8")->mapToItem(board, QPointF());
+        const auto a1 = item("chess-a1")->mapToItem(board, QPointF());
+        QCOMPARE(a8.x(), a1.x());
+        QCOMPARE(a8.y(), h8.y());
+        QVERIFY(a8.x() < h8.x() && a8.y() < a1.y());
+        QCOMPARE(status->property("text").toString(), QString("轮到你执白走棋"));
+        QVERIFY(QMetaObject::invokeMethod(reset, "clicked"));
+        QTRY_VERIFY(item("chessResetCancel") && item("chessResetCancel")->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(item("chessResetCancel"), "clicked"));
+        QTRY_VERIFY(!item("chessResetCancel") || !item("chessResetCancel")->isVisible());
+        QCOMPARE(bridge.gameRevision(), 1);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        const auto click = [&](const QString &name) {
+            auto *square = item(name);
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                square->mapToScene(square->boundingRect().center()).toPoint());
+        };
+        click("chess-e2");
+        QVERIFY(bridge.gameBoard().at(chessSquare('e', 2)).toMap().value("selected").toBool());
+        QVERIFY(bridge.gameBoard().at(chessSquare('e', 4)).toMap().value("destination").toBool());
+        click("chess-e5");
+        QVERIFY(!bridge.gameBoard().at(chessSquare('e', 2)).toMap().value("selected").toBool());
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        click("chess-e2");
+        click("chess-e4");
+        QCOMPARE(lastCommand(*frames, "game_state:put")["state"], QJsonValue(QJsonArray{"e2e4"}));
+    }
+
+    static QJsonObject goRecord(const QJsonArray &moves = {}, bool ended = false) {
+        return {{"moves", moves}, {"ended", ended}};
+    }
+
+    static void openGo(RuntimeBridge &bridge, const QJsonObject &record, int revision) {
+        bridge.openPanel("go");
+        strategicReceipt(bridge, controlId(bridge, "game_state:get"), record, revision);
+    }
+
+    void goRules() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        openGo(bridge, goRecord({1, 10, 9, 18, 11, 20, 80, 28, 19}), 2);
+        QCOMPARE(bridge.gameBoard().size(), 81);
+        QCOMPARE(bridge.m_position.property("ko").toInt(), 10);
+        QCOMPARE(bridge.m_position.property("blackCaptures").toInt(), 1);
+        QVERIFY(bridge.gameBoard().at(10).toMap().value("color").toString().isEmpty());
+        QCOMPARE(bridge.gameBoard().at(19).toMap().value("color").toString(), QString("black"));
+        const auto play = bridge.m_go.property("playGo");
+        QVERIFY(play.isCallable());
+        QVERIFY(play.call({bridge.m_position, 10}).strictlyEquals(bridge.m_position));
+        bridge.openPanel("diary");
+        openGo(bridge, goRecord({2, 0, 9, 1}), 5);
+        QCOMPARE(bridge.m_go.property("chooseGoMove").call({bridge.m_position}).toInt(), 10);
+        const auto capture = play.call({bridge.m_position, 10});
+        QCOMPARE(capture.property("blackCaptures").toInt(), 2);
+        QCOMPARE(capture.property("board").property(0).toInt(), 0);
+        QCOMPARE(capture.property("board").property(1).toInt(), 0);
+        QCOMPARE(capture.property("board").property(10).toInt(), 1);
+    }
+
+    void goRead_data() {
+        QTest::addColumn<QString>("scenario");
+        QTest::addColumn<QJsonValue>("record");
+        QTest::newRow("new") << QString("new") << QJsonValue(QJsonValue::Null);
+        QTest::newRow("existing") << QString("existing") << QJsonValue(goRecord({40, 31}));
+        QTest::newRow("read-failed") << QString("read-failed") << QJsonValue(QJsonValue::Null);
+        QTest::newRow("not-object") << QString("invalid") << QJsonValue(QJsonArray{});
+        QTest::newRow("unexpected-key") << QString("invalid") << QJsonValue(QJsonObject{{"moves", QJsonArray{}}, {"ended", false}, {"extra", 1}});
+        QTest::newRow("moves-not-array") << QString("invalid") << QJsonValue(QJsonObject{{"moves", 1}, {"ended", false}});
+        QTest::newRow("ended-not-boolean") << QString("invalid") << QJsonValue(QJsonObject{{"moves", QJsonArray{}}, {"ended", 1}});
+        QTest::newRow("out-of-range") << QString("invalid") << QJsonValue(goRecord({81}));
+        QTest::newRow("fractional") << QString("invalid") << QJsonValue(goRecord({40.5}));
+        QTest::newRow("occupied") << QString("invalid") << QJsonValue(goRecord({40, 40}));
+        QTest::newRow("suicide") << QString("invalid") << QJsonValue(goRecord({80, 1, 79, 9, 0}));
+        QTest::newRow("ko") << QString("invalid") << QJsonValue(goRecord({1, 10, 9, 18, 11, 20, 80, 28, 19, 10}));
+        QTest::newRow("after-passes") << QString("invalid") << QJsonValue(goRecord({QJsonValue::Null, QJsonValue::Null, 40}));
+    }
+
+    void goRead() {
+        QFETCH(QString, scenario);
+        QFETCH(QJsonValue, record);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.openPanel("go");
+        QCOMPARE(bridge.gameStatus(), QString("正在读取棋局…"));
+        QVERIFY(!bridge.gameCompanion());
+        const auto get = lastCommand(*frames, "game_state:get");
+        QCOMPARE(get["game_id"].toString(), QString("go"));
+        const auto id = get["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        if (scenario == "new") {
+            bridge.event(frame("game_state:result", id,
+                {{"ok", true}, {"exists", false}, {"revision", 0}, {"state", QJsonValue::Null}}));
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(put["game_id"].toString(), QString("go"));
+            QCOMPARE(put["expected_revision"].toInt(-1), 0);
+            QCOMPARE(put["state"], QJsonValue(goRecord()));
+            QVERIFY(!bridge.gameReady());
+            strategicReceipt(bridge, put["requestId"].toString(), goRecord(), 1);
+            QCOMPARE(bridge.gameRevision(), 1);
+            QCOMPARE(bridge.gameBoard().size(), 81);
+            QCOMPARE(bridge.gameStatus(), QString("轮到你执黑落子 · 提子 黑 0：白 0"));
+            QVERIFY(bridge.gameReady() && !bridge.gameCanUndo());
+        } else if (scenario == "read-failed") {
+            bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_unavailable"}}));
+            QCOMPARE(bridge.gameStatus(), QString("棋局读取失败，原记录没有改动。"));
+            QVERIFY(bridge.gameCanRead() && !bridge.gameCanReset());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameRead();
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+        } else {
+            strategicReceipt(bridge, id, record, 8);
+            QCOMPARE(bridge.gameRevision(), 8);
+            if (scenario == "existing") {
+                QCOMPARE(bridge.gameMoves(), record.toObject()["moves"].toArray().toVariantList());
+                const auto board = bridge.gameBoard();
+                QCOMPARE(board.size(), 81);
+                QCOMPARE(board.at(40).toMap().value("color").toString(), QString("black"));
+                QCOMPARE(board.at(31).toMap().value("color").toString(), QString("white"));
+                QVERIFY(!board.at(40).toMap().value("last").toBool() && board.at(31).toMap().value("last").toBool());
+                QVERIFY(bridge.gameReady() && bridge.gameCanUndo());
+                bridge.gameClick(31);
+                QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+                return;
+            }
+            QCOMPARE(bridge.gameStatus(), QString("棋谱无法完整重放；原记录保留。可以选择重新开始。"));
+            QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanRead());
+            QVERIFY(bridge.gameCanReset());
+            bridge.gameClick(40);
+            bridge.gamePass();
+            bridge.gameEnd();
+            bridge.gameUndo();
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+            bridge.gameReset();
+            const auto reset = lastCommand(*frames, "game_state:put");
+            QCOMPARE(reset["game_id"].toString(), QString("go"));
+            QCOMPARE(reset["expected_revision"].toInt(), 8);
+            QCOMPARE(reset["state"], QJsonValue(goRecord()));
+            strategicReceipt(bridge, reset["requestId"].toString(), goRecord(), 9);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void goSave_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"success", "conflict", "refused", "expired", "malformed"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void goSave() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openGo(bridge, goRecord(), 4);
+        bridge.gameClick(40);
+        const auto put = lastCommand(*frames, "game_state:put");
+        const auto id = put["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(put["game_id"].toString(), QString("go"));
+        QCOMPARE(put["expected_revision"].toInt(), 4);
+        QCOMPARE(put["state"], QJsonValue(goRecord({40})));
+        QCOMPARE(bridge.gameRevision(), 4);
+        QCOMPARE(bridge.gameStatus(), QString("正在保存…"));
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset() && !bridge.gameCanEnd());
+        bridge.gameClick(31);
+        bridge.gamePass();
+        bridge.gameEnd();
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        if (scenario == "success") {
+            strategicReceipt(bridge, id, goRecord({40}), 9);
+            QCOMPARE(bridge.gameRevision(), 9);
+            QVERIFY(bridge.gameCanUndo());
+        } else if (scenario == "conflict") {
+            const QJsonArray current{40, 31};
+            bridge.event(frame("game_state:result", id,
+                {{"ok", false}, {"code", "conflict"}, {"exists", true}, {"state", goRecord(current)}, {"revision", 11}}));
+            QCOMPARE(bridge.gameRevision(), 11);
+            QCOMPARE(bridge.gameMoves(), current.toVariantList());
+            QCOMPARE(bridge.gameFeedback(), QString("棋局已在别处改动，已读取当前棋局。"));
+            QVERIFY(bridge.gameReady());
+        } else {
+            if (scenario == "expired")
+                bridge.expirePending(id);
+            else if (scenario == "malformed")
+                strategicReceipt(bridge, id, goRecord(), 5);
+            else
+                bridge.event(frame("game_state:result", id, {{"ok", false}, {"code", "module_degraded"}}));
+            QCOMPARE(bridge.gameRevision(), 4);
+            QVERIFY(bridge.gameMoves().isEmpty());
+            QVERIFY(bridge.gameCanRead() && !bridge.gameReady() && !bridge.gameCanEnd());
+            QCOMPARE(bridge.gameStatus(), QString("这一步的保存结果未确认，没有自动重复提交。请重新读取。"));
+            strategicReceipt(bridge, id, goRecord({40}), 5);
+            QVERIFY(bridge.gameMoves().isEmpty());
+            QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+            bridge.gameRead();
+            strategicReceipt(bridge, controlId(bridge, "game_state:get"), goRecord(), 4);
+            QVERIFY(bridge.gameReady());
+        }
+    }
+
+    void goPracticeAndUndo() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openGo(bridge, goRecord(), 1);
+        bridge.gameClick(40);
+        const auto first = controlId(bridge, "game_state:put");
+        QVERIFY(!first.isEmpty());
+        QTest::qWait(350);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+        strategicReceipt(bridge, first, goRecord({40}), 2);
+        QCOMPARE(bridge.gameStatus(), QString("陪练思考中…"));
+        QTRY_COMPARE(commandCount(*frames, "game_state:put"), 2);
+        const auto practice = lastCommand(*frames, "game_state:put");
+        QCOMPARE(practice["game_id"].toString(), QString("go"));
+        QCOMPARE(practice["expected_revision"].toInt(), 2);
+        QCOMPARE(practice["state"], QJsonValue(goRecord({40, 31})));
+        strategicReceipt(bridge, practice["requestId"].toString(), goRecord({40, 31}), 3);
+        QVERIFY(bridge.gameReady());
+        bridge.gameUndo();
+        const auto undo = lastCommand(*frames, "game_state:put");
+        QCOMPARE(undo["expected_revision"].toInt(), 3);
+        QCOMPARE(undo["state"], QJsonValue(goRecord()));
+        strategicReceipt(bridge, undo["requestId"].toString(), goRecord(), 4);
+        QVERIFY(bridge.gameReady());
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void goOpponent_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"legal", "pass", "retry-format", "retry-illegal", "twice-illegal", "refused", "expired"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void goOpponent() {
+        QFETCH(QString, scenario);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.m_state["persona"] = QVariantMap{{"name", "<b>同伴</b>"}};
+        openGo(bridge, goRecord({40}), 3);
+        bridge.gameModeChanged(true);
+        QCOMPARE(bridge.gameStatus(), QString("「<b>同伴</b>」正在想…"));
+        QVERIFY(!bridge.gameReady());
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto request = lastCommand(*frames, "game:move");
+        auto id = request["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        const auto board = QString::fromUtf8(R"board(坐标：列 0–8 从左到右，行 0–8 从上到下；回复「列,行」，或 pass 表示停一手。
+△ 为用户的黑子，▲ 为你的白子，· 为空格。
+列 0 1 2 3 4 5 6 7 8
+行0 · · · · · · · · ·
+行1 · · · · · · · · ·
+行2 · · · · · · · · ·
+行3 · · · · · · · · ·
+行4 · · · · △ · · · ·
+行5 · · · · · · · · ·
+行6 · · · · · · · · ·
+行7 · · · · · · · · ·
+行8 · · · · · · · · ·)board");
+        const QJsonObject state{{"board_text", board}, {"side", "白棋"}, {"history_text", "共 1 手；黑提子 0，白提子 0"}};
+        QCOMPARE(request, (QJsonObject{{"requestId", id}, {"game", "go"}, {"state", state}}));
+        const bool retry = scenario.startsWith("retry-") || scenario == "twice-illegal";
+        const bool fallback = scenario == "twice-illegal" || scenario == "refused" || scenario == "expired";
+        if (retry) {
+            const bool format = scenario == "retry-format";
+            bridge.event(frame("game:move:result", id, {{"ok", true}, {"move", format ? "4/3" : "4,4"}}));
+            const auto second = lastCommand(*frames, "game:move");
+            const auto secondId = second["requestId"].toString();
+            QVERIFY(!secondId.isEmpty() && secondId != id);
+            id = secondId;
+            const QString note = format ? "走法需要 列,行 两个 0–8 的整数，或 pass" : "这步棋因打劫、自杀或已有棋子而不合法";
+            QCOMPARE(second, (QJsonObject{{"requestId", id}, {"game", "go"}, {"state", state}, {"retry_note", note}}));
+            QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        }
+        if (scenario == "expired") {
+            bridge.expirePending(id);
+        } else if (scenario == "refused") {
+            bridge.event(frame("game:move:result", id, {{"ok", false}, {"error", "unavailable"}}));
+        } else {
+            const auto reply = scenario == "twice-illegal" ? "4,4" : scenario == "pass" ? " 停一手 " : " 4，3 ";
+            bridge.event(frame("game:move:result", id, {{"ok", true}, {"move", reply}, {"comment", "<b>短评</b>"}}));
+        }
+        QCOMPARE(commandCount(*frames, "game:move"), retry ? 2 : 1);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        const QJsonArray moves{40, scenario == "pass" ? QJsonValue(QJsonValue::Null) : QJsonValue(31)};
+        const auto expected = goRecord(moves);
+        const auto put = lastCommand(*frames, "game_state:put");
+        QCOMPARE(put["game_id"].toString(), QString("go"));
+        QCOMPARE(put["expected_revision"].toInt(), 3);
+        QCOMPARE(put["state"], QJsonValue(expected));
+        if (!fallback) QCOMPARE(bridge.gameFeedback(), QString("<b>同伴</b>：<b>短评</b>"));
+        QVERIFY(!bridge.gameReady());
+        strategicReceipt(bridge, put["requestId"].toString(), expected, 4);
+        QCOMPARE(bridge.gameRevision(), 4);
+        QCOMPARE(bridge.gameLastPass(), scenario == "pass");
+        QVERIFY(bridge.gameReady());
+    }
+
+    void goTwoPassesAndUndo() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonValue pass(QJsonValue::Null);
+        openGo(bridge, goRecord(), 2);
+        bridge.gameModeChanged(true);
+        bridge.gamePass();
+        const auto first = lastCommand(*frames, "game_state:put");
+        QCOMPARE(first["state"], QJsonValue(goRecord({pass})));
+        strategicReceipt(bridge, first["requestId"].toString(), goRecord({pass}), 3);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto request = lastCommand(*frames, "game:move");
+        QCOMPARE(request["state"].toObject()["history_text"].toString(), QString("共 1 手；黑提子 0，白提子 0；用户上一手停一手"));
+        bridge.event(frame("game:move:result", request["requestId"].toString(), {{"ok", true}, {"move", " PASS "}}));
+        const auto second = lastCommand(*frames, "game_state:put");
+        QCOMPARE(second["expected_revision"].toInt(), 3);
+        QCOMPARE(second["state"], QJsonValue(goRecord({pass, pass})));
+        strategicReceipt(bridge, second["requestId"].toString(), goRecord({pass, pass}), 4);
+        QCOMPARE(bridge.gameStatus(), QString("本局结束：白胜 6.5 目（数子法，白贴 6.5，未判死子）"));
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanEnd() && bridge.gameCanUndo());
+        bridge.gameUndo();
+        const auto undo = lastCommand(*frames, "game_state:put");
+        QCOMPARE(undo["expected_revision"].toInt(), 4);
+        QCOMPARE(undo["state"], QJsonValue(goRecord()));
+        strategicReceipt(bridge, undo["requestId"].toString(), goRecord(), 5);
+        QVERIFY(bridge.gameReady());
+    }
+
+    void goReadOnlyDuringRecovery() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.event(frame("runtime:activity", "", {{"writes_blocked", true}, {"recovery_state", "recovering"},
+                                                      {"runtime_writable", false}}));
+        openGo(bridge, goRecord({40}), 3);
+        QCOMPARE(bridge.gameMoves(), QJsonArray{40}.toVariantList());
+        QVERIFY(!bridge.gameReady() && !bridge.gameCanUndo() && !bridge.gameCanReset() && !bridge.gameCanEnd());
+        bridge.gameClick(31);
+        bridge.gamePass();
+        bridge.gameEnd();
+        bridge.gameUndo();
+        bridge.gameReset();
+        bridge.gameModeChanged(true);
+        QVERIFY(!bridge.m_opponentPending);
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+    void goLateOpponent_data() {
+        QTest::addColumn<QString>("action");
+        for (const auto *name : {"undo", "reset", "mode", "persona", "end"})
+            QTest::newRow(name) << QString(name);
+    }
+
+    void goLateOpponent() {
+        QFETCH(QString, action);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        openGo(bridge, goRecord({40}), 5);
+        bridge.gameModeChanged(true);
+        QTRY_COMPARE(commandCount(*frames, "game:move"), 1);
+        const auto old = controlId(bridge, "game:move");
+        QVERIFY(!old.isEmpty());
+        if (action == "undo")
+            bridge.gameUndo();
+        else if (action == "reset")
+            bridge.gameReset();
+        else if (action == "mode")
+            bridge.gameModeChanged(false);
+        else if (action == "persona")
+            bridge.event(frame("bridge:persona_scope", "", {{"persona_id", "replacement"}, {"epoch", 4}, {"fingerprint", "replacement"}}));
+        else
+            bridge.gameEnd();
+        const bool saves = action == "undo" || action == "reset" || action == "end";
+        QCOMPARE(commandCount(*frames, "game_state:put"), saves ? 1 : 0);
+        if (saves) {
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(put["expected_revision"].toInt(), 5);
+            QCOMPARE(put["state"], QJsonValue(action == "end" ? goRecord({40}, true) : goRecord()));
+        }
+        const auto moves = bridge.gameMoves();
+        const auto feedback = bridge.gameFeedback();
+        const auto revision = bridge.gameRevision();
+        bridge.event(frame("game:move:result", old, {{"ok", true}, {"move", "4,3"}, {"comment", "旧回执"}}));
+        QCOMPARE(bridge.gameMoves(), moves);
+        QCOMPARE(bridge.gameFeedback(), feedback);
+        QCOMPARE(bridge.gameRevision(), revision);
+        QCOMPARE(commandCount(*frames, "game_state:put"), saves ? 1 : 0);
+        QCOMPARE(commandCount(*frames, "game:move"), 1);
+        if (action == "persona") {
+            QVERIFY(moves.isEmpty() && bridge.gameBoard().isEmpty());
+            QCOMPARE(commandCount(*frames, "game_state:get"), 2);
+            QCOMPARE(lastCommand(*frames, "game_state:get")["game_id"].toString(), QString("go"));
+        }
+    }
+
+    void fourGameRecordsStaySeparate() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        struct Game {
+            QString panel;
+            QString id;
+            QJsonValue empty;
+            QJsonValue afterMove;
+            int startingRevision;
+            QString reply;
+            void (*play)(RuntimeBridge &);
+        };
+        const QList<Game> games{
+            {"activities", "xiangqi", QJsonArray{}, xiangqiRedMove(), 4, "0,6,0,5", [](RuntimeBridge &target) {
+                target.gameClick(25);
+                target.gameClick(22);
+            }},
+            {"gomoku", "gomoku", QJsonArray{}, QJsonArray{112}, 9, "113", [](RuntimeBridge &target) { target.gameClick(112); }},
+            {"chess", "chess", QJsonArray{}, QJsonArray{"e2e4"}, 14, "Nf6", &chessE4},
+            {"go", "go", goRecord(), goRecord({40}), 19, "4,3", [](RuntimeBridge &target) { target.gameClick(40); }},
+        };
+        QString staleId;
+        QString staleMove;
+        for (int i = 0; i < games.size(); ++i) {
+            const auto &game = games.at(i);
+            bridge.openPanel(game.panel);
+            QCOMPARE(bridge.gameStatus(), QString("正在读取棋局…"));
+            QVERIFY(bridge.gameMoves().isEmpty() && bridge.gameFeedback().isEmpty());
+            QCOMPARE(bridge.gameRevision(), 0);
+            QVERIFY(!bridge.gameCompanion());
+            const auto get = lastCommand(*frames, "game_state:get");
+            QCOMPARE(get["game_id"].toString(), game.id);
+            QCOMPARE(commandCount(*frames, "game_state:get"), i + 1);
+            strategicReceipt(bridge, get["requestId"].toString(), game.empty, game.startingRevision);
+            QCOMPARE(bridge.gameRevision(), game.startingRevision);
+            QVERIFY(bridge.gameReady());
+            if (!staleId.isEmpty()) {
+                bridge.event(frame("game:move:result", staleId,
+                    {{"ok", true}, {"move", staleMove}, {"comment", "上局旧回复"}}));
+                QVERIFY(bridge.gameMoves().isEmpty() && bridge.gameFeedback().isEmpty());
+                QCOMPARE(bridge.gameRevision(), game.startingRevision);
+            }
+            QCOMPARE(commandCount(*frames, "game_state:put"), i);
+            bridge.gameModeChanged(true);
+            game.play(bridge);
+            const auto put = lastCommand(*frames, "game_state:put");
+            QCOMPARE(commandCount(*frames, "game_state:put"), i + 1);
+            QCOMPARE(put["game_id"].toString(), game.id);
+            QCOMPARE(put["expected_revision"].toInt(), game.startingRevision);
+            QCOMPARE(put["state"], game.afterMove);
+            strategicReceipt(bridge, put["requestId"].toString(), game.afterMove, game.startingRevision + 1);
+            QTRY_COMPARE(commandCount(*frames, "game:move"), i + 1);
+            const auto request = lastCommand(*frames, "game:move");
+            QCOMPARE(request["game"].toString(), game.id);
+            staleId = request["requestId"].toString();
+            staleMove = game.reply;
+            QVERIFY(!staleId.isEmpty());
+        }
+        for (int i = 0; i < games.size(); ++i) {
+            const auto &game = games.at(i);
+            bridge.openPanel(game.panel);
+            const auto get = lastCommand(*frames, "game_state:get");
+            QCOMPARE(get["game_id"].toString(), game.id);
+            QCOMPARE(commandCount(*frames, "game_state:get"), games.size() + i + 1);
+            strategicReceipt(bridge, get["requestId"].toString(), game.afterMove, game.startingRevision + 1);
+            if (i == 0) bridge.event(frame("game:move:result", staleId,
+                {{"ok", true}, {"move", staleMove}, {"comment", "上局旧回复"}}));
+            const auto moves = game.afterMove.isObject() ? game.afterMove.toObject()["moves"].toArray() : game.afterMove.toArray();
+            QCOMPARE(bridge.gameMoves(), moves.toVariantList());
+            QCOMPARE(bridge.gameRevision(), game.startingRevision + 1);
+            QVERIFY(bridge.gameFeedback().isEmpty() && bridge.gameCompanion());
+            QCOMPARE(commandCount(*frames, "game_state:put"), games.size());
+            QCOMPARE(commandCount(*frames, "game:move"), games.size());
+        }
+    }
+
+    void goViewAt760AndStrategicActivityEntries() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const QJsonArray moves{40, QJsonValue::Null};
+        openGo(bridge, goRecord(moves), 1);
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                SceneNavigation { id: nav; currentFeature: "activities"; currentSubentry: "go" }
+                TaskPanel { anchors.fill: parent; page: "activities"; navigation: nav }
+            }
+        )qml", QUrl("qrc:/xiangqi/go-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        auto *nav = root->findChild<QObject *>("sceneNavigation");
+        QVERIFY(nav);
+        const auto entryList = [](const QVariant &value) {
+            if (value.metaType() == QMetaType::fromType<QJSValue>())
+                return value.value<QJSValue>().toVariant().toList();
+            return value.toList();
+        };
+        QStringList activities;
+        for (const auto &row : entryList(nav->property("entries"))) {
+            const auto entry = row.toMap();
+            if (entry.value("feature").toString() == "activities") activities.append(entry.value("subentry").toString());
+        }
+        QCOMPARE(activities, (QStringList{"xiangqi", "gomoku", "chess", "go", "diary"}));
+        for (const auto &fixture : QList<QStringList>{{"chess", "chess", "国际象棋", "和角色下一盘，或本地练习", "棋 国际象棋 chess"},
+                 {"weiqi", "go", "围棋", "九路，和角色下一盘，或本地练习", "棋 围棋 weiqi"}}) {
+            QVERIFY(nav->setProperty("query", fixture[0]));
+            const auto filtered = entryList(nav->property("filteredEntries"));
+            QCOMPARE(filtered.size(), 1);
+            const auto entry = filtered.constFirst().toMap();
+            QCOMPARE(entry.value("subentry").toString(), fixture[1]);
+            QCOMPARE(entry.value("label").toString(), fixture[2]);
+            QCOMPARE(entry.value("detail").toString(), fixture[3]);
+            QCOMPARE(entry.value("keywords").toString(), fixture[4]);
+        }
+        QVariant defaultEntry;
+        QVERIFY(QMetaObject::invokeMethod(nav, "defaultSubentry", Q_RETURN_ARG(QVariant, defaultEntry),
+            Q_ARG(QVariant, QVariant("activities"))));
+        QCOMPARE(defaultEntry.toString(), QString("xiangqi"));
+        QVERIFY(nav->setProperty("query", QString()));
+
+        const auto item = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        QTRY_VERIFY(item("goBoard") && item("goBoard")->width() > 0);
+        auto *board = item("goBoard");
+        auto *view = item("memoryPageScroll");
+        auto *end = item("goEnd");
+        auto *pass = item("goLastPass");
+        auto *status = item("goStatus");
+        QVERIFY(view && end && pass && status);
+        QVERIFY(pass->isVisible());
+        QCOMPARE(pass->property("text").toString(), QString("对方停一手"));
+        QSignalSpy swapped(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QVERIFY(swapped.wait());
+        const auto extent = board->mapRectToItem(view, board->boundingRect());
+        QVERIFY2(view->boundingRect().contains(extent),
+            qPrintable(QString("board l=%1 t=%2 r=%3 b=%4 viewport=%5x%6")
+                .arg(extent.left()).arg(extent.top()).arg(extent.right()).arg(extent.bottom())
+                .arg(view->width()).arg(view->height())));
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        for (int index = 0; index < 81; ++index) {
+            auto *point = item(QString("go-%1").arg(index));
+            QVERIFY(point && point->isVisible() && point->width() >= 28 && point->height() >= 28);
+        }
+        const auto topLeft = item("go-0")->mapToItem(board, QPointF());
+        const auto topRight = item("go-8")->mapToItem(board, QPointF());
+        const auto bottomLeft = item("go-72")->mapToItem(board, QPointF());
+        QCOMPARE(topLeft.x(), bottomLeft.x());
+        QCOMPARE(topLeft.y(), topRight.y());
+        QVERIFY(topLeft.x() < topRight.x() && topLeft.y() < bottomLeft.y());
+
+        QVERIFY(QMetaObject::invokeMethod(end, "clicked"));
+        QTRY_VERIFY(item("goEndCancel") && item("goEndCancel")->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(item("goEndCancel"), "clicked"));
+        QTRY_VERIFY(!item("goEndCancel") || !item("goEndCancel")->isVisible());
+        QCOMPARE(commandCount(*frames, "game_state:put"), 0);
+        QCOMPARE(bridge.gameRevision(), 1);
+        QCOMPARE(bridge.gameMoves(), moves.toVariantList());
+
+        QVERIFY(QMetaObject::invokeMethod(end, "clicked"));
+        auto *dialog = root->findChild<QObject *>("goEndDialog");
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(item("goEndConfirm") && item("goEndConfirm")->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(item("goEndConfirm"), "clicked"));
+        QCOMPARE(commandCount(*frames, "game_state:put"), 1);
+        const auto put = lastCommand(*frames, "game_state:put");
+        QCOMPARE(put["expected_revision"].toInt(), 1);
+        QCOMPARE(put["state"], QJsonValue(goRecord(moves, true)));
+        strategicReceipt(bridge, put["requestId"].toString(), goRecord(moves, true), 2);
+        QCOMPARE(status->property("text").toString(), QString("本局结束：黑胜 74.5 目（数子法，白贴 6.5，未判死子）"));
+        QVERIFY(!bridge.gameReady() && bridge.gameCanUndo());
+        bridge.gameUndo();
+        const auto undo = lastCommand(*frames, "game_state:put");
+        QCOMPARE(undo["expected_revision"].toInt(), 2);
+        QCOMPARE(undo["state"], QJsonValue(goRecord()));
+        strategicReceipt(bridge, undo["requestId"].toString(), goRecord(), 3);
+        QVERIFY(bridge.gameReady() && !bridge.gameLastPass());
+        QCOMPARE(commandCount(*frames, "game:move"), 0);
+    }
+
+private:
+    static QJsonObject moodSnapshot(const QString &label = "happy", const QString &first = "joy",
+                                    const QString &second = "calm") {
+        QJsonObject emotions{{"joy", 20}, {"calm", 20}, {"excitement", 20}, {"sadness", 20},
+            {"anger", 20}, {"anxiety", 20}, {"grievance", 20}, {"touched", 20}};
+        emotions[first] = 71.5;
+        emotions[second] = 60.4;
+        QJsonArray dominant{QJsonObject{{"name", first}, {"value", 71.5}},
+            QJsonObject{{"name", second}, {"value", 60.4}}};
+        for (auto it = emotions.constBegin(); it != emotions.constEnd() && dominant.size() < 4; ++it)
+            if (it.key() != first && it.key() != second)
+                dominant.append(QJsonObject{{"name", it.key()}, {"value", it.value()}});
+        return {{"emotions", emotions}, {"mood", label}, {"dominant", dominant}, {"intensity", .28}};
+    }
+
+    static QJsonObject moodSettings(bool enabled) {
+        auto snapshot = settingsSnapshot();
+        auto features = snapshot["features"].toObject();
+        features["emotion_system_enabled"] = enabled;
+        features["emotion_carryover_days"] = 3;
+        features["emotion_inertia_factor"] = .15;
+        snapshot["features"] = features;
+        return snapshot;
+    }
+
+    static void acceptMoodSettings(RuntimeBridge &bridge, bool enabled) {
+        const auto id = bridge.request("settings:get");
+        QVERIFY(!id.isEmpty());
+        bridge.event(frame("settings:get:result", id, moodSettings(enabled)));
+    }
+
+private slots:
+    void moodShowsBackendLabelsAndRoundedValues_data() {
+        QTest::addColumn<QString>("label");
+        QTest::addColumn<QString>("first");
+        QTest::addColumn<QString>("second");
+        QTest::addColumn<QString>("labelText");
+        QTest::addColumn<QString>("dominantText");
+        QTest::newRow("happy") << "happy" << "joy" << "calm" << "开心" << "喜悦 72、平静 60";
+        QTest::newRow("peaceful") << "peaceful" << "calm" << "excitement" << "平静" << "平静 72、兴奋 60";
+        QTest::newRow("excited") << "excited" << "excitement" << "sadness" << "兴奋" << "兴奋 72、难过 60";
+        QTest::newRow("sad") << "sad" << "sadness" << "anger" << "难过" << "难过 72、生气 60";
+        QTest::newRow("angry") << "angry" << "anger" << "anxiety" << "生气" << "生气 72、焦虑 60";
+        QTest::newRow("anxious") << "anxious" << "anxiety" << "grievance" << "焦虑" << "焦虑 72、委屈 60";
+        QTest::newRow("upset") << "upset" << "grievance" << "touched" << "委屈" << "委屈 72、感动 60";
+        QTest::newRow("moved") << "moved" << "touched" << "joy" << "感动" << "感动 72、喜悦 60";
+        QTest::newRow("low-energy") << "low-energy" << "joy" << "calm" << "没精神" << "喜悦 72、平静 60";
+    }
+
+    void moodShowsBackendLabelsAndRoundedValues() {
+        QFETCH(QString, label);
+        QFETCH(QString, first);
+        QFETCH(QString, second);
+        QFETCH(QString, labelText);
+        QFETCH(QString, dominantText);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        QSignalSpy received(&bridge, &RuntimeBridge::responseReceived);
+        const auto id = bridge.request("emotion:get");
+        QVERIFY(!id.isEmpty());
+        const auto snapshot = moodSnapshot(label, first, second);
+        bridge.event(frame("emotion:update", id, snapshot));
+        QCOMPARE(bridge.moodStatus(), (QVariantMap{{"status", "ready"}, {"requestId", id},
+            {"label", "心情：" + labelText}, {"dominant", "现在最明显的是" + dominantText}}));
+        QCOMPARE(received.count(), 1);
+        QCOMPARE(received.at(0), (QVariantList{id, QString("emotion:get"), snapshot.toVariantMap(), bridge.generation()}));
+    }
+
+    void moodRejectsMalformedSnapshots_data() {
+        QTest::addColumn<QJsonObject>("payload");
+        auto missing = moodSnapshot();
+        missing.remove("mood");
+        QTest::newRow("missing-label") << missing;
+        QTest::newRow("unknown-label") << moodSnapshot("<b>neutral</b>");
+        auto missingValue = moodSnapshot();
+        auto values = missingValue["emotions"].toObject();
+        values.remove("touched");
+        missingValue["emotions"] = values;
+        QTest::newRow("missing-emotion") << missingValue;
+        auto wrongType = moodSnapshot();
+        wrongType["intensity"] = "0.28";
+        QTest::newRow("wrong-type") << wrongType;
+        auto foreign = moodSnapshot();
+        auto dominant = foreign["dominant"].toArray();
+        dominant[2] = QJsonObject{{"name", "<b>joy</b>"}, {"value", 20}};
+        foreign["dominant"] = dominant;
+        QTest::newRow("unknown-dominant-name") << foreign;
+        auto shortList = moodSnapshot();
+        shortList["dominant"] = QJsonArray{dominant.first()};
+        QTest::newRow("missing-second-value") << shortList;
+    }
+
+    void moodRejectsMalformedSnapshots() {
+        QFETCH(QJsonObject, payload);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.event(frame("emotion:update", bridge.request("emotion:get"), moodSnapshot()));
+        QCOMPARE(bridge.moodStatus().value("status").toString(), QString("ready"));
+        bridge.event(frame("emotion:update", bridge.request("emotion:get"), payload));
+        QCOMPARE(bridge.moodStatus(), (QVariantMap{{"status", "unavailable"}, {"message", "心情暂时读不到"}}));
+    }
+
+    void moodReadsOnEntryAndNormalReply_data() {
+        QTest::addColumn<QJsonValue>("enabled");
+        QTest::addColumn<int>("reads");
+        QTest::newRow("enabled") << QJsonValue(true) << 1;
+        QTest::newRow("disabled") << QJsonValue(false) << 0;
+        QTest::newRow("unknown") << QJsonValue(QJsonValue::Null) << 1;
+    }
+
+    void moodReadsOnEntryAndNormalReply() {
+        QFETCH(QJsonValue, enabled);
+        QFETCH(int, reads);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        if (enabled.isBool()) acceptMoodSettings(bridge, enabled.toBool());
+        activeChat(bridge);
+        auto frames = sentFrames(bridge);
+        bridge.setRelationshipPageVisible(true);
+        bridge.setRelationshipPageVisible(true);
+        QCOMPARE(commandCount(*frames, "relationship:get"), 1);
+        QCOMPARE(commandCount(*frames, "emotion:get"), reads);
+        if (!reads) {
+            QCOMPARE(bridge.moodStatus(), (QVariantMap{{"status", "disabled"}, {"message", "情绪变化已关闭"}}));
+            QVERIFY(bridge.request("emotion:get").isEmpty());
+        }
+        bridge.event(frame("chat:done", "chat-current", {}));
+        bridge.event(frame("chat:status", "chat-current", {{"state", "done"}}));
+        QCOMPARE(commandCount(*frames, "relationship:get"), 2);
+        QCOMPARE(commandCount(*frames, "emotion:get"), 2 * reads);
+        bridge.setRelationshipPageVisible(false);
+        activeChat(bridge);
+        frames = sentFrames(bridge);
+        bridge.event(frame("chat:done", "chat-current", {}));
+        QCOMPARE(commandCount(*frames, "emotion:get"), 0);
+        activeChat(bridge);
+        frames = sentFrames(bridge);
+        bridge.setRelationshipPageVisible(true);
+        bridge.event(frame("chat:cancelled", "chat-current", {{"ok", true}}));
+        QCOMPARE(commandCount(*frames, "emotion:get"), reads);
+    }
+
+    void moodReenableUsesConfirmedSettings() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.setRelationshipPageVisible(true);
+        const auto superseded = lastCommand(*frames, "emotion:get").value("requestId").toString();
+        QVERIFY(!superseded.isEmpty());
+        acceptMoodSettings(bridge, false);
+        bridge.event(frame("emotion:update", superseded, moodSnapshot()));
+        QCOMPARE(bridge.moodStatus().value("status").toString(), QString("disabled"));
+        QVERIFY(!bridge.moodStatus().contains("dominant"));
+        bridge.saveSettings("personality", {{"emotion_system_enabled", true}});
+        const auto write = lastCommand(*frames, "settings:update").value("requestId").toString();
+        QVERIFY(!write.isEmpty());
+        QCOMPARE(commandCount(*frames, "emotion:get"), 1);
+        bridge.event(frame("settings:update:result", write, {{"ok", true}}));
+        QCOMPARE(commandCount(*frames, "emotion:get"), 1);
+        const auto read = lastCommand(*frames, "settings:get").value("requestId").toString();
+        auto confirmed = moodSettings(true);
+        confirmed["emotionRuntime"] = QJsonObject{{"enabled", true}, {"carryover_days", 3}, {"inertia_factor", .15}};
+        bridge.event(frame("settings:get:result", read, confirmed));
+        QCOMPARE(commandCount(*frames, "emotion:get"), 2);
+        QCOMPARE(commandCount(*frames, "relationship:get"), 1);
+        const auto moodRead = lastCommand(*frames, "emotion:get").value("requestId").toString();
+        QVERIFY(moodRead != superseded);
+        bridge.event(frame("emotion:update", moodRead, moodSnapshot()));
+        QCOMPARE(bridge.moodStatus().value("requestId").toString(), moodRead);
+        acceptMoodSettings(bridge, true);
+        QCOMPARE(commandCount(*frames, "emotion:get"), 2);
+        bridge.setRelationshipPageVisible(false);
+        acceptMoodSettings(bridge, false);
+        acceptMoodSettings(bridge, true);
+        QCOMPARE(commandCount(*frames, "emotion:get"), 2);
+    }
+
+    void moodSwitchClearsAndRejectsOldReceipts() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.event(frame("emotion:update", bridge.request("emotion:get"), moodSnapshot()));
+        const auto old = bridge.request("emotion:get");
+        QVERIFY(!old.isEmpty());
+        bridge.m_state["personas"] = QVariantMap{{"profiles", QVariantList{
+            QVariantMap{{"id", "persona-next"}, {"name", "晴"}, {"active", false}}}}};
+        bridge.selectPersona("persona-next");
+        QVERIFY(bridge.personaChanging());
+        const QVariantMap loading{{"status", "loading"}, {"message", "正在读取…"}};
+        QCOMPARE(bridge.moodStatus(), loading);
+        bridge.event(frame("emotion:update", old, moodSnapshot()));
+        QCOMPARE(bridge.moodStatus(), loading);
+        bridge.event(frame("persona:scope", {}, {{"persona_id", "persona-next"}, {"epoch", 4},
+            {"fingerprint", "next-proof"}}));
+        const auto id = lastCommand(*frames, "emotion:get").value("requestId").toString();
+        QVERIFY(!id.isEmpty() && id != old);
+        bridge.event(frame("emotion:update", old, moodSnapshot()));
+        auto foreign = moodSnapshot();
+        foreign["persona_id"] = "persona-current";
+        bridge.event(frame("emotion:update", id, foreign));
+        QCOMPARE(bridge.moodStatus(), loading);
+        bridge.event(frame("emotion:update", id, moodSnapshot("peaceful", "calm", "joy")));
+        QCOMPARE(bridge.moodStatus().value("requestId").toString(), id);
+        QCOMPARE(bridge.moodStatus().value("label").toString(), QString("心情：平静"));
+    }
+
+    void moodReconnectRejectsOldGeneration() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        const auto frames = sentFrames(bridge);
+        const auto old = bridge.request("emotion:get");
+        QVERIFY(!old.isEmpty());
+        const auto persona = bridge.m_persona;
+        const int generation = bridge.generation();
+        bridge.m_connected = false;
+        bridge.acceptFrame({{"kind", "ready"}, {"schema", "reverie.bridge.stdio.ready.v4"},
+            {"protocolVersion", 4}, {"pid", QJsonValue(bridge.m_process.processId())},
+            {"secretSha256", QString::fromLatin1(QCryptographicHash::hash(
+                bridge.m_secret.toUtf8(), QCryptographicHash::Sha256).toHex())},
+            {"personaId", persona["persona_id"]}, {"personaEpoch", persona["epoch"]},
+            {"personaFingerprint", persona["fingerprint"]}, {"recoveryState", "clean"},
+            {"writesBlocked", false}, {"runtimeWritable", true}});
+        QCOMPARE(bridge.generation(), generation + 1);
+        const auto id = lastCommand(*frames, "emotion:get").value("requestId").toString();
+        QVERIFY(!id.isEmpty() && id != old);
+        bridge.event(frame("emotion:update", old, moodSnapshot()));
+        QCOMPARE(bridge.moodStatus().value("status").toString(), QString("loading"));
+        bridge.event(frame("emotion:update", id, moodSnapshot()));
+        QCOMPARE(bridge.moodStatus().value("requestId").toString(), id);
+    }
+
+    void moodFailureAndTimeoutKeepOnlyOwnValue_data() {
+        QTest::addColumn<bool>("hasPrevious");
+        QTest::addColumn<bool>("timeout");
+        QTest::newRow("failed-first-read") << false << false;
+        QTest::newRow("first-read-times-out") << false << true;
+        QTest::newRow("failed-refresh-keeps-value") << true << false;
+        QTest::newRow("refresh-times-out-keeps-value") << true << true;
+    }
+
+    void moodFailureAndTimeoutKeepOnlyOwnValue() {
+        QFETCH(bool, hasPrevious);
+        QFETCH(bool, timeout);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        if (hasPrevious)
+            bridge.event(frame("emotion:update", bridge.request("emotion:get"), moodSnapshot()));
+        auto expected = bridge.moodStatus();
+        const auto id = bridge.request("emotion:get");
+        QVERIFY(!id.isEmpty());
+        if (timeout)
+            bridge.expirePending(id);
+        else
+            bridge.event(frame("emotion:update", id, {{"error", "unavailable"}}));
+        if (hasPrevious)
+            expected["refreshNote"] = "没能更新，显示的是上一次读到的";
+        QCOMPARE(bridge.moodStatus(), expected);
+        bridge.event(frame("emotion:update", id, moodSnapshot("peaceful", "calm", "joy")));
+        QCOMPARE(bridge.moodStatus(), expected);
+    }
+
+    void relationshipAndMoodReadsFailIndependently() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.setRelationshipPageVisible(true);
+        const auto relation = controlId(bridge, "relationship:get");
+        const auto mood = controlId(bridge, "emotion:get");
+        QVERIFY(!relation.isEmpty() && !mood.isEmpty() && relation != mood);
+        bridge.event(frame("error", relation, {{"error", "unavailable"}}));
+        bridge.event(frame("emotion:update", mood, moodSnapshot()));
+        QCOMPARE(bridge.relationshipStatus().value("status").toString(), QString("unavailable"));
+        QCOMPARE(bridge.moodStatus().value("requestId").toString(), mood);
+        const auto relationRefresh = bridge.request("relationship:get");
+        const auto moodRefresh = bridge.request("emotion:get");
+        QVERIFY(!relationRefresh.isEmpty() && !moodRefresh.isEmpty());
+        bridge.event(frame("error", moodRefresh, {{"error", "unavailable"}}));
+        bridge.event(frame("relationship:data", relationRefresh, relationshipSnapshot()));
+        QCOMPARE(bridge.relationshipStatus().value("requestId").toString(), relationRefresh);
+        QCOMPARE(bridge.moodStatus().value("requestId").toString(), mood);
+        QCOMPARE(bridge.moodStatus().value("refreshNote").toString(), QString("没能更新，显示的是上一次读到的"));
+    }
+
+    void personaImportRefusalRefreshesVisibleStatus_data() {
+        QTest::addColumn<QString>("code");
+        QTest::addColumn<bool>("visible");
+        QTest::addColumn<bool>("enabled");
+        QTest::newRow("validation-visible") << "invalid_card" << true << true;
+        QTest::newRow("duplicate-visible") << "already_imported" << true << true;
+        QTest::newRow("identity-conflict-visible") << "identity_conflict" << true << true;
+        QTest::newRow("validation-away") << "invalid_card" << false << true;
+        QTest::newRow("identity-conflict-away") << "identity_conflict" << false << true;
+        QTest::newRow("emotion-disabled") << "invalid_card" << true << false;
+    }
+
+    void personaImportRefusalRefreshesVisibleStatus() {
+        QFETCH(QString, code);
+        QFETCH(bool, visible);
+        QFETCH(bool, enabled);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        acceptMoodSettings(bridge, enabled);
+        bridge.setRelationshipPageVisible(visible);
+        const auto frames = sentFrames(bridge);
+        const auto path = data.filePath("refused.json");
+        QVERIFY(writeLocal(path, cardJson()));
+        bridge.choosePersonaCard(QUrl::fromLocalFile(path));
+        bridge.importPersonaCard();
+        const auto id = bridge.personaCardFeedback().value("requestId").toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(bridge.personaCardFeedback().value("status").toString(), QString("pending"));
+        const auto refusal = frame("persona:import:result", id, {{"ok", false}, {"code", code},
+            {"saved", false}, {"activated", false}, {"runtime_ready", false}, {"partial_write", false}});
+        bridge.event(refusal);
+        bridge.event(refusal);
+        QCOMPARE(bridge.personaCardFeedback().value("status").toString(), QString("error"));
+        QCOMPARE(commandCount(*frames, "relationship:get"), visible ? 1 : 0);
+        QCOMPARE(commandCount(*frames, "emotion:get"), visible && enabled ? 1 : 0);
+    }
+
+    void moodViewAt760() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        acceptMoodSettings(bridge, true);
+        bridge.setRelationshipPageVisible(true);
+        const auto relation = controlId(bridge, "relationship:get");
+        const auto mood = controlId(bridge, "emotion:get");
+        QVERIFY(!relation.isEmpty() && !mood.isEmpty());
+        bridge.event(frame("relationship:data", relation, relationshipSnapshot()));
+        bridge.event(frame("emotion:update", mood, moodSnapshot()));
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                TaskPanel { anchors.fill: parent; page: "character" }
+            }
+        )qml", QUrl("qrc:/xiangqi/mood-status-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        auto *view = root->findChild<QQuickItem *>("memoryPageScroll");
+        auto *block = root->findChild<QQuickItem *>("moodStatus");
+        auto *relationship = root->findChild<QQuickItem *>("relationshipStatus");
+        auto *label = root->findChild<QQuickItem *>("moodLabel");
+        auto *dominant = root->findChild<QQuickItem *>("moodDominant");
+        auto *message = root->findChild<QQuickItem *>("moodMessage");
+        QVERIFY(view && block && relationship && label && dominant && message);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(window->width(), 760);
+        QTRY_VERIFY(block->width() > 0 && block->height() > 0);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QVERIFY(frame.wait());
+        const auto extent = block->mapRectToItem(view, block->boundingRect());
+        const auto relationshipExtent = relationship->mapRectToItem(view, relationship->boundingRect());
+        QVERIFY(extent.left() >= 0 && extent.right() <= view->width());
+        QVERIFY(extent.top() >= relationshipExtent.bottom());
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        QCOMPARE(label->property("text").toString(), QString("心情：开心"));
+        QCOMPARE(dominant->property("text").toString(), QString("现在最明显的是喜悦 72、平静 60"));
+        QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+        QCOMPARE(dominant->property("textFormat").toInt(), int(Qt::PlainText));
+        acceptMoodSettings(bridge, false);
+        QTRY_VERIFY(message->isVisible() && !label->isVisible() && !dominant->isVisible());
+        QCOMPARE(message->property("text").toString(), QString("情绪变化已关闭"));
+    }
+
+private:
+    QJsonObject proactiveFrameFixture() const {
+        QFile source(QFINDTESTDATA("fixtures/proactive-message.json"));
+        return source.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(source.readAll()).object() : QJsonObject{};
+    }
+
+    static void useProactiveFixtureScope(RuntimeBridge &bridge, const QJsonObject &message) {
+        const auto payload = message["frame"].toObject()["payload"].toObject();
+        bridge.m_persona = {{"persona_id", payload["persona_id"]}, {"epoch", payload["persona_epoch"]},
+            {"fingerprint", payload["persona_fingerprint"]}};
+    }
+
+    static QJsonObject proactiveHistoryRow(const QJsonObject &message, const QString &id, int index, const QString &content) {
+        const auto payload = message["frame"].toObject()["payload"].toObject();
+        return {{"id", id}, {"role", "assistant"}, {"content", content}, {"source", "proactive"},
+            {"proactive_id", payload["proactive_id"]}, {"request_id", payload["proactive_id"]}, {"bubble_index", index},
+            {"conversation_id", payload["conversation_id"]}, {"persona_id", payload["persona_id"]}};
+    }
+
+    static QJsonObject proactiveSettingsSnapshot(bool enabled, int limit = 2, int interval = 120) {
+        auto snapshot = settingsSnapshot();
+        auto features = snapshot["features"].toObject();
+        features["proactive_chat_enabled"] = enabled;
+        features["proactive_daily_limit"] = limit;
+        features["proactive_min_interval_minutes"] = interval;
+        snapshot["features"] = features;
+        return snapshot;
+    }
+
+private slots:
+    void proactiveBroadcastUsesOnlyDurableHistory() {
+        const auto broadcast = proactiveFrameFixture();
+        QCOMPARE(broadcast["kind"].toString(), QString("event"));
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        useProactiveFixtureScope(bridge, broadcast);
+        const auto frames = sentFrames(bridge);
+        const auto oldHistory = bridge.request("chat:history");
+        bridge.acceptFrame(broadcast);
+        bridge.acceptFrame(broadcast);
+        QCOMPARE(commandCount(*frames, "chat:history"), 2);
+        QVERIFY(bridge.messages().isEmpty());
+        const auto history = lastCommand(*frames, "chat:history").value("requestId").toString();
+        QVERIFY(!history.isEmpty() && history != oldHistory);
+        const QJsonArray rows{proactiveHistoryRow(broadcast, "z-ledger-first", 0, "库里第一条"),
+            proactiveHistoryRow(broadcast, "a-ledger-second", 1, "库里第二条")};
+        bridge.event(frame("chat:history:result", history, {{"items", rows}}));
+        QCOMPARE(bridge.messages(), rows.toVariantList());
+        bridge.event(frame("chat:history:result", oldHistory, {{"items", QJsonArray{}}}));
+        bridge.acceptFrame(broadcast);
+        QCOMPARE(bridge.messages(), rows.toVariantList());
+        QCOMPARE(commandCount(*frames, "chat:history"), 2);
+    }
+
+    void proactiveBroadcastRejectsForeignAndMalformedFrames_data() {
+        QTest::addColumn<QString>("field");
+        QTest::addColumn<QJsonValue>("replacement");
+        QTest::newRow("persona") << "persona_id" << QJsonValue("foreign-persona");
+        QTest::newRow("epoch") << "persona_epoch" << QJsonValue(2);
+        QTest::newRow("fingerprint") << "persona_fingerprint" << QJsonValue("other-proof");
+        QTest::newRow("conversation") << "conversation_id" << QJsonValue("other-room");
+        QTest::newRow("message-id") << "proactive_id" << QJsonValue("invalid");
+        QTest::newRow("messages") << "messages" << QJsonValue(QJsonArray{17});
+        QTest::newRow("missing-scope") << "persona_epoch" << QJsonValue(QJsonValue::Undefined);
+        QTest::newRow("correlated-broadcast") << "request_id" << QJsonValue("existing-request");
+    }
+
+    void proactiveBroadcastRejectsForeignAndMalformedFrames() {
+        QFETCH(QString, field);
+        QFETCH(QJsonValue, replacement);
+        auto broadcast = proactiveFrameFixture();
+        QVERIFY(!broadcast.isEmpty());
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        useProactiveFixtureScope(bridge, broadcast);
+        const auto frames = sentFrames(bridge);
+        bridge.m_messages = {QVariantMap{{"id", "existing"}, {"content", "保留消息"}}};
+        pending(bridge, "existing-request", "chat:history", bridge.generation());
+        const auto before = bridge.messages();
+        const auto scope = bridge.scopeKey();
+        auto event = broadcast["frame"].toObject();
+        auto payload = event["payload"].toObject();
+        if (field == "request_id")
+            event[field] = replacement;
+        else
+            payload.insert(field, replacement);
+        event["payload"] = payload;
+        broadcast["frame"] = event;
+        bridge.acceptFrame(broadcast);
+        QCOMPARE(bridge.messages(), before);
+        QCOMPARE(bridge.scopeKey(), scope);
+        QVERIFY(bridge.m_pending.contains("existing-request"));
+        QVERIFY(frames->isEmpty());
+    }
+
+    void proactiveBroadcastWaitsForReplyAndRecoversOnLaterRefresh_data() {
+        QTest::addColumn<bool>("timesOut");
+        QTest::newRow("refused") << false;
+        QTest::newRow("timeout") << true;
+    }
+
+    void proactiveBroadcastWaitsForReplyAndRecoversOnLaterRefresh() {
+        QFETCH(bool, timesOut);
+        const auto broadcast = proactiveFrameFixture();
+        QVERIFY(!broadcast.isEmpty());
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        useProactiveFixtureScope(bridge, broadcast);
+        activeChat(bridge);
+        const auto frames = sentFrames(bridge);
+        bridge.event(frame("chat:bubble", "chat-current", {{"delivery_id", "live-bubble"}, {"text", "正在送达的回复"}}));
+        const auto live = bridge.messages();
+        QCOMPARE(live.size(), 1);
+        bridge.acceptFrame(broadcast);
+        QVERIFY(bridge.busy());
+        QCOMPARE(commandCount(*frames, "chat:history"), 0);
+        QCOMPARE(bridge.messages(), live);
+        bridge.event(frame("chat:done", "chat-current", {}));
+        QVERIFY(!bridge.busy());
+        QCOMPARE(commandCount(*frames, "chat:history"), 1);
+        const auto requested = lastCommand(*frames, "chat:history").value("requestId").toString();
+        QVERIFY(!requested.isEmpty());
+        if (timesOut)
+            bridge.expirePending(requested);
+        else
+            bridge.event(frame("error", requested, {{"error", "读取失败"}}));
+        QCOMPARE(commandCount(*frames, "chat:history"), 1);
+        QCOMPARE(bridge.messages(), live);
+        const auto later = bridge.request("chat:history");
+        const QJsonArray rows{proactiveHistoryRow(broadcast, "ledger-proactive", 0, "持久记录"),
+            QJsonObject{{"id", "ledger-reply"}, {"role", "assistant"}, {"content", "已落库的回复"}}};
+        bridge.event(frame("chat:history:result", later, {{"items", rows}}));
+        QCOMPARE(bridge.messages(), rows.toVariantList());
+    }
+
+    void proactiveSettingsValidatesPresetsAndConfirmsReadback() {
+        QString error;
+        for (const int preset : {1, 2, 3, 5})
+            QCOMPARE(RuntimeBridge::settingsUpdate("features", {{"proactive_daily_limit", preset}}, &error),
+                     (QVariantMap{{"section", "features"}, {"proactive_daily_limit", preset}}));
+        for (const int preset : {60, 120, 240, 480})
+            QCOMPARE(RuntimeBridge::settingsUpdate("features", {{"proactive_min_interval_minutes", preset}}, &error),
+                     (QVariantMap{{"section", "features"}, {"proactive_min_interval_minutes", preset}}));
+        for (const auto &fields : QList<QVariantMap>{{{"proactive_chat_enabled", 1}}, {{"proactive_daily_limit", 4}},
+                {{"proactive_daily_limit", QString("2")}}, {{"proactive_min_interval_minutes", 61}},
+                {{"proactive_min_interval_minutes", 60.5}}, {{"diary_enabled", true}}})
+            QVERIFY(RuntimeBridge::settingsUpdate("features", fields, &error).isEmpty());
+
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, proactiveSettingsSnapshot(false));
+        const auto frames = sentFrames(bridge);
+        QSignalSpy dispatched(&bridge, &RuntimeBridge::proactiveSettingsDispatched);
+        const auto enabled = [&] {
+            return bridge.state().value("settings").toMap().value("features").toMap().value("proactive_chat_enabled").toBool();
+        };
+        bridge.saveSettings("features", {{"proactive_chat_enabled", true}});
+        const auto writeId = lastCommand(*frames, "settings:update").value("requestId").toString();
+        QVERIFY(!writeId.isEmpty());
+        QCOMPARE(dispatched.count(), 1);
+        QCOMPARE(dispatched.at(0), (QVariantList{writeId, QVariantMap{{"section", "features"}, {"proactive_chat_enabled", true}}}));
+        QVERIFY(!enabled());
+        bridge.event(frame("settings:update:result", writeId, {{"ok", true}}));
+        const auto readId = lastCommand(*frames, "settings:get").value("requestId").toString();
+        QVERIFY(!readId.isEmpty() && !enabled());
+        QCOMPARE(commandCount(*frames, "ai_usage:get"), 0);
+        bridge.event(frame("settings:get:result", readId, proactiveSettingsSnapshot(true)));
+        QVERIFY(enabled());
+        QCOMPARE(settingsReceipt(bridge, "features").value("status").toString(), QString("success"));
+        QCOMPARE(commandCount(*frames, "ai_usage:get"), 1);
+
+        bridge.saveSettings("features", {{"proactive_chat_enabled", false}});
+        const auto refusal = lastCommand(*frames, "settings:update").value("requestId").toString();
+        QVERIFY(!refusal.isEmpty() && refusal != writeId);
+        bridge.event(frame("settings:update:result", refusal, {{"ok", false}, {"error", "写入被拒绝"}}));
+        QVERIFY(enabled());
+        QCOMPARE(settingsReceipt(bridge, "features").value("status").toString(), QString("error"));
+        QCOMPARE(settingsReceipt(bridge, "features").value("text").toString(), QString("主动消息设置未能保存：写入被拒绝"));
+        QCOMPARE(commandCount(*frames, "settings:get"), 1);
+        QCOMPARE(commandCount(*frames, "ai_usage:get"), 1);
+        bridge.m_runtimeWritable = false;
+        bridge.saveSettings("features", {{"proactive_daily_limit", 5}});
+        QCOMPARE(commandCount(*frames, "settings:update"), 2);
+    }
+
+    void proactiveSettingsShowsConfirmedStatusAndFits760_data() {
+        QTest::addColumn<bool>("enabled");
+        QTest::addColumn<bool>("granted");
+        QTest::addColumn<bool>("effective");
+        QTest::addColumn<QString>("text");
+        QTest::newRow("disabled-with-saved-grant") << false << true << false << "未开启";
+        QTest::newRow("needs-permission") << true << false << false << "已开启，还需要授权费用";
+        QTest::newRow("authorized") << true << true << true << "已开启并已授权";
+        QTest::newRow("stale-provider") << true << true << false << "已授权但暂不生效（换过服务，需要重新授权）";
+    }
+
+    void proactiveSettingsShowsConfirmedStatusAndFits760() {
+        QFETCH(bool, enabled);
+        QFETCH(bool, granted);
+        QFETCH(bool, effective);
+        QFETCH(QString, text);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, proactiveSettingsSnapshot(enabled, 4, 127));
+        auto consent = permissions("current", granted);
+        auto features = consent["features"].toObject();
+        auto proactive = features["summary"].toObject();
+        proactive["effective"] = effective;
+        if (granted && !effective && enabled)
+            proactive["origin"] = "https://old.test";
+        features["proactive_chat"] = proactive;
+        consent["features"] = features;
+        knownPermissions(bridge, consent);
+
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                TaskPanel { anchors.fill: parent; page: "settings" }
+            }
+        )qml", QUrl("qrc:/xiangqi/proactive-settings-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        auto *tab = find("settingsTab-chat");
+        QVERIFY(tab);
+        QVERIFY(QMetaObject::invokeMethod(tab, "clicked"));
+        auto *block = find("settingsProactive");
+        auto *view = find("memoryPageScroll");
+        auto *status = find("settingsProactiveStatus");
+        auto *control = find("settingsProactiveEnabled");
+        auto *grant = find("settingsProactiveAuthorize");
+        auto *daily = find("settingsProactiveDailyLimit");
+        auto *interval = find("settingsProactiveMinInterval");
+        QVERIFY(block && view && status && control && grant && daily && interval);
+        QTRY_VERIFY(block->isVisible() && block->width() > 0);
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QVERIFY(rendered.wait());
+        const auto extent = block->mapRectToItem(view, block->boundingRect());
+        QVERIFY(extent.left() >= 0 && extent.right() <= view->width());
+        QVERIFY(view->property("contentWidth").toReal() <= view->width());
+        QCOMPARE(status->property("text").toString(), text);
+        QCOMPARE(control->property("checked").toBool(), enabled);
+        QCOMPARE(grant->isVisible(), enabled && !effective);
+        QCOMPARE(daily->property("text").toString(), QString("每天最多：4 条"));
+        QCOMPARE(interval->property("text").toString(), QString("最短间隔：127 分钟"));
+        const auto frames = sentFrames(bridge);
+        QVERIFY(control->setProperty("checked", !enabled));
+        QVERIFY(QMetaObject::invokeMethod(control, "toggled"));
+        QCOMPARE(commandCount(*frames, "settings:update"), 1);
+        QCOMPARE(control->property("checked").toBool(), enabled);
+        bridge.m_runtimeWritable = false;
+        emit bridge.changed();
+        QTRY_VERIFY(!control->isEnabled() && !grant->isEnabled());
+    }
+
+    void proactiveCostConsentButtonGeometry() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        knownSettings(bridge, proactiveSettingsSnapshot(true, 2, 120));
+        auto consent = permissions("current", false);
+        auto features = consent["features"].toObject();
+        const auto proactive = features.value("summary").toObject();
+        features["proactive_chat"] = proactive;
+        consent["features"] = features;
+        knownPermissions(bridge, consent);
+        const auto frames = sentFrames(bridge);
+
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 1380
+                height: 900
+                TaskPanel { anchors.fill: parent; page: "settings" }
+            }
+        )qml", QUrl("qrc:/xiangqi/proactive-consent-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) {
+            return NativeCheck::findVisual(window->contentItem(), name, true).item;
+        };
+        const auto tab = find("settingsTab-chat");
+        QVERIFY(tab);
+        QVERIFY(QMetaObject::invokeMethod(tab, "clicked"));
+        QTRY_VERIFY(find("settingsProactiveAuthorize"));
+        const auto authorize = find("settingsProactiveAuthorize");
+        QVERIFY(authorize->isEnabled());
+        auto *dialog = root->findChild<QObject *>("settingsCostConsent");
+        QVERIFY(dialog);
+        QSignalSpy rejected(dialog, SIGNAL(rejected()));
+        QSignalSpy accepted(dialog, SIGNAL(accepted()));
+        QVERIFY(rejected.isValid() && accepted.isValid());
+
+        QVERIFY(QMetaObject::invokeMethod(authorize, "clicked"));
+        QTRY_VERIFY(find("settingsCostConsentConfirm"));
+        const auto cancel = find("settingsCostConsentCancel");
+        QVERIFY(cancel);
+        QCOMPARE(cancel->property("text").toString(), QString("取消"));
+        const auto cancelSample = SummaryInteractionProbe::inspect(cancel, window, true, bridge.scopeKey());
+        QVERIFY(cancelSample.eligible);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, cancelSample.point, 0);
+        QTRY_COMPARE(rejected.count(), 1);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QCOMPARE(commandCount(*frames, "ai_usage:grant"), 0);
+        QCOMPARE(bridge.permissionFeedback().value("proactive_chat").toMap().value("status").toString(),
+                 QString("cancelled"));
+
+        QVERIFY(QMetaObject::invokeMethod(authorize, "clicked"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_COMPARE(rejected.count(), 2);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QCOMPARE(commandCount(*frames, "ai_usage:grant"), 0);
+
+        QVERIFY(QMetaObject::invokeMethod(authorize, "clicked"));
+        QTRY_VERIFY(find("settingsCostConsentConfirm"));
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped);
+        window->requestUpdate();
+        QVERIFY(rendered.wait());
+        const auto button = find("settingsCostConsentConfirm");
+        QVERIFY(button);
+        QCOMPARE(button->property("text").toString(), QString("确定"));
+        const auto sample = SummaryInteractionProbe::inspect(button, window, true, bridge.scopeKey());
+        QVariantList ancestors;
+        for (auto *item = button->parentItem(); item; item = item->parentItem()) {
+            if (!item->inherits("QQuickFlickable") && !item->property("contentY").isValid())
+                continue;
+            QVariantMap row{{"class", QString::fromLatin1(item->metaObject()->className())},
+                            {"objectName", item->objectName()}, {"orientation", item->property("orientation")}};
+            for (const auto *property : {"contentX", "contentY", "contentWidth", "contentHeight",
+                                         "originX", "originY", "topMargin", "bottomMargin"})
+                row[property] = item->property(property);
+            ancestors.append(row);
+        }
+        const auto whole = NativeControlReadiness::wholeVisibility(button, window);
+        qInfo().noquote() << "W17_CONSENT_GEOMETRY" << QJsonDocument::fromVariant(
+            QVariantMap{{"probe", sample.state}, {"ancestors", ancestors}, {"visibility", whole}})
+            .toJson(QJsonDocument::Compact);
+        QVERIFY(whole.value("fullyVisible").toBool());
+        QVERIFY(button->isEnabled());
+        QVERIFY(sample.state.value("bound").toBool());
+        QCOMPARE(sample.state.value("reason").toString(), QString("ready"));
+        QVERIFY(sample.eligible);
+        QVERIFY(NativeCheck::hitTest(window, sample.point, button).accepted());
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, sample.point, 0);
+        QTRY_COMPARE(accepted.count(), 1);
+        QCOMPARE(rejected.count(), 2);
+        QCOMPARE(commandCount(*frames, "ai_usage:grant"), 1);
+        const auto grant = lastCommand(*frames, "ai_usage:grant");
+        QCOMPARE(grant["feature"].toString(), QString("proactive_chat"));
+        QCOMPARE(grant["consent_digest"].toString(), proactive["consent_digest"].toString());
+        QVERIFY(grant["api_cost_acknowledged"].isBool() && grant["api_cost_acknowledged"].toBool());
+        QVERIFY(grant["user_confirmed"].isBool() && grant["user_confirmed"].toBool());
+    }
+    void chatImageFileValidationAndScopedRefusalPreserveText() {
+        QTemporaryDir data;
+        QTemporaryDir inputs;
+        QVERIFY(data.isValid() && inputs.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.m_providerConfirmedHandshake = bridge.m_handshakes;
+        auto frames = sentFrames(bridge);
+        const auto choose = [&](const QString &file) { return bridge.chooseChatImage(QUrl::fromLocalFile(inputs.filePath(file))); };
+        QImage sample(40, 24, QImage::Format_RGB32);
+        sample.fill(Qt::blue);
+        QVERIFY(sample.save(inputs.filePath("source.png"), "PNG"));
+        QVERIFY(sample.save(inputs.filePath("unsupported.bmp"), "BMP"));
+        QFile fake(inputs.filePath("broken.jpg"));
+        QVERIFY(fake.open(QIODevice::WriteOnly));
+        QCOMPARE(fake.write("wrong", 5), qint64(5));
+        fake.close();
+        QFile heavy(inputs.filePath("large.jpg"));
+        QVERIFY(heavy.open(QIODevice::WriteOnly));
+        QVERIFY(heavy.resize(5 * 1024 * 1024 + 1));
+        heavy.close();
+
+        bridge.setDraft("这一段不能被图片错误清掉");
+        QVERIFY(!choose("unsupported.bmp"));
+        QCOMPARE(bridge.chatImageFeedback(), QString("不支持这种图片格式"));
+        QVERIFY(!choose("broken.jpg"));
+        QCOMPARE(bridge.chatImageFeedback(), QString("这个文件读不了"));
+        QVERIFY(!choose("large.jpg"));
+        QCOMPARE(bridge.chatImageFeedback(), QString("图片超过 5MB"));
+        QCOMPARE(commandCount(*frames, "chat:send"), 0);
+        QCOMPARE(bridge.draft(), QString("这一段不能被图片错误清掉"));
+
+        QVERIFY(choose("source.png"));
+        bridge.sendChat();
+        const auto send = lastCommand(*frames, "chat:send");
+        const auto id = send["requestId"].toString();
+        QVERIFY(!id.isEmpty());
+        QCOMPARE(send["image_path"].toString(), inputs.filePath("source.png"));
+        QVERIFY(!send.contains("image_data_url"));
+        QCOMPARE(bridge.draft(), QString("这一段不能被图片错误清掉"));
+        const QJsonObject refusal{{"scope", "chat"}, {"code", "image_unreadable"}, {"message", "not displayed"}};
+        bridge.event(frame("error", "other-request", refusal));
+        QVERIFY(bridge.busy());
+        QCOMPARE(bridge.messages().size(), 1);
+        bridge.event(frame("error", id, refusal));
+        QVERIFY(!bridge.busy());
+        QVERIFY(bridge.messages().isEmpty());
+        QVERIFY(bridge.chatImagePreview().isEmpty());
+        QCOMPARE(bridge.draft(), QString("这一段不能被图片错误清掉"));
+        QCOMPARE(bridge.chatImageFeedback(), QString("这个文件读不了"));
+        QVERIFY(QDir(data.path()).entryList({"*.png", "*.jpg", "*.jpeg", "*.bmp"}, QDir::Files).isEmpty());
+        QVERIFY(!QFile::exists(data.filePath("chat-media")));
+    }
+
+    void chatImageClipboardUsesBoundedJpeg() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.m_providerConfirmedHandshake = bridge.m_handshakes;
+        auto frames = sentFrames(bridge);
+        QImage smooth(1800, 900, QImage::Format_RGB32);
+        smooth.fill(Qt::red);
+        QVERIFY(bridge.stagePastedChatImage(smooth));
+        QVERIFY(!bridge.chatImagePreview().isEmpty());
+        bridge.sendChat();
+        const auto send = lastCommand(*frames, "chat:send");
+        QCOMPARE(send["text"].toString(), QString("[图片]"));
+        QVERIFY(!send.contains("image_path"));
+        const auto url = send["image_data_url"].toString();
+        QVERIFY(url.startsWith("data:image/jpeg;base64,") && url.size() <= 350000);
+        const auto payload = QByteArray::fromBase64(url.mid(url.indexOf(',') + 1).toLatin1());
+        const auto image = QImage::fromData(payload, "JPEG");
+        QCOMPARE(image.size(), QSize(1280, 640));
+        QVERIFY(QJsonDocument(frames->last()).toJson(QJsonDocument::Compact).size() < 1048576);
+        bridge.event(frame("chat:state", send["requestId"].toString(), {{"state", "done"}}));
+        QVERIFY(!bridge.busy());
+
+        QImage detailed(1280, 1280, QImage::Format_RGB32);
+        QRandomGenerator random(947u);
+        for (int y = 0; y < detailed.height(); ++y) {
+            auto *pixels = reinterpret_cast<QRgb *>(detailed.scanLine(y));
+            for (int x = 0; x < detailed.width(); ++x)
+                pixels[x] = random.generate() | 0xff000000u;
+        }
+        QVERIFY(!bridge.stagePastedChatImage(detailed));
+        QVERIFY(bridge.chatImagePreview().isEmpty());
+        QCOMPARE(bridge.chatImageFeedback(), QString("这张图片太大，请改用选文件"));
+        bridge.sendChat();
+        QCOMPARE(commandCount(*frames, "chat:send"), 1);
+    }
+
+    void chatImageThumbnailDropsStaleReceipts_data() {
+        QTest::addColumn<bool>("newPersona");
+        QTest::newRow("old-persona") << true;
+        QTest::newRow("old-connection") << false;
+    }
+
+    void chatImageThumbnailDropsStaleReceipts() {
+        QFETCH(bool, newPersona);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        QFile source(QFINDTESTDATA("fixtures/chat-image-thumbnail.json"));
+        QVERIFY(source.open(QIODevice::ReadOnly));
+        auto result = QJsonDocument::fromJson(source.readAll()).object()["frame"].toObject();
+        const auto payload = result["payload"].toObject();
+        const auto media = payload["media_id"].toString();
+        QCOMPARE(media.size(), 64);
+        const QJsonObject recorded{{"id", "image-row"}, {"role", "user"}, {"content", "另一轮"},
+            {"media", QJsonArray{QJsonObject{{"media_id", media}, {"mime", "image/jpeg"}}}}};
+        const auto readHistory = [&] {
+            const auto id = bridge.request("chat:history");
+            bridge.event(frame("chat:history:result", id, {{"items", QJsonArray{recorded}}}));
+            return lastCommand(*frames, "chat:media")["requestId"].toString();
+        };
+        const auto previous = readHistory();
+        QVERIFY(!previous.isEmpty());
+        if (newPersona) {
+            bridge.event(frame("bridge:persona_scope", {}, {{"persona_id", "other-persona"}, {"epoch", 4},
+                {"persona_fingerprint", "other-persona-proof"}}));
+        } else {
+            bridge.m_connected = false;
+            const auto proof = QCryptographicHash::hash(bridge.m_secret.toUtf8(), QCryptographicHash::Sha256).toHex();
+            bridge.acceptFrame({{"kind", "ready"}, {"schema", "reverie.bridge.stdio.ready.v4"},
+                {"transport", "stdio-framed"}, {"protocolVersion", 4}, {"personaId", "persona-current"},
+                {"pid", 0}, {"secretSha256", QString::fromLatin1(proof)},
+                {"personaEpoch", 3}, {"personaFingerprint", "fingerprint-current"},
+                {"runtimeWritable", true}, {"writesBlocked", false}, {"recoveryState", "clean"}});
+        }
+        result["request_id"] = previous;
+        bridge.event(result);
+        QVERIFY(bridge.chatImageThumbnails().isEmpty());
+        const auto current = readHistory();
+        QVERIFY(!current.isEmpty() && current != previous);
+        bridge.event(result);
+        QCOMPARE(bridge.chatImageThumbnails().value(media).toMap().value("status").toString(), QString("loading"));
+        result["request_id"] = current;
+        bridge.event(result);
+        QCOMPARE(bridge.chatImageThumbnails().value(media).toMap().value("status").toString(), QString("ready"));
+        QCOMPARE(commandCount(*frames, "chat:media"), 2);
+    }
+
+    void chatImageComposerAndHistoryAt760() {
+        QTemporaryDir data;
+        QTemporaryDir inputs;
+        QVERIFY(data.isValid() && inputs.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.m_providerConfirmedHandshake = bridge.m_handshakes;
+        auto frames = sentFrames(bridge);
+
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                id: testWindow
+                width: 760
+                height: 650
+                property bool reading: false
+                ChatPanel {
+                    anchors.fill: parent
+                    director: QtObject {
+                        readonly property bool compact: true
+                        readonly property string mode: testWindow.reading ? "reading" : "companion"
+                        readonly property real taskBlend: 0
+                        readonly property real readBlend: testWindow.reading ? 1 : 0
+                        readonly property bool chatLayoutReading: testWindow.reading
+                        readonly property bool chatInputReady: true
+                        readonly property real historyBodyWidth: 704
+                        property real composerRequestedHeight: 68
+                        property real companionRequestedHeight: 250
+                        readonly property rect historyRect: Qt.rect(28, 20, 704, 430)
+                        readonly property rect composerRect: Qt.rect(28, 450, 704, 150)
+                        readonly property rect companionBarRect: Qt.rect(0, 0, 1, 1)
+                        readonly property real chatBodyOpacity: 1
+                        readonly property real companionBarOpacity: 0
+                        readonly property real readBodyOpacity: 1
+                        function phaseWeight(a, b, t) { return 0; }
+                    }
+                }
+            }
+        )qml", QUrl("qrc:/xiangqi/chat-image-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return NativeCheck::findVisual(window->contentItem(), name, true).item; };
+        QTRY_VERIFY(find("chatImageChoose") && find("sendChat"));
+        const auto chooser = find("chatImageChoose");
+        const auto sendButton = find("sendChat");
+        const auto panel = find("persistentChat");
+        QVERIFY(panel);
+        QVERIFY(chooser->isEnabled() && !sendButton->isEnabled());
+
+        QImage first(40, 24, QImage::Format_RGB32);
+        QImage second(24, 40, QImage::Format_RGB32);
+        first.fill(Qt::green);
+        second.fill(Qt::red);
+        const auto firstPath = QUrl::fromLocalFile(inputs.filePath("first.png"));
+        const auto secondPath = QUrl::fromLocalFile(inputs.filePath("second.gif"));
+        QVERIFY(first.save(firstPath.toLocalFile(), "PNG"));
+        // The chooser recognizes file content even when the suffix disagrees.
+        QVERIFY(second.save(secondPath.toLocalFile(), "PNG"));
+        QVERIFY(bridge.chooseChatImage(firstPath));
+        const auto firstImage = bridge.chatImagePreview();
+        QTRY_VERIFY(find("chatImagePreview") && find("chatImagePreview")->property("status").toInt() == 1);
+        QVERIFY(bridge.chooseChatImage(secondPath));
+        QVERIFY(bridge.chatImagePreview() != firstImage);
+        const auto disclosure = find("chatImageDisclosure");
+        QVERIFY(disclosure);
+        QCOMPARE(disclosure->property("text").toString(), QString("图片会发送给当前的模型服务。"));
+        QTRY_VERIFY(sendButton->isEnabled());
+        for (const auto &control : {chooser, sendButton, disclosure}) {
+            const auto box = control->mapRectToScene(control->boundingRect());
+            QVERIFY(box.width() > 0 && box.left() >= 0 && box.right() <= window->width());
+        }
+        const auto remove = find("chatImageRemove");
+        QVERIFY(remove && QMetaObject::invokeMethod(remove, "clicked"));
+        QTRY_VERIFY(!find("chatImagePreview") && !sendButton->isEnabled());
+
+        // Use the same clipboard image consumer with a synthetic image. The
+        // unit test may run against a platform with the owner's clipboard.
+        QVERIFY(bridge.stagePastedChatImage(first));
+        QTRY_VERIFY(find("chatImagePreview") && find("chatImagePreview")->property("status").toInt() == 1);
+        QVERIFY(bridge.draft().isEmpty());
+        bridge.m_runtimeWritable = false;
+        emit bridge.changed();
+        QTRY_VERIFY(!chooser->isEnabled() && !sendButton->isEnabled());
+        bridge.m_runtimeWritable = true;
+        bridge.m_offline = true;
+        emit bridge.changed();
+        QTRY_VERIFY(!chooser->isEnabled() && !sendButton->isEnabled());
+        bridge.m_offline = false;
+        emit bridge.changed();
+        QTRY_VERIFY(sendButton->isEnabled());
+        QVERIFY(QMetaObject::invokeMethod(sendButton, "clicked"));
+        const auto send = lastCommand(*frames, "chat:send");
+        const auto sendId = send["requestId"].toString();
+        QVERIFY(!sendId.isEmpty());
+        QCOMPARE(send["text"].toString(), QString("[图片]"));
+        QTRY_VERIFY(!chooser->isEnabled() && !find("chatImagePreview"));
+        QTRY_VERIFY(find("chatMessageImage-" + sendId));
+        bridge.event(frame("chat:state", sendId, {{"state", "done"}}));
+
+        QFile fixture(QFINDTESTDATA("fixtures/chat-image-thumbnail.json"));
+        QVERIFY(fixture.open(QIODevice::ReadOnly));
+        auto receipt = QJsonDocument::fromJson(fixture.readAll()).object()["frame"].toObject();
+        const auto media = receipt["payload"].toObject()["media_id"].toString();
+        QCOMPARE(media.size(), 64);
+        const QString unreadable(64, QLatin1Char('e'));
+        const auto row = [](QString id, const QString &imageId) {
+            return QJsonObject{{"id", id}, {"role", "user"}, {"content", "[图片]"},
+                {"media", QJsonArray{QJsonObject{{"media_id", imageId}, {"mime", "image/jpeg"}}}}};
+        };
+        const auto history = lastCommand(*frames, "chat:history")["requestId"].toString();
+        QVERIFY(!history.isEmpty());
+        const QJsonArray rows{row("saved-image", media), row("same-image-again", media), row("unreadable-image", unreadable)};
+        bridge.event(frame("chat:history:result", history, {{"items", rows}}));
+        const auto thumbnail = lastCommand(*frames, "chat:media");
+        QVERIFY(thumbnail["thumbnail"].isBool() && thumbnail["thumbnail"].toBool());
+        QCOMPARE(thumbnail["media_id"].toString(), media);
+        receipt["request_id"] = thumbnail["requestId"];
+        bridge.event(receipt);
+        QTRY_COMPARE(commandCount(*frames, "chat:media"), 2);
+        const auto error = lastCommand(*frames, "chat:media");
+        QCOMPARE(error["media_id"].toString(), unreadable);
+        bridge.event(frame("chat:media:result", error["requestId"].toString(),
+                           {{"media_id", unreadable}, {"error", "media not found"}}));
+        QVERIFY(root->setProperty("reading", true));
+        QTRY_VERIFY(find("chatMessageImage-saved-image") && find("chatMessageImage-same-image-again"));
+        QTRY_VERIFY(find("chatMessageImageError-unreadable-image"));
+        QCOMPARE(find("chatMessageImageError-unreadable-image")->property("text").toString(), QString("图片读不到"));
+        QCOMPARE(find("chatMessage-unreadable-image")->property("text").toString(), QString("[图片]"));
+        const auto image = find("chatMessageImage-saved-image");
+        const auto body = find("chatMessage-saved-image");
+        QVERIFY(image && body);
+        QVERIFY(image->mapRectToScene(image->boundingRect()).bottom() <= body->mapToScene(QPointF()).y());
+        const auto repeat = bridge.request("chat:history");
+        bridge.event(frame("chat:history:result", repeat, {{"items", rows}}));
+        QCOMPARE(commandCount(*frames, "chat:media"), 2);
+        QVERIFY(QDir(data.path()).entryList({"*.png", "*.jpg", "*.jpeg", "*.gif"}, QDir::Files).isEmpty());
+        QVERIFY(!QFile::exists(data.filePath("chat-media")));
+    }
+
+    void proactiveCreationFailureIsVisibleWithoutBlockingChat() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.m_providerConfirmedHandshake = bridge.m_handshakes;
+        auto snapshot = proactiveSettingsSnapshot(true);
+        snapshot["proactive_available"] = false;
+        knownSettings(bridge, snapshot);
+        auto frames = sentFrames(bridge);
+
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                TaskPanel { anchors.fill: parent; page: "settings" }
+            }
+        )qml", QUrl("qrc:/xiangqi/proactive-unavailable-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        auto *tab = find("settingsTab-chat");
+        QVERIFY(tab && QMetaObject::invokeMethod(tab, "clicked"));
+        auto *status = find("settingsProactiveStatus");
+        auto *toggle = find("settingsProactiveEnabled");
+        auto *authorize = find("settingsProactiveAuthorize");
+        auto *preset = find("settingsProactiveDailyLimit-3");
+        QVERIFY(status && toggle && authorize && preset);
+        QTRY_COMPARE(status->property("text").toString(), QString("主动消息暂不可用"));
+        QVERIFY(!toggle->isEnabled() && !preset->isEnabled() && !authorize->isVisible());
+        bridge.setDraft("正常聊天");
+        bridge.sendChat();
+        QCOMPARE(commandCount(*frames, "chat:send"), 1);
+        QCOMPARE(lastCommand(*frames, "chat:send")["text"].toString(), QString("正常聊天"));
+    }
+  private:
+    static QJsonObject keepsakePayload(const RuntimeBridge &bridge, const QString &operation) {
+        return {{"ok", true}, {"operation", operation}, {"persona_id", bridge.m_persona["persona_id"]},
+                {"persona_epoch", bridge.m_persona["epoch"]}, {"persona_fingerprint", bridge.m_persona["fingerprint"]}};
+    }
+    static QJsonObject keepsakeItem(const QString &id, const QString &messageId, const QString &body = "留住这句话") {
+        return {{"id", id}, {"message_id", messageId}, {"conversation_id", "dream-room"},
+                {"role", "user"}, {"source", "user"}, {"original_message_at_utc", "2026-11-14T10:00:00+00:00"},
+                {"created_at_utc", "2026-11-14T11:00:00+00:00"}, {"content", body}, {"media_ids", QJsonArray{}},
+                {"content_offset", 0}, {"content_total_chars", body.toUcs4().size()}, {"content_next_offset", QJsonValue::Null}};
+    }
+    static QJsonObject keepsakePage(const RuntimeBridge &bridge, const QJsonArray &items, int offset = 0,
+                                   bool more = false, const QJsonArray &personaMessageIds = {}) {
+        auto payload = keepsakePayload(bridge, "page");
+        QJsonArray ids = personaMessageIds;
+        if (ids.isEmpty())
+            for (const auto &item : items) ids.append(item.toObject()["message_id"]);
+        payload.insert("mode", "list");
+        payload.insert("items", items);
+        payload.insert("offset", offset);
+        payload.insert("next_offset", more ? QJsonValue(offset + items.size()) : QJsonValue(QJsonValue::Null));
+        payload.insert("has_more", more);
+        payload.insert("total", ids.size());
+        payload.insert("preview_keepsake_message_ids", ids);
+        return payload;
+    }
+    static QJsonObject keepsakeCollection(const RuntimeBridge &bridge, const QJsonObject &item) {
+        auto payload = keepsakePayload(bridge, "collect");
+        payload.insert("item", item);
+        payload.insert("created", true);
+        payload.insert("preview_keepsake_message_ids", QJsonArray{item["message_id"]});
+        return payload;
+    }
+    static QByteArray keepsakeWindowQml() {
+        return R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                id: host
+                width: 760
+                height: 650
+                property bool showChat: false
+                SceneNavigation { id: navigation }
+                KeepsakePanel { anchors.fill: parent; anchors.margins: 24; visible: !host.showChat }
+                ChatPanel {
+                    anchors.fill: parent
+                    visible: host.showChat
+                    director: QtObject {
+                        readonly property bool compact: true
+                        readonly property string mode: "reading"
+                        readonly property real taskBlend: 0
+                        readonly property real readBlend: 1
+                        readonly property bool chatLayoutReading: true
+                        readonly property bool chatInputReady: true
+                        readonly property real historyBodyWidth: 704
+                        property real composerRequestedHeight: 68
+                        property real companionRequestedHeight: 250
+                        readonly property rect historyRect: Qt.rect(28, 20, 704, 430)
+                        readonly property rect composerRect: Qt.rect(28, 450, 704, 150)
+                        readonly property rect companionBarRect: Qt.rect(0, 0, 1, 1)
+                        readonly property real chatBodyOpacity: 1
+                        readonly property real companionBarOpacity: 0
+                        readonly property real readBodyOpacity: 1
+                        function phaseWeight(a, b, t) { return 0; }
+                    }
+                }
+            }
+        )qml";
+    }
+    static bool keepsakeFrame(QQuickWindow *window) {
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        return frame.wait();
+    }
+    static void keepsakeClick(QQuickWindow *window, QQuickItem *item) {
+        QVERIFY(item && item->isVisible() && item->isEnabled());
+        const auto rect = item->mapRectToScene(item->boundingRect());
+        QVERIFY(rect.width() > 0 && rect.height() > 0);
+        QVERIFY(rect.left() >= 0 && rect.top() >= 0 && rect.right() <= window->width() && rect.bottom() <= window->height());
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, rect.center().toPoint());
+    }
+
+  private slots:
+    void keepsakeCollectUsesStableIdentityWithoutReplacingHistory() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        const QJsonArray history{QJsonObject{{"id", "saved-message"}, {"role", "assistant"}, {"content", "原消息"}}};
+        const auto read = bridge.request("chat:history");
+        bridge.event(frame("chat:history:result", read, {{"items", history}, {"preview_keepsake_message_ids", QJsonArray{}}}));
+        const auto original = bridge.messages();
+        QSignalSpy messages(&bridge, &RuntimeBridge::messagesChanged);
+        QSignalSpy dispatched(&bridge, &RuntimeBridge::keepsakeRequestDispatched);
+        bridge.collectKeepsake("saved-message");
+        QCOMPARE(commandCount(*frames, "keepsake:collect"), 1);
+        QCOMPARE(dispatched.size(), 1);
+        QCOMPARE(dispatched.first()[1].toMap(), QVariantMap({{"message_id", "saved-message"}}));
+        const auto command = lastCommand(*frames, "keepsake:collect");
+        const auto id = command["requestId"].toString();
+        bridge.collectKeepsake("saved-message");
+        QCOMPARE(commandCount(*frames, "keepsake:collect"), 1);
+        auto item = keepsakeItem("kept-one", "saved-message", "原消息");
+        item["role"] = "assistant";
+        bridge.event(frame("keepsake:preview:result", id, keepsakeCollection(bridge, item)));
+        QCOMPARE(bridge.keepsakeMessageIds().value("saved-message"), QVariant(true));
+        QVERIFY(bridge.keepsakeView().value("notice").toString().isEmpty());
+        bridge.collectKeepsake("saved-message");
+        QCOMPARE(commandCount(*frames, "keepsake:collect"), 1);
+        QCOMPARE(bridge.messages(), original);
+        QCOMPARE(messages.size(), 0);
+        QCOMPARE(commandCount(*frames, "chat:send"), 0);
+    }
+
+    void keepsakeFailuresAndReadOnlyKeepTheOriginalMessage() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        bridge.m_messages = {QVariantMap{{"id", "m-one"}, {"role", "user"}, {"content", "原样"}}};
+        const auto history = bridge.messages();
+        bridge.m_runtimeWritable = false;
+        QVERIFY(!bridge.keepsakeView().value("writeAvailable").toBool());
+        bridge.collectKeepsake("m-one");
+        QCOMPARE(commandCount(*frames, "keepsake:collect"), 0);
+        bridge.m_runtimeWritable = true;
+        for (const auto &code : QStringList{"KEEPSAKE_FULL", "KEEPSAKE_NOT_FOUND"}) {
+            bridge.collectKeepsake("m-one");
+            const auto id = lastCommand(*frames, "keepsake:collect")["requestId"].toString();
+            auto payload = keepsakePayload(bridge, "collect");
+            payload["ok"] = false;
+            payload["code"] = code;
+            payload["error"] = "合成错误";
+            bridge.event(frame("keepsake:preview:result", id, payload));
+            QCOMPARE(bridge.keepsakeView().value("notice").toString(),
+                code == "KEEPSAKE_FULL" ? QString("收藏已满，请先移除一些") : QString("没有收藏成功"));
+            QVERIFY(bridge.keepsakeMessageIds().isEmpty());
+            QCOMPARE(bridge.messages(), history);
+        }
+        bridge.collectKeepsake("m-one");
+        bridge.expirePending(lastCommand(*frames, "keepsake:collect")["requestId"].toString());
+        QCOMPARE(bridge.keepsakeView().value("notice").toString(), QString("没有收藏成功"));
+    }
+
+    void keepsakePagesAndUnicodeContentUseBackendOffsets() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        bridge.openPanel("keepsake");
+        QJsonArray first;
+        for (int i = 0; i < 20; ++i) first.append(keepsakeItem(QString("k-%1").arg(i), QString("m-%1").arg(i)));
+        auto emoji = first[0].toObject();
+        emoji["content"] = QString::fromUtf8("星🌙");
+        emoji["content_total_chars"] = 4;
+        emoji["content_next_offset"] = 2;
+        first[0] = emoji;
+        auto another = first[1].toObject();
+        another["content"] = "甲";
+        another["content_total_chars"] = 2;
+        another["content_next_offset"] = 1;
+        first[1] = another;
+        QJsonArray personaMessageIds;
+        QVariantMap expectedSaved;
+        for (int index = 0; index <= 20; ++index) {
+            const auto id = QString("m-%1").arg(index);
+            personaMessageIds.append(id);
+            expectedSaved[id] = true;
+        }
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:page"),
+            keepsakePage(bridge, first, 0, true, personaMessageIds)));
+        QCOMPARE(bridge.keepsakeView().value("entries").toList().size(), 20);
+        bridge.loadMoreKeepsakes();
+        const auto next = lastCommand(*frames, "keepsake:page");
+        QCOMPARE(next["offset"].toInt(), 20);
+        QVERIFY(!bridge.keepsakeView().value("writeAvailable").toBool());
+        bridge.requestKeepsakeRemoval("k-0");
+        QVERIFY(bridge.keepsakeView().value("removal").toMap().isEmpty());
+        bridge.event(frame("keepsake:preview:result", next["requestId"].toString(),
+            keepsakePage(bridge, QJsonArray{keepsakeItem("k-20", "m-20")}, 20, false, personaMessageIds)));
+        QCOMPARE(bridge.keepsakeView().value("entries").toList().size(), 21);
+        QCOMPARE(bridge.keepsakeMessageIds(), expectedSaved);
+        QVERIFY(!bridge.keepsakeView().value("hasMore").toBool());
+        bridge.toggleKeepsakeExpanded("k-0");
+        bridge.toggleKeepsakeExpanded("k-1");
+        auto command = lastCommand(*frames, "keepsake:page");
+        QCOMPARE(command["keepsake_id"].toString(), QString("k-0"));
+        QCOMPARE(command["content_offset"].toInt(), 2);
+        auto chunk = emoji;
+        chunk["content"] = QString::fromUtf8("光✨");
+        chunk["content_offset"] = 2;
+        chunk["content_next_offset"] = QJsonValue::Null;
+        auto result = keepsakePayload(bridge, "page");
+        result["mode"] = "content";
+        result["item"] = chunk;
+        bridge.event(frame("keepsake:preview:result", command["requestId"].toString(), result));
+        QCOMPARE(bridge.keepsakeView().value("entries").toList()[0].toMap().value("content").toString(), QString::fromUtf8("星🌙光✨"));
+        QTRY_COMPARE(lastCommand(*frames, "keepsake:page")["keepsake_id"].toString(), QString("k-1"));
+        command = lastCommand(*frames, "keepsake:page");
+        QCOMPARE(command["content_offset"].toInt(), 1);
+        chunk = another;
+        chunk["content"] = "乙";
+        chunk["content_offset"] = 1;
+        chunk["content_next_offset"] = QJsonValue::Null;
+        result["item"] = chunk;
+        bridge.event(frame("keepsake:preview:result", command["requestId"].toString(), result));
+        QCOMPARE(bridge.keepsakeView().value("entries").toList()[1].toMap().value("content").toString(), QString("甲乙"));
+    }
+
+    void keepsakeRemovalRequiresConfirmationAndRejectsOldHistoryStatus() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        const QJsonArray messages{QJsonObject{{"id", "m-one"}, {"role", "user"}, {"content", "保留"}}};
+        auto read = bridge.request("chat:history");
+        bridge.event(frame("chat:history:result", read, {{"items", messages}, {"preview_keepsake_message_ids", QJsonArray{"m-one"}}}));
+        bridge.openPanel("keepsake");
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:page"),
+            keepsakePage(bridge, QJsonArray{keepsakeItem("k-one", "m-one", "保留")})));
+        const auto original = bridge.messages();
+        read = bridge.request("chat:history");
+        bridge.confirmKeepsakeRemoval();
+        QCOMPARE(commandCount(*frames, "keepsake:remove"), 0);
+        bridge.requestKeepsakeRemoval("k-one");
+        QVERIFY(!bridge.keepsakeView().value("removal").toMap().isEmpty());
+        bridge.cancelKeepsakeRemoval();
+        bridge.confirmKeepsakeRemoval();
+        QCOMPARE(commandCount(*frames, "keepsake:remove"), 0);
+        bridge.requestKeepsakeRemoval("k-one");
+        bridge.confirmKeepsakeRemoval();
+        QCOMPARE(commandCount(*frames, "keepsake:remove"), 1);
+        auto removed = keepsakePayload(bridge, "remove");
+        removed["keepsake_id"] = "k-one";
+        removed["message_id"] = "m-one";
+        removed["removed"] = true;
+        removed["preview_keepsake_message_ids"] = QJsonArray{};
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:remove"), removed));
+        QVERIFY(bridge.keepsakeView().value("entries").toList().isEmpty());
+        QVERIFY(bridge.keepsakeMessageIds().isEmpty());
+        bridge.event(frame("chat:history:result", read, {{"items", messages}, {"preview_keepsake_message_ids", QJsonArray{"m-one"}}}));
+        QVERIFY(bridge.keepsakeMessageIds().isEmpty());
+        QCOMPARE(bridge.messages(), original);
+    }
+
+    void keepsakeOldScopeAndConnectionReceiptsAreDiscarded_data() {
+        QTest::addColumn<bool>("newPersona");
+        QTest::newRow("old-persona") << true;
+        QTest::newRow("old-connection") << false;
+    }
+    void keepsakeOldScopeAndConnectionReceiptsAreDiscarded() {
+        QFETCH(bool, newPersona);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.openPanel("keepsake");
+        const auto previous = controlId(bridge, "keepsake:page");
+        const auto oldReply = keepsakePage(bridge, QJsonArray{keepsakeItem("old-k", "old-m")});
+        if (newPersona) {
+            bridge.event(frame("bridge:persona_scope", {}, {{"persona_id", "other-persona"}, {"epoch", 4},
+                {"fingerprint", "other-proof"}}));
+        } else {
+            bridge.m_connected = false;
+            const auto proof = QCryptographicHash::hash(bridge.m_secret.toUtf8(), QCryptographicHash::Sha256).toHex();
+            bridge.acceptFrame({{"kind", "ready"}, {"schema", "reverie.bridge.stdio.ready.v4"},
+                {"transport", "stdio-framed"}, {"protocolVersion", 4}, {"personaId", "persona-current"},
+                {"pid", 0}, {"secretSha256", QString::fromLatin1(proof)}, {"personaEpoch", 3},
+                {"personaFingerprint", "fingerprint-current"}, {"runtimeWritable", true},
+                {"writesBlocked", false}, {"recoveryState", "clean"}});
+        }
+        const auto current = bridge.keepsakeView();
+        bridge.event(frame("keepsake:preview:result", previous, oldReply));
+        QCOMPARE(bridge.keepsakeView(), current);
+        QVERIFY(bridge.keepsakeMessageIds().isEmpty());
+        bridge.openPanel("keepsake");
+        const auto fresh = controlId(bridge, "keepsake:page");
+        QVERIFY(!fresh.isEmpty() && fresh != previous);
+        bridge.event(frame("keepsake:preview:result", fresh, keepsakePage(bridge, {})));
+        QCOMPARE(bridge.keepsakeView().value("listStatus").toString(), QString("ready"));
+    }
+
+    void keepsakePageAt760ShowsEmptyTextThumbnailAndConfirmation() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        bridge.openPanel("keepsake");
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:page"), keepsakePage(bridge, {})));
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        QQmlComponent component(&engine);
+        component.setData(keepsakeWindowQml(), QUrl("qrc:/xiangqi/keepsake-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        QTRY_VERIFY(find("keepsakeEmpty") && find("keepsakeEmpty")->isVisible());
+        QCOMPARE(find("keepsakeEmpty")->property("text").toString(), QString("在完整聊天历史里点『收藏』，喜欢的话会留在这里。"));
+        QFile fixture(QFINDTESTDATA("fixtures/chat-image-thumbnail.json"));
+        QVERIFY(fixture.open(QIODevice::ReadOnly));
+        auto thumbnail = QJsonDocument::fromJson(fixture.readAll()).object()["frame"].toObject();
+        const auto media = thumbnail["payload"].toObject()["media_id"].toString();
+        auto item = keepsakeItem("page-one", "page-message", QString("<b>原样文字</b>\n").repeated(12));
+        item["media_ids"] = QJsonArray{media};
+        bridge.refreshKeepsakes();
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:page"), keepsakePage(bridge, QJsonArray{item})));
+        auto read = lastCommand(*frames, "chat:media");
+        QCOMPARE(read["media_id"].toString(), media);
+        QVERIFY(read["thumbnail"].toBool());
+        thumbnail["request_id"] = read["requestId"];
+        bridge.event(thumbnail);
+        QTRY_VERIFY(find("keepsakeRow-page-one"));
+        auto *body = find("keepsakeContent-page-one");
+        QVERIFY(body);
+        QTRY_VERIFY(body->width() > 0);
+        QVERIFY(keepsakeFrame(window));
+        QCOMPARE(body->property("text").toString(), item["content"].toString());
+        QCOMPARE(body->property("maximumLineCount").toInt(), 6);
+        QVERIFY(body->property("truncated").toBool());
+        const auto bounds = body->mapRectToScene(body->boundingRect());
+        QVERIFY(bounds.left() >= 0 && bounds.right() <= 760);
+        QVERIFY(body->property("contentWidth").toDouble() <= body->width() + 1);
+        QTRY_VERIFY(find("keepsakeImage-page-one-" + media) && find("keepsakeImage-page-one-" + media)->property("status").toInt() == 1);
+        keepsakeClick(window, find("keepsakeExpand-page-one"));
+        if (QTest::currentTestFailed()) return;
+        QTRY_VERIFY(bridge.keepsakeView().value("entries").toList().first().toMap().value("expanded").toBool());
+        QVERIFY(keepsakeFrame(window));
+        QVERIFY(!find("keepsakeContent-page-one")->property("truncated").toBool());
+        bridge.toggleKeepsakeExpanded("page-one");
+        QVERIFY(keepsakeFrame(window));
+        keepsakeClick(window, find("keepsakeRemove-page-one"));
+        if (QTest::currentTestFailed()) return;
+        QTRY_VERIFY(find("keepsakeRemoveWarning") && find("keepsakeRemoveWarning")->isVisible());
+        QCOMPARE(find("keepsakeRemoveWarning")->property("text").toString(), QString("移除后不能恢复"));
+        keepsakeClick(window, find("keepsakeRemoveCancel"));
+        if (QTest::currentTestFailed()) return;
+        QTRY_VERIFY(bridge.keepsakeView().value("removal").toMap().isEmpty());
+        QCOMPARE(commandCount(*frames, "keepsake:remove"), 0);
+        keepsakeClick(window, find("keepsakeRemove-page-one"));
+        if (QTest::currentTestFailed()) return;
+        QTRY_VERIFY(find("keepsakeRemoveConfirm") && find("keepsakeRemoveConfirm")->isVisible());
+        keepsakeClick(window, find("keepsakeRemoveConfirm"));
+        if (QTest::currentTestFailed()) return;
+        QCOMPARE(commandCount(*frames, "keepsake:remove"), 1);
+    }
+
+    void keepsakeLastRowHasSixteenPointEndGap() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        bridge.openPanel("keepsake");
+        QJsonArray items;
+        for (int index = 1; index <= 12; ++index) {
+            const QString label = QString("合成收藏 %1：").arg(index);
+            items.append(keepsakeItem(QString("gap-%1").arg(index), QString("gap-message-%1").arg(index),
+                                      label + QString("这是一条用来核对留白的收藏。").repeated(1 + index % 5)));
+        }
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:page"), keepsakePage(bridge, items)));
+        QCOMPARE(bridge.keepsakeView().value("entries").toList().size(), 12);
+
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        QQmlComponent component(&engine);
+        component.setData(keepsakeWindowQml(), QUrl("qrc:/xiangqi/keepsake-end-gap.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->setColor(QColor("#101820"));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        QTRY_VERIFY(find("keepsakeScroll") && find("keepsakeRow-gap-12"));
+        auto *scroll = find("keepsakeScroll");
+        auto *last = find("keepsakeRow-gap-12");
+        auto *viewport = qvariant_cast<QQuickItem *>(scroll->property("contentItem"));
+        QVERIFY(viewport);
+
+        for (const QSize size : {QSize(760, 650), QSize(960, 540)}) {
+            window->resize(size);
+            QVERIFY(keepsakeFrame(window));
+            const qreal scrollHeight = viewport->property("contentHeight").toReal();
+            QVERIFY(scrollHeight > viewport->height());
+            const qreal bottom = viewport->property("originY").toReal() + scrollHeight - viewport->height();
+            QVERIFY(viewport->setProperty("contentY", bottom));
+            QTRY_VERIFY(viewport->property("atYEnd").toBool());
+            QVERIFY(keepsakeFrame(window));
+            const auto rowRect = last->mapRectToItem(viewport, last->boundingRect());
+            QVERIFY(rowRect.top() >= -1);
+            QVERIFY(qAbs(viewport->height() - rowRect.bottom() - 16) <= 1);
+        }
+
+        // The full-unit runner already supplies a run-owned report path.
+        const auto receiptDirectory = qEnvironmentVariable("REVERIE_P1_CONTROL_RECEIPT_DIR");
+        if (!receiptDirectory.isEmpty()) {
+            const QDir output(QFileInfo(receiptDirectory).absolutePath());
+            const auto image = window->grabWindow();
+            QVERIFY(!image.isNull());
+            QVERIFY(image.save(output.filePath("w22-keepsake-end-gap.png")));
+        }
+    }
+
+    void keepsakeMessageButtonsPreserveGeometry_data() {
+        QTest::addColumn<QString>("role");
+        QTest::addColumn<bool>("proactive");
+        QTest::newRow("user") << QString("user") << false;
+        QTest::newRow("assistant") << QString("assistant") << false;
+        QTest::newRow("proactive") << QString("assistant") << true;
+    }
+    void keepsakeMessageButtonsPreserveGeometry() {
+        QFETCH(QString, role);
+        QFETCH(bool, proactive);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        auto frames = sentFrames(bridge);
+        QJsonObject message{{"id", "geometry-message"}, {"role", role}, {"content", "一条保持位置的消息。"},
+            {"source", proactive ? "proactive" : role}, {"bubble_index", 0}};
+        if (proactive) message["proactive_id"] = "proactive_00000000000000000000000000000001";
+        const auto history = bridge.request("chat:history");
+        bridge.event(frame("chat:history:result", history, {{"items", QJsonArray{message}}, {"preview_keepsake_message_ids", QJsonArray{}}}));
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        QQmlComponent component(&engine);
+        component.setData(keepsakeWindowQml(), QUrl("qrc:/xiangqi/keepsake-geometry.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window && root->setProperty("showChat", true));
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        QTRY_VERIFY(find("keepsakeMessage-geometry-message") && find("keepsakeMessage-geometry-message")->isEnabled());
+        QTRY_VERIFY(find("chatMessage-geometry-message") && find("chatMessage-geometry-message")->width() > 0);
+        QVERIFY(keepsakeFrame(window));
+        const auto rect = [&](const QString &name) { auto *item = find(name); return item->mapRectToScene(item->boundingRect()); };
+        const auto rowBefore = rect("chatMessageRow-geometry-message");
+        const auto textBefore = rect("chatMessage-geometry-message");
+        auto *text = find("chatMessage-geometry-message");
+        auto *box = text->parentItem()->parentItem();
+        const auto boxBefore = box->mapRectToScene(box->boundingRect());
+        auto *button = find("keepsakeMessage-geometry-message");
+        const auto buttonBefore = rect(button->objectName());
+        QCOMPARE(button->property("text").toString(), QString("收藏"));
+        QCOMPARE(buttonBefore.height(), qreal(24));
+        QCOMPARE(buttonBefore.width(), qreal(60));
+        QVERIFY(buttonBefore.top() >= textBefore.bottom());
+        QVERIFY(buttonBefore.bottom() <= rowBefore.bottom());
+        const QPoint awayPoint(5, 5);
+        const auto buttonCenter = buttonBefore.center().toPoint();
+        qInfo() << "W19_KEEPSAKE_HOVER" << QTest::currentDataTag()
+                << "windowGlobal" << window->mapToGlobal(QPoint(0, 0))
+                << "awayGlobal" << window->mapToGlobal(awayPoint)
+                << "buttonGlobal" << window->mapToGlobal(buttonCenter);
+        QTest::mouseMove(window, awayPoint);
+        QTest::mouseMove(window, buttonCenter);
+        QTRY_VERIFY(button->property("hovered").toBool());
+        QVERIFY(keepsakeFrame(window));
+        QCOMPARE(rect("chatMessageRow-geometry-message"), rowBefore);
+        QCOMPARE(rect("chatMessage-geometry-message"), textBefore);
+        QCOMPARE(box->mapRectToScene(box->boundingRect()), boxBefore);
+        keepsakeClick(window, button);
+        if (QTest::currentTestFailed()) return;
+        auto item = keepsakeItem("geometry-kept", "geometry-message", message["content"].toString());
+        item["role"] = role;
+        item["source"] = message["source"];
+        bridge.event(frame("keepsake:preview:result", controlId(bridge, "keepsake:collect"), keepsakeCollection(bridge, item)));
+        QTRY_COMPARE(button->property("text").toString(), QString("已收藏"));
+        QVERIFY(!button->isEnabled());
+        QVERIFY(keepsakeFrame(window));
+        QCOMPARE(rect("chatMessageRow-geometry-message"), rowBefore);
+        QCOMPARE(rect("chatMessage-geometry-message"), textBefore);
+        QCOMPARE(box->mapRectToScene(box->boundingRect()), boxBefore);
+        QCOMPARE(rect(button->objectName()), buttonBefore);
+        QCOMPARE(commandCount(*frames, "chat:send"), 0);
+        QCOMPARE(bridge.messages().size(), 1);
+    }
+
+    void keepsakeNavigationKeepsTheExistingActivityEntries() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        QQmlComponent component(&engine, QUrl("qrc:/xiangqi/ui/SceneNavigation.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> navigation(component.create());
+        QVERIFY(navigation);
+        const auto list = [](const QVariant &value) {
+            return value.metaType() == QMetaType::fromType<QJSValue>()
+                ? value.value<QJSValue>().toVariant().toList() : value.toList();
+        };
+        const auto entries = list(navigation->property("entries"));
+        QStringList activities;
+        int diary = -1, keepsake = -1;
+        for (int i = 0; i < entries.size(); ++i) {
+            const auto entry = entries[i].toMap();
+            if (entry.value("feature") == "activities") activities.append(entry.value("subentry").toString());
+            if (entry.value("subentry") == "diary") diary = i;
+            if (entry.value("feature") == "keepsake") {
+                keepsake = i;
+                QCOMPARE(entry.value("label").toString(), QString("收藏"));
+                QVERIFY(!entry.value("showInRail").toBool());
+            }
+        }
+        QCOMPARE(activities, (QStringList{"xiangqi", "gomoku", "chess", "go", "diary"}));
+        QCOMPARE(keepsake, diary + 1);
+        QVERIFY(navigation->setProperty("query", "keepsake"));
+        QCOMPARE(list(navigation->property("filteredEntries")).size(), 1);
+    }
+
+    void roomQualityPreferencesRead_data() {
+        QTest::addColumn<QByteArray>("contents");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("no-file") << QByteArray() << QString("balanced");
+        QTest::newRow("missing-key") << QByteArray("{\"reducedMotion\":true}") << QString("balanced");
+        QTest::newRow("unknown") << QByteArray("{\"roomQuality\":\"ultra\"}") << QString("balanced");
+        QTest::newRow("number") << QByteArray("{\"roomQuality\":2}") << QString("balanced");
+        QTest::newRow("null") << QByteArray("{\"roomQuality\":null}") << QString("balanced");
+        for (const auto &quality : {"clear", "balanced", "smooth"})
+            QTest::newRow(quality) << QJsonDocument(QJsonObject{{"roomQuality", quality}}).toJson()
+                                  << QString(quality);
+    }
+    void roomQualityPreferencesRead() {
+        QFETCH(QByteArray, contents);
+        QFETCH(QString, expected);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        const auto path = data.filePath("qt-appearance.json");
+        if (!contents.isEmpty()) QVERIFY(writeLocal(path, contents));
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        QCOMPARE(bridge.roomQuality(), expected);
+        QCOMPARE(QFileInfo::exists(path), !contents.isEmpty());
+        if (!contents.isEmpty()) {
+            QFile stored(path);
+            QVERIFY(stored.open(QIODevice::ReadOnly));
+            QCOMPARE(stored.readAll(), contents);
+        }
+    }
+    void roomQualityPreferencesWriteAndPreserve_data() {
+        QTest::addColumn<QString>("quality");
+        for (const auto *quality : {"clear", "balanced", "smooth"})
+            QTest::newRow(quality) << QString(quality);
+    }
+    void roomQualityPreferencesWriteAndPreserve() {
+        QFETCH(QString, quality);
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        const auto path = data.filePath("qt-appearance.json");
+        const QJsonObject original{{"reducedMotion", true}, {"reducedTransparency", false}, {"offline", true},
+            {"roomQuality", quality == "smooth" ? "clear" : "smooth"}};
+        QVERIFY(writeLocal(path, QJsonDocument(original).toJson()));
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        const auto read = [&] {
+            QFile stored(path);
+            return stored.open(QIODevice::ReadOnly) ? stored.readAll() : QByteArray();
+        };
+        bridge.setRoomQuality(quality);
+        QCOMPARE(bridge.roomQuality(), quality);
+        auto expected = original;
+        expected["roomQuality"] = quality;
+        QCOMPARE(QJsonDocument::fromJson(read()).object(), expected);
+        const auto validBytes = read();
+        QSignalSpy changes(&bridge, &RuntimeBridge::changed);
+        for (const auto *invalid : {"", "ultra", "CLEAR", "2", "null"}) {
+            bridge.setRoomQuality(invalid);
+            QCOMPARE(bridge.roomQuality(), quality);
+            QCOMPARE(read(), validBytes);
+        }
+        QCOMPARE(changes.count(), 0);
+        bridge.setReducedMotion(false);
+        expected["reducedMotion"] = false;
+        QCOMPARE(QJsonDocument::fromJson(read()).object(), expected);
+        bridge.setReducedTransparency(true);
+        expected["reducedTransparency"] = true;
+        QCOMPARE(QJsonDocument::fromJson(read()).object(), expected);
+        online(bridge);
+        bridge.setOffline(false);
+        const auto id = bridge.m_networkRequestId;
+        QVERIFY(!id.isEmpty());
+        bridge.acceptFrame(controlResult(id, "local_mode:set", {{"ok", true}, {"active", false},
+            {"epoch", bridge.m_localModeEpoch}}));
+        expected["offline"] = false;
+        QCOMPARE(QJsonDocument::fromJson(read()).object(), expected);
+        RuntimeBridge restarted(data.path(), data.path(), data.filePath("unused-python"));
+        QCOMPARE(restarted.roomQuality(), quality);
+        QCOMPARE(restarted.reducedMotion(), false);
+        QCOMPARE(restarted.reducedTransparency(), true);
+        QCOMPARE(restarted.state().value("offline").toBool(), false);
+    }
+    void roomQualitySettingsButtons() {
+        QTemporaryDir data;
+        QVERIFY(data.isValid());
+        RuntimeBridge bridge(data.path(), data.path(), data.filePath("unused-python"));
+        online(bridge);
+        ArchiveEditor archive([](const QString &, const QVariantMap &) { return QString(); });
+        QQuickStyle::setStyle("Basic");
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("session", &bridge);
+        engine.rootContext()->setContextProperty("archiveEditor", &archive);
+        QQmlComponent component(&engine);
+        component.setData(R"qml(
+            import QtQuick
+            import QtQuick.Window
+            import "ui"
+            Window {
+                width: 760
+                height: 650
+                TaskPanel { anchors.fill: parent; page: "settings" }
+            }
+        )qml", QUrl("qrc:/xiangqi/room-quality-fixture.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        auto *window = qobject_cast<QQuickWindow *>(root.get());
+        QVERIFY(window);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        const auto find = [window](const QString &name) { return gomokuItem(window->contentItem(), name); };
+        const QStringList values{"clear", "balanced", "smooth"};
+        const QStringList labels{"清晰", "均衡", "流畅"};
+        for (int index = 0; index < values.size(); ++index) {
+            auto *button = find("roomQuality-" + values[index]);
+            QVERIFY(button);
+            QCOMPARE(button->property("text").toString(), labels[index]);
+            QVERIFY(button->isEnabled());
+            QCOMPARE(button->property("accented").toBool(), values[index] == "balanced");
+        }
+        auto *description = find("roomQualityDescription");
+        QVERIFY(description);
+        QCOMPARE(description->property("text").toString(), QString(
+            "只影响房间背景。均衡在画面变化时降低分辨率，停下后恢复；清晰始终最清楚，开合抽屉时可能卡顿；流畅始终较低分辨率。非 Retina 屏幕上三档相同。"));
+        QElapsedTimer clock;
+        clock.start();
+        for (const auto &quality : {QString("clear"), QString("smooth"), QString("balanced")}) {
+            auto *button = find("roomQuality-" + quality);
+            NativeControlReadiness::revealWholeItem(button, [&] { return clock.elapsed(); }, clock.elapsed() + 4000);
+            QSignalSpy rendered(window, &QQuickWindow::frameSwapped);
+            window->update();
+            QVERIFY(rendered.wait());
+            QVERIFY(NativeControlReadiness::wholeVisibility(button, window).value("fullyVisible").toBool());
+            const auto point = button->mapToScene(QPointF(button->width() / 2, button->height() / 2)).toPoint();
+            QVERIFY(NativeCheck::hitTest(window, point, button).accepted());
+            QSignalSpy clicked(button, SIGNAL(clicked()));
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, point, 0);
+            QCOMPARE(clicked.count(), 1);
+            QCOMPARE(bridge.roomQuality(), quality);
+            for (const auto &value : values)
+                QCOMPARE(find("roomQuality-" + value)->property("accented").toBool(), value == quality);
+        }
+        bridge.m_runtimeWritable = false;
+        emit bridge.changed();
+        for (const auto &value : values) QTRY_VERIFY(!find("roomQuality-" + value)->isEnabled());
+    }
+
 };
 
-QTEST_GUILESS_MAIN(RuntimeBridgeTest)
+QTEST_MAIN(RuntimeBridgeTest)
 #include "RuntimeBridgeTest.moc"

@@ -1,0 +1,22 @@
+{
+  "kind": "event",
+  "frame": {
+    "type": "proactive:message",
+    "payload": {
+      "messages": ["那只蓝色杯子，你找到了吗？"],
+      "text": "那只蓝色杯子，你找到了吗？",
+      "trigger": "morning_greeting",
+      "emotion_changes": {},
+      "metadata": {},
+      "proactive_id": "proactive_0123456789abcdef0123456789abcdef",
+      "created_at_utc": "2026-11-14T00:00:00+00:00",
+      "conversation_id": "dream-room",
+      "persona_id": "builtin_hoshino_yumetsuki",
+      "persona_epoch": 1,
+      "persona_fingerprint": "2b83b064b6ff4e0a41f8e8ff7ede53ca6537bc9dbc89b81a42122d17b8d926f4",
+      "notify": false,
+      "native_notification": false,
+      "notification_title": "星野幻月"
+    }
+  }
+}

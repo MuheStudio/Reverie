@@ -1,3 +1,6 @@
+#if defined(REVERIE_TIMING_DIAGNOSTICS) || defined(REVERIE_QML_PROFILER)
+#include "SmoothnessCheck.h"
+#endif
 #include "PerfScenarioCheck.h"
 #include "HeaderFrameLocalCheck.h"
 #include "../src/ArchiveEditor.h"
@@ -1929,6 +1932,12 @@ class Runner final : public QObject {
 void PerfScenarioCheck::run(QQuickWindow *window, RuntimeBridge *session, ArchiveEditor *editor,
                             const QString &mode, int fixtureRows, const QString &reportPrefix,
                             Completion completion, const QString &protocol, const QString &diagnosticCase) {
+#if defined(REVERIE_TIMING_DIAGNOSTICS) || defined(REVERIE_QML_PROFILER)
+    if (SmoothnessCheck::requested()) {
+        SmoothnessCheck::run(window, session, editor, std::move(completion));
+        return;
+    }
+#endif
     if (HeaderFrameLocalCheck::requested()) {
         HeaderFrameLocalCheck::run(window, session, mode, fixtureRows, reportPrefix,
                                   std::move(completion), protocol, diagnosticCase);

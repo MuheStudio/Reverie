@@ -1,3 +1,6 @@
+#if defined(REVERIE_TIMING_DIAGNOSTICS) || defined(REVERIE_QML_PROFILER)
+#include "SmoothnessCheck.h"
+#endif
 #include "PerfBootstrap.h"
 #include "HeaderFrameLocalCheck.h"
 #include "../src/RuntimeBridge.h"
@@ -133,6 +136,12 @@ public:
 };
 }
 void PerfBootstrap::run(QQuickWindow *w,RuntimeBridge *s,ArchiveEditor *a,const QString &model,const QString &url,int rows,std::function<void(bool,QVariantMap)> cb) {
+#if defined(REVERIE_TIMING_DIAGNOSTICS) || defined(REVERIE_QML_PROFILER)
+    if (SmoothnessCheck::requested()) {
+        SmoothnessCheck::bootstrap(w, s, a, model, url, rows, std::move(cb));
+        return;
+    }
+#endif
     const bool w4Local = HeaderFrameLocalCheck::requested();
     if (w4Local) {
         try { validateW4Bootstrap(rows); }

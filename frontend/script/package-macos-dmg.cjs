@@ -225,7 +225,7 @@ async function main(args = process.argv.slice(2)) {
         assert.deepEqual(treeManifest(stagedApp), sourceTree, 'Copy changed application');
         fs.copyFileSync(instructionsSource, instructions);
         writeJson(path.join(metadata, 'package.json'), { name: 'reverie-macos-dmg', productName: 'Reverie macOS Test',
-          version: sourceIdentity.version, description: 'Local core test DMG', author: 'Muhe Studio contributors', license: 'GPL-3.0-only' });
+          version: sourceIdentity.version, description: 'Local core test DMG', author: 'Muhe Studio contributors', license: 'Apache-2.0' });
       });
       const tool = await phase('Verify the pinned arm64 DMG build tool', async () => {
         const cache = path.join(buildRoot, 'cache', 'dmg'); fs.mkdirSync(cache, { recursive: true });

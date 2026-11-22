@@ -1,4 +1,4 @@
-"""Independent canonical-snapshot worldbook evaluator (repository GPL-3.0)."""
+"""Independent canonical-snapshot worldbook evaluator (repository Apache-2.0)."""
 
 from .engine import (
     EvaluationResult,

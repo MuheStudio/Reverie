@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, Literal
 
+from .kaomoji import kaomoji_spans
+
 if TYPE_CHECKING:
     pass
 
@@ -471,8 +473,17 @@ class MessageScheduler:
             if len(chunk) <= 48:
                 hard_chunks.append(chunk)
                 continue
-            for start in range(0, len(chunk), 42):
-                hard_chunks.append(self._normalize_chat_punctuation(chunk[start:start + 42]))
+            spans = iter(kaomoji_spans(chunk))
+            span = next(spans, None)
+            start = 0
+            while start < len(chunk):
+                cut = min(start + 42, len(chunk))
+                while span is not None and span[1] <= cut:
+                    span = next(spans, None)
+                if span is not None and span[0] < cut < span[1]:
+                    cut = span[0] if span[0] > start else span[1]
+                hard_chunks.append(self._normalize_chat_punctuation(chunk[start:cut]))
+                start = cut
 
         return [chunk for chunk in hard_chunks if chunk] or [self._normalize_chat_punctuation(message)]
 

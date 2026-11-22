@@ -2,7 +2,7 @@
 
 Independent implementation from the approved contract and Python documentation:
 https://docs.python.org/3/library/asyncio-subprocess.html
-No legacy matching code was consulted. Repository GPL-3.0 terms apply.
+No legacy matching code was consulted. Repository Apache-2.0 terms apply.
 """
 
 from __future__ import annotations

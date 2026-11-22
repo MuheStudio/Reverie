@@ -12,7 +12,7 @@ import struct
 from typing import Any, BinaryIO
 
 
-# The MVP carries text and small settings objects, never files or images.
+# Attachments use paths, bounded clipboard data, and bounded thumbnail replies.
 MAX_FRAME_BYTES = 1024 * 1024
 _HEADER = struct.Struct(">I")
 

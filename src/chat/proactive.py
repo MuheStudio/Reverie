@@ -30,6 +30,7 @@ from ..persona.identity import (
     PersonaEpochToken,
     StalePersonaEpoch,
 )
+from ..utils.prompt_data import neutralize_prompt_tags
 
 if TYPE_CHECKING:
     from ..api.adapter import LLMAdapter
@@ -140,6 +141,8 @@ class ProactiveChat:
         wake_max_minutes: int = 10,
         random_seconds: Callable[[int, int], int] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        preview_mode: bool = False,
+        writes_blocked: Callable[[], bool] | None = None,
     ) -> None:
         self.persona = persona
         if callable(getattr(self.persona, "seal_identity", None)):
@@ -159,6 +162,11 @@ class ProactiveChat:
         self.persona_epoch_registry = persona_epoch_registry
         self.conversation_id = str(conversation_id).strip() or "dream-room"
         self.kernel_store = kernel_store
+        self.preview_mode = preview_mode
+        self._writes_blocked = writes_blocked or (lambda: False)
+        self._persona_id = active_token.persona_id
+        if preview_mode and kernel_store is None:
+            raise ValueError("preview proactive messages require an encrypted kernel store")
         self.chat_busy = chat_busy or (lambda: False)
         self.wake_min_minutes = int(wake_min_minutes)
         self.wake_max_minutes = int(wake_max_minutes)
@@ -171,27 +179,32 @@ class ProactiveChat:
         self.emotion = emotion
         self.scheduler = scheduler
         self.relationship = relationship
-        self.late_night_enabled = late_night_enabled
+        self.late_night_enabled = late_night_enabled and not preview_mode
         self.late_night_probability = late_night_probability
-        self.manage_status = manage_status
+        self.manage_status = manage_status and not preview_mode
         self.daily_limit = max(1, min(12, int(daily_limit)))
         self.min_interval_minutes = max(15, min(1440, int(min_interval_minutes)))
-        self.event_stories_enabled = event_stories_enabled
+        self.event_stories_enabled = event_stories_enabled and not preview_mode
         self.memory = memory
         self.user_manager = user_manager
-        self.web_surfing = web_surfing
-        self.affair_manager = affair_manager
+        self.web_surfing = None if preview_mode else web_surfing
+        self.affair_manager = None if preview_mode else affair_manager
         self.interest_tracker = interest_tracker
         if world_clock is None:
             from ..world import WorldClock
 
             world_clock = WorldClock()
         self.world_clock = world_clock
-        self.state_path = state_path or (USER_DIR / "proactive_state.json")
+        self.state_path = None if preview_mode else (state_path or (USER_DIR / "proactive_state.json"))
+        if preview_mode:
+            from ..emotion.system import DEFAULT_BASELINE
+
+            self._initial_emotions = {**DEFAULT_BASELINE, **persona.emotions}
         self.speech_habits = speech_habit_engine
-        self.reflex = reflex_system
+        self.reflex = None if preview_mode else reflex_system
         self.local_reflex_probability = max(0.0, min(1.0, float(local_reflex_probability)))
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.state_path is not None:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self._pending: asyncio.Queue[ProactiveResult] = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._run_generation = 0
@@ -205,7 +218,7 @@ class ProactiveChat:
         self._late_night_until_hour: int | None = None
         self._last_proactive_at: datetime | None = None
         self._last_proactive_replied = True
-        self._silence_penalized = False
+        self._silence_handled_for: datetime | None = None
         self._last_user_activity: datetime | None = None
         self._last_user_message = ""
         self._load_state()
@@ -234,6 +247,30 @@ class ProactiveChat:
         if self._task:
             self._task.cancel()
             logger.info("ProactiveChat stopped")
+        if self.preview_mode:
+            while not self._pending.empty():
+                self._pending.get_nowait()
+
+    def apply_preview_settings(self, features, *, start_allowed: bool = True) -> None:
+        self.daily_limit = features.proactive_daily_limit
+        self.min_interval_minutes = features.proactive_min_interval_minutes
+        if features.proactive_chat_enabled and start_allowed:
+            if not self._desired_running:
+                self.start()
+        elif self._desired_running or self.running:
+            self.stop()
+
+    def _preview_generation_allowed(self) -> bool:
+        return not self.chat_busy() and self.accepts_pending_result()
+
+    def accepts_pending_result(self) -> bool:
+        """Recheck preview admission immediately before persisting a queued result."""
+        if not self.preview_mode:
+            return True
+        from ..local_mode import get_local_mode_gate
+
+        return (not self._writes_blocked() and not get_local_mode_gate().blocks_remote()
+                and self.usage_policy is not None and self.usage_policy.allowed("proactive_chat"))
 
     def _on_loop_done(self, task: asyncio.Task) -> None:
         if self._task is not task:
@@ -329,10 +366,14 @@ class ProactiveChat:
     def mark_user_replied(self, message: str = "") -> None:
         """Record user activity and the latest status signal for later care."""
         self._last_proactive_replied = True
-        self._silence_penalized = False
         self._last_user_activity = self.world_clock.now().replace(tzinfo=None)
         self._last_user_message = message.strip()[:500]
-        self._save_state()
+        try:
+            self._save_state()
+        except Exception:
+            if not self.preview_mode:
+                raise
+            logger.warning("Proactive user activity could not be saved")
 
     async def enqueue_late_night_checkin(self, *, event_date: str, user_online: bool = True) -> bool:
         """Generate one late-night check-in and queue it for the frontend."""
@@ -367,23 +408,31 @@ class ProactiveChat:
                 )
                 await self._sleep(delay)
 
+                if self.preview_mode and (active_generation != self._run_generation or self._writes_blocked()):
+                    continue
+
                 # ── Status management ──────────────────────
                 self._update_status()
                 self._apply_silence_emotion_if_needed()
 
                 # ── Trigger checks ─────────────────────────
-                if self.chat_busy():
+                if ((self.preview_mode and not self._preview_generation_allowed())
+                        or (not self.preview_mode and self.chat_busy())):
                     continue
                 trigger_type, context = self._check_triggers()
                 if trigger_type:
                     result = await self._generate_message(trigger_type, context)
-                    if result and active_generation == self._run_generation:
+                    if (result and active_generation == self._run_generation
+                            and (not self.preview_mode or self._preview_generation_allowed())):
                         self._enqueue_result(result)
             except asyncio.CancelledError:
                 logger.debug("ProactiveChat loop cancelled")
                 return
             except Exception:
-                logger.exception("ProactiveChat loop error")
+                if self.preview_mode:
+                    logger.warning("ProactiveChat loop error")
+                else:
+                    logger.exception("ProactiveChat loop error")
 
     # ── Trigger logic ─────────────────────────────────────
 
@@ -449,14 +498,16 @@ class ProactiveChat:
 
         # 2) Emotion-driven triggers
         for name, val in self.emotion.values.items():
-            if val >= self.EMOTION_THRESHOLD_HIGH:
+            initial = self._initial_emotions.get(name, val) if self.preview_mode else val
+            if val >= self.EMOTION_THRESHOLD_HIGH and (not self.preview_mode or val - initial >= 20):
                 if self._can_trigger(f"emotion_high_{name}", now):
                     return ("emotion_spike", {
                         "emotion": name,
                         "value": val,
                         "direction": "high",
                     })
-            elif val <= self.EMOTION_THRESHOLD_LOW:
+            elif val <= self.EMOTION_THRESHOLD_LOW and (
+                    not self.preview_mode or (name in {"joy", "calm"} and initial - val >= 20)):
                 if self._can_trigger(f"emotion_low_{name}", now):
                     return ("emotion_dip", {
                         "emotion": name,
@@ -710,19 +761,29 @@ class ProactiveChat:
 
     def _apply_silence_emotion_if_needed(self) -> None:
         """If she reached out and got no reply for hours, let that hurt a little."""
-        if self._last_proactive_replied or self._last_proactive_at is None or self._silence_penalized:
+        if (self._last_proactive_replied or self._last_proactive_at is None
+                or self._silence_handled_for == self._last_proactive_at):
             return
         hours = (
             self.world_clock.now().replace(tzinfo=None) - self._last_proactive_at
         ).total_seconds() / 3600
         if hours < 4:
             return
+        previous = self._silence_handled_for
+        self._silence_handled_for = self._last_proactive_at
+        try:
+            saved = self._save_state(log_failure=False)
+        except Exception:
+            saved = False
+        if not saved:
+            self._silence_handled_for = previous
+            logger.warning("ProactiveChat: could not save the silence marker")
+            return
         changes = self.emotion.apply_user_silence(hours)
         if changes:
             logger.info("User silence affected emotion: %s", changes)
-            if self.relationship is not None:
+            if self.relationship is not None and not self.preview_mode:
                 self.relationship.on_user_ignores()
-        self._silence_penalized = True
 
     # ── Status auto-switch ───────────────────────────────
 
@@ -730,7 +791,7 @@ class ProactiveChat:
 
     def _update_status(self) -> None:
         """Auto-switch online status based on time of day."""
-        if self.scheduler is None or not self.manage_status:
+        if self.preview_mode or self.scheduler is None or not self.manage_status:
             return
         now = self.world_clock.now().replace(tzinfo=None)
         self._prepare_late_night_state(now)
@@ -790,7 +851,8 @@ class ProactiveChat:
             current_emotions = sorted(emotion_values.items(), key=lambda item: item[1], reverse=True)[:3]
             mood = "neutral"
 
-        if self.chat_busy():
+        if ((self.preview_mode and not self._preview_generation_allowed())
+                or (not self.preview_mode and self.chat_busy())):
             return None
         grounding = self._grounding_context()
         if grounding is None:
@@ -896,14 +958,17 @@ class ProactiveChat:
                 ),
             )
             text = continuity.text
-            if not self._text_uses_grounding(text, grounding["detail"]):
+            if not self._text_uses_grounding(text, grounding.get("verbatim", grounding["detail"])):
                 logger.warning("ProactiveChat discarded output without a concrete grounding detail")
                 return None
             if not text or len(text) < 3:
                 logger.debug("ProactiveChat: empty or very short response, skipping")
                 return None
 
-            logger.info("ProactiveChat triggered: %s → %s", trigger_type, text[:60])
+            if self.preview_mode:
+                logger.info("ProactiveChat triggered: %s", trigger_type)
+            else:
+                logger.info("ProactiveChat triggered: %s (characters=%d)", trigger_type, len(text))
 
             if usage_lease is not None:
                 self.usage_policy.validate(usage_lease)
@@ -937,8 +1002,11 @@ class ProactiveChat:
         except StalePersonaEpoch:
             logger.info("Proactive generation completed after persona changed; result discarded")
             return None
-        except Exception as exc:
-            logger.exception("ProactiveChat: LLM call failed for trigger %s", trigger_type)
+        except Exception:
+            if self.preview_mode:
+                logger.warning("ProactiveChat: LLM call failed for trigger %s", trigger_type)
+            else:
+                logger.exception("ProactiveChat: LLM call failed for trigger %s", trigger_type)
             if not self.persona_epoch_registry.is_current(persona_token):
                 return None
             if self.reflex is not None:
@@ -963,6 +1031,8 @@ class ProactiveChat:
         if self.kernel_store is not None:
             try:
                 persona_id = self._capture_persona_token().persona_id
+                if self.preview_mode and not self.kernel_store.has_persona_user_message(persona_id, self.conversation_id):
+                    return None
                 rows = self.kernel_store.message_page(
                     self.conversation_id,
                     limit=8,
@@ -974,13 +1044,19 @@ class ProactiveChat:
                     if str(row.get("content", "")).strip()
                 ]
                 if details:
-                    return {"source": "authoritative recent conversation", "detail": "\n".join(details)[-2000:]}
+                    detail = "\n".join(details)[-2000:]
+                    grounding = {"source": "authoritative recent conversation", "detail": detail}
+                    if self.preview_mode:
+                        grounding["verbatim"] = "\n".join(
+                            str(row.get("content", "")).strip() for row in rows
+                        )[-2000:]
+                    return grounding
             except StalePersonaEpoch:
                 return None
             except Exception:
                 logger.exception("Authoritative proactive conversation lookup failed")
                 return None
-        if self.memory is not None:
+        if self.memory is not None and not self.preview_mode:
             try:
                 memories = self.memory.retrieve_relevant(
                     "最近的重要约定、长期目标或共同经历",
@@ -1095,7 +1171,6 @@ class ProactiveChat:
                 del self._daily_trigger_count[old_key]
         self._last_proactive_at = now
         self._last_proactive_replied = False
-        self._silence_penalized = False
 
         if trigger_type == "event_story" and self._active_story is not None:
             self._active_story_step += 1
@@ -1312,10 +1387,13 @@ class ProactiveChat:
         )
 
     def _load_state(self) -> None:
-        if not self.state_path.exists():
+        if self.state_path is not None and not self.state_path.exists():
             return
         try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if self.state_path is None:
+                data = self.kernel_store.read_proactive_trigger_state(self._persona_id) or {}
+            else:
+                data = json.loads(self.state_path.read_text(encoding="utf-8"))
             triggered = data.get("last_triggered", {})
             if isinstance(triggered, dict):
                 # Prune stale cooldown ledger entries (older than 30 days) so
@@ -1345,6 +1423,11 @@ class ProactiveChat:
             self._last_user_activity = _as_naive(_parse_datetime(data.get("last_user_activity")))
             self._last_user_message = str(data.get("last_user_message", ""))[:500]
             self._last_proactive_replied = bool(data.get("last_proactive_replied", True))
+            self._silence_handled_for = _as_naive(_parse_datetime(data.get("silence_handled_for")))
+            if ("silence_handled_for" not in data and not self._last_proactive_replied
+                    and self._last_proactive_at is not None
+                    and self.world_clock.now().replace(tzinfo=None) - self._last_proactive_at >= timedelta(hours=4)):
+                self._silence_handled_for = self._last_proactive_at
             counts = data.get("daily_trigger_count", {})
             if isinstance(counts, dict):
                 self._daily_trigger_count = {
@@ -1355,30 +1438,39 @@ class ProactiveChat:
                 self._active_story = story
                 self._active_story_step = max(0, int(data.get("active_story_step", 0)))
         except Exception:
+            if self.preview_mode:
+                raise RuntimeError("Proactive trigger state could not be loaded") from None
             logger.exception("ProactiveChat: failed to load local state")
 
-    def _save_state(self) -> None:
+    def _save_state(self, *, log_failure: bool = True) -> bool:
         data = {
             "last_triggered": {key: value.isoformat() for key, value in self._last_triggered.items()},
             "last_any_triggered": self._last_any_triggered.isoformat() if self._last_any_triggered else None,
             "daily_trigger_count": self._daily_trigger_count,
             "last_proactive_at": self._last_proactive_at.isoformat() if self._last_proactive_at else None,
             "last_proactive_replied": self._last_proactive_replied,
+            "silence_handled_for": self._silence_handled_for.isoformat() if self._silence_handled_for else None,
             "last_user_activity": self._last_user_activity.isoformat() if self._last_user_activity else None,
             "last_user_message": self._last_user_message,
             "active_story": self._active_story,
             "active_story_step": self._active_story_step,
         }
+        if self.state_path is None:
+            self.kernel_store.write_proactive_trigger_state(self._persona_id, data)
+            return True
         temp_path = self.state_path.with_suffix(".tmp")
         try:
             temp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             temp_path.replace(self.state_path)
         except Exception:
-            logger.exception("ProactiveChat: failed to persist local state")
+            if log_failure:
+                logger.exception("ProactiveChat: failed to persist local state")
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
                 pass
+            return False
+        return True
 
 
 def _parse_datetime(value: object) -> datetime | None:
@@ -1407,5 +1499,5 @@ def _coerce_profile_date(value: str, now: datetime, *, recurring: bool) -> datet
 
 
 def _escape_untrusted(value: object) -> str:
-    text = str(value).replace("</", "< /")
+    text = neutralize_prompt_tags(str(value))
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)[:1000]

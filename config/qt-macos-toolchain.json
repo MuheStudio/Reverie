@@ -73,5 +73,5 @@
     "arm64CoreSha256": "b37198e8fa6e1cfc64300fa9ae42721e5c45889bfa15d6ee57389836c6acbe84",
     "defaultDistribution": false
   },
-  "licenseState": "Root license unchanged; Qt LGPLv3 runtime obligations and Cubism proprietary/Open Software terms require separate distribution review"
+  "licenseState": "Root license is Apache-2.0; Qt LGPLv3 runtime obligations and Cubism proprietary/Open Software terms require separate distribution review"
 }

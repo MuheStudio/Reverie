@@ -85,6 +85,16 @@ class Check final : public QObject {
                                 "独立规则记录五：OrbitKey RedGate"};
     QVariantList originalMessageIds;
     QVariantMap originalArchive, originalAvatars, importedArchive, cardInputHashes, cardImportMetadata;
+    static constexpr qint64 PersonaFeedbackDeadlineMs = 1000;
+    struct PersonaFeedbackGeometry {
+        QPointer<QQuickItem> item;
+        QPointF position;
+        qreal visibleHeight = 0;
+        bool fullyVisible = false;
+    } previousPersonaFeedback;
+    int personaFeedbackStep = -1;
+    qint64 personaFeedbackReadyAt = 0;
+    QVariantList personaImportFeedbackStability;
     // Card export is an independent addition. Its observations never enter the
     // signed import, author-control, row-input or ordinary readiness records.
     QVariantMap cardExportMetadata;
@@ -354,12 +364,15 @@ class Check final : public QObject {
     }
     // Whole text inside the window and every clipping scroll area, read
     // before any reveal: a matching property alone can sit below the fold.
+    static bool fullyInView(qreal itemHeight, const QRectF &visible) {
+        return itemHeight >= 1 && visible.width() >= 2 && visible.height() >= itemHeight - 1;
+    }
     bool fullyInView(const QString &name) const {
         auto *i = find(w->contentItem(), name);
         if (!i || i->height() < 1)
             return false;
         const auto rect = NativeControlReadiness::visibleRect(i, w);
-        return rect.width() >= 2 && rect.height() >= i->height() - 1;
+        return fullyInView(i->height(), rect);
     }
     QVariantList memories() const { return s->state()["memory"].toMap()["memories"].toList(); }
     QVariantList candidates() const { return s->state()["candidates"].toMap()["candidates"].toList(); }
@@ -1198,6 +1211,54 @@ class Check final : public QObject {
         readiness.append(QVariantMap{{"step", step}, {"control", name}, {"gate", gate.metadata()}});
         gate.resetForNextStep();
         return true;
+    }
+    bool personaFeedbackReady() {
+        if (personaFeedbackStep == step)
+            return true;
+        if (!whenReady("personaImportFeedback", true, [this] { personaFeedbackReadyAt = clock.elapsed(); }))
+            return false;
+        personaFeedbackStep = step;
+        previousPersonaFeedback = {};
+        personaImportFeedbackStability.append(QVariantMap{{"step", step}, {"control", "personaImportFeedback"},
+            {"readyAtMs", personaFeedbackReadyAt}, {"deadlineMs", PersonaFeedbackDeadlineMs},
+            {"samples", QVariantList{}}, {"passed", false}});
+        return true;
+    }
+    bool stablePersonaFeedbackInView(const QString &failure) {
+        auto result = personaImportFeedbackStability.last().toMap();
+        const auto before = clock.elapsed() - personaFeedbackReadyAt;
+        if (before > PersonaFeedbackDeadlineMs) {
+            result["elapsedMs"] = before;
+            personaImportFeedbackStability.last() = result;
+            require(false, failure);
+        }
+
+        // Read the product's layout in place. Do not reposition the feedback.
+        auto *item = find(w->contentItem(), "personaImportFeedback");
+        const auto position = item ? item->mapToScene(QPointF()) : QPointF{};
+        const auto itemHeight = item ? item->height() : 0;
+        const auto visible = NativeControlReadiness::visibleRect(item, w);
+        const bool whole = item && fullyInView(itemHeight, visible);
+        const auto &previous = previousPersonaFeedback;
+        const bool stable = whole && previous.fullyVisible && previous.item.data() == item &&
+            previous.position.x() == position.x() && previous.position.y() == position.y() &&
+            previous.visibleHeight == visible.height();
+        previousPersonaFeedback = {item, position, visible.height(), whole};
+
+        const auto elapsed = clock.elapsed() - personaFeedbackReadyAt;
+        const bool passed = stable && elapsed <= PersonaFeedbackDeadlineMs;
+        auto samples = result.value("samples").toList();
+        samples.append(QVariantMap{{"elapsedMs", elapsed}, {"found", item != nullptr},
+            {"sceneX", item ? QVariant(position.x()) : QVariant{}},
+            {"sceneY", item ? QVariant(position.y()) : QVariant{}},
+            {"itemHeight", itemHeight}, {"visibleWidth", visible.width()}, {"visibleHeight", visible.height()},
+            {"fullyVisible", whole}, {"stable", stable}});
+        result["samples"] = samples;
+        result["elapsedMs"] = elapsed;
+        result["passed"] = passed;
+        personaImportFeedbackStability.last() = result;
+        require(passed || elapsed < PersonaFeedbackDeadlineMs, failure);
+        return passed;
     }
     void enterPersonaRowInput(int inputStep, const QString &targetId) {
         step = inputStep;
@@ -2208,7 +2269,10 @@ class Check final : public QObject {
                 report["personaRowInputs"] = personaRowMetadata();
                 report["authorControlReadiness"] = authorControlMetadata();
                 report["authorWriteReceipts"] = authorPutReceipts;
-                if (!personaRestart) report["cardExport"] = cardExportMetadata;
+                if (!personaRestart) {
+                    report["cardExport"] = cardExportMetadata;
+                    report["personaImportFeedbackStability"] = personaImportFeedbackStability;
+                }
             }
             callback(report);
         }
@@ -2911,7 +2975,7 @@ class Check final : public QObject {
         }
         if (step == 410) {
             // Where the result lands is read before any test positioning.
-            if (!whenReady("personaImportFeedback", true, [] {}))
+            if (!personaFeedbackReady())
                 return;
             require(s->personaCardFeedback().value("status").toString() == "error" &&
                         s->personaCardFeedback().value("requestId").toString().isEmpty() &&
@@ -2921,7 +2985,8 @@ class Check final : public QObject {
             requireDefaultImportBaseline("PERSONA_PLAIN_PNG_CHANGED_IDENTITY_OR_ARCHIVE");
             require(shownWith("personaImportFeedback", s->personaCardFeedback().value("text").toString()),
                     "PERSONA_PLAIN_PNG_REJECTION_NOT_VISIBLE");
-            require(fullyInView("personaImportFeedback"), "PERSONA_PLAIN_PNG_REJECTION_OUT_OF_VIEW");
+            if (!stablePersonaFeedbackInView("PERSONA_PLAIN_PNG_REJECTION_OUT_OF_VIEW"))
+                return;
             record("plain-png-rejected-locally-with-identity-and-archive-unchanged");
             reveal(named(w->contentItem(), "personaImportFeedback"));
             w->grabWindow().save(capturePrefix + ".persona-card-invalid.png");
@@ -2970,8 +3035,8 @@ class Check final : public QObject {
             next();
             return;
         }
-        if (step == 414 && personaReadsSettled()) {
-            if (!whenReady("personaImportFeedback", true, [] {}))
+        if (step == 414 && (personaFeedbackStep == step || personaReadsSettled())) {
+            if (!personaFeedbackReady())
                 return;
             for (const auto &value : personaProfiles())
                 if (value.toMap().value("name").toString() == "测试人格·月")
@@ -3017,7 +3082,8 @@ class Check final : public QObject {
                         "已导入并切换为「测试人格·月」。卡内世界书 1 条已写入这个人格的资料；"
                         "卡作者的系统提示和对话后指令已隔离保存，默认不启用，可在本页下方开启。",
                     "PERSONA_CARD_RESULT_TEXT_NOT_FROM_RECEIPT_FIELDS");
-            require(fullyInView("personaImportFeedback"), "PERSONA_CARD_RESULT_OUT_OF_VIEW");
+            if (!stablePersonaFeedbackInView("PERSONA_CARD_RESULT_OUT_OF_VIEW"))
+                return;
             cardImportMetadata = {{"requestId", importRequest}, {"profiles", 3}, {"worldBookEntries", 1},
                                   {"quarantinedFields", 2}, {"composerReadOnly", false}, {"runtimeWritable", true},
                                   {"systemFilePickerCovered", false}, {"plainRejectionInView", true},
@@ -3050,8 +3116,9 @@ class Check final : public QObject {
             next();
             return;
         }
-        if (step == 417 && s->personaCardFeedback().value("status").toString() != "pending") {
-            if (!whenReady("personaImportFeedback", true, [] {}))
+        if (step == 417 && (personaFeedbackStep == step ||
+                            s->personaCardFeedback().value("status").toString() != "pending")) {
+            if (!personaFeedbackReady())
                 return;
             require(s->personaCardFeedback().value("status").toString() == "error" &&
                         s->personaCardFeedback().value("code").toString() == "already_imported" &&
@@ -3062,7 +3129,8 @@ class Check final : public QObject {
                     "PERSONA_DUPLICATE_IMPORT_OVERWROTE_PROFILE_OR_ARCHIVE");
             require(shownWith("personaImportFeedback", s->personaCardFeedback().value("text").toString()),
                     "PERSONA_DUPLICATE_REJECTION_NOT_VISIBLE");
-            require(fullyInView("personaImportFeedback"), "PERSONA_DUPLICATE_REJECTION_OUT_OF_VIEW");
+            if (!stablePersonaFeedbackInView("PERSONA_DUPLICATE_REJECTION_OUT_OF_VIEW"))
+                return;
             cardImportMetadata["duplicateRequestId"] = duplicateRequest;
             cardImportMetadata["duplicateCode"] = "already_imported";
             cardImportMetadata["duplicateInView"] = true;
@@ -3333,8 +3401,8 @@ class Check final : public QObject {
             next();
             return;
         }
-        if (step == 455 && personaReadsSettled()) {
-            if (!whenReady("personaImportFeedback", true, [] {}))
+        if (step == 455 && (personaFeedbackStep == step || personaReadsSettled())) {
+            if (!personaFeedbackReady())
                 return;
             for (const auto &value : personaProfiles())
                 if (value.toMap().value("name").toString() == "测试人格·霜")
@@ -3357,7 +3425,8 @@ class Check final : public QObject {
                             "已导入并切换为「测试人格·霜」。卡作者的系统提示和对话后指令含可疑指令，已隔离，不能启用。" &&
                         shownWith("personaImportFeedback", s->personaCardFeedback().value("text").toString()),
                     "PERSONA_FLAGGED_CARD_RESULT_TEXT_OR_COUNTS");
-            require(fullyInView("personaImportFeedback"), "PERSONA_FLAGGED_CARD_RESULT_OUT_OF_VIEW");
+            if (!stablePersonaFeedbackInView("PERSONA_FLAGGED_CARD_RESULT_OUT_OF_VIEW"))
+                return;
             cardImportMetadata["flaggedRequestId"] = flaggedRequest;
             cardImportMetadata["flaggedProfiles"] = 4;
             cardImportMetadata["flaggedQuarantinedFields"] = 2;

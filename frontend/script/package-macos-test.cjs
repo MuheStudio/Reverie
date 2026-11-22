@@ -179,7 +179,7 @@ async function main() {
   await phase('Stage desktop host, source, empty seed and notices', async () => {
     copyTree(path.join(frontend, 'dist'), path.join(appStage, 'dist'));
     copyTree(path.join(frontend, 'electron'), path.join(appStage, 'electron'), (name, stat) => path.basename(name) !== 'bridge-supervisor.cjs' && !/\.(?:test|spec|fixture)\.(?:c?js|mjs|json)$/i.test(name) && !(stat.isDirectory() && /(?:__fixtures__|fixtures|tests?)$/i.test(name)));
-    writeJson(path.join(appStage, 'package.json'), { name: 'reverie-macos-test', productName: 'Reverie macOS Test', version: '0.5.5', description: 'Reverie independent macOS arm64 core local test', author: 'Muhe Studio contributors', main: 'electron/main.js', license: 'GPL-3.0-only' });
+    writeJson(path.join(appStage, 'package.json'), { name: 'reverie-macos-test', productName: 'Reverie macOS Test', version: '0.5.5', description: 'Reverie independent macOS arm64 core local test', author: 'Muhe Studio contributors', main: 'electron/main.js', license: 'Apache-2.0' });
     copyProductionPythonSource(path.join(root, 'src'), path.join(resources, 'src'), resources);
     sourceMigration.staged = assertSourceMigrationStage({ projectRoot: root, resourceRoot: resources, appRoot: appStage });
     const seed = createSeedConfig();

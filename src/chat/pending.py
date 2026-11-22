@@ -9,7 +9,7 @@ import uuid
 import copy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from ..config.settings import DATA_DIR
 
@@ -71,13 +71,14 @@ class PendingChatStore:
         client_id: str = "",
         sent_at_utc: str | None = None,
         image_path: str = "",
+        image_media_id: str = "",
     ) -> str:
         item_id = str(request_id or f"chat_{uuid.uuid4().hex}")
-        if item_id in self._items:
+        if self._lookup_item(item_id) is not None:
             return item_id
         now = time.time()
         due = max(now, float(due_at if due_at is not None else now))
-        self._items[item_id] = {
+        self._insert_item(item_id, {
             "id": item_id,
             "request_id": item_id,
             "delivery_id": str(delivery_id or f"delivery_{uuid.uuid4().hex}"),
@@ -90,9 +91,7 @@ class PendingChatStore:
             "source": str(source or "user"),
             "client_id": str(client_id or ""),
             "text": str(text),
-            # Durable stored-media path so a crash replay regenerates with the
-            # same attachment (the bytes live under chat-media/, not here).
-            "image_path": str(image_path or ""),
+            **({"image_media_id": image_media_id} if image_media_id else {"image_path": str(image_path or "")}),
             "state": "queued",
             "provider_state": "not_started",
             "commit_state": "not_started",
@@ -109,12 +108,11 @@ class PendingChatStore:
             "error": None,
             "created_at": now,
             "due_at": due,
-        }
-        self._save()
+        })
         return item_id
 
     def get_item(self, item_id: str) -> dict[str, Any] | None:
-        item = self._items.get(str(item_id))
+        item = self._lookup_item(str(item_id))
         return copy.deepcopy(item) if item is not None else None
 
     def mark_generating(self, item_id: str) -> None:
@@ -173,13 +171,13 @@ class PendingChatStore:
         self._update(item_id, commit_state="uncertain", error=str(error)[:500])
 
     def mark_bubble_delivered(self, item_id: str, index: int) -> None:
-        item = self._items.get(str(item_id))
-        if item is None:
-            return
-        indices = {int(value) for value in item.get("delivered_bubble_indices", [])}
-        indices.add(int(index))
-        item["delivered_bubble_indices"] = sorted(indices)
-        self._save()
+        def deliver(item: dict[str, Any]) -> bool:
+            indices = {int(value) for value in item.get("delivered_bubble_indices", [])}
+            indices.add(int(index))
+            item["delivered_bubble_indices"] = sorted(indices)
+            return True
+
+        self._edit_item(str(item_id), deliver)
 
     def mark_retraction_started(self, item_id: str) -> None:
         """Tombstone an optional retraction before emitting it.
@@ -204,35 +202,25 @@ class PendingChatStore:
         )
 
     def mark_cancelled(self, item_id: str, *, reason: str = "cancelled") -> None:
-        item = self._items.get(str(item_id))
-        if item is None or item.get("state") in TERMINAL_STATES:
-            return
-        now = utc_now()
-        self._update(
-            item_id,
-            state="cancelled",
-            cancelled=True,
-            cancelled_at_utc=now,
-            finished_at_utc=now,
-            error=str(reason)[:500],
-        )
+        def cancel(item: dict[str, Any]) -> bool:
+            if item.get("state") in TERMINAL_STATES:
+                return False
+            now = utc_now()
+            item.update(
+                state="cancelled", cancelled=True, cancelled_at_utc=now,
+                finished_at_utc=now, error=str(reason)[:500],
+            )
+            return True
+
+        self._edit_item(str(item_id), cancel)
 
     def clear_not_started(self, *, reason: str = "local_mode") -> list[str]:
-        cancelled: list[str] = []
         now = utc_now()
-        for item_id, item in tuple(self._items.items()):
-            if item.get("state") == "queued" and item.get("provider_state") == "not_started":
-                item.update(
-                    state="cancelled",
-                    cancelled=True,
-                    cancelled_at_utc=now,
-                    finished_at_utc=now,
-                    error=str(reason)[:500],
-                )
-                cancelled.append(item_id)
-        if cancelled:
-            self._save()
-        return cancelled
+        return self._edit_selected(
+            lambda item: item.get("state") == "queued" and item.get("provider_state") == "not_started",
+            dict(state="cancelled", cancelled=True, cancelled_at_utc=now,
+                 finished_at_utc=now, error=str(reason)[:500]),
+        )
 
     def remove(self, item_id: str) -> None:
         if self._items.pop(str(item_id), None) is not None:
@@ -240,7 +228,7 @@ class PendingChatStore:
 
     def list_items(self) -> list[dict[str, Any]]:
         return sorted(
-            (copy.deepcopy(item) for item in self._items.values()),
+            (copy.deepcopy(item) for item in self._stored_items()),
             key=lambda item: (
                 utc_to_epoch(item.get("deliver_at_utc"), fallback=float(item.get("due_at", 0.0))),
                 utc_to_epoch(item.get("created_at_utc"), fallback=float(item.get("created_at", 0.0))),
@@ -252,24 +240,47 @@ class PendingChatStore:
 
     def prune_terminal(self, *, older_than_epoch: float) -> int:
         """Remove old delivery ledger rows without touching user chat history."""
-        removed = 0
-        for item_id, item in tuple(self._items.items()):
+        def is_old_terminal(item: dict[str, Any]) -> bool:
             if item.get("state") not in TERMINAL_STATES:
-                continue
+                return False
             finished = utc_to_epoch(item.get("finished_at_utc"), fallback=0.0)
-            if finished and finished < older_than_epoch:
-                self._items.pop(item_id, None)
-                removed += 1
-        if removed:
+            return bool(finished) and finished < older_than_epoch
+
+        return len(self._edit_selected(is_old_terminal, None))
+
+    def _lookup_item(self, item_id: str) -> dict[str, Any] | None:
+        return self._items.get(item_id)
+
+    def _stored_items(self) -> Iterable[dict[str, Any]]:
+        return self._items.values()
+
+    def _insert_item(self, item_id: str, item: dict[str, Any]) -> None:
+        self._items[item_id] = item
+        self._save()
+
+    def _edit_item(self, item_id: str, mutate: Callable[[dict[str, Any]], bool]) -> None:
+        item = self._items.get(item_id)
+        if item is not None and mutate(item):
             self._save()
-        return removed
+
+    def _edit_selected(self, matches: Callable[[dict[str, Any]], bool],
+                       changes: dict[str, Any] | None) -> list[str]:
+        selected = [item_id for item_id, item in self._items.items() if matches(item)]
+        for item_id in selected:
+            if changes is None:
+                self._items.pop(item_id)
+            else:
+                self._items[item_id].update(changes)
+        if selected:
+            self._save()
+        return selected
 
     def _update(self, item_id: str, **changes: Any) -> None:
-        item = self._items.get(str(item_id))
-        if item is None:
-            return
-        item.update(changes)
-        self._save()
+        def update(item: dict[str, Any]) -> bool:
+            item.update(changes)
+            return True
+
+        self._edit_item(str(item_id), update)
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -291,7 +302,8 @@ class PendingChatStore:
         if migrated:
             self._save()
 
-    def _normalize_item(self, raw: dict[str, Any], *, version: int) -> dict[str, Any]:
+    @staticmethod
+    def _normalize_item(raw: dict[str, Any], *, version: int) -> dict[str, Any]:
         item = copy.deepcopy(raw)
         item_id = str(item.get("request_id") or item["id"])
         now = time.time()

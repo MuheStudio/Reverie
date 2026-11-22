@@ -1,12 +1,9 @@
 """Chat image attachments: validation, content-addressed storage, read-back.
 
-Images sent through chat are conversation artifacts, so each one is stored
-exactly once (sha256-addressed under ``REVERIE_DATA_DIR/chat-media``) and
-referenced by ``media_id`` everywhere else — kernel rows, history pages, and
-renderer fetches. Pillow re-encodes every attachment to a bounded JPEG so a
-provider payload never carries multi-megabyte originals, and decoding is
-guarded the same way as sticker assets (magic-byte verification plus a
-DecompressionBomb pixel ceiling).
+Pillow normalizes attachments to content-addressed JPEGs. The full runtime
+stores them under ``REVERIE_DATA_DIR/chat-media``. The preview runtime uses
+the normalization and thumbnail helpers in memory and persists through its
+encrypted kernel store.
 """
 
 from __future__ import annotations
@@ -18,11 +15,14 @@ import hashlib
 import io
 import os
 import re
+import stat
 
 from PIL import Image, ImageFile
 
 MAX_RAW_BYTES = 5 * 1024 * 1024
 MAX_EDGE = 1600
+THUMBNAIL_EDGE = 640
+THUMBNAIL_MAX_BYTES = 512 * 1024
 JPEG_QUALITY = 85
 # DecompressionBomb ceiling: an image that decodes beyond this is refused
 # before Pillow can allocate the pixels.
@@ -42,6 +42,10 @@ Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 class ChatMediaError(ValueError):
     """Raised when an attachment cannot be accepted."""
 
+    def __init__(self, message: str, *, code: str = "image_unreadable") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 def _media_dir() -> Path:
     from src.config.settings import DATA_DIR
@@ -49,18 +53,17 @@ def _media_dir() -> Path:
     return Path(DATA_DIR) / "chat-media"
 
 
-def _encode_jpeg(image: Image.Image) -> bytes:
+def _encode_jpeg(image: Image.Image, *, quality: int = JPEG_QUALITY) -> bytes:
     buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
     return buffer.getvalue()
 
 
-def store_image_bytes(raw: bytes) -> dict[str, object]:
-    """Validate, normalize, and persist one image; return its media record."""
+def _normalize_jpeg(raw: bytes) -> bytes:
     if not raw:
         raise ChatMediaError("empty image payload")
     if len(raw) > MAX_RAW_BYTES:
-        raise ChatMediaError("image exceeds the 5MB attachment limit")
+        raise ChatMediaError("image exceeds the 5MB attachment limit", code="image_too_large")
     try:
         with Image.open(io.BytesIO(raw)) as probe:
             probe.verify()
@@ -70,16 +73,23 @@ def store_image_bytes(raw: bytes) -> dict[str, object]:
         with Image.open(io.BytesIO(raw)) as image:
             fmt = (image.format or "").upper()
             if fmt not in {"JPEG", "PNG", "WEBP", "GIF"}:
-                raise ChatMediaError(f"unsupported image format: {fmt or 'unknown'}")
+                raise ChatMediaError(
+                    f"unsupported image format: {fmt or 'unknown'}", code="image_format_unsupported",
+                )
             if getattr(image, "n_frames", 1) > 1:
                 image.seek(0)
             normalized = image.convert("RGB")
             normalized.thumbnail((MAX_EDGE, MAX_EDGE))
-            encoded = _encode_jpeg(normalized)
+            return _encode_jpeg(normalized)
     except ChatMediaError:
         raise
     except Exception as exc:
         raise ChatMediaError("image could not be decoded") from exc
+
+
+def store_image_bytes(raw: bytes) -> dict[str, object]:
+    """Validate, normalize, and persist one image; return its media record."""
+    encoded = _normalize_jpeg(raw)
     digest = hashlib.sha256(encoded).hexdigest()
     directory = _media_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -113,14 +123,17 @@ def store_from_file(path: str) -> dict[str, object]:
 
 def store_from_data_url(url: str) -> dict[str, object]:
     """Decode a renderer-supplied base64 data URL into stored media."""
+    return store_image_bytes(_decode_data_url(url))
+
+
+def _decode_data_url(url: str) -> bytes:
     match = _DATA_URL_RE.fullmatch(url or "")
     if not match:
-        raise ChatMediaError("unsupported image data URL")
+        raise ChatMediaError("unsupported image data URL", code="image_format_unsupported")
     try:
-        raw = base64.b64decode(match.group(1), validate=True)
+        return base64.b64decode(match.group(1), validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ChatMediaError("image data URL is not valid base64") from exc
-    return store_image_bytes(raw)
 
 
 def resolve_sticker_asset(url: str) -> dict[str, object]:
@@ -130,6 +143,10 @@ def resolve_sticker_asset(url: str) -> dict[str, object]:
     resolution is done locally — the renderer never needs to hand over bytes
     it originally received from us.
     """
+    return store_image_bytes(_sticker_asset_path(url).read_bytes())
+
+
+def _sticker_asset_path(url: str) -> Path:
     if not (url or "").startswith(_STICKER_PROTOCOL_PREFIX):
         raise ChatMediaError("unsupported sticker url")
     name = url[len(_STICKER_PROTOCOL_PREFIX):]
@@ -141,7 +158,49 @@ def resolve_sticker_asset(url: str) -> dict[str, object]:
     target = (root / name).resolve()
     if target.parent != root or not target.is_file():
         raise ChatMediaError("sticker asset not found")
-    return store_image_bytes(target.read_bytes())
+    return target
+
+
+def normalize_preview_image(*, path: str = "", data_url: str = "", sticker: str = "") -> bytes:
+    """Read and normalize a preview attachment without writing image files."""
+    if path or (not data_url and sticker.startswith(_STICKER_PROTOCOL_PREFIX)):
+        candidate = Path(path) if path else _sticker_asset_path(sticker)
+        if not candidate.is_absolute() or "\x00" in str(candidate):
+            raise ChatMediaError("invalid image path")
+        try:
+            # Nonblocking open lets us reject special files without waiting
+            # if the selected path changes before we open it.
+            with open(candidate, "rb", opener=_open_image_file) as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise ChatMediaError("image path is not a regular file")
+                if info.st_size > MAX_RAW_BYTES:
+                    raise ChatMediaError("image exceeds the 5MB attachment limit", code="image_too_large")
+                raw = stream.read(MAX_RAW_BYTES + 1)
+        except OSError as exc:
+            raise ChatMediaError("image file could not be read") from exc
+    else:
+        raw = _decode_data_url(data_url or sticker)
+    return _normalize_jpeg(raw)
+
+
+def _open_image_file(path: str, flags: int) -> int:
+    return os.open(path, flags | os.O_NONBLOCK)
+
+
+def jpeg_data_url(jpeg: bytes) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+
+
+def preview_thumbnail_data_url(jpeg: bytes) -> str:
+    """Return a bounded JPEG thumbnail without creating a second stored image."""
+    with Image.open(io.BytesIO(jpeg)) as image:
+        image.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE))
+        for quality in (JPEG_QUALITY, 70, 55):
+            thumbnail = _encode_jpeg(image, quality=quality)
+            if len(thumbnail) <= THUMBNAIL_MAX_BYTES:
+                return jpeg_data_url(thumbnail)
+    raise ChatMediaError("image thumbnail exceeds the size limit")
 
 
 def load_data_url(media_id: str) -> str:

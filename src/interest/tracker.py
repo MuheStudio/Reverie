@@ -177,7 +177,7 @@ class InterestTracker:
                 # A corrupt timestamp must not cause the same interest to be
                 # advanced every day until it maxes out. Conservatively skip it
                 # and let record_activity refresh the timestamp on real use.
-                logger.warning("Interest %r has an unparsable last_active; skipping auto-advance", interest.name)
+                logger.warning("Interest has an unparsable last_active; skipping auto-advance")
                 continue
             if last is not None and last.date() >= now.date():
                 continue

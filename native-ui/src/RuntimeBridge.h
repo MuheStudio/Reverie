@@ -1,22 +1,31 @@
 #pragma once
 #include <QHash>
 #include <QJSEngine>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QPointF>
 #include <QProcess>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
 #include <memory>
 class ProviderKeyStore;
+class QImage;
 class RuntimeBridge final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantMap state READ state NOTIFY changed)
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
+    Q_PROPERTY(QUrl chatImagePreview READ chatImagePreview NOTIFY chatImagesChanged)
+    Q_PROPERTY(QString chatImageFeedback READ chatImageFeedback NOTIFY chatImagesChanged)
+    Q_PROPERTY(QVariantMap chatImageThumbnails READ chatImageThumbnails NOTIFY chatImagesChanged)
+    Q_PROPERTY(bool chatImageCanChoose READ chatImageCanChoose NOTIFY changed)
+    Q_PROPERTY(bool chatImageCanSend READ chatImageCanSend NOTIFY changed)
     Q_PROPERTY(QString panel READ panel WRITE openPanel NOTIFY panelChanged)
     Q_PROPERTY(QPointF panelOrigin READ panelOrigin NOTIFY panelChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY changed)
@@ -50,6 +59,11 @@ class RuntimeBridge final : public QObject {
     Q_PROPERTY(QVariantMap settingsFeedback READ settingsFeedback NOTIFY changed)
     // Only a fresh, correlated ledger read makes the cached snapshot live.
     Q_PROPERTY(QVariantMap budgetState READ budgetState NOTIFY changed)
+    Q_PROPERTY(QVariantMap relationshipStatus READ relationshipStatus NOTIFY changed)
+    Q_PROPERTY(QVariantMap moodStatus READ moodStatus NOTIFY changed)
+    Q_PROPERTY(QVariantMap diaryView READ diaryView NOTIFY changed)
+    Q_PROPERTY(QVariantMap keepsakeView READ keepsakeView NOTIFY changed)
+    Q_PROPERTY(QVariantMap keepsakeMessageIds READ keepsakeMessageIds NOTIFY keepsakesChanged)
     // Visible receipt of an explicit persona switch; it outlives the identity
     // reset that a confirmed switch causes.
     Q_PROPERTY(QVariantMap personaFeedback READ personaFeedback NOTIFY changed)
@@ -62,6 +76,9 @@ class RuntimeBridge final : public QObject {
     Q_PROPERTY(QString personaCardExportDefaultBookId READ personaCardExportDefaultBookId NOTIFY changed)
     Q_PROPERTY(bool personaCardExportAvailable READ personaCardExportAvailable NOTIFY changed)
     Q_PROPERTY(bool personaCardExportBuiltin READ personaCardExportBuiltin NOTIFY changed)
+    Q_PROPERTY(QVariantMap worldbookFileState READ worldbookFileState NOTIFY changed)
+    Q_PROPERTY(bool worldbookFileAvailable READ worldbookFileAvailable NOTIFY changed)
+    Q_PROPERTY(bool worldbookFileBusy READ worldbookFileBusy NOTIFY changed)
     Q_PROPERTY(QVariantMap personaProfileState READ personaProfileState NOTIFY changed)
     Q_PROPERTY(bool personaProfilePending READ personaProfilePending NOTIFY changed)
     Q_PROPERTY(bool personaChanging READ personaChanging NOTIFY changed)
@@ -77,6 +94,7 @@ class RuntimeBridge final : public QObject {
     Q_PROPERTY(bool connected READ connected NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY changed)
+    Q_PROPERTY(QString roomQuality READ roomQuality WRITE setRoomQuality NOTIFY changed)
     Q_PROPERTY(bool reducedTransparency READ reducedTransparency WRITE setReducedTransparency NOTIFY
                    changed)
     Q_PROPERTY(QString avatarPath READ avatarPath NOTIFY avatarChanged)
@@ -84,9 +102,17 @@ class RuntimeBridge final : public QObject {
     Q_PROPERTY(int avatarReloadToken READ avatarReloadToken NOTIFY avatarChanged)
     Q_PROPERTY(QVariantMap avatarCandidate READ avatarCandidate NOTIFY avatarChanged)
     Q_PROPERTY(bool avatarBusy READ avatarBusy NOTIFY avatarChanged)
+    Q_PROPERTY(QVariantMap avatarRemovalFeedback READ avatarRemovalFeedback NOTIFY avatarChanged)
     Q_PROPERTY(QVariantList gameBoard READ gameBoard NOTIFY gameChanged)
     Q_PROPERTY(QString gameStatus READ gameStatus NOTIFY gameChanged)
     Q_PROPERTY(bool gameReady READ gameReady NOTIFY gameChanged)
+    Q_PROPERTY(bool gameCanEnd READ gameCanEnd NOTIFY gameChanged)
+    Q_PROPERTY(bool gameLastPass READ gameLastPass NOTIFY gameChanged)
+    Q_PROPERTY(bool gameCanUndo READ gameCanUndo NOTIFY gameChanged)
+    Q_PROPERTY(bool gameCanReset READ gameCanReset NOTIFY gameChanged)
+    Q_PROPERTY(bool gameCanRead READ gameCanRead NOTIFY gameChanged)
+    Q_PROPERTY(bool gameCompanion READ gameCompanion NOTIFY gameChanged)
+    Q_PROPERTY(QString gameFeedback READ gameFeedback NOTIFY gameChanged)
   public:
     RuntimeBridge(QString root, QString data, QString python, QObject *parent = nullptr,
                   bool supplementaryFixture = false, bool previewMode = false);
@@ -95,6 +121,11 @@ class RuntimeBridge final : public QObject {
     QVariantList messages() const { return m_messages; }
     QString draft() const { return m_draft; }
     void setDraft(const QString &);
+    QUrl chatImagePreview() const { return m_chatImagePreview; }
+    QString chatImageFeedback() const { return m_chatImageFeedback; }
+    QVariantMap chatImageThumbnails() const { return m_chatImageThumbnails; }
+    bool chatImageCanChoose() const;
+    bool chatImageCanSend() const;
     QString panel() const { return m_panel; }
     QString notice() const { return m_notice; }
     QVariantMap chatFeedback() const { return m_chatFeedback; }
@@ -114,6 +145,11 @@ class RuntimeBridge final : public QObject {
     QVariantMap summaryDetailState() const { return m_summaryDetailState; }
     QVariantMap settingsFeedback() const { return m_settingsFeedback; }
     QVariantMap budgetState() const;
+    QVariantMap relationshipStatus() const;
+    QVariantMap moodStatus() const;
+    QVariantMap diaryView() const;
+    QVariantMap keepsakeView() const;
+    QVariantMap keepsakeMessageIds() const { return m_keepsakeMessageIds; }
     QVariantMap personaFeedback() const { return m_personaFeedback; }
     bool firstRunPending() const;
     QVariantMap personaCardCandidate() const { return m_personaCardCandidate; }
@@ -123,6 +159,9 @@ class RuntimeBridge final : public QObject {
     QString personaCardExportDefaultBookId() const;
     bool personaCardExportAvailable() const;
     bool personaCardExportBuiltin() const;
+    QVariantMap worldbookFileState() const { return m_worldbookFileState; }
+    bool worldbookFileAvailable() const;
+    bool worldbookFileBusy() const;
     QVariantMap personaProfileState() const { return m_personaProfileState; }
     bool personaProfilePending() const;
     bool personaChanging() const { return !m_personaSwitch.isEmpty() || !m_personaImport.isEmpty(); }
@@ -136,6 +175,8 @@ class RuntimeBridge final : public QObject {
     bool connected() const { return m_connected; }
     bool busy() const { return m_busy; }
     bool reducedMotion() const { return m_reducedMotion; }
+    QString roomQuality() const { return m_roomQuality; }
+    void setRoomQuality(const QString &value);
     bool reducedTransparency() const { return m_reducedTransparency; }
     void setReducedMotion(bool);
     void setReducedTransparency(bool);
@@ -144,19 +185,47 @@ class RuntimeBridge final : public QObject {
     int avatarReloadToken() const { return m_avatarReloadToken; }
     QVariantMap avatarCandidate() const { return m_candidate; }
     bool avatarBusy() const { return m_avatarBusy; }
+    QVariantMap avatarRemovalFeedback() const { return m_avatarRemovalFeedback; }
     QVariantList gameBoard() const { return m_gameBoard; }
-    QString gameStatus() const { return m_gameStatus; }
-    bool gameReady() const { return m_gameReady && !m_gameSaving && runtimeWritable(); }
+    QString gameStatus() const;
+    bool gameReady() const;
+    bool gameCanEnd() const;
+    bool gameLastPass() const;
+    bool gameCanUndo() const;
+    bool gameCanReset() const;
+    bool gameCanRead() const;
+    bool gameCompanion() const;
+    QString gameFeedback() const { return m_gameFeedback; }
+    QVariantList gameMoves() const { return m_moves; }
+    qint64 gameRevision() const { return m_gameRevision; }
+    Q_INVOKABLE void gameRead();
     Q_INVOKABLE void gameClick(int square);
+    Q_INVOKABLE void gamePass();
+    Q_INVOKABLE void gameEnd();
     Q_INVOKABLE void gameUndo();
     Q_INVOKABLE void gameReset();
     Q_INVOKABLE void gameModeChanged(bool companion);
     Q_INVOKABLE void openPanel(const QString &);
+    Q_INVOKABLE void setRelationshipPageVisible(bool visible);
+    Q_INVOKABLE void refreshDiary();
+    Q_INVOKABLE void readDiary(const QString &date);
+    Q_INVOKABLE void setDiaryEnabled(bool enabled);
+    Q_INVOKABLE void writeDiary();
+    Q_INVOKABLE void collectKeepsake(const QString &messageId);
+    Q_INVOKABLE void refreshKeepsakes();
+    Q_INVOKABLE void loadMoreKeepsakes();
+    Q_INVOKABLE void toggleKeepsakeExpanded(const QString &id);
+    Q_INVOKABLE void requestKeepsakeRemoval(const QString &id);
+    Q_INVOKABLE void cancelKeepsakeRemoval();
+    Q_INVOKABLE void confirmKeepsakeRemoval();
     Q_INVOKABLE void openPanelAt(const QString &name, double x, double y) {
         m_panelOrigin = {x, y};
         openPanel(name);
     }
     Q_INVOKABLE void sendChat();
+    Q_INVOKABLE bool chooseChatImage(const QUrl &file);
+    Q_INVOKABLE bool pasteChatImage();
+    Q_INVOKABLE void removeChatImage();
     Q_INVOKABLE void cancelChat();
     Q_INVOKABLE QString request(const QString &, const QVariantMap &payload = {});
     // The local service without a key, as the earlier controls and test hosts use it.
@@ -216,6 +285,9 @@ class RuntimeBridge final : public QObject {
     Q_INVOKABLE void confirmModel(bool rights, bool warnings);
     Q_INVOKABLE void modelRendered(bool, const QString &, const QString &path);
     Q_INVOKABLE void selectModel(const QString &);
+    Q_INVOKABLE void removeModel(const QString &id);
+    Q_INVOKABLE bool dismissAvatarRemovalSuccess();
+    Q_INVOKABLE QString modelRemovalBlocker(const QString &id) const;
     Q_INVOKABLE void saveWorldbook(const QString &, const QString &, const QString &, bool);
     // Inspect chosen backup bytes before a private staging copy and explicit confirmation.
     Q_INVOKABLE void exportBackup(const QUrl &target);
@@ -238,6 +310,12 @@ class RuntimeBridge final : public QObject {
     Q_INVOKABLE void cancelPersonaCard();
     Q_INVOKABLE QUrl suggestedPersonaCardFile() const;
     Q_INVOKABLE void exportPersonaCard(const QUrl &target, const QString &worldBookId);
+    Q_INVOKABLE void inspectWorldbookFile(const QUrl &source, int archiveRevision);
+    Q_INVOKABLE void confirmWorldbookFileImport(int archiveRevision);
+    Q_INVOKABLE void cancelWorldbookFileImport();
+    Q_INVOKABLE void exportWorldbookFile(const QUrl &target, const QString &worldBookId, int archiveRevision);
+    Q_INVOKABLE QUrl suggestedWorldbookFile(const QString &worldBookId) const;
+    Q_INVOKABLE void acknowledgeWorldbookFileImportReadback(const QString &worldBookId, int revision, bool confirmed);
     Q_INVOKABLE void loadPersonaProfile(const QString &profileId);
     Q_INVOKABLE void savePersonaProfile(const QVariantMap &fields, bool confirmed = false);
     Q_INVOKABLE void closePersonaProfile();
@@ -274,11 +352,16 @@ class RuntimeBridge final : public QObject {
     }
   signals:
     void changed();
+    void chatImagesChanged();
+    void keepsakesChanged();
     void messagesChanged();
     void draftChanged();
     void panelChanged();
     void avatarChanged();
     void gameChanged();
+    void gameCommandSent(const QString &id, const QString &command);
+    void gameStateDispatched(QString requestId, QVariantMap fields);
+    void proactiveSettingsDispatched(QString requestId, QVariantMap fields);
     void commandResult(QString command, QVariantMap result);
     void shutdownComplete();
     // Only emitted for a preview host after private ready and recovery validation.
@@ -288,6 +371,9 @@ class RuntimeBridge final : public QObject {
     void backupRestoreReconciled();
     // A complete settings snapshot has replaced state["settings"].
     void settingsRead();
+    void commandSent(QString requestId, QString command, QString scope, int generation);
+    void diaryRequestDispatched(QString requestId, QVariantMap fields);
+    void keepsakeRequestDispatched(QString requestId, QVariantMap fields);
     void responseReceived(QString requestId, QString command, QVariantMap result, int generation);
     void requestFailed(QString requestId, QString code, int generation);
 
@@ -300,10 +386,49 @@ class RuntimeBridge final : public QObject {
     QString control(const QString &, QJsonObject fields = {},
                     std::function<void(QJsonObject)> callback = {}, int timeoutMs = 30000);
     void event(const QJsonObject &);
-    void refresh();
+    void refresh(bool readPersonaStatus = true);
+    void refreshVisiblePersonaStatus();
+    void cancelRelationshipRead();
+    void failRelationshipRead();
+    void cancelMoodRead();
+    void failMoodRead();
+    bool moodDisabled() const;
+    static QString moodLabel(const QString &key);
+    static QVariantMap moodDisplay(const QJsonObject &snapshot, const QString &id);
+    static QVariantList diaryRows(const QJsonArray &entries, bool *valid);
+    enum class DiaryOperation { None, List, Read, Save, Write };
+    static constexpr int DiaryWriteTimeoutMs = 120000;
+    QString sendDiary(DiaryOperation, const QString &, const QVariantMap & = {});
+    DiaryOperation diaryOperation(const QString &id) const;
+    bool acceptDiaryResponse(const QString &id, const QString &type, const QJsonObject &payload);
+    bool expireDiary(const QString &id);
+    void clearDiary();
+    bool diaryAuthorized() const;
+    QString diaryWriteBlocker() const;
+    QString sendKeepsake(const QString &command, const QVariantMap &fields);
+    bool acceptKeepsakeResponse(const QString &id, const QString &type, const QJsonObject &payload);
+    bool expireKeepsake(const QString &id);
+    void clearKeepsakes();
+    void applyKeepsakeMessageIds(const QJsonValue &ids);
+    void readKeepsakeContent(const QString &id);
+    void readNextKeepsakeContent();
+    void discoverKeepsakeThumbnails();
+    bool keepsakeWriteAvailable() const;
     void setNotice(QString);
     void expirePending(const QString &id);
-    void finishChat(const QString &status);
+    void setChatImageFeedback(const QString &text);
+    bool stagePastedChatImage(const QImage &image);
+    void appendChatImageFields(QVariantMap &payload) const;
+    void resetChatImages(bool discardDraft);
+    void discoverChatImageThumbnails();
+    void readNextChatImageThumbnail();
+    void settleChatImageThumbnail(const QUrl &url = {});
+    bool acceptChatImageThumbnail(const QJsonObject &frame, const QJsonObject &payload, const QString &id);
+    bool rejectSentChatImage(const QJsonObject &payload);
+    void finishChat(const QString &status, const QJsonObject &failure = {});
+    void observeProactiveMessage(const QJsonObject &frame, const QJsonObject &payload);
+    void readProactiveHistory();
+    void clearProactiveHistory();
     void setChatFeedback(const QString &status, const QString &text);
     void setCancelFeedback(const QString &status, const QString &text, const QString &requestId,
                            const QString &subjectRequestId);
@@ -372,6 +497,10 @@ class RuntimeBridge final : public QObject {
     void setPersonaCardExportState(const QString &status, const QString &text,
                                    const QVariantMap &details = {});
     void unknownPersonaCardExport();
+    void setWorldbookFileState(const QString &status, const QString &text, const QVariantMap &details = {});
+    void unknownWorldbookFile();
+    bool worldbookFileContextMatches(int revision) const;
+    void runWorldbookFileControl(const QString &operation, const QString &path, const QString &bookId, int revision);
     void invalidatePersonaProfile();
     void finishPersonaProfile(const QString &type, const QJsonObject &payload, const QString &id);
     void setPersonaProfileStatus(const QString &status, const QString &text);
@@ -436,18 +565,48 @@ class RuntimeBridge final : public QObject {
     void verifyProviderKeyCleared();
     // Any valid provider snapshot settles or confirms an unconfirmed stop.
     void observeProviderKeyClear(const QJsonObject &snapshot, bool verifying);
-    void avatarJob(const QJsonObject &, std::function<void(QJsonObject)>);
+    void avatarJob(const QJsonObject &, std::function<void(QJsonObject)>, std::function<void()> failed = {});
     void persistAppearance();
     void rememberAvatar(const QJsonObject &);
     bool retargetAvatar(const QString &entry);
-    void rebuildGame();
+    enum class GamePhase { Unloaded, Reading, Ready, InvalidRecord, ReadFailed, Saving, SaveUnknown };
+    bool gomokuGame() const { return m_panel == "gomoku"; }
+    bool chessGame() const { return m_panel == "chess"; }
+    bool goGame() const { return m_panel == "go"; }
+    static QString gameIdForPanel(const QString &);
+    bool gamePanelOpen() const { return !gameId().isEmpty(); }
+    QString gameId() const { return gameIdForPanel(m_panel); }
+    bool &gameCompanionMode();
+    bool gameUserTurn() const;
+    bool gameOpponentTurn() const;
+    bool replayGomoku(const QJsonArray &moves);
+    bool replayGo(const QJsonObject &record);
+    QJsonValue gameRecord() const;
+    QJsonValue emptyGameRecord() const;
+    void clearGame();
+    void cancelOpponent();
+    void showGameRecord(const QJsonValue &);
+    void rebuildGameBoard();
+    void finishGameRequest(const QString &command, const QString &type, const QJsonObject &payload);
+    void failGameRequest(const QString &command);
     void saveGame();
     void scheduleOpponent();
+    void requestOpponent(const QString &retryNote = {});
+    void practiceMove();
+    void fallbackOpponent(bool invalidMove);
+    QString gamePersonaName() const;
+    QString gameBoardText() const;
     void applyMove(const QVariantMap &move);
+    void applyGameMove(const QVariant &move);
     QString m_root, m_data, m_python, m_secret, m_panel, m_draft, m_notice, m_chatId, m_avatarPath,
         m_avatarState = "未选择形象";
     QPointF m_panelOrigin{400, 800};
     QVariantMap m_state, m_candidate;
+    QVariantMap m_avatarRemovalFeedback;
+    bool m_avatarRemovalSuccessDismissed = false;
+    QVariantList m_avatarJobRecords;
+    qulonglong m_avatarJobDispatched = 0, m_avatarJobStarted = 0, m_avatarJobCompleted = 0;
+    bool m_avatarJobTraceTruncated = false;
     QVariantMap m_chatFeedback{{"status", "idle"}, {"text", ""}},
         m_providerFeedback{{"status", "idle"}, {"text", ""}, {"pending", false}, {"saving", false}},
         m_networkFeedback{{"status", "unknown"}, {"text", "网络调用状态尚未确认。"}, {"known", false}},
@@ -456,6 +615,31 @@ class RuntimeBridge final : public QObject {
         {"stale", true}, {"snapshot", QVariantMap{}}, {"requestId", ""},
         {"scopeKey", ""}, {"generation", -1}};
     QString m_budgetReadId;
+    QString m_relationshipReadId;
+    QJsonObject m_relationshipReadPersona;
+    QVariantMap m_relationshipDisplay, m_lastRelationshipDisplay;
+    bool m_relationshipPageVisible = false;
+    QString m_moodReadId;
+    QJsonObject m_moodReadPersona;
+    QVariantMap m_moodDisplay, m_lastMoodDisplay;
+    // A confirmed global setting survives a persona switch on this connection.
+    QJsonValue m_moodEnabled;
+    DiaryOperation m_diarySending = DiaryOperation::None;
+    QJsonObject m_diaryScope;
+    QString m_diaryListId, m_diaryListReceiptId, m_diaryReadId, m_diaryReadDate,
+        m_diarySaveId, m_diaryWriteId, m_diaryToday;
+    QString m_diaryListStatus, m_diaryReadNotice, m_diarySaveNotice, m_diaryWriteNotice;
+    QVariantList m_diaryEntries;
+    QVariantMap m_diaryEntry;
+    bool m_diaryRequestedEnabled = false, m_diaryBackendWriting = false;
+    bool m_keepsakeSending = false, m_keepsakeHasMore = false;
+    int m_keepsakeNextOffset = 0;
+    quint64 m_keepsakeRevision = 0;
+    QVariantMap m_keepsakeMessageIds, m_keepsakeRemoval;
+    QVariantList m_keepsakeEntries;
+    QHash<QString, QVariantMap> m_keepsakeRequests;
+    QString m_keepsakePageId, m_keepsakeCollectId, m_keepsakeRemoveId, m_keepsakeContentId;
+    QString m_keepsakeListStatus, m_keepsakeNotice, m_keepsakeMessageId;
     QJsonObject m_budgetReadPersona;
     int m_budgetReadGeneration = -1;
     int m_budgetDispatchGeneration = -1, m_budgetReadDispatchCount = 0;
@@ -463,6 +647,10 @@ class RuntimeBridge final : public QObject {
     QVariantMap m_personaSwitch;
     QVariantMap m_personaCardCandidate, m_personaCardFeedback, m_personaImport;
     QVariantMap m_personaCardExportState;
+    QVariantMap m_worldbookFileState;
+    QString m_worldbookFilePath;
+    QJsonObject m_worldbookFilePersona;
+    quint64 m_worldbookFileSerial = 0;
     QVariantMap m_personaProfileState;
     QJsonObject m_personaProfileProof;
     int m_personaProfileGeneration = -1;
@@ -477,6 +665,11 @@ class RuntimeBridge final : public QObject {
     QString m_personaCardJson;
     QJsonObject m_personaImportReceipt;
     QVariantList m_messages;
+    bool m_proactiveHistoryDirty = false;
+    QString m_proactiveHistoryId;
+    QSet<QString> m_proactiveAnnouncements;
+    QSet<QString> m_proactiveHistoryQueued, m_proactiveHistoryBatch;
+    quint64 m_chatHistorySequence = 0, m_chatHistoryApplied = 0;
     QProcess m_process;
     QByteArray m_buffer;
     QJsonObject m_persona, m_providerTest, m_chatPersona;
@@ -547,6 +740,7 @@ class RuntimeBridge final : public QObject {
     bool m_fixtureCandidatePaging = false;
     QString m_fixtureContext, m_fixtureEndpoint, m_fixtureEndpointB;
     int m_fixtureCycle = 0;
+    QString m_roomQuality = "balanced";
     bool m_connected = false, m_busy = false, m_stopping = false, m_reducedMotion = false,
          m_reducedTransparency = false, m_modelConfirmed = false, m_offline = false,
          m_avatarBusy = false;
@@ -573,16 +767,30 @@ class RuntimeBridge final : public QObject {
         int permissionContextEpoch = -1;
         int permissionSequence = -1;
         bool memoryAdjustment = false;
+        quint64 chatHistorySequence = 0;
+        quint64 keepsakeRevision = 0;
     };
     QHash<QString, Pending> m_pending;
+    QUrl m_chatImagePreview;
+    QString m_chatImageFeedback, m_chatImagePath, m_chatImageData, m_chatImageSentDraft;
+    bool m_chatImageInFlight = false;
+    QVariantMap m_chatImageThumbnails;
+    QStringList m_chatImageReads;
+    QString m_chatImageReadId, m_chatImageReadMedia;
+    QJsonObject m_chatImageReadPersona;
     // Friend-only transport seam for dispatcher tests; production uses QProcess.
     std::function<qint64(const QByteArray &)> m_frameWriter;
     QJSEngine m_rules;
-    QJSValue m_xiangqi, m_position;
+    QJSValue m_xiangqi, m_gomoku, m_chess, m_go, m_position, m_gameOutcome;
     QVariantList m_moves, m_gameBoard;
-    QString m_gameStatus = "正在读取棋局…";
-    int m_selection = -1, m_gameRevision = 0, m_gameGeneration = 0;
-    bool m_gameReady = false, m_gameSaving = false, m_companion = false, m_opponentPending = false;
+    QJsonValue m_confirmedGameRecord = QJsonArray{};
+    QString m_gameReadId, m_gameSaveId, m_gameMoveId, m_gameFeedback;
+    GamePhase m_gamePhase = GamePhase::Unloaded;
+    qint64 m_gameRevision = 0;
+    int m_selection = -1, m_gameGeneration = 0;
+    bool m_companion = false, m_gomokuCompanion = false, m_chessCompanion = false, m_goCompanion = false;
+    bool m_goEnded = false;
+    bool m_opponentPending = false, m_opponentRetried = false;
     QString m_legacyContent, m_legacySha;
     int m_legacyGeneration = -1;
     QVariantMap m_archive;

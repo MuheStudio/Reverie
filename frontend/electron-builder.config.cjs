@@ -92,8 +92,8 @@ module.exports = {
     enableCookieEncryption: true,
     enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false,
-    // Renderer/Electron entrypoints are integrity-checked in app.asar. GPL
-    // corresponding source is emitted beside the installer, never inside the
+    // Renderer/Electron entrypoints are integrity-checked in app.asar.
+    // Corresponding source is emitted beside the installer, never inside the
     // executable production payload.
     enableEmbeddedAsarIntegrityValidation: true,
     onlyLoadAppFromAsar: true,

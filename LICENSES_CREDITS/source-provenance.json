@@ -4,23 +4,35 @@
   "baselineCommit": "db891cd853ce9ccaa43caf76471925ef27448230",
   "scope": "Local staged source migrations; original and replacement provenance, runtime reachability and candidate acceptance are recorded separately. This registry is not an SBOM or proof that all GPL obligations are gone.",
   "licenseTransition": {
-    "current": "GPL-3.0 as root LICENSE",
+    "current": "Apache-2.0",
     "preferredTarget": "Apache-2.0",
     "alternative": "MIT",
     "dualLicense": false,
-    "readyForLicenseSwitch": false,
-    "remainingBlockers": [
-      "Complete file and contribution authorization coverage; original-author handover support is already confirmed.",
-      "Finish Python chat-video provenance review and retained dependency and asset notice coverage.",
-      "Audit the final code tree and a newly built candidate, then synchronize the root license, contribution rules and packaging notices."
-    ],
+    "readyForLicenseSwitch": true,
+    "remainingBlockers": [],
     "knownHandoverFact": {
       "source": "Direct user instruction in this local development task",
       "date": "2026-10-05",
       "statement": "The original author has entrusted continued development of Reverie to the user and explicitly supports migration to Apache-2.0/MIT.",
       "status": "confirmed-context",
       "scope": "Original works that the original author has authority to relicense; third-party rights and contribution coverage remain separately recorded."
-    }
+    },
+    "previous": "GPL-3.0",
+    "switchedOn": "2026-11-18",
+    "closedBlockers": [
+      {
+        "blocker": "Complete file and contribution authorization coverage; original-author handover support is already confirmed.",
+        "resolution": "The original author authorized the handover and permissive migration. On 2026-11-17 the maintainer confirmed there were no outside code contributions before handover. Third-party material keeps its own terms."
+      },
+      {
+        "blocker": "Finish Python chat-video provenance review and retained dependency and asset notice coverage.",
+        "resolution": "W24 retired all six Python chat video download source files. The provenance of the deleted files remains unverified. Bundled dependency and asset notices remain part of the separate distributable preview work."
+      },
+      {
+        "blocker": "Audit the final code tree and a newly built candidate, then synchronize the root license, contribution rules and packaging notices.",
+        "resolution": "W24 synchronizes the root license, contribution rules and project notices, and checks the working tree and local build. The milestone 7 formal batch and installation will verify the new native preview package. Windows remains pending."
+      }
+    ]
   },
   "entries": [
     {
@@ -33,7 +45,7 @@
         "tests/",
         "script/"
       ],
-      "license": "Current root LICENSE: GPL-3.0",
+      "license": "Apache-2.0",
       "originClass": "first-party-original",
       "runtime": "Core product",
       "bundle": "Source, renderer and backend resources",
@@ -62,13 +74,14 @@
       "runtime": "Depends on contribution",
       "bundle": "Depends on contribution",
       "rights": "Author identities and commits are evidence of authorship, not proof that the original author can relicense every contribution. No lack of handover support is inferred.",
-      "decision": "Three Git author labels and imported snapshots are mapped as evidence keys, not presumed distinct holders. Original-author support remains confirmed; formal switching awaits file-origin/actual contribution coverage.",
-      "status": "coverage-review-required",
+      "decision": "The maintainer confirmed on 2026-11-17 that the original project had accepted no outside code contributions before handover.",
+      "status": "coverage-review-closed",
       "evidence": [
         "docs/LICENSE-MIGRATION.md#贡献覆盖登记",
         "git shortlog -sne db891cd853ce9ccaa43caf76471925ef27448230",
         "LICENSES_CREDITS/history/contribution-history-metadata.json",
-        "LICENSES_CREDITS/history/remaining-source-review.json"
+        "LICENSES_CREDITS/history/remaining-source-review.json",
+        "docs/PREVIEW-LICENSE-EVALUATION-20261117.md#七用户确认2026-11-17"
       ],
       "acceptance": {
         "state": "recorded-not-fully-verified",
@@ -177,7 +190,7 @@
         "frontend/electron/media-transfer.cjs",
         "frontend/electron/media-resources.cjs"
       ],
-      "license": "Current root LICENSE; final project relicensing pending",
+      "license": "Apache-2.0",
       "originClass": "new-first-party-implementation",
       "runtime": "Replacement for existing opt-in Electron sniff/download IPC",
       "bundle": "Four new modules match source hashes in the signed final ASAR; sandboxed preload multiline HLS fix also verified.",
@@ -231,11 +244,11 @@
       ],
       "license": "Current root LICENSE",
       "originClass": "declared-independent-provenance-review",
-      "runtime": "Chat video download pipeline; separate from Electron adapter",
-      "bundle": "Backend source resources",
+      "runtime": "Legacy authenticated video:download request returns a refusal after checking the existing disclaimer gate. Chat can still reference saved videos.",
+      "bundle": "Six download modules removed from the backend source tree.",
       "rights": "Headers state no runtime code reuse, but explicitly reference old adapter/background structure. This declaration alone does not close provenance review.",
-      "decision": "Retain existing behavior. Six files have only an imported baseline history; runtime independence is checked but pre-import creative provenance cannot be certified from this tree. See explicit missing materials.",
-      "status": "provenance-review-pending",
+      "decision": "Retire the Python chat video download pipeline in W24. The evidence still does not establish independent implementation of the removed files.",
+      "status": "retired",
       "evidence": [
         "src/video_download/__init__.py:1",
         "src/video_download/hls.py:1",
@@ -244,6 +257,22 @@
       "acceptance": {
         "state": "recorded-not-fully-verified",
         "evidence": []
+      },
+      "retirement": {
+        "codeCommit": "e77ec444cdb927b3861434365fd07690f46c390b",
+        "deletedPaths": [
+          "src/video_download/__init__.py",
+          "src/video_download/downloader.py",
+          "src/video_download/gates.py",
+          "src/video_download/hls.py",
+          "src/video_download/merge.py",
+          "src/video_download/pipeline.py"
+        ],
+        "compatibility": [
+          "video:download, video:download:result, video:download:progress and their existing protocol bindings",
+          "VideoDownloadPayload and all five video settings fields, including the disclaimer requirement",
+          "Previously stored videos remain available to the chat attachment path"
+        ]
       }
     },
     {
@@ -775,7 +804,7 @@
       "paths": [
         "src/worldbook/"
       ],
-      "license": "Current root LICENSE; final project relicensing pending",
+      "license": "Apache-2.0",
       "originClass": "new-first-party-implementation",
       "runtime": "Canonical encrypted archive snapshots, deterministic prompt matching and isolated regex execution",
       "bundle": "Final signed macOS candidate verifies old worldbook absence and all five new worldbook Python modules; Hypa remains separately tracked.",
@@ -818,7 +847,7 @@
       "paths": [
         "src/conversation_summary/"
       ],
-      "license": "Current root license; no early Apache-2.0 switch",
+      "license": "Apache-2.0",
       "originClass": "independent-local-implementation",
       "runtime": "Post-commit optional summaries; canonical message IDs, persona/conversation scope, independent consent, SQLCipher-derived storage.",
       "bundle": "New signed local macOS candidate verifies retired Hypa absence, required independent modules and exact module/source digests.",
@@ -868,7 +897,7 @@
         "frontend/src/components/DreamRoom/xiangqiEngine.ts",
         "frontend/src/components/DreamRoom/xiangqiState.ts"
       ],
-      "license": "Current root GPL-3.0; no permissive switch yet",
+      "license": "Apache-2.0",
       "originClass": "independent-local-implementation",
       "runtime": "Pure 90-square engine, existing move-array replay and epoch-bound canonical persistence.",
       "bundle": "Final r3 renderer graph, reachable npm graph, actual ASAR and collected npm notices verify retired dependency absence.",
@@ -903,6 +932,29 @@
           "No Windows execution",
           "No overall license switch"
         ]
+      }
+    },
+    {
+      "id": "native-preview",
+      "source": "First-party native preview written after handover by the maintainer with Codex and Claude.",
+      "version": null,
+      "paths": [
+        "native-ui/"
+      ],
+      "license": "Apache-2.0",
+      "originClass": "first-party-original",
+      "runtime": "Native macOS preview, including the room renderer and its shaders.",
+      "bundle": "Native preview source. Qt, Cubism and assets retain their separate terms.",
+      "rights": "The retained history records local generation and later edits of liquid.frag. It does not establish that the authors consulted no third-party material.",
+      "decision": "Record liquid.frag as first-party under the approved W23 decision.",
+      "status": "first-party-recorded",
+      "evidence": [
+        "docs/PREVIEW-LICENSE-EVALUATION-20261117.md#五历史来源证据补充2026-11-17codex待-claude-审阅",
+        "docs/PREVIEW-LICENSE-EVALUATION-20261117.md#六第五节审阅与待确认更新2026-11-17claude"
+      ],
+      "acceptance": {
+        "state": "recorded",
+        "evidence": []
       }
     }
   ],

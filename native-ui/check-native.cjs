@@ -17,6 +17,20 @@ const { BOOK_SETTINGS_TEXTS, BOOK_SETTINGS_REPLY, bookSettingsModelMetadata, ver
 const { verifyArchiveControlReadiness } = require('./archive-control-readiness-verdicts.cjs');
 const { CARD_EXPORT_CONTRACT, captureCardExport } = require('./card-export-verdicts.cjs');
 const { CARD_EDIT_CONTRACT, captureCardEdit } = require('./card-edit-verdicts.cjs');
+const { WORLDBOOK_FILE_CONTRACT, captureWorldbookFile } = require('./worldbook-file-verdicts.cjs');
+const { AVATAR_MANAGE_CONTRACT, captureAvatarManage, readAvatarStorage } = require('./avatar-manage-verdicts.cjs');
+const { verifyXiangqi } = require('./xiangqi-verdicts.cjs');
+const { verifyRelationshipStatus } = require('./relationship-status-verdicts.cjs');
+const { verifyPersonaState } = require('./persona-state-verdicts.cjs');
+const { verifyDiary } = require('./diary-verdicts.cjs');
+const { verifyGomoku } = require('./gomoku-verdicts.cjs');
+const { verifyChess } = require('./chess-verdicts.cjs');
+const { verifyGo } = require('./go-verdicts.cjs');
+const { verifyProactiveSettings } = require('./proactive-settings-verdicts.cjs');
+const { verifyChatImage } = require('./chat-image-verdicts.cjs');
+const { verifyKeepsake } = require('./keepsake-verdicts.cjs');
+const { verifyRoomQuality } = require('./room-quality-verdicts.cjs');
+const { countPendingChatFiles, verifyPendingChatCycle, verifyPendingChatFiles, scanPendingChatWorkspace } = require('./pending-chat-verdicts.cjs');
 const { ENTRY_SETTINGS_TEXTS, ENTRY_SETTINGS_REPLY, entrySettingsModelMetadata, verifyWorldbookEntrySettings } = require('./worldbook-entry-settings-verdicts.cjs');
 const { REGEX_TEXTS, REGEX_REPLY, regexModelMetadata, verifyWorldbookRegex } = require('./worldbook-regex-verdicts.cjs');
 const { INJECTION_TEXTS, INJECTION_REPLY, injectionModelMetadata, verifyWorldbookInjection } = require('./worldbook-injection-verdicts.cjs');
@@ -633,6 +647,19 @@ async function launch(cycle) {
     } else {
       for (let i = 1; i <= (transitionDiagnostics ? 1 : 2); i++) {
         console.log(`Qt cycle ${i}: ${reportRoot}`); await launch(i);
+        if (p1Settings) {
+          guard.assertIsolation(run.runRoot, data);
+          const counts = countPendingChatFiles(run.runRoot, i);
+          (result.pendingChatFilesByCycle ||= []).push(counts);
+          verifyPendingChatCycle(counts, i);
+        }
+        if (p1Settings && i === 1) {
+          // Observe physical deletion before a restart constructor can clean
+          // pending tombstones. This is separate from every existing verdict.
+          result.avatarManageFirstStorage = readAvatarStorage(data);
+          fs.writeFileSync(path.join(reportRoot, 'avatar-manage-first-storage.json'),
+            JSON.stringify(result.avatarManageFirstStorage, null, 2), {flag:'wx', mode:0o600});
+        }
       }
       if (supplementary || p0Tail) {
         const endpoint = endpointUrl('A');
@@ -877,6 +904,9 @@ async function launch(cycle) {
       result.cardEditContract = CARD_EDIT_CONTRACT;
       result.cardEditEvidence = captureCardEdit({...result, requests, modelCalls}, data, reportRoot);
     }
+    if (p1Persona) {
+      result.personaStateEvidence = verifyPersonaState(result.reports, modelCallTiming, requests);
+    }
     if (p1Settings) {
       const [changed, restarted] = result.reports.map(r => r.settingsSections);
       assert(changed?.passed === true && changed.mode === 'change-and-effect', 'Settings change cycle did not pass');
@@ -942,6 +972,48 @@ async function launch(cycle) {
         [e.cycle, e.planned, e.startDelayMs, e.immediate, e.reason, e.textCharacters]),
         SETTINGS_TURN_CHARACTERS.map(characters => [1, true, 0, true, 'isolated_settings_fixture', characters]),
         'Settings chat turns did not receive exactly the fixed reply starts');
+    }
+    if (p1Settings) {
+      // Separate W9 proof after every existing settings assertion. Capture the
+      // actual bounded files while the owned isolation still exists.
+      result.worldbookFileContract = WORLDBOOK_FILE_CONTRACT;
+      result.worldbookFileEvidence = captureWorldbookFile(result.reports, data, reportRoot);
+    }
+    if (p1Settings) {
+      // W10 owns a separate proof after W9. Only metadata and hashes leave the
+      // isolated avatar library; no model payload is copied into reports.
+      result.avatarManageContract = AVATAR_MANAGE_CONTRACT;
+      result.avatarManageEvidence = captureAvatarManage(result.reports, data, reportRoot,
+        {requests, modelCalls, firstStorage: result.avatarManageFirstStorage});
+      result.xiangqiEvidence = verifyXiangqi(result.reports);
+      result.relationshipStatusEvidence = verifyRelationshipStatus(result.reports, modelCallTiming);
+    }
+    if (p1Settings) {
+      result.diaryEvidence = verifyDiary(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.gomokuEvidence = verifyGomoku(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.chessEvidence = verifyChess(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.goEvidence = verifyGo(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.proactiveSettingsEvidence = verifyProactiveSettings(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.chatImageEvidence = verifyChatImage(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.keepsakeEvidence = verifyKeepsake(result.reports, modelCallTiming, requests);
+    }
+    if (p1Settings) {
+      result.pendingChatEvidence = verifyPendingChatFiles(result.pendingChatFilesByCycle);
+    }
+    if (p1Settings) {
+      result.roomQualityEvidence = verifyRoomQuality(result.reports, modelCallTiming, requests);
     }
     if (p1Provider) {
       const [saved, restarted] = result.reports.map(r => r.providerCredential);
@@ -1552,6 +1624,29 @@ async function launch(cycle) {
       }
     }
     if (result.forcedCleanup || result.forcedCleanupErrors.length || !result.noResidualProcesses || result.interruptError) result.passed = false;
+    if (p1Settings) {
+      // The settings harness writes backend stderr inside the isolation directory.
+      // The separate application logs are in the report directory.
+      const backendStderr = path.relative(run.runRoot, path.join(data, 'backend.log'));
+      const workspaceScan = {
+        scope: 'owned-isolation-run-root',
+        backendStderr: {path: backendStderr, status: 'not-scanned'},
+        applicationLogsOutsideScope: [1, 2].map(cycle => path.relative(root, path.join(reportRoot, `cycle-${cycle}.log`))),
+      };
+      result.pendingChatWorkspaceScan = workspaceScan;
+      if (result.reports.length === 2 && result.noResidualProcesses) {
+        try {
+          guard.assertIsolation(run.runRoot, data);
+          const encryptedDatabase = path.relative(run.runRoot, path.join(data, 'data', 'runtime', 'kernel.sqlite3'));
+          Object.assign(workspaceScan,
+            scanPendingChatWorkspace(run.runRoot, result.reports[1].messages, {encryptedDatabase, backendStderr}));
+        } catch {
+          workspaceScan.status = 'scan-unavailable';
+        }
+      } else {
+        workspaceScan.status = 'settings-cycles-incomplete-or-processes-remaining';
+      }
+    }
     guard.removeIsolationContext(run.runRoot);
     result.testDataRemoved = !fs.existsSync(data);
     fs.writeFileSync(path.join(reportRoot, 'summary.json'), JSON.stringify(result, null, 2));

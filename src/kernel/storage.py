@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import hashlib
 from pathlib import Path
 import re
 import sqlite3
 import threading
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 from uuid import uuid4
 
 from src.storage.encrypted_sqlite import connect_database
@@ -21,20 +21,21 @@ from .contracts import CommandEnvelopeV4, DomainEventV4, PersonaScopeV4
 
 KERNEL_SCHEMA_VERSION = 3
 COMMAND_TERMINAL_STATES = frozenset({"committed", "failed", "outcome_unknown"})
-PRIVATE_DOCUMENT_NAMES = frozenset(
-    {
-        "persona_emotion_state",
-        "persona_relationship_state",
-        "user_profile",
-        "user_emotional_memories",
-    }
-)
+PERSONA_STATE_DOCUMENTS = ("persona_emotion_state", "persona_relationship_state")
+PRIVATE_DOCUMENT_NAMES = frozenset((*PERSONA_STATE_DOCUMENTS, "user_profile", "user_emotional_memories"))
 MAX_PRIVATE_DOCUMENT_BYTES = 1024 * 1024
 PROACTIVE_ID_PATTERN = re.compile(r"^proactive_[0-9a-f]{32}$")
 
 
 class KernelStorageError(RuntimeError):
     pass
+
+
+class PersonaStateMigrationError(KernelStorageError):
+    code = "PERSONA_STATE_MIGRATION_FAILED"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
 
 
 class IdempotencyConflict(KernelStorageError):
@@ -113,11 +114,11 @@ class KernelStore:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
                 yield self._connection
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-            else:
                 self._connection.execute("COMMIT")
+            except BaseException:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
 
     def _migrate(self) -> None:
         with self._lock:
@@ -245,6 +246,17 @@ class KernelStore:
                 CREATE INDEX IF NOT EXISTS chat_media_request
                     ON chat_media(request_id);
 
+                CREATE TABLE IF NOT EXISTS preview_chat_images (
+                    media_id TEXT PRIMARY KEY,
+                    jpeg BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS preview_chat_image_links (
+                    message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,
+                    media_id TEXT NOT NULL REFERENCES preview_chat_images(media_id)
+                );
+                CREATE INDEX IF NOT EXISTS preview_chat_image_links_media
+                    ON preview_chat_image_links(media_id);
+
                 CREATE TABLE IF NOT EXISTS module_checkpoints (
                     module_id TEXT NOT NULL,
                     persona_id TEXT NOT NULL,
@@ -257,6 +269,23 @@ class KernelStore:
                     document_name TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL,
                     updated_at_utc TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS persona_state_documents (
+                    persona_id TEXT NOT NULL,
+                    document_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    PRIMARY KEY (persona_id, document_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS persona_state_migration (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1)
+                );
+
+                CREATE TABLE IF NOT EXISTS proactive_trigger_state (
+                    persona_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL
                 );
                 COMMIT;
                 """
@@ -332,6 +361,138 @@ class KernelStore:
                 """,
                 (document_name, encoded, _utc_now()),
             )
+
+    @staticmethod
+    def _persona_document_row(connection, persona_id: str, document_name: str):
+        if not persona_id or document_name not in PERSONA_STATE_DOCUMENTS:
+            raise ValueError("invalid persona state document scope")
+        return connection.execute(
+            "SELECT payload_json FROM persona_state_documents WHERE persona_id = ? AND document_name = ?",
+            (persona_id, document_name),
+        ).fetchone()
+
+    @staticmethod
+    def _persona_document_payload(payload: str) -> dict[str, Any]:
+        value = json.loads(payload)
+        if not isinstance(value, dict):
+            raise KernelStorageError("persona state document root is invalid")
+        return value
+
+    def read_persona_state_document(self, persona_id: str, document_name: str) -> dict[str, Any] | None:
+        with self._lock:
+            return self.read_persisted_persona_state_document(self._connection, persona_id, document_name)
+
+    @classmethod
+    def read_persisted_persona_state_document(cls, connection, persona_id: str, document_name: str) -> dict[str, Any] | None:
+        row = cls._persona_document_row(connection, persona_id, document_name)
+        return cls._persona_document_payload(row[0]) if row is not None else None
+
+    def write_persona_state_document(self, persona_id: str, document_name: str, payload: dict[str, Any]) -> None:
+        if not persona_id or document_name not in PERSONA_STATE_DOCUMENTS:
+            raise ValueError("invalid persona state document scope")
+        encoded = _json(payload)
+        if len(encoded.encode("utf-8")) > MAX_PRIVATE_DOCUMENT_BYTES:
+            raise ValueError("private document exceeds the storage limit")
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO persona_state_documents(persona_id,document_name,payload_json,updated_at_utc)
+                VALUES (?,?,?,?)
+                ON CONFLICT(persona_id,document_name) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at_utc=excluded.updated_at_utc
+                """,
+                (persona_id, document_name, encoded, _utc_now()),
+            )
+
+    def persona_state_migrated(self) -> bool:
+        with self._lock:
+            return self._connection.execute("SELECT 1 FROM persona_state_migration WHERE singleton = 1").fetchone() is not None
+
+    def read_proactive_trigger_state(self, persona_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT payload_json FROM proactive_trigger_state WHERE persona_id = ?", (persona_id,),
+            ).fetchone()
+        return self._persona_document_payload(row[0]) if row is not None else None
+
+    def write_proactive_trigger_state(self, persona_id: str, payload: dict[str, Any]) -> None:
+        encoded = _json(payload)
+        if len(encoded.encode("utf-8")) > MAX_PRIVATE_DOCUMENT_BYTES:
+            raise ValueError("proactive trigger state exceeds the storage limit")
+        with self.transaction() as connection:
+            connection.execute(
+                """INSERT INTO proactive_trigger_state(persona_id,payload_json) VALUES (?,?)
+                ON CONFLICT(persona_id) DO UPDATE SET payload_json=excluded.payload_json""",
+                (persona_id, encoded),
+            )
+
+    def has_persona_user_message(self, persona_id: str, conversation_id: str) -> bool:
+        with self._lock:
+            return self._connection.execute(
+                "SELECT 1 FROM messages WHERE persona_id = ? AND conversation_id = ? AND role = 'user' LIMIT 1",
+                (persona_id, conversation_id),
+            ).fetchone() is not None
+
+    def migrate_persona_state(
+        self,
+        current_persona_id: str,
+        validate_document: Callable[[str, dict[str, Any]], None],
+        *,
+        prepare_current: Callable[[], None] | None = None,
+    ) -> bool:
+        """Copy existing shared state exactly once in the encrypted kernel."""
+        try:
+            with self.transaction() as connection:
+                if self.persona_state_migrated():
+                    if prepare_current is not None:
+                        prepare_current()
+                    return False
+                legacy_query = """
+                    SELECT document_name,payload_json,updated_at_utc FROM private_documents
+                    WHERE document_name IN (?,?) ORDER BY document_name
+                """
+                documents = [tuple(row) for row in connection.execute(legacy_query, PERSONA_STATE_DOCUMENTS)]
+                if documents:
+                    owner = connection.execute(
+                        """
+                        SELECT p.persona_id, COUNT(m.message_id) AS user_messages
+                        FROM personas p LEFT JOIN messages m
+                            ON p.persona_id = m.persona_id AND m.role = 'user'
+                        GROUP BY p.persona_id
+                        ORDER BY user_messages DESC, p.persona_id = ? DESC, p.persona_id
+                        LIMIT 1
+                        """,
+                        (current_persona_id,),
+                    ).fetchone()
+                    persona_id = current_persona_id
+                    if owner is not None and owner["user_messages"]:
+                        persona_id = owner["persona_id"]
+                    for name, raw, updated_at in documents:
+                        validate_document(name, self._persona_document_payload(raw))
+                        connection.execute(
+                            "INSERT INTO persona_state_documents VALUES (?,?,?,?)",
+                            (persona_id, name, raw, updated_at),
+                        )
+                    copied = connection.execute(
+                        """
+                        SELECT document_name,payload_json,updated_at_utc FROM persona_state_documents
+                        WHERE persona_id = ? ORDER BY document_name
+                        """,
+                        (persona_id,),
+                    ).fetchall()
+                    if [tuple(row) for row in copied] != documents:
+                        raise KernelStorageError("persona state migration readback differs")
+                connection.execute("INSERT INTO persona_state_migration VALUES (1)")
+                if not self.persona_state_migrated():
+                    raise KernelStorageError("persona state migration marker is missing")
+                if [tuple(row) for row in connection.execute(legacy_query, PERSONA_STATE_DOCUMENTS)] != documents:
+                    raise KernelStorageError("legacy persona state changed during migration")
+                if prepare_current is not None:
+                    prepare_current()
+        except Exception:
+            raise PersonaStateMigrationError() from None
+        return True
 
     def activate_persona(
         self,
@@ -588,6 +749,7 @@ class KernelStore:
         idempotent even if the process dies between the two.
         """
         now = created_at_utc or _utc_now()
+        message_id = uuid4().hex
         with self.transaction() as connection:
             connection.execute(
                 """
@@ -608,7 +770,7 @@ class KernelStore:
                 ON CONFLICT(request_id, role, bubble_index) DO NOTHING
                 """,
                 (
-                    uuid4().hex,
+                    message_id,
                     conversation_id,
                     persona_id,
                     request_id,
@@ -616,7 +778,18 @@ class KernelStore:
                     now,
                 ),
             )
-            if media:
+            if media and "jpeg" in media:
+                if not cursor.rowcount:
+                    raise ValueError("preview image request already has a user message")
+                connection.execute(
+                    "INSERT INTO preview_chat_images(media_id, jpeg) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                    (media["media_id"], media["jpeg"]),
+                )
+                connection.execute(
+                    "INSERT INTO preview_chat_image_links(message_id, media_id) VALUES (?, ?)",
+                    (message_id, media["media_id"]),
+                )
+            elif media:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO chat_media(
@@ -649,6 +822,28 @@ class KernelStore:
                 WHERE role = 'user' AND created_at_utc LIKE ?
                 """,
                 (f"{date_str}%",),
+            ).fetchone()
+        return int(row["total"]) if row is not None else 0
+
+    def count_persona_user_messages_on_local_date(self, persona_id: str, date_str: str) -> int:
+        """Count one persona's accepted user messages in the host's local day."""
+        day = date.fromisoformat(date_str)
+        if day.isoformat() != date_str:
+            raise ValueError("date must use YYYY-MM-DD")
+        # Resolve each midnight separately so local days also work across DST.
+        start_utc = datetime.combine(day, time.min).astimezone(timezone.utc)
+        end_utc = datetime.combine(day + timedelta(days=1), time.min).astimezone(timezone.utc)
+        # Stored UTC timestamps include seconds. A prefix works for both whole
+        # seconds and fractional seconds, regardless of the UTC suffix.
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM messages
+                WHERE persona_id = ? AND role = 'user'
+                  AND created_at_utc >= ? AND created_at_utc < ?
+                """,
+                (persona_id, start_utc.replace(tzinfo=None).isoformat(), end_utc.replace(tzinfo=None).isoformat()),
             ).fetchone()
         return int(row["total"]) if row is not None else 0
 
@@ -867,6 +1062,45 @@ class KernelStore:
         for row in rows:
             grouped.setdefault(str(row["request_id"]), []).append(dict(row))
         return grouped
+
+    def preview_images_for_messages(self, message_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        if not message_ids:
+            return {}
+        placeholders = ",".join("?" for _ in message_ids)
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT link.message_id, link.media_id, message.request_id,
+                       'image/jpeg' AS mime, COALESCE(length(image.jpeg), 0) AS bytes
+                FROM preview_chat_image_links link
+                JOIN messages message ON message.message_id = link.message_id
+                LEFT JOIN preview_chat_images image ON image.media_id = link.media_id
+                WHERE link.message_id IN ({placeholders})
+                """,
+                message_ids,
+            ).fetchall()
+        return {
+            str(row["message_id"]): [{key: row[key] for key in ("media_id", "request_id", "mime", "bytes")}]
+            for row in rows
+        }
+
+    def read_preview_chat_image(
+        self, media_id: str, *, conversation_id: str, persona_id: str, request_id: str | None = None,
+    ) -> bytes | None:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT image.jpeg
+                FROM preview_chat_images image
+                JOIN preview_chat_image_links link ON link.media_id = image.media_id
+                JOIN messages message ON message.message_id = link.message_id
+                WHERE image.media_id = ? AND message.conversation_id = ? AND message.persona_id = ?
+                    AND (? IS NULL OR message.request_id = ?)
+                LIMIT 1
+                """,
+                (media_id, conversation_id, persona_id, request_id, request_id),
+            ).fetchone()
+        return bytes(row["jpeg"]) if row is not None else None
 
     def commit_chat_exchange(
         self,

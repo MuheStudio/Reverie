@@ -5,8 +5,8 @@
  * https://www.rfc-editor.org/rfc/rfc8216.html (consulted 2026-10-05), principally
  * sections 4.1, 4.2, 4.3.2, 4.3.3 and 4.3.4.2. Tests use synthetic fixtures.
  * No prior/upstream download implementation was consulted. This provenance
- * note is not a legal clean-room claim; the repository remains GPL pending
- * completion of its license migration.
+ * note is not a legal clean-room claim; the repository is licensed under
+ * Apache-2.0.
  *
  * This pure text parser performs no network or filesystem operations. It
  * tolerates one leading BOM for the public contract (unlike strict RFC 8216).

@@ -15,6 +15,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime
+from itertools import islice
 from typing import TYPE_CHECKING, Any, Sequence
 
 from .anti_ai import (
@@ -23,6 +24,7 @@ from .anti_ai import (
     filter_output_detail,
     guard_user_message,
 )
+from .kaomoji import kaomoji_palette, recent_kaomoji_used
 from .scheduler import MessageScheduler
 from ..local_mode import LocalModeBlocked
 from ..memory.cognitive_decay import FUZZY_RECALL_PREFIX, conversational_recall
@@ -121,8 +123,11 @@ class ProviderCallFailed(RuntimeError):
         *,
         timeout_seconds: float | None = None,
     ) -> None:
+        from ..api.adapter import ProviderRequestError
+
         self.cause_type = cause.__class__.__name__ if cause is not None else "ProviderError"
         self.status_code = getattr(cause, "status_code", None) if cause is not None else None
+        self.cause_code = cause.code if isinstance(cause, ProviderRequestError) else None
         super().__init__(_provider_failure_summary(cause, timeout_seconds=timeout_seconds))
 
 
@@ -174,16 +179,16 @@ def _read_image_data_url(image_path: str) -> str:
     return f"data:image/jpeg;base64,{encoded}"
 
 
-def _build_vision_user_turn(text: str, image_path: str) -> dict[str, Any]:
+def _build_vision_user_turn(text: str, image_path: str, data_url: str = "") -> dict[str, Any]:
     """Compose the user turn, attaching the image as an OpenAI-style part.
 
     OpenAI-compatible providers accept this shape verbatim; the Anthropic
     path converts image parts into Messages-API blocks in the adapter.
     """
-    if not image_path:
+    if not image_path and not data_url:
         return {"role": "user", "content": text}
     try:
-        data_url = _read_image_data_url(image_path)
+        data_url = data_url or _read_image_data_url(image_path)
     except Exception:
         logger.exception("Chat image could not be loaded; sending text only")
         return {"role": "user", "content": f"{text}{_IMAGE_PLACEHOLDER}"}
@@ -273,6 +278,7 @@ class ChatSession:
         worldbook_runtime: "Any | None" = None,
         conversation_summary: "Any | None" = None,
         imported_prompt_opts: dict | None = None,
+        kaomoji_hints: bool = False,
     ) -> None:
         self.persona = persona
         self.adapter = adapter
@@ -288,6 +294,8 @@ class ChatSession:
         self.user_manager = user_manager
         self.feature_settings = feature_settings
         self.keepsakes = keepsake_manager
+        # Preview selections stay in memory and never enter cached delivery payloads.
+        self._keepsake_recalls: dict[str, tuple[str, Any, Any, int]] = {}
         self.reflex = reflex_system
         self.ambient_presence = ambient_presence
         self.thought_engine = thought_engine
@@ -296,6 +304,7 @@ class ChatSession:
         self.conversation_summary = conversation_summary
         # 卡作者提示词运行时开关（默认关闭）。由 bridge 在导入/更新时注入。
         self.imported_prompt_opts: dict = dict(imported_prompt_opts or {})
+        self.kaomoji_hints = kaomoji_hints
         if speech_habit_engine is None:
             from ..persona.speech_habits import SpeechHabitEngine
 
@@ -415,6 +424,7 @@ class ChatSession:
         request_id: str = "",
         conversation_id: str = "",
         image_path: str = "",
+        image_data_url: str = "",
     ) -> dict:
         """Process a user message and return the assistant's reply.
 
@@ -428,10 +438,13 @@ class ChatSession:
                 "injection_detected": bool,
             }
         """
+        if callable(getattr(self.keepsakes, "prepare_recall_context", None)):
+            self._keepsake_recalls.pop(conversation_id, None)
         # Capture the committed archive before this turn can yield to a save.
         worldbook_capture = (self.worldbook_runtime.capture(request_id)
                              if self.worldbook_runtime is not None else None)
-        logger.info("User: %s", user_message[:100])
+        preview_image_turn = bool(image_data_url)
+        logger.info("User message received (characters=%d)", len(user_message))
 
         # ── Step 1: Input pre-processing ──────────────────
         guard = guard_user_message(user_message)
@@ -674,7 +687,20 @@ class ChatSession:
         interest_context = self._optional_context(self.interest, "build_interest_context")
         affairs_context = self._optional_context(self.affairs, "build_prompt_context")
         user_context = self._optional_context(self.user_manager, "build_prompt_context")
-        keepsake_context = self._optional_context(self.keepsakes, "maybe_recall_context")
+        keepsake_manager = self.keepsakes
+        keepsake_selection = None
+        keepsake_generation = int(getattr(self, "restore_generation", 0))
+        prepare_keepsake = getattr(keepsake_manager, "prepare_recall_context", None)
+        if callable(prepare_keepsake):
+            keepsake_context = ""
+            try:
+                keepsake_selection = prepare_keepsake()
+                if keepsake_selection is not None:
+                    keepsake_context = keepsake_selection.context
+            except Exception:
+                logger.warning("Preview keepsake context could not be prepared")
+        else:
+            keepsake_context = self._optional_context(self.keepsakes, "maybe_recall_context")
         availability_context = self._availability_prompt_context()
         try:
             current_time = self.world_clock.now()
@@ -734,11 +760,13 @@ class ChatSession:
                 lorebook_context=lorebook_context,
                 after_char_context=after_char_context,
                 imported_prompt_opts=self.imported_prompt_opts,
+                **({"kaomoji": self._kaomoji_for_prompt(conversation_id)} if self.kaomoji_hints else {}),
             )
         except Exception:
             logger.exception("Full prompt assembly failed; using identity-safe minimal prompt")
             system_prompt = self._minimal_system_prompt(current_time, current_emotions, intimacy)
             depth_entries = ()
+            keepsake_selection = None
 
         # ── Step 5: LLM call ──────────────────────────────
         request_history = _worldbook_history_messages(conversation_tail, depth_entries)
@@ -790,6 +818,7 @@ class ChatSession:
             messages.append(_build_vision_user_turn(
                 f"{guard.llm_text}{avoidance_hint}{image_note}",
                 image_path,
+                image_data_url,
             ))
             try:
                 response = await asyncio.wait_for(
@@ -809,7 +838,7 @@ class ChatSession:
                 # or a personality reflex that looks like a successful AI turn.
                 raise
             except Exception as exc:
-                if image_path and not vision_fallback_used and _provider_rejected_content(exc):
+                if (image_path or image_data_url) and not vision_fallback_used and _provider_rejected_content(exc):
                     # The provider definitively refused the request (a 4xx
                     # rejection is processed-and-billed nowhere), so one
                     # text-only retry is safe. Unknown outcomes (timeouts,
@@ -819,8 +848,17 @@ class ChatSession:
                     )
                     vision_fallback_used = True
                     image_path = ""
+                    image_data_url = ""
                     image_note = _IMAGE_PLACEHOLDER
                     continue
+                if preview_image_turn:
+                    from ..api.adapter import normalize_provider_error
+
+                    logger.warning("LLM provider request failed after dispatching a preview image turn")
+                    raise ProviderCallFailed(
+                        normalize_provider_error(exc),
+                        timeout_seconds=_PROVIDER_CALL_TIMEOUT_SECONDS,
+                    ) from None
                 logger.exception("LLM provider request failed after dispatch")
                 raise ProviderCallFailed(
                     exc, timeout_seconds=_PROVIDER_CALL_TIMEOUT_SECONDS,
@@ -1152,6 +1190,14 @@ class ChatSession:
             "had_typo": bool(typo_indices),
             "typo_indices": typo_indices,
         }
+        if keepsake_selection is not None and request_id:
+            while len(self._keepsake_recalls) >= self.MAX_TRACKED_CONVERSATIONS:
+                self._keepsake_recalls.pop(next(iter(self._keepsake_recalls)))
+            self._keepsake_recalls[conversation_id] = (
+                request_id, keepsake_manager, keepsake_selection, keepsake_generation,
+            )
+            if not defer_side_effects:
+                self._commit_keepsake_recall(request_id, result, conversation_id)
         return self._with_deferred_commit(
             result,
             defer_side_effects=defer_side_effects,
@@ -1365,14 +1411,39 @@ class ChatSession:
                 logger.exception("Deferred cross-character marker commit failed")
                 commit_errors.append("cross_character_marker")
 
+        self._commit_keepsake_recall(request_id, result, conversation_id or context_conversation_id)
         if commit_errors:
             raise RuntimeError(
                 "deferred commit incomplete: " + ",".join(commit_errors)
             )
         self._remember_committed_request_id(request_id)
 
+    def _commit_keepsake_recall(self, request_id: str, result: dict, conversation_id: str) -> None:
+        candidate = getattr(self, "_keepsake_recalls", {}).get(conversation_id)
+        if candidate is None or candidate[0] != request_id:
+            return
+        self._keepsake_recalls.pop(conversation_id)
+        _, manager, selected, restore_generation = candidate
+        commit = getattr(manager, "commit_recall", None)
+        if not callable(commit) or manager is not self.keepsakes or (
+            restore_generation != int(getattr(self, "restore_generation", 0))
+        ):
+            return
+        # Real deferred deliveries carry the coordinator's complete persona/model proof.
+        # Recheck after the asynchronous side effects, before writing the recall times.
+        if any(key in result for key in ("persona_id", "model_epoch", "model_fingerprint")):
+            from ..bridge.ws_bridge import _chat_scope_is_current
+
+            if not _chat_scope_is_current(result):
+                return
+        try:
+            commit(selected, request_id=request_id, conversation_id=conversation_id)
+        except Exception:
+            logger.warning("Preview keepsake recall could not be committed")
+
     async def close(self) -> None:
         """Clean up session resources."""
+        getattr(self, "_keepsake_recalls", {}).clear()
         summary_cleanup_error = None
         if self.conversation_summary is not None:
             try:
@@ -1407,6 +1478,14 @@ class ChatSession:
         except Exception:
             logger.exception("Relationship addressing failed; preserving guarded text")
         return text
+
+    def _kaomoji_for_prompt(self, conversation_id: str) -> tuple[str, ...]:
+        recent_replies = islice((message["content"] for message in reversed(self._history_for(conversation_id))
+                                 if message.get("role") == "assistant"), 3)
+        if recent_kaomoji_used(recent_replies):
+            return ()
+        dominant = self._safe_dominant_emotions(1)
+        return kaomoji_palette(dominant[0][0] if dominant else "calm")
 
     def _safe_dominant_emotions(self, limit: int) -> list[tuple[str, float]]:
         try:

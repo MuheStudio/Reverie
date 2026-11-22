@@ -65,6 +65,9 @@ export const WSMsgType = {
   USER_PROFILE_UPDATE: "user:profile:update",
   KEEPSAKE_LIST: "keepsake:list",
   KEEPSAKE_ADD: "keepsake:add",
+  KEEPSAKE_COLLECT: "keepsake:collect",
+  KEEPSAKE_PAGE: "keepsake:page",
+  KEEPSAKE_REMOVE: "keepsake:remove",
   BACKUP_EXPORT: "backup:export",
   BACKUP_IMPORT: "backup:import",
   STICKER_LIST: "sticker:list",
@@ -115,6 +118,7 @@ export const WSMsgType = {
   TTS_RESULT: "tts:result",
   USER_PROFILE_RESULT: "user:profile:result",
   KEEPSAKE_RESULT: "keepsake:result",
+  KEEPSAKE_PREVIEW_RESULT: "keepsake:preview:result",
   BACKUP_RESULT: "backup:result",
   SETTINGS_UPDATE_RESULT: "settings:update:result",
   SETTINGS_GET_RESULT: "settings:get:result",
@@ -128,7 +132,7 @@ export const WSMsgType = {
 } as const;
 
 export type LegacyMessageType = typeof WSMsgType[keyof typeof WSMsgType];
-export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:media" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "diary:write" | "emotion:get" | "game:move" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:list" | "memory:candidates:confirm" | "memory:candidates:decide_many" | "memory:candidates:list" | "memory:candidates:reject" | "memory:candidates:status" | "memory:delete" | "memory:delete_many" | "memory:edit" | "memory:list" | "memory:pin_many" | "memory:pin_status" | "memory:query" | "memory:reinforce" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "persona:list" | "persona:profile:get" | "persona:profile:update" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:import" | "sticker:list" | "sticker:react" | "summary:get" | "summary:legacy:import" | "summary:legacy:preview" | "summary:status" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update" | "video:download";
+export type MVPCommandName = "ai_usage:get" | "ai_usage:grant" | "ai_usage:revoke" | "ambient:get" | "anti_ai:status" | "api:budget:get" | "archive:get" | "archive:migrate" | "archive:put" | "backup:export" | "backup:import" | "chat:cancel" | "chat:history" | "chat:media" | "chat:reveal" | "chat:send" | "chat:stop" | "diary:request" | "diary:write" | "emotion:get" | "game:move" | "game_state:get" | "game_state:put" | "group:request" | "group:send" | "image:random" | "immersion:closeup" | "immersion:nearby" | "immersion:smart_home" | "keepsake:add" | "keepsake:collect" | "keepsake:list" | "keepsake:page" | "keepsake:remove" | "memory:candidates:confirm" | "memory:candidates:decide_many" | "memory:candidates:list" | "memory:candidates:reject" | "memory:candidates:status" | "memory:delete" | "memory:delete_many" | "memory:edit" | "memory:list" | "memory:pin_many" | "memory:pin_status" | "memory:query" | "memory:reinforce" | "memory:settings:get" | "memory:store" | "module:control" | "module:list" | "persona:activate" | "persona:get" | "persona:import" | "persona:list" | "persona:profile:get" | "persona:profile:update" | "relationship:get" | "settings:get" | "settings:update" | "sticker:collect" | "sticker:import" | "sticker:list" | "sticker:react" | "summary:get" | "summary:legacy:import" | "summary:legacy:preview" | "summary:status" | "timeline:request" | "tts:list" | "tts:synthesize" | "user:profile:get" | "user:profile:update" | "video:download";
 
 export interface PersonaScopeV4 {
   persona_id: string;

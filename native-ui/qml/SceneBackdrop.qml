@@ -8,6 +8,7 @@ Item {
     // physical furniture grows from those slots, never from a second layout.
     property var director
     property bool reducedMotion: false
+    property string roomQuality: "balanced"
     property vector2d lightDirection: director && director.lightDirection !== undefined ? director.lightDirection : Qt.vector2d(-0.56, -0.83)
     // Optional event-driven drift of the window view's clouds.
     property real cloudPhase: 0
@@ -62,14 +63,47 @@ Item {
         property real cloudPhase: room.reducedMotion ? 0 : room.cloudPhase
         fragmentShader: "qrc:/shaders/room-sky.frag.qsb"
     }
-    // Everything else holds still, so it renders once into a full-DPR layer and
-    // again only when geometry, a transition or a portal changes.
+    // Keep moving room geometry inexpensive, then restore full detail once
+    // the last input change has been quiet for 250 ms.
     ShaderEffect {
         id: environment
         objectName: "moonroomEnvironmentShader"
         anchors.fill: parent
         layer.enabled: true
-        layer.textureSize: Qt.size(width * Screen.devicePixelRatio, height * Screen.devicePixelRatio)
+        layer.smooth: true
+        layer.textureSize: Qt.size(width * resolutionScale, height * resolutionScale)
+        property bool changing: true
+        readonly property real resolutionScale: room.roomQuality === "clear" ? Screen.devicePixelRatio
+            : room.roomQuality === "smooth" || changing ? Math.max(1, Screen.devicePixelRatio / 2)
+            : Screen.devicePixelRatio
+        function inputChanged() {
+            changing = true;
+            if (settleTimer)
+                settleTimer.restart();
+        }
+        Timer {
+            id: settleTimer
+            interval: 250
+            running: true
+            repeat: false
+            onTriggered: environment.changing = false
+        }
+        onWidthChanged: inputChanged()
+        onHeightChanged: inputChanged()
+        onViewportSizeChanged: inputChanged()
+        onApertureRectChanged: inputChanged()
+        onArchiveAnchorChanged: inputChanged()
+        onTerminalAnchorChanged: inputChanged()
+        onAvatarRectChanged: inputChanged()
+        onStageCenterChanged: inputChanged()
+        onHorizonYChanged: inputChanged()
+        onTaskBlendChanged: inputChanged()
+        onReadBlendChanged: inputChanged()
+        onAvatarVisibilityChanged: inputChanged()
+        onArchiveOpenChanged: inputChanged()
+        onTerminalOpenChanged: inputChanged()
+        onPortalDockedChanged: inputChanged()
+        onLightDirectionChanged: inputChanged()
         property vector2d viewportSize: Qt.vector2d(Math.max(1, room.width), Math.max(1, room.height))
         property vector4d apertureRect: Qt.vector4d(room.apertureRect.x, room.apertureRect.y, room.apertureRect.width, room.apertureRect.height)
         property vector4d archiveAnchor: Qt.vector4d(room.archiveAnchor.x, room.archiveAnchor.y, room.archiveAnchor.width, room.archiveAnchor.height)

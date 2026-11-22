@@ -1,4 +1,5 @@
 #include <QElapsedTimer>
+#include <QColor>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJSValue>
@@ -230,6 +231,21 @@ private slots:
         m_session.reset();
     }
 
+    void providerFailureReasonIsVisibleAndUsesExistingErrorStyle() {
+        const QString text = "服务拒绝了密钥，请检查 API Key。（HTTP 401）";
+        auto *label = m_root->findChild<QQuickItem *>("chatFeedbackText");
+        QVERIFY(label);
+        for (const QString &status : QStringList{"failed", "failed_uncertain"}) {
+            m_session->setChatFeedback({{"status", status}, {"text", text}, {"requestId", "provider-failure-fixture"}});
+            QTRY_COMPARE(label->property("text").toString(), text);
+            settle();
+            QVERIFY(label->isVisible());
+            QVERIFY(m_chat->property("feedbackIsError").toBool());
+            QCOMPARE(label->property("color").value<QColor>(), QColor("#e6b4a4"));
+            QVERIFY(label->width() > 0 && label->height() > 0);
+            QVERIFY(!label->property("truncated").toBool());
+        }
+    }
     void terminalFeedbackVisibleWithoutBusyAndSurvivesReadingSwitch() {
         const QString text = "回复结果尚未确认，未自动重试。你可以继续阅读已有消息。";
         m_session->setDraft("保留下一条草稿");
@@ -368,6 +384,28 @@ private slots:
         QVERIFY(selected);
         QCOMPARE(selected->property("selectionStart").toInt(), 5);
         QCOMPARE(selected->property("selectionEnd").toInt(), 20);
+    }
+
+    void identicalListReplacementTemporarilyBlocksMessageRows() {
+        QVERIFY(m_chat->property("inputReady").toBool());
+        auto *target = row(299);
+        QVERIFY(target && target->isVisible() && target->isEnabled());
+        const auto messages = m_session->messages();
+
+        m_session->setMessages(messages);
+
+        // Observe the same turn, before the restore timer can run.
+        QVERIFY(!m_chat->property("inputReady").toBool());
+        auto *blockedTarget = row(299);
+        QVERIFY(!blockedTarget || !blockedTarget->isVisible() || !blockedTarget->isEnabled());
+        QCOMPARE(m_session->messages(), messages);
+
+        QTRY_VERIFY(m_chat->property("inputReady").toBool());
+        const auto targetUsable = [this] {
+            auto *restored = row(299);
+            return restored && restored->isVisible() && restored->isEnabled();
+        };
+        QTRY_VERIFY(targetUsable());
     }
 
     void replacedListKeepsTheExchangeInPlace() {
@@ -697,6 +735,312 @@ private slots:
         QVERIFY(gate.attempted() && gate.failed() && !gate.completed());
         QVERIFY(!gate.run([] { return qint64(0); }, 100, [&] { ++calls; }));
         QCOMPARE(calls, 1);
+    }
+
+private:
+    static QString selectionRowText(int lines = 4) {
+        QStringList text;
+        for (int index = 0; index < lines; ++index)
+            text.append(QString(44, QLatin1Char('a' + index % 20)));
+        return text.join('\n');
+    }
+
+    bool selectionFixtureReady() const {
+        return m_chat->property("inputReady").toBool() && m_chat->property("geometryReady").toBool() &&
+            !m_chat->property("restoringReading").toBool() && !m_chat->property("layoutRestorePending").toBool() &&
+            !m_history->property("moving").toBool() && !m_history->property("dragging").toBool() &&
+            !m_history->property("flicking").toBool();
+    }
+
+    bool selectionRowAt(int index, QQuickItem *&item) const {
+        item = nullptr;
+        return QMetaObject::invokeMethod(m_history, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, item), Q_ARG(int, index));
+    }
+
+    bool selectionRowsMeet() const {
+        QQuickItem *previous = nullptr, *target = nullptr, *next = nullptr;
+        if (!selectionRowAt(0, previous) || !selectionRowAt(1, target) || !selectionRowAt(2, next) ||
+            !previous || !target || !next) return false;
+        const qreal spacing = m_history->property("spacing").toDouble();
+        return qAbs(previous->y() + previous->height() + spacing - target->y()) < .5 &&
+            qAbs(target->y() + target->height() + spacing - next->y()) < .5;
+    }
+
+    void prepareAdjacentSelectionRows() {
+        prepareProbeMessages({"previous", selectionRowText(), "next"});
+        if (QTest::currentTestFailed()) return;
+        QVERIFY(m_history->setProperty("spacing", 7.0));
+        settle();
+        if (QTest::currentTestFailed()) return;
+        QTRY_VERIFY_WITH_TIMEOUT(selectionRowsMeet(), 1500);
+        QVERIFY(selectionFixtureReady());
+    }
+
+    void proveLegacySelectionGates(ReadingSelectionProbe::Candidate &candidate) const {
+        QVERIFY(selectionFixtureReady());
+        const auto legacy = readingProbe();
+        QVERIFY2(legacy.hasCandidate(), probeJson(legacy).constData());
+        QCOMPARE(legacy.candidate.messageId, QString("m-1"));
+        QCOMPARE(legacy.candidate.item.data(), messageText(1));
+        const auto record = probeRecord(legacy, legacy.candidate.name);
+        QVERIFY(record.value("oldWidthGate").toBool());
+        QVERIFY(record.value("oldHeightGate").toBool());
+        QVERIFY(record.value("oldTextLengthGate").toBool());
+        QVERIFY(record.value("visible").toBool() && record.value("enabled").toBool());
+        QVERIFY(record.value("effectiveOpacity").toDouble() > .05);
+        QVERIFY(record.value("reasons").toStringList().isEmpty());
+        QVERIFY(!record.value("bestSpan").toMap().isEmpty());
+        QVERIFY(ReadingSelectionProbe::revalidate(legacy.candidate, m_history, m_window.get(), selectionFixtureReady(),
+                                                   [] { return qint64(0); }, 4000));
+        candidate = legacy.candidate;
+    }
+
+    ReadingSelectionProbe::ProbeResult selectionBeforePress(const ReadingSelectionProbe::Clock &clock) const {
+        return ReadingSelectionProbe::probeBeforePress(m_history, m_window.get(), selectionFixtureReady(), clock, 4000);
+    }
+
+    bool trySelectionDrag(const ReadingSelectionProbe::ProbeResult &result, const ReadingSelectionProbe::Clock &clock,
+                          ReadingSelectionProbe::OnceGesture &gesture, int &pressCount) {
+        ReadingSelectionProbe::Candidate live;
+        if (!result.hasCandidate() || !ReadingSelectionProbe::revalidateBeforePress(result.candidate, m_history,
+                m_window.get(), selectionFixtureReady(), clock, 4000, &live)) return false;
+        return gesture.run(clock, 4000, [&] {
+            QTest::mousePress(m_window.get(), Qt::LeftButton, Qt::NoModifier, live.start, 0);
+            ++pressCount;
+            const QPointF start = live.start, end = live.end;
+            for (int move = 1; move <= 5; ++move)
+                QTest::mouseMove(m_window.get(), (start + (end - start) * (move / 5.)).toPoint(), 0);
+            QTest::mouseRelease(m_window.get(), Qt::LeftButton, Qt::NoModifier, live.end, 0);
+        });
+    }
+
+    void verifyReadingSelection(const ReadingSelectionProbe::Candidate &candidate) const {
+        QVERIFY(candidate.item);
+        QVERIFY(candidate.item->property("selectionEnd").toInt() > candidate.item->property("selectionStart").toInt());
+        QVERIFY(candidate.item->property("selectedText").toString().trimmed().size() >= 4);
+    }
+
+private slots:
+    void readingSelectionAcceptsConsistentAdjacentRows() {
+        prepareAdjacentSelectionRows();
+        if (QTest::currentTestFailed()) return;
+        ReadingSelectionProbe::Candidate legacy;
+        proveLegacySelectionGates(legacy);
+        if (QTest::currentTestFailed()) return;
+        const ReadingSelectionProbe::Clock clock = [] { return qint64(0); };
+        const auto eligible = selectionBeforePress(clock);
+        QVERIFY2(eligible.hasCandidate(), probeJson(eligible).constData());
+        QCOMPARE(eligible.candidate.item, legacy.item);
+        const auto adjacency = eligible.diagnostic.value("rowAdjacency").toMap();
+        QCOMPARE(adjacency.value("status").toString(), QString("consistent"));
+        QCOMPARE(adjacency.value("spacing").toDouble(), 7.0);
+        QCOMPARE(adjacency.value("previous").toMap().value("index").toInt(), 0);
+        QCOMPARE(adjacency.value("target").toMap().value("index").toInt(), 1);
+        QCOMPARE(adjacency.value("next").toMap().value("index").toInt(), 2);
+        ReadingSelectionProbe::OnceGesture gesture;
+        int presses = 0;
+        QVERIFY(trySelectionDrag(eligible, clock, gesture, presses));
+        QCOMPARE(presses, 1);
+        verifyReadingSelection(eligible.candidate);
+    }
+
+    void readingSelectionBlocksStaleRowBeforePress() {
+        prepareAdjacentSelectionRows();
+        if (QTest::currentTestFailed()) return;
+        auto *target = row(1);
+        QVERIFY(target);
+        target->setY(target->y() + 16);
+        ReadingSelectionProbe::Candidate legacy;
+        proveLegacySelectionGates(legacy);
+        if (QTest::currentTestFailed()) return;
+        const auto state = probeObservedState(legacy.item.data());
+        const ReadingSelectionProbe::Clock clock = [] { return qint64(0); };
+        const auto blocked = selectionBeforePress(clock);
+        QVERIFY(!blocked.hasCandidate());
+        QCOMPARE(blocked.diagnostic.value("reason").toString(), QString("row-position-inconsistent"));
+        const auto adjacency = blocked.diagnostic.value("rowAdjacency").toMap();
+        QCOMPARE(adjacency.value("status").toString(), QString("inconsistent"));
+        const auto previous = adjacency.value("previous").toMap();
+        const auto current = adjacency.value("target").toMap();
+        QVERIFY(previous.value("instantiated").toBool() && current.value("instantiated").toBool());
+        QCOMPARE(current.value("y").toDouble(), target->y());
+        const qreal gap = current.value("y").toDouble() - previous.value("y").toDouble() -
+            previous.value("height").toDouble() - adjacency.value("spacing").toDouble();
+        QVERIFY(qAbs(gap - 16) < .5);
+        QVariantMap revalidated;
+        QVERIFY(!ReadingSelectionProbe::revalidateBeforePress(legacy, m_history, m_window.get(), true, clock, 4000,
+                                                               nullptr, &revalidated));
+        QCOMPARE(revalidated.value("reason").toString(), QString("row-position-inconsistent"));
+        ReadingSelectionProbe::OnceGesture gesture;
+        int presses = 0;
+        QVERIFY(!trySelectionDrag(blocked, clock, gesture, presses));
+        QVERIFY(!gesture.attempted());
+        QCOMPARE(presses, 0);
+        QCOMPARE(probeObservedState(legacy.item.data()), state);
+    }
+
+    void readingSelectionRetriesAfterListLayoutCorrection() {
+        prepareAdjacentSelectionRows();
+        if (QTest::currentTestFailed()) return;
+        auto *target = row(1);
+        QVERIFY(target);
+        target->setY(target->y() + 16);
+        ReadingSelectionProbe::Candidate legacy;
+        proveLegacySelectionGates(legacy);
+        if (QTest::currentTestFailed()) return;
+        qint64 elapsed = 0;
+        const ReadingSelectionProbe::Clock clock = [&] { return elapsed; };
+        const auto stale = selectionBeforePress(clock);
+        QCOMPARE(stale.diagnostic.value("reason").toString(), QString("row-position-inconsistent"));
+        ReadingSelectionProbe::OnceGesture gesture;
+        int presses = 0;
+        QVERIFY(!trySelectionDrag(stale, clock, gesture, presses));
+        QCOMPARE(presses, 0);
+
+        // A fixture spacing change asks the real ListView to position its rows.
+        // The discovery and revalidation calls themselves never run layout.
+        QVERIFY(m_history->setProperty("spacing", 11.0));
+        QVERIFY(QMetaObject::invokeMethod(m_history, "forceLayout"));
+        QTRY_VERIFY_WITH_TIMEOUT(selectionRowsMeet() && selectionFixtureReady(), 1500);
+        proveLegacySelectionGates(legacy);
+        if (QTest::currentTestFailed()) return;
+        elapsed = 100;
+        const auto corrected = selectionBeforePress(clock);
+        QVERIFY2(corrected.hasCandidate(), probeJson(corrected).constData());
+        QCOMPARE(corrected.diagnostic.value("rowAdjacency").toMap().value("status").toString(), QString("consistent"));
+        QCOMPARE(corrected.candidate.item, legacy.item);
+        QVERIFY(trySelectionDrag(corrected, clock, gesture, presses));
+        QCOMPARE(presses, 1);
+        verifyReadingSelection(corrected.candidate);
+    }
+
+    void readingSelectionAllowsUninstantiatedAdjacentRows() {
+        prepareProbeMessages({"previous", selectionRowText(90), "next"}, 340);
+        if (QTest::currentTestFailed()) return;
+        QCOMPARE(m_history->property("count").toInt(), 3);
+        QVERIFY(m_history->setProperty("cacheBuffer", 0));
+        QVERIFY(m_history->setProperty("currentIndex", 1));
+        QVERIFY(QMetaObject::invokeMethod(m_history, "positionViewAtIndex", Q_ARG(int, 1), Q_ARG(int, 0)));
+        QQuickItem *target = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(selectionRowAt(1, target) && target, 1500);
+        QVERIFY(target->height() > m_history->height() + 200);
+        QVERIFY(m_chat->setProperty("followLatest", false));
+        QVERIFY(m_history->setProperty("contentY", target->y() + (target->height() - m_history->height()) / 2));
+        QVERIFY(QMetaObject::invokeMethod(m_chat, "captureReadingAnchor"));
+        QQuickItem *previous = nullptr, *next = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(selectionFixtureReady() && selectionRowAt(0, previous) && !previous &&
+            selectionRowAt(2, next) && !next, 1500);
+        ReadingSelectionProbe::Candidate legacy;
+        proveLegacySelectionGates(legacy);
+        if (QTest::currentTestFailed()) return;
+        const ReadingSelectionProbe::Clock clock = [] { return qint64(0); };
+        const auto eligible = selectionBeforePress(clock);
+        QVERIFY2(eligible.hasCandidate(), probeJson(eligible).constData());
+        QCOMPARE(eligible.candidate.item, legacy.item);
+        const auto adjacency = eligible.diagnostic.value("rowAdjacency").toMap();
+        QCOMPARE(adjacency.value("status").toString(), QString("unavailable"));
+        const auto upper = adjacency.value("previous").toMap();
+        const auto lower = adjacency.value("next").toMap();
+        QVERIFY(upper.contains("instantiated") && lower.contains("instantiated"));
+        QCOMPARE(upper.value("index").toInt(), 0);
+        QCOMPARE(lower.value("index").toInt(), 2);
+        QVERIFY(!upper.value("instantiated").toBool() && !lower.value("instantiated").toBool());
+        ReadingSelectionProbe::OnceGesture gesture;
+        int presses = 0;
+        QVERIFY(trySelectionDrag(eligible, clock, gesture, presses));
+        QCOMPARE(presses, 1);
+        verifyReadingSelection(eligible.candidate);
+    }
+
+    void readingSelectionReportsStaleRowAtDeadline() {
+        prepareAdjacentSelectionRows();
+        if (QTest::currentTestFailed()) return;
+        auto *target = row(1);
+        QVERIFY(target);
+        target->setY(target->y() + 16);
+        ReadingSelectionProbe::Candidate legacy;
+        proveLegacySelectionGates(legacy);
+        if (QTest::currentTestFailed()) return;
+        qint64 elapsed = 3999;
+        const ReadingSelectionProbe::Clock clock = [&] { return elapsed; };
+        const auto last = selectionBeforePress(clock);
+        QCOMPARE(last.diagnostic.value("reason").toString(), QString("row-position-inconsistent"));
+        QVERIFY(!last.diagnostic.value("deadlineReached").toBool());
+        ReadingSelectionProbe::OnceGesture gesture;
+        int presses = 0;
+        QVERIFY(!trySelectionDrag(last, clock, gesture, presses));
+
+        elapsed = 4000;
+        const auto expired = selectionBeforePress(clock);
+        QVERIFY(expired.diagnostic.value("deadlineReached").toBool());
+        QVERIFY(!trySelectionDrag(expired, clock, gesture, presses));
+        QVERIFY(!gesture.attempted());
+        QCOMPARE(presses, 0);
+        QVERIFY(legacy.item->property("selectedText").toString().isEmpty());
+        const QString ordinaryTimeout = "MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT";
+        QCOMPARE(ReadingSelectionProbe::acquisitionTimeoutCode(last.diagnostic, ordinaryTimeout),
+                 QString("MOONROOM_READING_SELECTION_LAYOUT_INCONSISTENT"));
+        QCOMPARE(ReadingSelectionProbe::acquisitionTimeoutCode(expired.diagnostic, ordinaryTimeout), ordinaryTimeout);
+    }
+
+private:
+    static QVariantMap proactiveBubble(int rowIndex, int bubbleIndex) {
+        auto row = message(rowIndex, "assistant");
+        row["content"] = QString("主动消息气泡 %1").arg(bubbleIndex);
+        row["source"] = "proactive";
+        row["proactive_id"] = "proactive_0123456789abcdef0123456789abcdef";
+        row["bubble_index"] = bubbleIndex;
+        return row;
+    }
+
+    QQuickItem *proactiveSourceLabel(int index) const {
+        auto *item = row(index);
+        return item ? item->findChild<QQuickItem *>(QString("proactiveSource-m-%1").arg(index)) : nullptr;
+    }
+
+private slots:
+    void proactiveHistoryShowsOnePlainSourceInBothPresentations() {
+        m_session->setMessages({message(0, "user"), message(1, "assistant"), proactiveBubble(2, 0), proactiveBubble(3, 1)});
+        settle();
+        QTRY_VERIFY(row(2) && row(3) && row(2)->isVisible() && row(3)->isVisible());
+        QTRY_VERIFY(proactiveSourceLabel(2) && proactiveSourceLabel(2)->isVisible());
+        QVERIFY(proactiveSourceLabel(3) && !proactiveSourceLabel(3)->isVisible());
+        QCOMPARE(proactiveSourceLabel(2)->property("text").toString(), QString("她主动发来"));
+        QCOMPARE(proactiveSourceLabel(2)->property("textFormat").toInt(), int(Qt::PlainText));
+        transition(true);
+        settle();
+        QTRY_VERIFY(proactiveSourceLabel(2) && proactiveSourceLabel(2)->isVisible());
+        QVERIFY(proactiveSourceLabel(3) && !proactiveSourceLabel(3)->isVisible());
+        QVERIFY(messageText(2)->mapToItem(row(2), QPointF()).y() > proactiveSourceLabel(2)->y());
+    }
+
+    void proactiveHistoryPageDoesNotRelabelLaterBubble() {
+        m_session->setMessages({proactiveBubble(0, 1), proactiveBubble(1, 2)});
+        settle();
+        QTRY_VERIFY(row(0) && row(1) && row(0)->isVisible() && row(1)->isVisible());
+        QVERIFY(proactiveSourceLabel(0) && !proactiveSourceLabel(0)->isVisible());
+        QVERIFY(proactiveSourceLabel(1) && !proactiveSourceLabel(1)->isVisible());
+        transition(true);
+        settle();
+        QTRY_VERIFY(row(0) && row(1));
+        QVERIFY(proactiveSourceLabel(0) && !proactiveSourceLabel(0)->isVisible());
+        QVERIFY(proactiveSourceLabel(1) && !proactiveSourceLabel(1)->isVisible());
+    }
+
+    void proactiveHistoryUsesUnreadReplyCueBehindTask() {
+        m_session->setMessages({message(0, "user"), message(1, "assistant")});
+        settle();
+        QCOMPARE(m_chat->property("unreadReplyCount").toInt(), 0);
+        setDirector({{"mode", "task"}, {"taskBlend", 1.}, {"chatInputReady", false}});
+        const QPointer<QQuickItem> focus = m_window->activeFocusItem();
+        const QVariantList history{message(0, "user"), message(1, "assistant"), proactiveBubble(2, 0), proactiveBubble(3, 1)};
+        m_session->setMessages(history);
+        QTRY_COMPARE(m_chat->property("unreadReplyCount").toInt(), 1);
+        QCOMPARE(m_chat->property("companionStatusText").toString(), QString("有新回复"));
+        QCOMPARE(m_director->property("mode").toString(), QString("task"));
+        QCOMPARE(QPointer<QQuickItem>(m_window->activeFocusItem()), focus);
+        m_session->setMessages(history);
+        QCOMPARE(m_chat->property("unreadReplyCount").toInt(), 1);
     }
 };
 QTEST_MAIN(ChatPanelVirtualizationTest)

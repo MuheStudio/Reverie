@@ -297,6 +297,18 @@
             "minLength": 1,
             "title": "Media Id",
             "type": "string"
+          },
+          "thumbnail": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Thumbnail"
           }
         },
         "required": [
@@ -562,6 +574,12 @@
             "maxLength": 20,
             "minLength": 1,
             "title": "Game",
+            "type": "string"
+          },
+          "retry_note": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Retry Note",
             "type": "string"
           },
           "state": {
@@ -833,6 +851,23 @@
         "title": "KeepsakeAddPayload",
         "type": "object"
       },
+      "keepsake:collect": {
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "title": "Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "KeepsakeCollectPayload",
+        "type": "object"
+      },
       "keepsake:list": {
         "additionalProperties": false,
         "description": "List collected keepsakes.",
@@ -846,6 +881,55 @@
           }
         },
         "title": "KeepsakeListPayload",
+        "type": "object"
+      },
+      "keepsake:page": {
+        "additionalProperties": false,
+        "properties": {
+          "content_offset": {
+            "default": 0,
+            "maximum": 2147483647,
+            "minimum": 0,
+            "title": "Content Offset",
+            "type": "integer"
+          },
+          "keepsake_id": {
+            "anyOf": [
+              {
+                "pattern": "^keepsake_[0-9a-f]{32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Keepsake Id"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 200,
+            "minimum": 0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "title": "KeepsakePagePayload",
+        "type": "object"
+      },
+      "keepsake:remove": {
+        "additionalProperties": false,
+        "properties": {
+          "keepsake_id": {
+            "pattern": "^keepsake_[0-9a-f]{32}$",
+            "title": "Keepsake Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "keepsake_id"
+        ],
+        "title": "KeepsakeRemovePayload",
         "type": "object"
       },
       "memory:candidates:confirm": {

@@ -12,6 +12,7 @@ process.stdin.on('end',()=>{try{
  else if(c.action==='preview'){result=manager.markPreviewReady(c.importId,{capabilities:{expressionPlayback:true,embeddedAnimationPlayback:true}});}
  else if(c.action==='commit'){const record=manager.commitImport({importId:c.importId,rightsConfirmed:c.rightsConfirmed===true,warningAccepted:c.warningAccepted===true});manager.setActive(record.id);}
  else if(c.action==='select')manager.setActive(c.id);
+ else if(c.action==='remove')manager.remove(c.id);
  else if(c.action!=='list')throw Error('Unknown model action');
  if(!result.candidate){const list=manager.list();result.list=list;if(list.activeId){const record=list.records.find(r=>r.id===list.activeId);const u=new URL(record.entryUrl);const relative=u.pathname.split('/').slice(2).map(decodeURIComponent).join('/');const descriptor=manager.openAsset(list.activeId,relative);fs.closeSync(descriptor.fd);result.entryPath=path.join(manager.recordsDir,list.activeId,'payload',relative);}}
  process.stdout.write(JSON.stringify({ok:true,...result}));

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Callable, TypeVar
 
 from ..config.settings import TIMELINE_DIR
 from ..persona.identity import StalePersonaEpoch
+from ..utils.prompt_data import neutralize_prompt_tags
 
 if TYPE_CHECKING:
     from ..api.adapter import LLMAdapter
@@ -433,8 +434,8 @@ class TimelineManager:
                 self._require_scope(epoch_token)
                 if not consistent:
                     logger.warning(
-                        "Timeline: consistency check failed; using grounded fallback (%s)",
-                        "; ".join(contradictions[:3]) or "verifier unavailable",
+                        "Timeline: consistency check failed; using grounded fallback (contradictions=%d)",
+                        len(contradictions),
                     )
                     text = self._build_grounded_fallback(
                         mood=mood,
@@ -481,7 +482,7 @@ class TimelineManager:
                 except Exception:
                     logger.debug("Timeline: failed to write post back to event memory", exc_info=True)
             self._save()
-            logger.info("Timeline post: %s [%s]", text[:50], trigger)
+            logger.info("Timeline post generated: trigger=%s characters=%d", trigger, len(text))
             return post
 
         except StalePersonaEpoch:
@@ -724,7 +725,7 @@ class TimelineManager:
                 ev.last_post_date = now.strftime("%Y-%m-%d")
                 if ev.post_count >= self.MAX_EVENT_POSTS:
                     ev.status = "completed"
-                    logger.info("Story event completed: %s", ev.title)
+                    logger.info("Story event completed (posts=%d)", ev.post_count)
                 return
 
     def create_event(
@@ -972,7 +973,7 @@ class TimelineManager:
 
 def _escape_prompt_data(value: str) -> str:
     """Keep untrusted memory text visibly data inside prompts."""
-    text = str(value).replace("</", "< /")
+    text = neutralize_prompt_tags(str(value))
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)[:1000]
 
 

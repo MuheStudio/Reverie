@@ -94,6 +94,14 @@ class DiaryEntry:
         )
 
 
+class DiaryWriteRejected(RuntimeError):
+    """A dated write request did not produce a new diary entry."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 # ── Content encryption ────────────────────────────────────
 
 class DiaryCrypto:
@@ -364,6 +372,7 @@ class DiaryManager:
         self._crypto: DiaryCrypto | None = None
         self._last_generated_date: str | None = None
         self._emotion_snapshot: dict[str, float] = {}
+        self._writing_dates: set[str] = set()
 
     def _now_local(self) -> datetime:
         """Naive wall time in the world clock zone, or process-local fallback."""
@@ -386,6 +395,33 @@ class DiaryManager:
         return self._crypto
 
     # ── Public API ────────────────────────────────────────
+
+    def today(self) -> str:
+        return self._now_local().date().isoformat()
+
+    def is_writing(self, date_str: str) -> bool:
+        self._require_scope()
+        return date_str in self._writing_dates
+
+    async def write_daily_entry_once(self, date_str: str, *, trigger: str) -> DiaryEntry:
+        """Share the same day reservation across preview automatic and manual writes."""
+        self._require_scope()
+        if self._entry_exists(date_str):
+            raise DiaryWriteRejected("diary_already_exists", "今天已经写过了")
+        if self.is_writing(date_str):
+            raise DiaryWriteRejected("diary_writing", "她正在写，稍后再看")
+        if not self._generation_allowed():
+            raise DiaryWriteRejected("diary_not_allowed", "日记未开启或未授权")
+        self._writing_dates.add(date_str)
+        try:
+            entry = await self.generate_daily_entry(date_str, trigger=trigger)
+            if entry is None:
+                if not self._generation_allowed():
+                    raise DiaryWriteRejected("diary_not_allowed", "日记未开启或未授权")
+                raise DiaryWriteRejected("diary_write_failed", "没写成，没有保存任何内容。可以稍后再试。")
+            return entry
+        finally:
+            self._writing_dates.remove(date_str)
 
     async def maybe_generate(
         self,
@@ -571,9 +607,9 @@ class DiaryManager:
             self._require_scope(epoch_token)
             if not consistent:
                 logger.warning(
-                    "Diary: consistency check failed for %s; using grounded fallback (%s)",
+                    "Diary: consistency check failed for %s (%d unsupported claims)",
                     date_str,
-                    "; ".join(unsupported[:3]) or "verifier unavailable",
+                    len(unsupported),
                 )
                 text = self._build_grounded_fallback(
                     date_str=date_str,
@@ -627,7 +663,7 @@ class DiaryManager:
             logger.info("Diary: dropped stale generation result for %s", date_str)
             return None
         except Exception:
-            logger.exception("Diary: generation failed for %s", date_str)
+            logger.warning("Diary: generation failed for %s", date_str)
             return None
         finally:
             if usage_lease is not None:
@@ -680,7 +716,7 @@ class DiaryManager:
             unsupported = [str(item)[:200] for item in claims[:10]] if isinstance(claims, list) else []
             return data.get("consistent") is True and not unsupported, unsupported
         except Exception:
-            logger.debug("Diary consistency verifier failed", exc_info=True)
+            logger.debug("Diary consistency verifier failed for %s", date_str)
             return False, ["核验调用失败"]
 
     def _build_grounded_fallback(
@@ -1029,7 +1065,7 @@ class DiaryManager:
         })
 
     def replace_all(self, data: dict) -> int:
-        """Replay a complete diary snapshot using the existing encryption key."""
+        """Replay a complete diary snapshot, provisioning an unused diary if needed."""
         self._require_scope()
         if not isinstance(data, dict) or not isinstance(data.get("entries", []), list):
             raise ValueError("Diary restore must contain an entries list")
@@ -1056,8 +1092,13 @@ class DiaryManager:
             if name in data and not isinstance(data[name], bool):
                 raise ValueError("Diary restore preferences are invalid")
         key_file = self.diary_dir / "keys" / KEY_FILE.name
-        if entries and not key_file.is_file():
-            raise ValueError("Diary restore requires the existing encryption key")
+        if not key_file.is_file():
+            if self.list_entries():
+                raise ValueError("Diary restore requires the existing encryption key")
+            if entries:
+                # Use the normal lazy key creation in save_entry. A cached
+                # key alone cannot make the restored files readable on restart.
+                self._crypto = None
         for entry in entries.values():
             self.save_entry(entry)
         # Include backup files: stale entries must never reappear through the

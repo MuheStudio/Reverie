@@ -86,6 +86,9 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("USER_PROFILE_UPDATE", "user:profile:update"),
     ("KEEPSAKE_LIST", "keepsake:list"),
     ("KEEPSAKE_ADD", "keepsake:add"),
+    ("KEEPSAKE_COLLECT", "keepsake:collect"),
+    ("KEEPSAKE_PAGE", "keepsake:page"),
+    ("KEEPSAKE_REMOVE", "keepsake:remove"),
     ("BACKUP_EXPORT", "backup:export"),
     ("BACKUP_IMPORT", "backup:import"),
     ("STICKER_LIST", "sticker:list"),
@@ -136,6 +139,7 @@ LEGACY_MESSAGE_TYPES: tuple[tuple[str, str], ...] = (
     ("TTS_RESULT", "tts:result"),
     ("USER_PROFILE_RESULT", "user:profile:result"),
     ("KEEPSAKE_RESULT", "keepsake:result"),
+    ("KEEPSAKE_PREVIEW_RESULT", "keepsake:preview:result"),
     ("BACKUP_RESULT", "backup:result"),
     ("SETTINGS_UPDATE_RESULT", "settings:update:result"),
     ("SETTINGS_GET_RESULT", "settings:get:result"),
@@ -203,6 +207,9 @@ MVP_COMMAND_NAMES = frozenset(
         "TIMELINE_REQUEST",
         "KEEPSAKE_LIST",
         "KEEPSAKE_ADD",
+        "KEEPSAKE_COLLECT",
+        "KEEPSAKE_PAGE",
+        "KEEPSAKE_REMOVE",
         "BACKUP_EXPORT",
         "BACKUP_IMPORT",
         "IMAGE_RANDOM",
@@ -259,6 +266,7 @@ MVP_EVENT_NAMES = frozenset(
         "DIARY_RESULT",
         "TIMELINE_RESULT",
         "KEEPSAKE_RESULT",
+        "KEEPSAKE_PREVIEW_RESULT",
         "BACKUP_RESULT",
         "IMAGE_RESULT",
         "TTS_RESULT",
@@ -392,6 +400,7 @@ class ChatMediaPayload(_PayloadModel):
     """Fetch one persisted chat media attachment as a data URL."""
 
     media_id: str = Field(min_length=1, max_length=128)
+    thumbnail: StrictBool | None = None
 
     @field_validator("media_id")
     @classmethod
@@ -449,6 +458,7 @@ class GameMovePayload(_PayloadModel):
 
     game: str = Field(min_length=1, max_length=20)
     state: dict[str, Any]
+    retry_note: str = Field(default="", max_length=200, strict=True)
 
     @field_validator("game")
     @classmethod
@@ -614,6 +624,28 @@ class ArchivePutPayload(_PayloadModel):
 
     archive: dict[str, Any] = Field(default_factory=dict)
     expected_revision: StrictInt = Field(default=0, ge=0)
+
+
+class KeepsakeCollectPayload(_PayloadModel):
+    message_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", strict=True)
+
+
+class KeepsakeRemovePayload(_PayloadModel):
+    keepsake_id: str = Field(pattern=r"^keepsake_[0-9a-f]{32}$", strict=True)
+
+
+class KeepsakePagePayload(_PayloadModel):
+    offset: int = Field(default=0, ge=0, le=200, strict=True)
+    keepsake_id: str | None = Field(default=None, pattern=r"^keepsake_[0-9a-f]{32}$", strict=True)
+    content_offset: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
+
+    @model_validator(mode="after")
+    def validate_page_kind(self) -> "KeepsakePagePayload":
+        if self.keepsake_id is None and self.content_offset != 0:
+            raise ValueError("content offset requires a keepsake id")
+        if self.keepsake_id is not None and self.offset != 0:
+            raise ValueError("content pages do not use a collection offset")
+        return self
 
 
 class SummaryStatusPayload(_PayloadModel):
@@ -1443,6 +1475,9 @@ COMMAND_PAYLOAD_MODELS: dict[str, type[_PayloadModel]] = {
     "timeline:request": EmptyPayload,
     "keepsake:list": KeepsakeListPayload,
     "keepsake:add": KeepsakeAddPayload,
+    "keepsake:collect": KeepsakeCollectPayload,
+    "keepsake:page": KeepsakePagePayload,
+    "keepsake:remove": KeepsakeRemovePayload,
     "backup:export": EmptyPayload,
     "backup:import": BackupImportPayload,
     "image:random": ImageRandomPayload,
@@ -1487,6 +1522,8 @@ MUTATING_COMMAND_NAMES = frozenset(
         "archive:migrate",
         "module:control",
         "keepsake:add",
+        "keepsake:collect",
+        "keepsake:remove",
         "persona:import",
         "persona:activate",
         "persona:profile:update",

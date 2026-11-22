@@ -550,6 +550,7 @@ class Runner final : public QObject {
     QVariantMap m_hiddenReturnBefore, m_hiddenAvatarBefore;
     int m_step = 0, m_baselineUserCount = 0, m_baselineAssistantCount = 0, m_loads = 0;
     int m_readingSendClicks = 0, m_stopSendClicks = 0, m_stopClicks = 0, m_wheelEvents = 0;
+    int m_readingHistoryGateHeldTicks = 0;
     bool m_entered = false, m_inTick = false, m_finished = false, m_mousePressed = false;
     bool m_watchTaskBlend = false, m_preeditSent = false;
     double m_minTaskBlend = 1, m_scrollBefore = 0, m_scrollAfter = 0;
@@ -567,6 +568,9 @@ class Runner final : public QObject {
     QString m_fullMessageId;
     QVariantList m_readingSelectionAcquisitions, m_readingSelectionSnapshots;
     QVariantMap m_readingSelectionLastDiagnostic;
+    QVariantMap m_readingSelectionLastRowAdjacency;
+    qint64 m_readingSelectionLastRowAdjacencyMs = -1, m_readingSelectionFirstRowPositionConsistentMs = -1;
+    int m_readingSelectionRowPositionRetryCount = 0;
     ReadingLayoutTimeline m_readingLayoutTimeline;
     ReadingSelectionProbe::Candidate m_readingSelectionCandidate;
     ReadingSelectionProbe::OnceGesture m_readingSelectionGesture;
@@ -907,6 +911,17 @@ class Runner final : public QObject {
         return m_readingSelectionDeadlineMs >= 0 &&
                m_stepClock.elapsed() < m_readingSelectionDeadlineMs;
     }
+    QString readingSelectionTimeoutCode(const QString &fallback) const {
+        if (!m_readingSelectionAcquiring || m_readingSelectionGesture.attempted())
+            return fallback;
+        return ReadingSelectionProbe::acquisitionTimeoutCode(m_readingSelectionLastDiagnostic, fallback);
+    }
+    void recordReadingSelectionRowSample(QVariantMap &snapshot, bool reused) const {
+        const bool available = !m_readingSelectionLastRowAdjacency.isEmpty();
+        snapshot["rowAdjacency"] = available ? m_readingSelectionLastRowAdjacency : QVariantMap{{"status", "unavailable"}};
+        snapshot["rowAdjacencyElapsedMs"] = m_readingSelectionLastRowAdjacencyMs;
+        snapshot["rowAdjacencyReused"] = available && reused;
+    }
     QVariantMap readingSelectionSnapshot(const QString &stage, const QVariantMap &diagnostic,
                                         qint64 probeElapsedMs, bool reusedProbe = false) const {
         auto *history = readingSelectionHistory();
@@ -966,6 +981,7 @@ class Runner final : public QObject {
             {"actualUtf16End", actual ? actual->property("selectionEnd").toInt() : -1},
             {"actualUtf16Length", selected.size()},
             {"actualTrimmedUtf16Length", selected.trimmed().size()}};
+        recordReadingSelectionRowSample(snapshot, reusedProbe || !diagnostic.contains("rowAdjacency"));
         return snapshot;
     }
     void beginReadingSelectionAcquisition(const QString &step, int stepTimeoutMs,
@@ -988,6 +1004,10 @@ class Runner final : public QObject {
         m_readingSelectionGesture = {};
         m_readingSelectionCandidate = {};
         m_readingSelectionLastDiagnostic.clear();
+        m_readingSelectionLastRowAdjacency.clear();
+        m_readingSelectionLastRowAdjacencyMs = -1;
+        m_readingSelectionFirstRowPositionConsistentMs = -1;
+        m_readingSelectionRowPositionRetryCount = 0;
         m_readingSelectionSnapshots.clear();
         m_selectedText = nullptr;
         m_selectedTextName.clear();
@@ -1001,14 +1021,21 @@ class Runner final : public QObject {
         m_readingSelectionDeadlineMs =
             std::min<qint64>(m_readingSelectionStepTimeoutMs, now + 4000);
     }
-    void rememberReadingSelectionObservation(const QVariantMap &diagnostic) {
-        // An expired probe is not a fresh candidate observation. Keep the last
-        // bounded one and its time for the explicitly reused terminal snapshot.
+    void rememberReadingSelectionObservation(const QVariantMap &diagnostic, bool beforePress = false) {
+        // Keep the last bounded observation. A completed row comparison can
+        // still be the newest observation when the final clock check expires.
+        const bool rowInconsistent = beforePress && diagnostic.value("reason").toString() == "row-position-inconsistent";
         if (diagnostic.value("deadlineReached").toBool() &&
-            !m_readingSelectionLastDiagnostic.isEmpty())
+            !rowInconsistent && !m_readingSelectionLastDiagnostic.isEmpty())
             return;
         m_readingSelectionLastDiagnostic = diagnostic;
         m_readingSelectionLastProbeMs = m_stepClock.elapsed();
+        if (!beforePress) return;
+        m_readingSelectionLastRowAdjacency = diagnostic.value("rowAdjacency").toMap();
+        m_readingSelectionLastRowAdjacencyMs = m_readingSelectionLastRowAdjacency.value("observedAtMs", -1).toLongLong();
+        if (m_readingSelectionFirstRowPositionConsistentMs < 0 &&
+                m_readingSelectionLastRowAdjacency.value("status").toString() == "consistent")
+            m_readingSelectionFirstRowPositionConsistentMs = m_readingSelectionLastRowAdjacencyMs;
     }
     void finishReadingSelectionAcquisition(bool passed) {
         m_readingLayoutTimeline.stop("acquisition-finished");
@@ -1034,6 +1061,8 @@ class Runner final : public QObject {
             {"windowElapsedMs", m_readingSelectionWindowStartMs >= 0
                                     ? elapsed - m_readingSelectionWindowStartMs : -1},
             {"attemptCount", m_readingSelectionAttempts},
+            {"rowPositionRetryCount", m_readingSelectionRowPositionRetryCount},
+            {"firstRowPositionConsistentMs", m_readingSelectionFirstRowPositionConsistentMs},
             {"selectedId", m_readingSelectionCandidate.messageId},
             {"dragAttemptCount", m_readingSelectionGesture.attempted() ? 1 : 0},
             {"gestureCompleted", m_readingSelectionGesture.completed()},
@@ -1069,33 +1098,35 @@ class Runner final : public QObject {
         if (m_readingSelectionGesture.completed())
             return true;
         require(!m_readingSelectionGesture.attempted(), "MOONROOM_READING_SELECTION_RETRY_AFTER_PRESS");
-        require(readingSelectionBeforeDeadline(), "MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT");
+        require(readingSelectionBeforeDeadline(), readingSelectionTimeoutCode("MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT"));
         auto *history = readingSelectionHistory();
+        if (m_readingSelectionLastDiagnostic.value("reason").toString() == "row-position-inconsistent")
+            ++m_readingSelectionRowPositionRetryCount;
         ++m_readingSelectionAttempts;
-        const auto probe = ReadingSelectionProbe::probe(
+        const auto probe = ReadingSelectionProbe::probeBeforePress(
             history, m_window, readingSelectionReady(history), readingSelectionClock(),
             m_readingSelectionDeadlineMs);
-        rememberReadingSelectionObservation(probe.diagnostic);
+        rememberReadingSelectionObservation(probe.diagnostic, true);
         if (probe.hasCandidate())
             m_readingSelectionCandidate = probe.candidate;
         if (m_readingSelectionSnapshots.isEmpty())
             m_readingSelectionSnapshots.append(
                 readingSelectionSnapshot("first", probe.diagnostic, m_readingSelectionLastProbeMs));
-        require(readingSelectionBeforeDeadline(), "MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT");
+        require(readingSelectionBeforeDeadline(), readingSelectionTimeoutCode("MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT"));
         if (!probe.hasCandidate())
             return false;
         ReadingSelectionProbe::Candidate live;
         QVariantMap diagnostic;
-        if (!ReadingSelectionProbe::revalidate(
+        if (!ReadingSelectionProbe::revalidateBeforePress(
                 probe.candidate, history, m_window, readingSelectionReady(history),
                 readingSelectionClock(), m_readingSelectionDeadlineMs, &live, &diagnostic)) {
-            rememberReadingSelectionObservation(diagnostic);
-            require(readingSelectionBeforeDeadline(), "MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT");
+            rememberReadingSelectionObservation(diagnostic, true);
+            require(readingSelectionBeforeDeadline(), readingSelectionTimeoutCode("MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT"));
             return false;
         }
         m_readingSelectionCandidate = live;
-        rememberReadingSelectionObservation(diagnostic);
-        const auto beforePress = readingSelectionSnapshot(
+        rememberReadingSelectionObservation(diagnostic, true);
+        auto beforePress = readingSelectionSnapshot(
             "beforePress", diagnostic, m_readingSelectionLastProbeMs);
         // Diagnostics do not pump events. Reacquire once more after their public
         // Qt queries so a replaced delegate remains a candidate-only retry.
@@ -1103,15 +1134,16 @@ class Runner final : public QObject {
         history = readingSelectionHistory();
         m_readingLayoutTimeline.prepare(history, m_chat, live.item, readingSelectionClock());
         ReadingLayoutTimeline::WindowGuard layoutWindow(m_readingLayoutTimeline);
-        if (!ReadingSelectionProbe::revalidate(
+        if (!ReadingSelectionProbe::revalidateBeforePress(
                 live, history, m_window, readingSelectionReady(history), readingSelectionClock(),
                 m_readingSelectionDeadlineMs, &finalLive, &diagnostic)) {
-            rememberReadingSelectionObservation(diagnostic);
-            require(readingSelectionBeforeDeadline(), "MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT");
+            rememberReadingSelectionObservation(diagnostic, true);
+            require(readingSelectionBeforeDeadline(), readingSelectionTimeoutCode("MOONROOM_READING_SELECTION_ACQUISITION_TIMEOUT"));
             return false;
         }
         m_readingSelectionCandidate = finalLive;
-        rememberReadingSelectionObservation(diagnostic);
+        rememberReadingSelectionObservation(diagnostic, true);
+        recordReadingSelectionRowSample(beforePress, false);
         m_selectedText = finalLive.item;
         m_selectedTextName = finalLive.name;
         const QPointF start = finalLive.start;
@@ -1267,14 +1299,23 @@ class Runner final : public QObject {
             add(
                 "reading-fixture-send-" + QString::number(turn),
                 [this, text] {
+                    m_readingHistoryGateHeldTicks = 0;
                     type("chatComposer", text);
                     click("sendChat");
                     ++m_readingSendClicks;
                 },
                 [this, text, turn] {
-                    return !m_session->busy() && chatReady("companion") && messageCount("user", text) == 1 &&
-                           messageCount("assistant") >= m_baselineAssistantCount + turn &&
-                           assistantCharactersAfter(text) >= 600;
+                    const bool ready = !m_session->busy() && chatReady("companion") && messageCount("user", text) == 1 &&
+                                       messageCount("assistant") >= m_baselineAssistantCount + turn &&
+                                       assistantCharactersAfter(text) >= 600;
+                    if (!ready)
+                        return false;
+                    bool historyPending = false;
+                    for (const auto &value : m_session->diagnostics().value("pendingCommands").toList())
+                        historyPending = historyPending || value.toMap().value("command").toString() == "chat:history";
+                    if (historyPending)
+                        ++m_readingHistoryGateHeldTicks;
+                    return !historyPending;
                 },
                 [this, text, turn] {
                     require(messageCount("user") == m_baselineUserCount + turn,
@@ -1284,6 +1325,7 @@ class Runner final : public QObject {
                             {"text", text},
                             {"matchingUserRows", messageCount("user", text)},
                             {"assistantCharacters", assistantCharactersAfter(text)},
+                            {"historyGateHeldTicks", m_readingHistoryGateHeldTicks},
                             {"purpose", "long-history reading fixture"}});
                 },
                 120, 30000);
@@ -1870,7 +1912,7 @@ class Runner final : public QObject {
                     {"assistantMessages", m_session ? messageCount("assistant") : -1},
                     {"userMessages", m_session ? messageCount("user") : -1}};
             }
-            require(m_stepClock.elapsed() <= step.timeoutMs, "MOONROOM_STEP_TIMEOUT:" + step.name);
+            require(m_stepClock.elapsed() <= step.timeoutMs, readingSelectionTimeoutCode("MOONROOM_STEP_TIMEOUT:" + step.name));
             if (m_stepClock.elapsed() >= step.minimumMs && (!step.ready || step.ready())) {
                 if (step.validate)
                     step.validate();

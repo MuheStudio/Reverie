@@ -1,7 +1,7 @@
 """Independent, deterministic worldbook evaluation over canonical snapshots.
 
 Written from the approved behavior contract and the canonical archive schema;
-no legacy matching implementation was consulted. Repository GPL-3.0 terms apply.
+no legacy matching implementation was consulted. Repository Apache-2.0 terms apply.
 There is no storage or model dependency here. Rendering is exact entry content
 joined with two newlines; budgets count Unicode code points in that rendering.
 Regex execution is delegated exclusively to the killable subprocess supervisor.

@@ -375,7 +375,7 @@ class StickerManager:
         )
         self._stickers[sid] = sticker
         self._save()
-        logger.info("Collected sticker: %s", clean_text[:30])
+        logger.info("Collected sticker: id=%s characters=%d", sid, len(clean_text))
         return sticker
 
     def collect_from_file(

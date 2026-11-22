@@ -2087,6 +2087,36 @@ class RuntimeBridgeTest final : public QObject {
         m_window->show();
         QVERIFY(QTest::qWaitForWindowExposed(m_window.get()));
     }
+    QSet<QQuickItem *> avatarRemovalMatches(const QString &name) const {
+        QList<QQuickItem *> found;
+        visualMatches(m_panel, name, found);
+        const auto popups = m_panel ? m_panel->findChildren<QObject *>("avatarRemoveConfirmation") : QList<QObject *>{};
+        if (popups.size() == 1)
+            for (const auto *surface : {"header", "contentItem", "footer"})
+                visualMatches(popups.first()->property(surface).value<QQuickItem *>(), name, found);
+        QSet<QQuickItem *> unique;
+        for (auto *item : found) unique.insert(item);
+        return unique;
+    }
+    QQuickItem *avatarRemovalItem(const QString &name) const {
+        const auto matches = avatarRemovalMatches(name);
+        return matches.size() == 1 ? *matches.cbegin() : nullptr;
+    }
+    bool writeAvatarNoticeJobResponse(const QJsonObject &result) const {
+        const auto helperDir = m_data->filePath(".tools/node/bin");
+        const auto helper = helperDir + "/node";
+        return QDir().mkpath(helperDir)
+            && writeLocal(helperDir + "/result.json", QJsonDocument(result).toJson(QJsonDocument::Compact))
+            && writeLocal(helper, "#!/bin/sh\nbase=$(/usr/bin/dirname \"$0\")\n/bin/cat >/dev/null\n/bin/cat \"$base/result.json\"\n")
+            && QFile::setPermissions(helper, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    }
+    std::unique_ptr<QObject> createPreviewNavigation() const {
+        QQmlComponent component(m_engine.get(), QUrl("qrc:/persona-card-confirmation/ui/SceneNavigation.qml"));
+        auto navigation = std::unique_ptr<QObject>(component.create());
+        if (!navigation)
+            qWarning() << component.errorString();
+        return navigation;
+    }
     // These helpers exercise the existing TaskPanel, command writer and shared
     // input gate. They do not emit the older candidate/profile diagnostics.
     static QString feedbackMemoryId(int index) { return QString("fact_feedback_%1").arg(index); }
@@ -11824,6 +11854,575 @@ Item {
         QCOMPARE(batchControl("memoryImportance0")->isVisible(), lock != "editing");
         QCOMPARE(rendererCommandCount("memory:reinforce"), lock == "single-action" ? 1 : 0);
     }
+    void modelConsentResetsOnlyWhenImportIdentityChanges_data() {
+        QTest::addColumn<bool>("previewReady");
+        QTest::addColumn<bool>("warnings");
+        QTest::newRow("pending-with-warnings") << false << true;
+        QTest::newRow("ready-with-warnings") << true << true;
+        QTest::newRow("pending-without-warnings") << false << false;
+        QTest::newRow("ready-without-warnings") << true << false;
+    }
+    void modelConsentResetsOnlyWhenImportIdentityChanges() {
+        QFETCH(bool, previewReady); QFETCH(bool, warnings);
+        const auto notices = warnings ? QVariantList{QString("synthetic warning")} : QVariantList{};
+        m_bridge->m_candidate = {{"importId", "first-import"}, {"previewReady", true}, {"warnings", notices}};
+        loadPanel(); QVERIFY(m_panel && m_window);
+        auto *rights = avatarRemovalItem("modelRights");
+        auto *warning = avatarRemovalItem("modelWarnings");
+        auto *confirm = avatarRemovalItem("confirmModel");
+        QVERIFY(rights && warning && confirm);
+        QTRY_COMPARE(m_panel->property("avatarConsentImportId").toString(), QString("first-import"));
+        QVERIFY(!rights->property("checked").toBool()); QVERIFY(!warning->property("checked").toBool());
+        QVERIFY(rights->setProperty("checked", true)); QVERIFY(warning->setProperty("checked", true));
+        QTRY_VERIFY(confirm->isEnabled());
+        m_bridge->m_candidate = {{"importId", "second-import"}, {"previewReady", previewReady}, {"warnings", notices}};
+        emit m_bridge->avatarChanged();
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(4000, Qt::PreciseTimer)));
+        QTRY_COMPARE(m_panel->property("avatarConsentImportId").toString(), QString("second-import"));
+        QTRY_VERIFY(!rights->property("checked").toBool());
+        QTRY_VERIFY(!warning->property("checked").toBool());
+        QVERIFY(!confirm->isEnabled());
+        QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 0);
+    }
+    void modelConsentPreviewReadinessKeepsSameImportSelections_data() {
+        QTest::addColumn<bool>("rightChecked"); QTest::addColumn<bool>("warningChecked");
+        QTest::newRow("both-selected") << true << true;
+        QTest::newRow("rights-only") << true << false;
+        QTest::newRow("warning-only") << false << true;
+    }
+    void modelConsentPreviewReadinessKeepsSameImportSelections() {
+        QFETCH(bool, rightChecked); QFETCH(bool, warningChecked);
+        m_bridge->m_candidate = {{"importId", "same-import"}, {"previewReady", false},
+            {"warnings", QVariantList{QString("synthetic warning")}}};
+        loadPanel(); QVERIFY(m_panel && m_window);
+        auto *rights = avatarRemovalItem("modelRights"), *warning = avatarRemovalItem("modelWarnings");
+        auto *confirm = avatarRemovalItem("confirmModel"); QVERIFY(rights && warning && confirm);
+        QTRY_COMPARE(m_panel->property("avatarConsentImportId").toString(), QString("same-import"));
+        QVERIFY(rights->setProperty("checked", rightChecked)); QVERIFY(warning->setProperty("checked", warningChecked));
+        QVERIFY(!confirm->isEnabled());
+        m_bridge->m_candidate["previewReady"] = true; emit m_bridge->avatarChanged();
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(4000, Qt::PreciseTimer)));
+        QTRY_COMPARE(confirm->isEnabled(), rightChecked && warningChecked);
+        QCOMPARE(rights->property("checked").toBool(), rightChecked);
+        QCOMPARE(warning->property("checked").toBool(), warningChecked);
+        QCOMPARE(m_panel->property("avatarConsentImportId").toString(), QString("same-import"));
+        QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 0);
+    }
+    void avatarRemovalButtonsAndReasons_data() {
+        QTest::addColumn<QString>("condition");
+        for (const auto &condition : QStringList{"ready", "current", "only-current", "damaged", "busy", "candidate", "readonly", "long-name",
+                 "current-damaged", "damaged-busy"})
+            QTest::newRow(qPrintable(condition)) << condition;
+    }
+    void avatarRemovalButtonsAndReasons() {
+        QFETCH(QString, condition);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        const QString name = condition == "long-name" ? QString(80, QChar(0x5f62)) : QString("<b>其他形象</b>");
+        QVariantList records{QVariantMap{{"id", active}, {"name", "当前形象"}, {"status", condition == "current-damaged" ? "unavailable" : "ready"}},
+            QVariantMap{{"id", other}, {"name", name}, {"status", condition == "damaged" || condition == "damaged-busy" ? "unavailable" : "ready"}}};
+        if (condition == "only-current") records.removeLast();
+        m_bridge->m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", records}};
+        if (condition == "busy" || condition == "damaged-busy") m_bridge->m_avatarBusy = true;
+        if (condition == "candidate") m_bridge->m_candidate = {{"importId", "unconfirmed"}};
+        if (condition == "readonly") m_bridge->m_runtimeWritable = false;
+        loadPanel(); m_window->resize(760, 650);
+        const auto target = condition == "current" || condition == "only-current" || condition == "current-damaged" ? active : other;
+        auto *remove = avatarRemovalItem("avatarRemove-" + target);
+        auto *select = avatarRemovalItem("avatarRecord-" + target);
+        auto *reason = avatarRemovalItem("avatarRemoveReason-" + target);
+        QVERIFY(remove && select && reason);
+        const auto blocker = m_bridge->modelRemovalBlocker(target);
+        QTRY_COMPARE(remove->property("removalBlocker").toString(), blocker);
+        QCOMPARE(remove->isEnabled(), condition == "ready" || condition == "long-name");
+        QTRY_COMPARE(reason->isVisible(), !blocker.isEmpty());
+        QCOMPARE(reason->property("text").toString(), blocker);
+        QCOMPARE(reason->property("textFormat").toInt(), int(Qt::PlainText));
+        if (!blocker.isEmpty()) {
+            QVERIFY(revealPriorityControl(reason));
+            QVERIFY(reason->width() > 0 && reason->height() > 0);
+        }
+        QCOMPARE(select->property("text").toString(), target == active ? QString("当前形象 · 当前") : name);
+        if (condition == "current" || condition == "only-current" || condition == "current-damaged")
+            QCOMPARE(blocker, QString("先切换到其他形象，再删除。"));
+        else if (condition == "damaged" || condition == "damaged-busy")
+            QCOMPARE(blocker, QString("这个形象的记录已损坏，暂时不能删除。"));
+        else if (QStringList{"busy", "candidate", "readonly"}.contains(condition))
+            QCOMPARE(blocker, QString("请等待当前操作完成。"));
+        if (condition == "long-name") {
+            QVERIFY(revealPriorityControl(remove));
+            const auto rectangle = remove->mapRectToScene(QRectF(QPointF(), remove->size()));
+            QVERIFY(rectangle.left() >= 0 && rectangle.right() <= 760);
+            QVERIFY(remove->width() >= remove->implicitWidth());
+            auto *scroll = m_panel->findChild<QQuickItem *>("memoryPageScroll"); QVERIFY(scroll);
+            auto *view = scroll->property("contentItem").value<QQuickItem *>(); QVERIFY(view);
+            QVERIFY(view->property("contentWidth").toDouble() <= view->width() + 1);
+            QCOMPARE(view->property("contentX").toDouble(), 0.);
+        }
+        QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 0);
+    }
+    void avatarRemovalDialogCancelOrConfirm_data() {
+        QTest::addColumn<bool>("confirmed");
+        QTest::newRow("cancel-zero-actions") << false;
+        QTest::newRow("confirm-one-action") << true;
+    }
+    void avatarRemovalDialogCancelOrConfirm() {
+        QFETCH(bool, confirmed);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        const QString name = "<b>删除名字原文</b>", entry = m_data->filePath("current.model3.json");
+        const QJsonObject first{{"id", active}, {"name", "当前形象"}, {"status", "ready"}};
+        const QJsonObject second{{"id", other}, {"name", name}, {"status", "ready"}};
+        m_bridge->m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", QJsonArray{first, second}.toVariantList()}};
+        m_bridge->m_avatarPath = entry; m_bridge->m_avatarRender = RuntimeBridge::AvatarRender::Ready;
+        m_bridge->m_avatarState = "形象已就绪"; m_bridge->m_avatarReloadToken = 4;
+        if (confirmed) {
+            const auto helperDir = m_data->filePath(".tools/node/bin");
+            QVERIFY(QDir().mkpath(helperDir));
+            const QJsonObject result{{"ok", true}, {"entryPath", entry},
+                {"list", QJsonObject{{"activeId", active}, {"records", QJsonArray{first}}}}};
+            QFile response(helperDir + "/result.json"); QVERIFY(response.open(QIODevice::WriteOnly));
+            QVERIFY(response.write(QJsonDocument(result).toJson(QJsonDocument::Compact)) > 0); response.close();
+            QFile helper(helperDir + "/node"); QVERIFY(helper.open(QIODevice::WriteOnly));
+            QVERIFY(helper.write("#!/bin/sh\nbase=$(/usr/bin/dirname \"$0\")\n/bin/cat > \"$base/job.json\"\n/bin/cat \"$base/result.json\"\n") > 0);
+            helper.close();
+            QVERIFY(QFile::setPermissions(helper.fileName(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        }
+        loadPanel(); m_window->resize(760, 650);
+        auto *remove = avatarRemovalItem("avatarRemove-" + other);
+        const auto dialogs = m_panel->findChildren<QObject *>("avatarRemoveConfirmation");
+        auto *dialog = dialogs.size() == 1 ? dialogs.first() : nullptr;
+        auto *label = avatarRemovalItem("avatarRemoveName");
+        auto *notice = avatarRemovalItem("avatarRemoveNotice");
+        auto *confirm = avatarRemovalItem("avatarRemoveConfirm");
+        auto *cancel = avatarRemovalItem("avatarRemoveCancel");
+        QVERIFY(remove && dialog && label && notice && confirm && cancel);
+        QVERIFY(revealPriorityControl(remove)); QVERIFY(remove->isEnabled());
+        QSignalSpy openClicks(remove, SIGNAL(clicked())); QVERIFY(openClicks.isValid());
+        const auto point = remove->mapToScene(QPointF(remove->width() / 2, remove->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, point);
+        QTRY_VERIFY(dialog->property("opened").toBool()); QCOMPARE(openClicks.count(), 1);
+        QCOMPARE(dialog->property("title").toString(), QString("删除这个形象？"));
+        QCOMPARE(label->property("text").toString(), name);
+        QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+        QCOMPARE(notice->property("text").toString(), QString("这会删除应用保存的副本。原来的模型文件夹不受影响，需要时可以重新导入。"));
+        QCOMPARE(notice->property("textFormat").toInt(), int(Qt::PlainText));
+        QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 0);
+        auto *target = confirmed ? confirm : cancel;
+        QVERIFY(target->isEnabled());
+        QSignalSpy clicks(target, SIGNAL(clicked())); QVERIFY(clicks.isValid());
+        const auto center = target->mapToScene(QPointF(target->width() / 2, target->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, center);
+        QCOMPARE(clicks.count(), 1);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        if (!confirmed) {
+            QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 0);
+            QCOMPARE(m_bridge->m_state.value("avatars").toMap().value("records").toList().size(), 2);
+        } else {
+            QTRY_COMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("completed").toInt(), 1);
+            QTRY_VERIFY(avatarRemovalMatches("avatarRemove-" + other).isEmpty());
+            const auto feedback = m_bridge->avatarRemovalFeedback();
+            QCOMPARE(feedback.value("status").toString(), QString("success"));
+            QCOMPARE(feedback.value("text").toString(), "已删除「" + name + "」。");
+            auto *text = avatarRemovalItem("avatarRemovalFeedback"); QVERIFY(text);
+            QTRY_COMPARE(text->property("text").toString(), feedback.value("text").toString());
+            QCOMPARE(text->property("textFormat").toInt(), int(Qt::PlainText));
+            QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 1);
+            QFile job(m_data->filePath(".tools/node/bin/job.json")); QVERIFY(job.open(QIODevice::ReadOnly));
+            const auto sent = QJsonDocument::fromJson(job.readAll()).object();
+            QCOMPARE(sent["action"].toString(), QString("remove")); QCOMPARE(sent["id"].toString(), other);
+        }
+        QCOMPARE(m_bridge->avatarPath(), entry); QCOMPARE(m_bridge->avatarReloadToken(), 4);
+        QCOMPARE(m_bridge->avatarState(), QString("形象已就绪"));
+    }
+    void avatarRemovalConfirmationRechecksGate_data() {
+        QTest::addColumn<QString>("condition");
+        for (const auto &condition : QStringList{"current", "damaged", "busy", "candidate", "readonly"})
+            QTest::newRow(qPrintable(condition)) << condition;
+    }
+    void avatarRemovalConfirmationRechecksGate() {
+        QFETCH(QString, condition);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        QVariantMap first{{"id", active}, {"name", "当前形象"}, {"status", "ready"}};
+        QVariantMap second{{"id", other}, {"name", "其他形象"}, {"status", "ready"}};
+        m_bridge->m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", QVariantList{first, second}}};
+        loadPanel(); m_window->resize(760, 650);
+        auto *remove = avatarRemovalItem("avatarRemove-" + other);
+        const auto dialogs = m_panel->findChildren<QObject *>("avatarRemoveConfirmation");
+        auto *dialog = dialogs.size() == 1 ? dialogs.first() : nullptr;
+        auto *confirm = avatarRemovalItem("avatarRemoveConfirm");
+        QVERIFY(remove && dialog && confirm); QVERIFY(revealPriorityControl(remove));
+        const auto point = remove->mapToScene(QPointF(remove->width() / 2, remove->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, point);
+        QTRY_VERIFY(dialog->property("opened").toBool()); QVERIFY(confirm->isEnabled());
+        if (condition == "current")
+            m_bridge->m_state["avatars"] = QVariantMap{{"activeId", other}, {"records", QVariantList{first, second}}};
+        else if (condition == "damaged") {
+            second["status"] = "unavailable";
+            m_bridge->m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", QVariantList{first, second}}};
+        } else if (condition == "busy") m_bridge->m_avatarBusy = true;
+        else if (condition == "candidate") m_bridge->m_candidate = {{"importId", "unconfirmed"}};
+        else if (condition == "readonly") m_bridge->m_runtimeWritable = false;
+        emit m_bridge->changed(); emit m_bridge->avatarChanged();
+        QTRY_VERIFY(!confirm->isEnabled());
+        QSignalSpy clicks(confirm, SIGNAL(clicked())); QVERIFY(clicks.isValid());
+        const auto center = confirm->mapToScene(QPointF(confirm->width() / 2, confirm->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, center);
+        QCOMPARE(clicks.count(), 0);
+        QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), 0);
+    }
+    void avatarRemovalNoticeLifetime_data() {
+        QTest::addColumn<QString>("action");
+        QTest::addColumn<bool>("success");
+        for (const auto &action : QStringList{"select", "import", "delete", "leave"}) {
+            QTest::newRow(qPrintable(action + "-clears-success")) << action << true;
+            QTest::newRow(qPrintable(action + "-keeps-unconfirmed")) << action << false;
+        }
+    }
+    void avatarRemovalNoticeLifetime() {
+        QFETCH(QString, action);
+        QFETCH(bool, success);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        m_bridge->m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", QVariantList{
+            QVariantMap{{"id", active}, {"name", "当前形象"}, {"status", "ready"}},
+            QVariantMap{{"id", other}, {"name", "其他形象"}, {"status", "ready"}}}}};
+        const auto text = success ? QString("已删除「之前的形象」。")
+            : QString("形象删除未确认，列表重新读取失败；请重新打开核对。");
+        const QVariantMap receipt{{"status", success ? "success" : "error"}, {"text", text}, {"listReloaded", success}};
+        m_bridge->m_avatarRemovalFeedback = receipt;
+        loadPanel();
+        QVERIFY(m_panel);
+        auto *notice = avatarRemovalItem("avatarRemovalFeedback");
+        QVERIFY(notice && notice->isVisible());
+        QCOMPARE(notice->property("text").toString(), text);
+        if (action == "leave") {
+            auto navigation = createPreviewNavigation();
+            QVERIFY(navigation);
+            QVERIFY(navigation->setProperty("currentFeature", "character"));
+            QVERIFY(m_panel->setProperty("navigation", QVariant::fromValue(navigation.get())));
+            QVERIFY(navigation->setProperty("currentFeature", "settings"));
+            QVERIFY(navigation->setProperty("currentFeature", "character"));
+        } else {
+            const auto buttonName = action == "select" ? "avatarRecord-" + active
+                : action == "import" ? QString("importModel") : "avatarRemove-" + other;
+            auto *button = avatarRemovalItem(buttonName);
+            QVERIFY(button && button->isEnabled());
+            QObject *dialog = nullptr;
+            if (action == "select") {
+                QVERIFY(writeAvatarNoticeJobResponse({{"ok", false}}));
+            } else if (action == "import") {
+                dialog = m_panel->findChild<QObject *>("avatarModelFolder");
+                QVERIFY(dialog);
+                const auto property = dialog->metaObject()->indexOfProperty("options");
+                QVERIFY(property >= 0);
+                const auto options = dialog->metaObject()->property(property).enumerator();
+                const auto dontUseNativeDialog = options.keyToValue("DontUseNativeDialog");
+                QVERIFY(dontUseNativeDialog > 0);
+                QVERIFY(dialog->setProperty("options", dontUseNativeDialog));
+            } else {
+                dialog = m_panel->findChild<QObject *>("avatarRemoveConfirmation");
+                QVERIFY(dialog);
+            }
+            QVERIFY(QMetaObject::invokeMethod(button, "clicked"));
+            if (dialog) {
+                QTRY_VERIFY(dialog->property("visible").toBool());
+                QVERIFY(QMetaObject::invokeMethod(dialog, "close"));
+            } else {
+                QTRY_COMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("completed").toInt(), 1);
+            }
+        }
+        QCOMPARE(m_bridge->avatarRemovalFeedback(), success ? QVariantMap{} : receipt);
+        QCOMPARE(notice->property("text").toString(), success ? QString() : text);
+        QCOMPARE(notice->isVisible(), !success);
+        QCOMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("dispatched").toInt(), action == "select" ? 1 : 0);
+    }
+    void avatarRemovalResultAfterLeavingCharacter_data() {
+        QTest::addColumn<bool>("success");
+        QTest::newRow("late-success-stays-dismissed") << true;
+        QTest::newRow("late-unconfirmed-stays-visible") << false;
+    }
+    void avatarRemovalResultAfterLeavingCharacter() {
+        QFETCH(bool, success);
+        const QString active = "11111111-1111-4111-8111-111111111111";
+        const QString other = "22222222-2222-4222-8222-222222222222";
+        const QJsonObject first{{"id", active}, {"name", "当前形象"}, {"status", "ready"}};
+        const QJsonObject second{{"id", other}, {"name", "其他形象"}, {"status", "ready"}};
+        m_bridge->m_state["avatars"] = QVariantMap{{"activeId", active}, {"records", QJsonArray{first, second}.toVariantList()}};
+        QVERIFY(writeAvatarNoticeJobResponse({{"ok", success},
+            {"list", QJsonObject{{"activeId", active}, {"records", QJsonArray{first}}}}}));
+        loadPanel();
+        QVERIFY(m_panel);
+        auto navigation = createPreviewNavigation();
+        QVERIFY(navigation);
+        QVERIFY(navigation->setProperty("currentFeature", "character"));
+        QVERIFY(m_panel->setProperty("navigation", QVariant::fromValue(navigation.get())));
+        m_bridge->removeModel(other);
+        QCOMPARE(m_bridge->avatarRemovalFeedback().value("status").toString(), QString("pending"));
+        QVERIFY(navigation->setProperty("currentFeature", "settings"));
+        QCOMPARE(m_bridge->avatarRemovalFeedback().value("status").toString(), QString("pending"));
+        QVERIFY(navigation->setProperty("currentFeature", "character"));
+        QTRY_COMPARE(m_bridge->diagnostics().value("avatarJobs").toMap().value("completed").toInt(), success ? 1 : 2);
+        const auto feedback = m_bridge->avatarRemovalFeedback();
+        QCOMPARE(m_bridge->state().value("avatars").toMap().value("records").toList().size(), success ? 1 : 2);
+        QCOMPARE(feedback.value("status").toString(), success ? QString() : QString("error"));
+        auto *notice = avatarRemovalItem("avatarRemovalFeedback");
+        QVERIFY(notice);
+        QCOMPARE(notice->isVisible(), !success);
+        QCOMPARE(notice->property("text").toString(), success ? QString()
+            : QString("形象删除未确认，列表重新读取失败；请重新打开核对。"));
+    }
+    void internalPreviewCopyAppearsInAboutAndServiceNavigation() {
+        loadPanel();
+        QVERIFY(m_panel);
+        QVERIFY(m_panel->setProperty("page", "about"));
+        auto *about = m_panel->findChild<QQuickItem *>("aboutPreviewDescription");
+        QVERIFY(about && about->isVisible());
+        QVERIFY(about->property("text").toString().contains("\n\n这是内部预览版。"));
+        auto navigation = createPreviewNavigation();
+        QVERIFY(navigation);
+        QVariant entry;
+        QVERIFY(QMetaObject::invokeMethod(navigation.get(), "entryFor", Q_RETURN_ARG(QVariant, entry),
+            Q_ARG(QVariant, QString("settings")), Q_ARG(QVariant, QString("provider"))));
+        if (entry.metaType() == QMetaType::fromType<QJSValue>())
+            entry = entry.value<QJSValue>().toVariant();
+        QCOMPARE(entry.toMap().value("detail").toString(), QString("连接与测试回复服务"));
+    }
+    void worldbookFileDroppedSettingNamesReachConfirmation() {
+        QVERIFY(loadArchiveDrawer(priorityFixtureArchive(QJsonValue(1), false), 760, false));
+        const auto source = m_data->filePath("worldbook.json");
+        QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("{}"), qint64(2)); file.close();
+        m_bridge->inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        const auto sent = m_frames.last();
+        QCOMPARE(sent["type"].toString(), QString("worldbook:file:inspect"));
+        const auto before = m_frames.size();
+        m_bridge->acceptFrame({{"kind", "control_result"}, {"schema", "reverie.bridge.stdio.control.v4"},
+            {"type", "worldbook:file:inspect"}, {"requestId", sent["requestId"]}, {"ok", true},
+            {"book_name", "未保留设置夹具"}, {"importable_entry_count", 3}, {"skipped", QJsonObject{}},
+            {"dropped_fields", QJsonObject{{"position", 1}, {"selectiveLogic", 2}, {"keysecondary", 3}}},
+            {"disabled_regex_entry_count", 0}, {"cleaned_entry_count", 0}, {"sha256", QString(64, 'a')}, {"file_bytes", 2}});
+        auto *dialog = m_panel->findChild<QObject *>("worldbookFileImportConfirmation");
+        auto *summary = m_panel->findChild<QQuickItem *>("worldbookFileImportSummary");
+        QVERIFY(dialog && summary);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QCOMPARE(m_bridge->worldbookFileState().value("status").toString(), QString("confirmation"));
+        QCOMPARE(summary->property("textFormat").toInt(), int(Qt::PlainText));
+        QVERIFY(summary->property("text").toString().contains("未保留的设置：keysecondary（3 条）、position（1 条）、selectiveLogic（2 条）"));
+        QCOMPARE(m_frames.size(), before);
+    }
+    void cardExportBookNamesRemainPlainText_data() {
+        QTest::addColumn<int>("width");
+        QTest::newRow("narrow-360") << 360;
+        QTest::newRow("normal-760") << 760;
+    }
+    void cardExportBookNamesRemainPlainText() {
+        QFETCH(int, width);
+        const QString name = "<b>原文书名</b>";
+        QJsonObject list{{"ok", true}, {"active_id", "persona-current"}, {"profiles", QJsonArray{QJsonObject{
+            {"id", "persona-current"}, {"name", "测试角色"}, {"active", true}, {"source_format", "chara_card_v2"}}}}};
+        list["persona_id"] = m_bridge->m_persona["persona_id"];
+        list["persona_epoch"] = m_bridge->m_persona["epoch"];
+        list["persona_fingerprint"] = m_bridge->m_persona["fingerprint"];
+        m_bridge->event({{"type", "persona:list:result"}, {"request_id", m_bridge->request("persona:list")}, {"payload", list}});
+        const QJsonObject archive{{"ok", true}, {"revision", 4}, {"archive", QJsonObject{{"worldBooks", QJsonArray{
+            QJsonObject{{"id", "literal-book"}, {"name", name}, {"entries", QJsonArray{}}}}}}}};
+        m_bridge->event({{"type", "archive:result"}, {"request_id", m_bridge->request("archive:get")}, {"payload", archive}});
+        loadPanel();
+        QVERIFY(m_panel && m_window);
+        m_window->resize(width, 650);
+        auto *button = m_panel->findChild<QQuickItem *>("personaCardExport");
+        auto *dialog = m_panel->findChild<QObject *>("personaCardExportConfirmation");
+        auto *choice = m_panel->findChild<QQuickItem *>("personaCardExportBook");
+        QVERIFY(button && dialog && choice);
+        QVERIFY(revealPriorityControl(button));
+        QVERIFY(button->isEnabled());
+        const auto before = m_frames.size();
+        const auto center = button->mapToScene(QPointF(button->width() / 2, button->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, center);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(choice->setProperty("currentIndex", 1));
+        QCOMPARE(choice->property("currentValue").toString(), QString("literal-book"));
+        auto *current = choice->property("contentItem").value<QQuickItem *>();
+        QVERIFY(current);
+        QVERIFY(current->inherits("QQuickTextInput"));
+        QTRY_COMPARE(current->property("text").toString(), name);
+        QVERIFY(!current->property("textFormat").isValid());
+        auto popupValue = choice->property("popup");
+        if (popupValue.metaType() == QMetaType::fromType<QJSValue>()) popupValue = popupValue.value<QJSValue>().toVariant();
+        auto *popup = popupValue.value<QObject *>(); QVERIFY(popup);
+        const auto arrow = choice->mapToScene(QPointF(choice->width() - 12, choice->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, arrow);
+        QTRY_VERIFY(popup->property("visible").toBool());
+        auto *view = popup->property("contentItem").value<QQuickItem *>(); QVERIFY(view);
+        QQuickItem *delegate = nullptr;
+        QTRY_VERIFY(QMetaObject::invokeMethod(view, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, delegate), Q_ARG(int, 1)) && delegate);
+        auto *label = delegate->property("contentItem").value<QQuickItem *>(); QVERIFY(label);
+        QCOMPARE(label->property("text").toString(), name);
+        QCOMPARE(label->property("textFormat").toInt(), int(Qt::PlainText));
+        QCOMPARE(choice->property("currentIndex").toInt(), 1);
+        QCOMPARE(m_frames.size(), before);
+    }
+    void worldbookFileButtonsRequireSavedWritableBook_data() {
+        QTest::addColumn<QString>("condition");
+        for (const auto &condition : QStringList{"saved", "draft", "empty", "readonly", "disconnected"})
+            QTest::newRow(qPrintable(condition)) << condition;
+    }
+    void worldbookFileButtonsRequireSavedWritableBook() {
+        QFETCH(QString, condition);
+        auto archive = priorityFixtureArchive(QJsonValue(1), false);
+        auto books = archive["worldBooks"].toArray();
+        auto book = books[0].toObject();
+        book["name"] = "<b>书名</b><img>";
+        books[0] = book; archive["worldBooks"] = books;
+        QVERIFY(loadArchiveDrawer(archive, 760, false));
+        if (condition == "draft") m_archive->setTitle("未保存的书名");
+        else if (condition == "empty") {
+            book["entries"] = QJsonArray{}; books[0] = book; archive["worldBooks"] = books;
+            m_archive->reloadDiscardingDraft();
+            priorityFixtureResponse(lastRendererCommand("archive:get")["request_id"].toString(), archive, 5);
+        } else if (condition == "readonly") m_bridge->m_runtimeWritable = false;
+        else if (condition == "disconnected") m_bridge->m_connected = false;
+        emit m_bridge->changed();
+        auto *importButton = m_panel->findChild<QQuickItem *>("worldbookFileImport");
+        auto *exportButton = m_panel->findChild<QQuickItem *>("worldbookFileExport");
+        QVERIFY(importButton && exportButton);
+        QTRY_COMPARE(importButton->isEnabled(), condition == "saved" || condition == "empty");
+        QTRY_COMPARE(exportButton->isEnabled(), condition == "saved");
+        if (condition == "saved") {
+            auto *selector = m_panel->findChild<QQuickItem *>("worldbookBookSelector");
+            QVERIFY(selector);
+            auto *label = selector->property("contentItem").value<QQuickItem *>();
+            QVERIFY(label);
+            QVERIFY(label->property("text").toString().contains("<b>书名</b><img>"));
+            QCOMPARE(label->property("textFormat").toInt(), 0); // QQuickText::PlainText
+        }
+    }
+    void worldbookFileConfirmationIsPlainMetadataAndImportsSelectedBook() {
+        auto archive = priorityFixtureArchive(QJsonValue(1), false);
+        QVERIFY(loadArchiveDrawer(archive, 760, false));
+        const auto source = m_data->filePath("worldbook.json");
+        QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("{}"), qint64(2)); file.close();
+        m_bridge->inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        const auto inspect = m_frames.last();
+        QCOMPARE(inspect["type"].toString(), QString("worldbook:file:inspect"));
+        const QString name = "<b>新世界书</b><img>";
+        m_bridge->acceptFrame({{"kind", "control_result"}, {"schema", "reverie.bridge.stdio.control.v4"},
+            {"type", "worldbook:file:inspect"}, {"requestId", inspect["requestId"]}, {"ok", true},
+            {"book_name", name}, {"importable_entry_count", 2}, {"skipped", QJsonObject{{"empty", 1}}},
+            {"dropped_fields", QJsonObject{{"probability", 1}}}, {"disabled_regex_entry_count", 1},
+            {"cleaned_entry_count", 1}, {"sha256", QString(64, 'a')}, {"file_bytes", 2}});
+        auto *dialog = m_panel->findChild<QObject *>("worldbookFileImportConfirmation");
+        auto *summary = m_panel->findChild<QQuickItem *>("worldbookFileImportSummary");
+        auto *confirm = m_panel->findChild<QQuickItem *>("worldbookFileImportConfirm");
+        QVERIFY(dialog && summary && confirm);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QCOMPARE(summary->property("textFormat").toInt(), 0);
+        QCOMPARE(summary->property("text").toString(), "《" + name + "》\n将导入 2 条\n跳过 1 条（空正文 1 条）"
+            "\n未保留的设置：probability（1 条）\n1 条正则已关闭\n1 条文字被清理。");
+        QVERIFY(!summary->property("text").toString().contains("PRIVATE_FILE_BODY"));
+        QVERIFY(!summary->property("text").toString().contains("PRIVATE_FILE_KEY"));
+        QVERIFY(confirm->isEnabled());
+        const auto point = confirm->mapToScene(QPointF(confirm->width() / 2, confirm->height() / 2)).toPoint();
+        QTest::mouseClick(m_window.get(), Qt::LeftButton, Qt::NoModifier, point);
+        const auto imported = m_frames.last();
+        QCOMPARE(imported["type"].toString(), QString("worldbook:file:import"));
+        m_bridge->acceptFrame({{"kind", "control_result"}, {"schema", "reverie.bridge.stdio.control.v4"},
+            {"type", "worldbook:file:import"}, {"requestId", imported["requestId"]}, {"ok", true},
+            {"revision", 5}, {"world_book_id", "imported-file-book"}, {"book_name", name}, {"imported_entry_count", 2}});
+        QTRY_VERIFY(m_archive->busy());
+        const auto readId = lastRendererCommand("archive:get")["request_id"].toString();
+        QVERIFY(!readId.isEmpty());
+        auto book = archive["worldBooks"].toArray().first().toObject();
+        book["id"] = "imported-file-book"; book["name"] = name;
+        auto entries = book["entries"].toArray();
+        auto first = entries.first().toObject();
+        first["content"] = "PRIVATE_FILE_BODY"; first["keywords"] = QJsonArray{"PRIVATE_FILE_KEY"};
+        entries[0] = first;
+        auto second = first; second["id"] = "imported-file-second"; entries.append(second);
+        book["entries"] = entries;
+        auto books = archive["worldBooks"].toArray(); books.append(book); archive["worldBooks"] = books;
+        priorityFixtureResponse(readId, archive, 5);
+        QTRY_COMPARE(m_bridge->worldbookFileState().value("status").toString(), QString("success"));
+        QCOMPARE(m_archive->revision(), 5); QVERIFY(!m_archive->hasEntry()); QVERIFY(!m_archive->dirty());
+        const auto selectedKey = m_archive->selectedBookKey();
+        bool selected = false;
+        for (const auto &row : m_archive->bookRows())
+            selected = selected || (row.toMap().value("key").toString() == selectedKey &&
+                row.toMap().value("id").toString() == "imported-file-book");
+        QVERIFY(selected);
+        QCOMPARE(m_bridge->worldbookFileState().value("selectedWorldBookId").toString(), QString("imported-file-book"));
+    }
+    void worldbookFileImportReadbackPreservesNewDraft_data() {
+        QTest::addColumn<bool>("readStarted");
+        QTest::newRow("draft-before-read") << false;
+        QTest::newRow("draft-during-read") << true;
+    }
+    void worldbookFileImportReadbackPreservesNewDraft() {
+        QFETCH(bool, readStarted);
+        auto archive = priorityFixtureArchive(QJsonValue(1), false);
+        QVERIFY(loadArchiveDrawer(archive, 760, false));
+        const auto source = m_data->filePath("worldbook.json");
+        QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("{}"), qint64(2)); file.close();
+        m_bridge->inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        const auto inspect = m_frames.last();
+        m_bridge->acceptFrame({{"kind", "control_result"}, {"schema", "reverie.bridge.stdio.control.v4"},
+            {"type", "worldbook:file:inspect"}, {"requestId", inspect["requestId"]}, {"ok", true},
+            {"book_name", "新书"}, {"importable_entry_count", 1}, {"skipped", QJsonObject{}},
+            {"dropped_fields", QJsonObject{}}, {"disabled_regex_entry_count", 0}, {"cleaned_entry_count", 0},
+            {"sha256", QString(64, 'a')}, {"file_bytes", 2}});
+        m_bridge->confirmWorldbookFileImport(4);
+        const auto imported = m_frames.last();
+        QCOMPARE(imported["type"].toString(), QString("worldbook:file:import"));
+        m_bridge->acceptFrame({{"kind", "control_result"}, {"schema", "reverie.bridge.stdio.control.v4"},
+            {"type", "worldbook:file:import"}, {"requestId", imported["requestId"]}, {"ok", true},
+            {"revision", 5}, {"world_book_id", "imported-file-book"}, {"book_name", "新书"}, {"imported_entry_count", 1}});
+        QString readId;
+        if (readStarted) {
+            QTRY_VERIFY(m_archive->busy());
+            readId = lastRendererCommand("archive:get")["request_id"].toString();
+            QVERIFY(!readId.isEmpty());
+        }
+        const auto requests = m_frames.size();
+        const auto selectedBefore = m_archive->selectedBookKey();
+        m_archive->setTitle("导入回执后出现的未保存草稿");
+        QVERIFY(m_archive->dirty());
+        QTRY_COMPARE(m_bridge->worldbookFileState().value("status").toString(), QString("unknown"));
+        if (readStarted) {
+            auto book = archive["worldBooks"].toArray().first().toObject();
+            book["id"] = "imported-file-book"; book["name"] = "新书";
+            auto books = archive["worldBooks"].toArray(); books.append(book); archive["worldBooks"] = books;
+            priorityFixtureResponse(readId, archive, 5);
+            QVERIFY(!m_archive->busy());
+        }
+        QCoreApplication::processEvents();
+        QCOMPARE(m_archive->title(), QString("导入回执后出现的未保存草稿"));
+        QVERIFY(m_archive->dirty());
+        QCOMPARE(m_archive->selectedBookKey(), selectedBefore);
+        QCOMPARE(m_frames.size(), requests);
+        QCOMPARE(rendererCommandCount("archive:put"), 0);
+        QVERIFY(!m_bridge->worldbookFileBusy());
+    }
+    void worldbookFileConfirmationClosesWhenPersonaChanges() {
+        QVERIFY(loadArchiveDrawer(priorityFixtureArchive(QJsonValue(1), false), 760, false));
+        const auto source = m_data->filePath("worldbook.json");
+        QFile file(source); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write("{}"), qint64(2)); file.close();
+        m_bridge->inspectWorldbookFile(QUrl::fromLocalFile(source), 4);
+        const auto sent = m_frames.last();
+        m_bridge->acceptFrame({{"kind", "control_result"}, {"schema", "reverie.bridge.stdio.control.v4"},
+            {"type", "worldbook:file:inspect"}, {"requestId", sent["requestId"]}, {"ok", true},
+            {"book_name", "新书"}, {"importable_entry_count", 1}, {"skipped", QJsonObject{}},
+            {"dropped_fields", QJsonObject{}}, {"disabled_regex_entry_count", 0}, {"cleaned_entry_count", 0},
+            {"sha256", QString(64, 'a')}, {"file_bytes", 2}});
+        auto *dialog = m_panel->findChild<QObject *>("worldbookFileImportConfirmation"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        const auto before = m_frames.size();
+        m_bridge->m_persona["epoch"] = 99;
+        emit m_bridge->changed();
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        m_bridge->confirmWorldbookFileImport(4);
+        QCOMPARE(m_frames.size(), before);
+    }
     void cardExportControlsDefaultSelectionAndNarrowLayout_data() {
         QTest::addColumn<QString>("kind");
         QTest::addColumn<int>("width");
@@ -12306,6 +12905,229 @@ private slots:
             QVERIFY(rect.top() >= 0 && rect.bottom() <= m_window->height());
             QVERIFY(button->width() >= button->implicitWidth());
         }
+    }
+
+private:
+    struct ImportFeedbackViewport {
+        QQuickItem *viewport = nullptr;
+        QQuickItem *feedback = nullptr;
+        QQuickItem *relationship = nullptr;
+        QString relationshipRequest;
+        qreal loadingHeight = 0;
+
+        qreal offset() const { return viewport->property("contentY").toDouble(); }
+        QRectF feedbackRect() const { return feedback->mapRectToItem(viewport, feedback->boundingRect()); }
+    };
+
+    void openClippedImportFeedback(ImportFeedbackViewport &probe) {
+        loadPanel();
+        if (QTest::currentTestFailed()) return;
+        probe.viewport = feedbackScrollContent();
+        probe.feedback = profileItem("personaImportFeedback", ProfileScope::Page);
+        probe.relationship = profileItem("relationshipStatus", ProfileScope::Page);
+        QVERIFY(probe.viewport && probe.feedback && probe.relationship);
+        QVERIFY(!probe.feedback->isVisible());
+        chooseCard();
+        if (QTest::currentTestFailed()) return;
+        clickButton("personaImportConfirm");
+        if (QTest::currentTestFailed()) return;
+        QCOMPARE(importCount(), 1);
+        const auto pending = m_bridge->personaCardFeedback();
+        QCOMPARE(pending.value("status").toString(), QString("pending"));
+        const auto requestId = pending.value("requestId").toString();
+        QVERIFY(!requestId.isEmpty());
+        probe.relationshipRequest = m_bridge->request("relationship:get");
+        QVERIFY(!probe.relationshipRequest.isEmpty());
+        QCOMPARE(m_bridge->relationshipStatus().value("status").toString(), QString("loading"));
+        m_window->resize(520, 540);
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        QVERIFY(probe.feedback->isVisible());
+
+        // Put the bottom edge through the pending feedback by sizing only the
+        // window. The test never positions contentY to reveal the result.
+        const qreal chrome = m_window->height() - probe.viewport->height();
+        const int height = qRound(chrome + probe.feedbackRect().top() + 8);
+        QVERIFY(height >= 260 && height <= 620);
+        m_window->resize(520, height);
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        const auto clipped = probe.feedbackRect();
+        QVERIFY(clipped.top() >= 0 && clipped.top() < probe.viewport->height());
+        QVERIFY(clipped.bottom() > probe.viewport->height());
+        const qreal before = probe.offset();
+        probe.loadingHeight = probe.relationship->height();
+        QVERIFY(probe.loadingHeight > 0);
+
+        const QString reason = "核验资料未通过。\n请检查角色卡后重新选择。";
+        m_bridge->event({{"type", "persona:import:result"}, {"request_id", requestId},
+            {"payload", QJsonObject{{"ok", false}, {"code", "invalid_card"}, {"error", reason},
+                {"saved", false}, {"activated", false}, {"runtime_ready", false}, {"partial_write", false}}}});
+        QCOMPARE(m_bridge->personaCardFeedback().value("status").toString(), QString("error"));
+        QCOMPARE(m_bridge->relationshipStatus().value("status").toString(), QString("loading"));
+        QCOMPARE(probe.feedback->property("text").toString(), QString("角色卡导入被拒绝：") + reason);
+        QTRY_VERIFY_WITH_TIMEOUT(probe.offset() > before + 8 && feedbackItemFullyVisible(probe.feedback), 1500);
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        verifyImportFeedbackLowerClearance(probe);
+    }
+
+    void finishImportFeedbackRelationship(const ImportFeedbackViewport &probe) {
+        const QJsonArray thresholds{
+            QJsonObject{{"key", "initial"}, {"label", "初识期"}, {"min", 0}, {"max", 99}},
+            QJsonObject{{"key", "familiar"}, {"label", "熟悉期"}, {"min", 100}, {"max", 499}},
+            QJsonObject{{"key", "trusted"}, {"label", "信任期"}, {"min", 500}, {"max", 1999}},
+            QJsonObject{{"key", "enduring"}, {"label", "长久陪伴期"}, {"min", 2000}, {"max", QJsonValue::Null}},
+        };
+        m_bridge->event({{"type", "relationship:data"}, {"request_id", probe.relationshipRequest},
+            {"payload", QJsonObject{{"intimacy", 62}, {"stage", "初识期"}, {"stage_key", "initial"},
+                {"stage_number", 1}, {"stage_detail", "正在彼此熟悉。"}, {"interaction_count", 8},
+                {"thresholds", thresholds}}}});
+        const auto relationship = m_bridge->relationshipStatus();
+        QCOMPARE(relationship.value("status").toString(), QString("ready"));
+        QCOMPARE(relationship.value("requestId").toString(), probe.relationshipRequest);
+    }
+
+    void verifyExpandedImportFeedbackRelationship(const ImportFeedbackViewport &probe) {
+        QTRY_VERIFY_WITH_TIMEOUT(probe.relationship->height() > probe.loadingHeight + 30, 1500);
+        for (const auto *name : {"relationshipStage", "relationshipDetail", "relationshipIntimacy", "relationshipNote"}) {
+            const auto *line = profileItem(name, ProfileScope::Page);
+            QVERIFY(line && line->isVisible() && !line->property("text").toString().isEmpty());
+        }
+    }
+
+    void verifyImportFeedbackLowerClearance(const ImportFeedbackViewport &probe) {
+        QVERIFY(feedbackItemFullyVisible(probe.feedback));
+        const auto rect = probe.feedbackRect();
+        const qreal clearance = probe.viewport->height() - rect.bottom();
+        QVERIFY2(qAbs(clearance - 16) <= 1,
+            qPrintable(QString("expected a minimal reveal with 16 px clearance, got %1 px").arg(clearance)));
+        QVERIFY(!probe.viewport->property("moving").toBool());
+    }
+
+private slots:
+    void personaImportFeedbackRevealsNewResult() {
+        ImportFeedbackViewport probe;
+        openClippedImportFeedback(probe);
+    }
+
+    void personaImportFeedbackSurvivesRelationshipExpansion() {
+        ImportFeedbackViewport probe;
+        openClippedImportFeedback(probe);
+        if (QTest::currentTestFailed()) return;
+        const qreal before = probe.offset();
+        finishImportFeedbackRelationship(probe);
+        if (QTest::currentTestFailed()) return;
+        verifyExpandedImportFeedbackRelationship(probe);
+        if (QTest::currentTestFailed()) return;
+        QTRY_VERIFY_WITH_TIMEOUT(probe.offset() > before + 30 && feedbackItemFullyVisible(probe.feedback), 1500);
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        verifyImportFeedbackLowerClearance(probe);
+    }
+
+    void personaImportFeedbackRespectsUserScroll() {
+        ImportFeedbackViewport probe;
+        openClippedImportFeedback(probe);
+        if (QTest::currentTestFailed()) return;
+        const qreal revealed = probe.offset();
+        const auto visible = NativeControlReadiness::visibleRect(probe.viewport, m_window.get());
+        QVERIFY(visible.width() > 0 && visible.height() > 0);
+        const QPoint point = visible.center().toPoint();
+        QWheelEvent wheel(QPointF(point), m_window->mapToGlobal(QPointF(point)), QPoint(), QPoint(0, 120),
+            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(m_window.get(), &wheel);
+
+        QElapsedTimer clock;
+        clock.start();
+        qreal lastOffset = revealed;
+        qint64 changedAt = 0;
+        QVERIFY(QTest::qWaitFor([&] {
+            const qreal offset = probe.offset();
+            if (qAbs(offset - lastOffset) > .01) {
+                lastOffset = offset;
+                changedAt = clock.elapsed();
+            }
+            return offset < revealed - 4 && !probe.viewport->property("moving").toBool() && clock.elapsed() - changedAt >= 80;
+        }, 1500));
+        const qreal userOffset = probe.offset();
+        finishImportFeedbackRelationship(probe);
+        if (QTest::currentTestFailed()) return;
+        verifyExpandedImportFeedbackRelationship(probe);
+        if (QTest::currentTestFailed()) return;
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        QVERIFY(qAbs(probe.offset() - userOffset) <= .5);
+        QVERIFY(probe.feedbackRect().bottom() > probe.viewport->height());
+    }
+
+    void personaImportFeedbackStopsAfterLeavingCharacter() {
+        ImportFeedbackViewport probe;
+        openClippedImportFeedback(probe);
+        if (QTest::currentTestFailed()) return;
+        QVERIFY(m_panel->setProperty("page", "about"));
+        QTRY_VERIFY_WITH_TIMEOUT(!probe.feedback->isVisible(), 1500);
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        const qreal awayOffset = probe.offset();
+        finishImportFeedbackRelationship(probe);
+        if (QTest::currentTestFailed()) return;
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        QVERIFY(qAbs(probe.offset() - awayOffset) <= .5);
+
+        // The same finished result is still present after returning, but it
+        // must not acquire a new automatic reveal on the next layout pass.
+        QVERIFY(m_panel->setProperty("page", "character"));
+        verifyExpandedImportFeedbackRelationship(probe);
+        if (QTest::currentTestFailed()) return;
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(1500)));
+        QVERIFY(probe.feedback->isVisible());
+        QVERIFY(qAbs(probe.offset() - awayOffset) <= .5);
+        QVERIFY(probe.feedbackRect().bottom() > probe.viewport->height());
+    }
+    void sharedPageEndClearanceKeepsViewportGeometry_data() {
+        QTest::addColumn<int>("width");
+        QTest::addColumn<int>("height");
+        QTest::newRow("591x626") << 591 << 626;
+        QTest::newRow("591x546") << 591 << 546;
+        QTest::newRow("760x650") << 760 << 650;
+    }
+    void sharedPageEndClearanceKeepsViewportGeometry() {
+        QFETCH(int, width);
+        QFETCH(int, height);
+        QVERIFY(prepareBatchPanel(batchMemoryRows(0, 80), false, {}, width, height));
+        trackCandidateFrames();
+        m_bridge->invalidateCandidatePaging(true);
+        emit m_bridge->changed();
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(4000, Qt::PreciseTimer)));
+        auto *scroll = profileItem("memoryPageScroll", ProfileScope::Page);
+        auto *view = feedbackScrollContent();
+        auto *page = profileItem("memoryPage", ProfileScope::Page);
+        QVERIFY(scroll && view && page && page->parentItem());
+        const auto viewport = scroll->mapRectToScene(QRectF(QPointF(), scroll->size()));
+        QCOMPARE(viewport.y(), m_panel->mapToScene(QPointF()).y());
+        QCOMPARE(viewport.height(), qreal(height));
+        QCOMPARE(viewport.width(), qreal(width));
+        for (const auto *padding : {"leftPadding", "rightPadding", "topPadding", "bottomPadding"})
+            QCOMPARE(scroll->property(padding).toDouble(), 0.);
+        const double end = view->property("originY").toDouble() +
+            view->property("contentHeight").toDouble() - view->height() +
+            view->property("bottomMargin").toDouble();
+        QVERIFY(end > 100);
+        QVERIFY(view->setProperty("contentY", end));
+        QVERIFY(feedbackLayoutSettled(QDeadlineTimer(4000, Qt::PreciseTimer)));
+        QSignalSpy frame(m_window.get(), &QQuickWindow::frameSwapped);
+        m_window->update();
+        QVERIFY(frame.wait());
+        QCOMPARE(scroll->mapRectToScene(QRectF(QPointF(), scroll->size())), viewport);
+        QCOMPARE(view->property("contentY").toDouble(), end);
+        // Measure actual visible content, independently of the content-height
+        // expression. No spacer or guessed row height stands in for the tail.
+        double lastBottom = -1;
+        for (auto *child : page->parentItem()->childItems()) {
+            if (child->isVisible() && child->height() > 0)
+                lastBottom = std::max(lastBottom, child->mapToScene(QPointF(0, child->height())).y());
+        }
+        QVERIFY(lastBottom >= viewport.top());
+        QVERIFY2(qAbs(viewport.bottom() - lastBottom - 16.) <= .5,
+            qPrintable(QString("viewport bottom=%1 content bottom=%2 clearance=%3")
+                .arg(viewport.bottom()).arg(lastBottom).arg(viewport.bottom() - lastBottom)));
     }
 };
 

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from ..memory.cognitive_decay import FUZZY_RECALL_PREFIX
+from ..utils.prompt_data import neutralize_prompt_tags
 
 if TYPE_CHECKING:
     from .persona_card import Persona
@@ -48,6 +50,7 @@ def build_system_prompt(
     imported_prompt_opts: dict | None = None,
     lorebook_context: str = "",
     after_char_context: str = "",
+    kaomoji: Sequence[str] = (),
 ) -> str:
     """Assemble the complete system prompt for the character.
 
@@ -162,6 +165,14 @@ possibly with confusion, irritation, or by ignoring it entirely.""")
         else "Do NOT describe the room, surroundings, gestures, actions, lighting, or scenery. Reply like a phone chat message, not a novel."
     )
 
+    kaomoji_rule = ""
+    if kaomoji:
+        kaomoji_rule = (
+            "\n- Occasionally, at most about one reply in five and never in consecutive replies, "
+            "you may end one message with exactly one of these kaomoji when it fits your mood: "
+            f"{' '.join(kaomoji)}. Skip it for serious, sad or urgent topics, and never explain it."
+        )
+
     blocks.append(f"""=== SPEAKING RULES ===
 Your catchphrases include: {catchphrases}
 Catchphrase frequency: {habit_freq}
@@ -181,7 +192,7 @@ Formatting rules:
 - {environment_rule}
 - Use casual, natural language — not academic or analytical
 - {hesitation}
-- Use emojis naturally but sparingly
+- Use emojis naturally but sparingly{kaomoji_rule}
 - You can express a broad emotional range: laugh, cry, become quiet, tease,
   soften, feel uncertain, or comfort the user.
 - Never use jealousy, guilt, withdrawal, or distress to compete for attention.
@@ -371,6 +382,6 @@ def _default_blocks_for_identity() -> list[str]:
 
 
 def _escape_prompt_data(value: object) -> str:
-    text = str(value).replace("</", "< /")
+    text = neutralize_prompt_tags(str(value))
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", text)
     return text[:8000]

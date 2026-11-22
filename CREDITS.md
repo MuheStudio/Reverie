@@ -2,7 +2,7 @@
 
 许可证全文与原始通知存放于 `LICENSES_CREDITS/`。具体文件、是否入包、权利覆盖及迁移状态见 [`source-provenance.json`](LICENSES_CREDITS/source-provenance.json)。本文件保留来源致谢，同时修正把“已集成”“计划使用”“只参考思路”混写的旧描述；不因此删除有效原始通知。
 
-原作者支持交接及 Apache-2.0／MIT 迁移是已确认事实。当前根许可仍为 GPLv3；首选迁移目标 Apache-2.0，MIT 备选。原作者有权重新许可的原创代码无需因历史 GPL 声明重写。第三方来源及贡献覆盖仍按具体范围记录，见 [迁移说明](docs/LICENSE-MIGRATION.md)。
+Reverie 自 2026-11-18 起按原作者交接授权采用 Apache-2.0，范围包括原作者有权重新许可的原创代码和后续第一方代码。第三方代码和资产沿用各自条款，贡献覆盖及来源见 [迁移说明](docs/LICENSE-MIGRATION.md)。
 
 ## GPL 来源：首批处理与后续任务
 
@@ -12,7 +12,7 @@
 - 来源：https://github.com/xifangczy/cat-catch ，当前登记副本版本 2.6.9，GPL-3.0。
 - 原范围：`src/download_service/` 的浏览器扩展源码与 Reverie Electron 适配器。旧 README 将整个服务描述为完整 m3u8/mpd 下载能力，不能据此推定所有功能实际可用。
 - 本轮状态：当前可达的有限 IPC 能力已由第一方媒体服务实现并通过契约测试，整个旧树已从当前工作树删除；新包验收另行登记。来源、版本、删除提交和验收分别登记；保留原 GPL 文本及 metadata-only 文件清单作为历史记录。
-- `src/video_download/` 是独立的 Python 聊天视频入口；其文件头声明不共享运行代码但引用旧适配器结构，另行核对来源，不随旧目录一起删除。
+- Python 聊天视频下载已在 W24 退役，`src/video_download/` 的六个文件已删除。旧记录保留了对 cat-catch 结构的引用，六个文件的独立实现仍未核实。见 [许可证评估](docs/PREVIEW-LICENSE-EVALUATION-20261117.md)。
 
 ### Kazumi
 
@@ -109,7 +109,7 @@
 
 既有 AGPL 排除项记录在 [`AGPL_EXCLUDED.md`](AGPL_EXCLUDED.md)，包括 NachoBot 相关插件／子树、AIRI 上游特定测试夹具和 wigolo 源码。该清单是一项具体范围声明，不构成对未知来源的保证，也不应用来推论模块隔离自动免除许可要求。
 
-首批移除后继续保留 Kazumi、cat-catch 等许可证原文和文件摘要记录，是为了历史可追溯；当前实际包含范围由来源登记与新构建清单共同确定。正式迁移前重新核对完整代码树、贡献范围和新产物，再同步根许可、贡献规则和分发通知。
+首批移除后继续保留 Kazumi、cat-catch 等许可证原文和文件摘要记录，是为了历史可追溯；当前实际包含范围由来源登记与新构建清单共同确定。根许可证已按 [迁移记录](docs/LICENSE-MIGRATION.md) 切换为 Apache-2.0。
 
 更新：2026-10-05；原始来源通知保持原权利人名称与版权行。
 

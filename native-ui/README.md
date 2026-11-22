@@ -112,4 +112,4 @@ Qt6.11.2固定输入、Cubism Native SDK5-r.4.1和Core校验值已登记。Qt模
 
 SDK、Core、模型与生成候选留在忽略目录；Core只在显式`--local-sdk`本地候选中链接，不进入默认构建。新增房间与材质均为本项目源代码绘制，没有导入第三方场景资产。
 
-OpenGL仍是唯一已实现的渲染后端；不引入QtQuick3D或Metal/QRhi。根许可证不变，Apache-2.0优先、MIT备选的迁移目标另行完成。本地ad-hoc签名不代表正式分发或公证。
+OpenGL仍是唯一已实现的渲染后端；不引入QtQuick3D或Metal/QRhi。项目根许可证现为 Apache-2.0。本地ad-hoc签名不代表正式分发或公证。

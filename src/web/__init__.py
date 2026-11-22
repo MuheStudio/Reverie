@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 
 from ..config.settings import WEB_CACHE_DIR
 from ..local_mode import LocalModeBlocked, get_local_mode_gate
+from ..utils.prompt_data import neutralize_prompt_tags
 from .sanitizer import CLASSIFIER_VERSION, LocalWebIntentClassifier
 
 if TYPE_CHECKING:
@@ -401,7 +402,7 @@ class WebSurfingManager:
             return 0
 
         if topic not in self.allowed_topics or topic in BLOCKED_TOPICS:
-            logger.warning("WebSurfing: blocked local topic ignored: %s", topic)
+            logger.warning("WebSurfing: blocked local topic ignored")
             return 0
         if not isinstance(data, list):
             return 0
@@ -896,7 +897,7 @@ def _stable_item_id(source: str, identity: str) -> str:
 
 
 def _escape_prompt_data(value: str) -> str:
-    text = _normalize_untrusted_text(value, 2000).replace("</", "< /")
+    text = neutralize_prompt_tags(_normalize_untrusted_text(value, 2000))
     return text
 
 

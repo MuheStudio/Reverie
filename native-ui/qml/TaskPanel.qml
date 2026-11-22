@@ -9,13 +9,97 @@ Item {
     property var navigation
     property string page: "settings"
     property var avatarItem
-    readonly property Item firstFocusItem: page === "memory" ? (memoryTabs.currentIndex === 4 ? memoryRecallQuery : memoryRefresh) : [endpoint, splitMessagesSwitch, retentionShort, forgettingSwitch, misrememberSwitch, flawsSwitch, emotionSwitch, budgetSwitch][settingsTabs.currentIndex] || endpoint
-    readonly property bool modalOpen: personaProfilePanel.visible || personaProfileSaveDialog.visible || personaProfileDiscardDialog.visible || consent.visible || modelFolder.visible || legacyFile.visible || backupSaveDialog.visible || backupOpenDialog.visible || backupConfirm.visible || personaConfirm.visible || personaCardFile.visible || personaImportConfirmDialog.visible || personaCardExportDialog.visible || personaCardSaveDialog.visible || retentionConfirm.visible || misrememberConfirm.visible || authorPromptConfirm.visible || profileClearDialog.visible || memoryBatchDeleteDialog.visible || memoryBatchPinDialog.visible || memoryCandidateBatchDialog.visible
+    readonly property bool diaryActive: page === "activities" && navigation?.currentSubentry === "diary"
+    readonly property bool gomokuActive: page === "activities" && navigation?.currentSubentry === "gomoku"
+    readonly property bool chessActive: page === "activities" && navigation?.currentSubentry === "chess"
+    readonly property bool goActive: page === "activities" && navigation?.currentSubentry === "go"
+    readonly property Item firstFocusItem: page === "activities"
+        ? (diaryActive ? diaryPage.item?.firstFocusItem
+            : gomokuActive ? gomokuPage.item?.firstFocusItem
+            : chessActive ? chessPage.item?.firstFocusItem
+            : goActive ? goPage.item?.firstFocusItem : xiangqiPage.item?.firstFocusItem) || null
+        : page === "memory" ? (memoryTabs.currentIndex === 4 ? memoryRecallQuery : memoryRefresh)
+        : [endpoint, splitMessagesSwitch, retentionShort, forgettingSwitch, misrememberSwitch, flawsSwitch, emotionSwitch, budgetSwitch][settingsTabs.currentIndex] || endpoint
+    onDiaryActiveChanged: if (diaryActive && pageScroll) pageScroll.contentItem.contentY = 0
+    onGomokuActiveChanged: if (gomokuActive && pageScroll) pageScroll.contentItem.contentY = 0
+    onChessActiveChanged: if (chessActive && pageScroll) pageScroll.contentItem.contentY = 0
+    onGoActiveChanged: if (goActive && pageScroll) pageScroll.contentItem.contentY = 0
+    readonly property bool modalOpen: personaProfilePanel.visible || personaProfileSaveDialog.visible || personaProfileDiscardDialog.visible || consent.visible || modelFolder.visible || legacyFile.visible || backupSaveDialog.visible || backupOpenDialog.visible || backupConfirm.visible || personaConfirm.visible || personaCardFile.visible || personaImportConfirmDialog.visible || personaCardExportDialog.visible || personaCardSaveDialog.visible || retentionConfirm.visible || misrememberConfirm.visible || authorPromptConfirm.visible || profileClearDialog.visible || memoryBatchDeleteDialog.visible || memoryBatchPinDialog.visible || memoryCandidateBatchDialog.visible || avatarRemoveDialog.visible || xiangqiPage.item?.resetOpen === true || gomokuPage.item?.resetOpen === true || chessPage.item?.resetOpen === true
+        || goPage.item?.resetOpen === true || goPage.item?.endOpen === true
+    readonly property bool characterPageActive: page === "character" && (navigation?.currentFeature || "character") === "character"
+    onCharacterPageActiveChanged: {
+        if (!characterPageActive) {
+            personaImportFeedbackReveal = null;
+            if (typeof session.dismissAvatarRemovalSuccess === "function")
+                session.dismissAvatarRemovalSuccess();
+        }
+    }
+    readonly property var avatarRemovalFeedback: session.avatarRemovalFeedback || ({})
+    readonly property var avatarRemovalContext: [session.state.avatars, session.avatarBusy, session.avatarCandidate,
+        session.runtimeWritable, session.avatarRemovalFeedback]
+    readonly property string avatarConsentImportId: session.avatarCandidate.importId || ""
+    onAvatarConsentImportIdChanged: {
+        if (rights) rights.checked = false;
+        if (performanceWarning) performanceWarning.checked = false;
+    }
+    function avatarRemovalBlocker(id) {
+        // These public properties notify the binding when the shared C++ gate
+        // changes; a method's internal reads are not QML dependencies.
+        return avatarRemovalContext.length === 5 && typeof session.modelRemovalBlocker === "function"
+            ? session.modelRemovalBlocker(id) : "请等待当前操作完成。";
+    }
     readonly property bool writesAllowed: session.runtimeWritable !== false
     readonly property var personaProfiles: session.state.personas?.profiles || []
     readonly property var personaFeedback: session.personaFeedback || ({})
     readonly property var personaCardCandidate: session.personaCardCandidate || ({})
     readonly property var personaCardFeedback: session.personaCardFeedback || ({})
+    readonly property string personaImportResultKey: {
+        const receipt = personaCardFeedback;
+        return (receipt.status === "success" || receipt.status === "error") && receipt.text
+            ? JSON.stringify([receipt.status, receipt.requestId || "", receipt.text]) : "";
+    }
+    property var personaImportFeedbackReveal: null
+    onPersonaImportResultKeyChanged: armPersonaImportFeedbackReveal()
+    function armPersonaImportFeedbackReveal() {
+        personaImportFeedbackReveal = characterPageActive && visible && personaImportResultKey
+            ? {key: personaImportResultKey, scope: session.scopeKey, generation: session.connectionGeneration} : null;
+        queuePersonaImportFeedbackReveal();
+    }
+    function queuePersonaImportFeedbackReveal() {
+        if (personaImportFeedbackReveal)
+            Qt.callLater(tasks.revealPersonaImportFeedback);
+    }
+    function revealPersonaImportFeedback() {
+        const intent = personaImportFeedbackReveal;
+        if (!intent)
+            return;
+        if (!characterPageActive || !visible || intent.key !== personaImportResultKey ||
+                intent.scope !== session.scopeKey || intent.generation !== session.connectionGeneration) {
+            personaImportFeedbackReveal = null;
+            return;
+        }
+        const scroll = pageScroll.contentItem;
+        const feedback = personaImportFeedback;
+        if (!enabled || !scroll || !feedback.visible || feedback.height <= 0 || scroll.height <= 0)
+            return;
+        if (scroll.dragging || scroll.flicking || pageScroll.ScrollBar.vertical?.pressed) {
+            personaImportFeedbackReveal = null;
+            return;
+        }
+
+        const top = feedback.mapToItem(scroll, 0, 0).y;
+        const bottom = feedback.mapToItem(scroll, 0, feedback.height).y;
+        if (top >= 0 && bottom <= scroll.height)
+            return;
+
+        // Bring a clipped receipt into view and leave room below it when it fits.
+        const delta = top < 0 ? top : Math.min(top, bottom - scroll.height + 16);
+        const minimum = scroll.originY - scroll.topMargin;
+        const maximum = Math.max(minimum, scroll.originY + scroll.contentHeight - scroll.height + scroll.bottomMargin);
+        const destination = Math.max(minimum, Math.min(maximum, scroll.contentY + delta));
+        if (destination !== scroll.contentY)
+            scroll.contentY = destination;
+    }
     readonly property var personaCardExportState: session.personaCardExportState || ({})
     readonly property bool personaExportAvailable: session.personaCardExportAvailable === true
     readonly property int personaExportGeneration: session.connectionGeneration || 0
@@ -166,6 +250,8 @@ Item {
     // previous persona must not be saved into the next one.
     readonly property string personaScope: session.scopeKey
     onPersonaScopeChanged: {
+        if (personaImportFeedbackReveal && personaImportFeedbackReveal.scope !== session.scopeKey)
+            personaImportFeedbackReveal = null;
         personaCardExportDialog.close();
         personaCardSaveDialog.close();
         if (personaConfirm.visible)
@@ -542,13 +628,45 @@ Item {
         if (page !== "memory")
             cancelCandidateFocus("page");
         if (page !== "character") {
+            if (avatarRemoveDialog) avatarRemoveDialog.close();
             if (personaCardExportDialog) personaCardExportDialog.close();
             if (personaCardSaveDialog) personaCardSaveDialog.close();
         }
     }
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
             cancelCandidateFocus("hidden");
+            personaImportFeedbackReveal = null;
+            if (avatarRemoveDialog) avatarRemoveDialog.close();
+        }
+    }
+    onEnabledChanged: if (enabled) queuePersonaImportFeedbackReveal()
+    WheelHandler {
+        parent: pageScroll.contentItem || pageScroll
+        target: null
+        enabled: tasks.personaImportFeedbackReveal !== null
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        blocking: false
+        onWheel: event => {
+            tasks.personaImportFeedbackReveal = null;
+            event.accepted = false;
+        }
+    }
+    Connections {
+        target: pageScroll.contentItem
+        enabled: tasks.personaImportFeedbackReveal !== null
+        function onDraggingChanged() {
+            if (pageScroll.contentItem.dragging)
+                tasks.personaImportFeedbackReveal = null;
+        }
+    }
+    Connections {
+        target: pageScroll.ScrollBar.vertical
+        enabled: tasks.personaImportFeedbackReveal !== null
+        function onPressedChanged() {
+            if (pageScroll.ScrollBar.vertical.pressed)
+                tasks.personaImportFeedbackReveal = null;
+        }
     }
     Connections {
         target: tasks.Window.window
@@ -1186,17 +1304,61 @@ Item {
     }
     Dialog {
         id: consent
+        objectName: "settingsCostConsent"
         width: 420
         title: "确认后台模型费用"
         modal: true
         anchors.centerIn: Overlay.overlay
-        standardButtons: Dialog.Ok | Dialog.Cancel
+        standardButtons: Dialog.NoButton
+        background: GlassPane {
+            padding: 0
+            materialRole: "work"
+            cornerRadius: 16
+        }
+        header: Text {
+            text: consent.title
+            textFormat: Text.PlainText
+            color: "#edf4f4"
+            font.pixelSize: 15
+            font.weight: Font.DemiBold
+            leftPadding: 18
+            rightPadding: 18
+            topPadding: 18
+            bottomPadding: 8
+        }
+        Overlay.modal: Rectangle { color: "#99050b0e" }
         contentItem: Text {
             textFormat: Text.PlainText
             text: "该功能会向当前配置的服务发送必要内容，并可能产生费用。\n授权只适用于当前服务和目的地；随时可撤销。"
             wrapMode: Text.Wrap
             color: "#d8e8f0"
             width: 340
+        }
+        footer: Item {
+            implicitHeight: 54
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                anchors.bottomMargin: 16
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                GlassButton {
+                    objectName: "settingsCostConsentCancel"
+                    text: "取消"
+                    implicitHeight: 38
+                    padding: 8
+                    onClicked: consent.reject()
+                }
+                GlassButton {
+                    objectName: "settingsCostConsentConfirm"
+                    text: "确定"
+                    implicitHeight: 38
+                    padding: 8
+                    accented: true
+                    onClicked: consent.accept()
+                }
+            }
         }
         onAccepted: session.grantFeature(tasks.consentFeature, tasks.consentDigest, true, tasks.consentEpoch)
         onRejected: session.grantFeature(tasks.consentFeature, tasks.consentDigest, false, tasks.consentEpoch)
@@ -1651,6 +1813,7 @@ Item {
     }
     FolderDialog {
         id: modelFolder
+        objectName: "avatarModelFolder"
         title: "选择你的 Live2D 模型目录"
         onAccepted: session.importModel(selectedFolder)
     }
@@ -1984,6 +2147,73 @@ Item {
         }
     }
     Dialog {
+        id: avatarRemoveDialog
+        objectName: "avatarRemoveConfirmation"
+        property string targetId: ""
+        property string targetName: ""
+        readonly property string blocker: tasks.avatarRemovalBlocker(targetId)
+        title: "删除这个形象？"
+        modal: true
+        width: Math.min(470, Overlay.overlay ? Overlay.overlay.width - 48 : 470)
+        anchors.centerIn: Overlay.overlay
+        padding: 18
+        closePolicy: Popup.NoAutoClose
+        background: GlassPane { padding: 0; materialRole: "work"; cornerRadius: 16 }
+        header: Text {
+            text: avatarRemoveDialog.title
+            textFormat: Text.PlainText
+            color: "#edf4f4"
+            font.pixelSize: 15
+            font.weight: Font.DemiBold
+            leftPadding: 18
+            rightPadding: 18
+            topPadding: 18
+            bottomPadding: 10
+        }
+        Overlay.modal: Rectangle { color: "#99050b0e" }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text {
+                objectName: "avatarRemoveName"
+                Layout.fillWidth: true
+                text: avatarRemoveDialog.targetName
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: "#e3eff7"
+                font.pixelSize: 14
+            }
+            Text {
+                objectName: "avatarRemoveNotice"
+                Layout.fillWidth: true
+                text: "这会删除应用保存的副本。原来的模型文件夹不受影响，需要时可以重新导入。"
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: "#aabfce"
+                font.pixelSize: 13
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                GlassButton {
+                    objectName: "avatarRemoveCancel"
+                    text: "取消"
+                    onClicked: avatarRemoveDialog.close()
+                }
+                GlassButton {
+                    objectName: "avatarRemoveConfirm"
+                    text: "删除"
+                    enabled: avatarRemoveDialog.visible && avatarRemoveDialog.blocker.length === 0
+                    onClicked: {
+                        if (!avatarRemoveDialog.visible || avatarRemoveDialog.blocker.length > 0)
+                            return;
+                        const id = avatarRemoveDialog.targetId;
+                        avatarRemoveDialog.close();
+                        session.removeModel(id);
+                    }
+                }
+            }
+        }
+    }
+    Dialog {
         id: personaConfirm
         property string targetId: ""
         property string targetName: ""
@@ -2142,7 +2372,11 @@ Item {
         title: "选择角色卡"
         fileMode: FileDialog.OpenFile
         nameFilters: ["角色卡 (*.json *.png)", "JSON 角色卡 (*.json)", "PNG 角色卡 (*.png)"]
-        onAccepted: session.choosePersonaCard(selectedFile)
+        onAccepted: {
+            session.choosePersonaCard(selectedFile);
+            // A second local rejection can have exactly the same receipt text.
+            tasks.armPersonaImportFeedbackReveal();
+        }
         onRejected: session.cancelPersonaCard()
     }
     FileDialog {
@@ -2193,6 +2427,22 @@ Item {
                 model: session.personaCardExportBooks || []
                 textRole: "name"
                 valueRole: "id"
+                delegate: ItemDelegate {
+                    required property var modelData
+                    required property int index
+                    width: personaCardExportBook.width
+                    text: modelData.name
+                    font: personaCardExportBook.font
+                    highlighted: personaCardExportBook.highlightedIndex === index
+                    contentItem: Text {
+                        text: parent.text
+                        textFormat: Text.PlainText
+                        font: parent.font
+                        color: parent.palette.text
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
             }
             Text {
                 objectName: "personaCardExportSavedNotice"
@@ -2468,7 +2718,8 @@ Item {
                     text: ({
                             character: "角色与形象",
                             memory: "记忆与资料",
-                            activities: "一起做点什么",
+                            activities: tasks.diaryActive ? "日记" : tasks.gomokuActive ? "五子棋"
+                                : tasks.chessActive ? "国际象棋" : tasks.goActive ? "围棋" : "中国象棋",
                             settings: "空间控制台",
                             about: "关于这个空间",
                             palette: "前往哪里？"
@@ -2482,7 +2733,7 @@ Item {
                     text: ({
                             character: "一个形象，始终在场",
                             memory: "保留值得记住的，决定如何使用",
-                            activities: "把互动变成共同经历",
+                            activities: tasks.diaryActive ? "读她每天写的日记" : "和角色下一盘",
                             settings: "连接、授权与空间偏好",
                             about: "REVERIE / SCENE",
                             palette: "场景物件与快捷入口使用同一个控制器"
@@ -2573,8 +2824,12 @@ Item {
             Layout.fillHeight: true
             clip: true
             contentWidth: availableWidth
+            contentHeight: pageScrollContent.implicitHeight + 16
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            onHeightChanged: tasks.queuePersonaImportFeedbackReveal()
+            onContentHeightChanged: tasks.queuePersonaImportFeedbackReveal()
             ColumnLayout {
+                id: pageScrollContent
                 width: parent.width
                 spacing: 18
                 ColumnLayout {
@@ -2589,11 +2844,24 @@ Item {
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
                     }
+                    Text {
+                        objectName: "avatarRemovalFeedback"
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: tasks.avatarRemovalFeedback.text || ""
+                        textFormat: Text.PlainText
+                        color: tasks.avatarRemovalFeedback.status === "success" ? "#b8ddca" : "#e6b4a4"
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                    }
                     GlassButton {
                         objectName: "importModel"
                         enabled: tasks.writesAllowed && !session.avatarBusy
                         text: "导入 Live2D 模型"
-                        onClicked: modelFolder.open()
+                        onClicked: {
+                            session.dismissAvatarRemovalSuccess();
+                            modelFolder.open();
+                        }
                     }
                     Text {
                         textFormat: Text.PlainText
@@ -2644,12 +2912,55 @@ Item {
                     }
                     Repeater {
                         model: session.state.avatars ? session.state.avatars.records : []
-                        GlassButton {
+                        ColumnLayout {
+                            id: avatarRow
                             required property var modelData
-                            objectName: "avatarRecord-" + modelData.id
-                            text: modelData.name + (session.state.avatars.activeId === modelData.id ? " · 当前" : "")
-                            enabled: tasks.writesAllowed
-                            onClicked: session.selectModel(modelData.id)
+                            readonly property string removalBlocker: tasks.avatarRemovalBlocker(modelData.id)
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 4
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 8
+                                GlassButton {
+                                    objectName: "avatarRecord-" + avatarRow.modelData.id
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    Layout.preferredWidth: 1
+                                    text: avatarRow.modelData.name + (session.state.avatars.activeId === avatarRow.modelData.id ? " · 当前" : "")
+                                    enabled: tasks.writesAllowed
+                                    onClicked: session.selectModel(avatarRow.modelData.id)
+                                }
+                                GlassButton {
+                                    objectName: "avatarRemove-" + avatarRow.modelData.id
+                                    text: "删除"
+                                    readonly property string removalBlocker: avatarRow.removalBlocker
+                                    enabled: removalBlocker.length === 0 && !tasks.modalOpen
+                                    ToolTip.visible: hovered && !enabled && removalBlocker.length > 0
+                                    ToolTip.text: removalBlocker
+                                    onClicked: {
+                                        if (avatarRow.removalBlocker.length > 0)
+                                            return;
+                                        avatarRemoveDialog.targetId = avatarRow.modelData.id;
+                                        avatarRemoveDialog.targetName = avatarRow.modelData.name || "未命名形象";
+                                        session.dismissAvatarRemovalSuccess();
+                                        avatarRemoveDialog.open();
+                                    }
+                                }
+                            }
+                            Text {
+                                objectName: "avatarRemoveReason-" + avatarRow.modelData.id
+                                Layout.fillWidth: true
+                                visible: avatarRow.removalBlocker.length > 0
+                                text: avatarRow.removalBlocker
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                color: "#aabfce"
+                                font.pixelSize: 12
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
+                            }
                         }
                     }
                     RowLayout {
@@ -2688,6 +2999,79 @@ Item {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
                     }
+                    ColumnLayout {
+                        id: relationshipBlock
+                        objectName: "relationshipStatus"
+                        readonly property var snapshot: session.relationshipStatus || ({})
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 4
+
+                        component RelationshipLine: Text {
+                            visible: text.length > 0
+                            textFormat: Text.PlainText
+                            color: "#9fb4c7"
+                            font.pixelSize: 13
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                        }
+                        RelationshipLine {
+                            text: relationshipBlock.snapshot.message || ""
+                        }
+                        RelationshipLine {
+                            objectName: "relationshipStage"
+                            text: relationshipBlock.snapshot.stage || ""
+                        }
+                        RelationshipLine {
+                            objectName: "relationshipDetail"
+                            text: relationshipBlock.snapshot.detail || ""
+                        }
+                        RelationshipLine {
+                            objectName: "relationshipIntimacy"
+                            text: relationshipBlock.snapshot.intimacy || ""
+                        }
+                        RelationshipLine {
+                            objectName: "relationshipNote"
+                            text: relationshipBlock.snapshot.note || ""
+                        }
+                        RelationshipLine {
+                            objectName: "relationshipRefreshNote"
+                            text: relationshipBlock.snapshot.refreshNote || ""
+                        }
+                    }
+                    ColumnLayout {
+                        id: moodBlock
+                        objectName: "moodStatus"
+                        readonly property var snapshot: session.moodStatus || ({})
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 4
+
+                        component MoodLine: Text {
+                            visible: text.length > 0
+                            textFormat: Text.PlainText
+                            color: "#9fb4c7"
+                            font.pixelSize: 13
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                        }
+                        MoodLine {
+                            objectName: "moodMessage"
+                            text: moodBlock.snapshot.message || ""
+                        }
+                        MoodLine {
+                            objectName: "moodLabel"
+                            text: moodBlock.snapshot.label || ""
+                        }
+                        MoodLine {
+                            objectName: "moodDominant"
+                            text: moodBlock.snapshot.dominant || ""
+                        }
+                        MoodLine {
+                            objectName: "moodRefreshNote"
+                            text: moodBlock.snapshot.refreshNote || ""
+                        }
+                    }
                     Flow {
                         Layout.fillWidth: true
                         Layout.minimumWidth: 0
@@ -2714,6 +3098,7 @@ Item {
                     // Directly under its button: an import that adds a row to
                     // the list below must not push its own result out of view.
                     Text {
+                        id: personaImportFeedback
                         objectName: "personaImportFeedback"
                         visible: text.length > 0
                         textFormat: Text.PlainText
@@ -2722,6 +3107,8 @@ Item {
                         font.pixelSize: 13
                         wrapMode: Text.Wrap
                         Layout.fillWidth: true
+                        onYChanged: tasks.queuePersonaImportFeedbackReveal()
+                        onHeightChanged: tasks.queuePersonaImportFeedbackReveal()
                         Accessible.role: Accessible.StaticText
                         Accessible.name: text
                     }
@@ -4466,6 +4853,47 @@ Item {
                             wrapMode: Text.Wrap
                             Layout.fillWidth: true
                         }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text {
+                                Layout.preferredWidth: 176
+                                textFormat: Text.PlainText
+                                text: "房间画质"
+                                color: tasks.writesAllowed ? "#c8dce9" : "#75858a"
+                                font.pixelSize: 13
+                                wrapMode: Text.Wrap
+                            }
+                            Repeater {
+                                model: [
+                                    { value: "clear", label: "清晰" },
+                                    { value: "balanced", label: "均衡" },
+                                    { value: "smooth", label: "流畅" }
+                                ]
+                                GlassButton {
+                                    required property var modelData
+                                    objectName: "roomQuality-" + modelData.value
+                                    Layout.fillWidth: true
+                                    implicitHeight: 32
+                                    padding: 5
+                                    text: modelData.label
+                                    accented: session.roomQuality === modelData.value
+                                    enabled: tasks.writesAllowed
+                                    Accessible.role: Accessible.RadioButton
+                                    Accessible.checked: accented
+                                    onClicked: session.roomQuality = modelData.value
+                                }
+                            }
+                        }
+                        Text {
+                            objectName: "roomQualityDescription"
+                            Layout.fillWidth: true
+                            textFormat: Text.PlainText
+                            text: "只影响房间背景。均衡在画面变化时降低分辨率，停下后恢复；清晰始终最清楚，开合抽屉时可能卡顿；流畅始终较低分辨率。非 Retina 屏幕上三档相同。"
+                            color: "#819ab0"
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                        }
                         Rectangle {
                             height: 1
                             Layout.fillWidth: true
@@ -4666,6 +5094,143 @@ Item {
                             wrapMode: Text.Wrap
                             Accessible.role: Accessible.StaticText
                             Accessible.name: text
+                        }
+                        ColumnLayout {
+                            id: proactiveSettings
+                            objectName: "settingsProactive"
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            spacing: 8
+                            readonly property var features: tasks.settingsSnapshot.features || ({})
+                            readonly property var permission: session.state.permissions?.features?.proactive_chat || ({})
+                            readonly property var consentFeedback: session.permissionFeedback?.proactive_chat || ({})
+                            readonly property bool available: session.state.settings?.proactive_available !== false
+                            readonly property bool active: features.proactive_chat_enabled === true
+                            readonly property bool permissionKnown: session.permissionsKnown === true
+                                && typeof permission.enabled === "boolean" && typeof permission.effective === "boolean"
+                            readonly property bool editable: tasks.settingsEditable("features")
+                                && available && typeof features.proactive_chat_enabled === "boolean"
+                            Text {
+                                textFormat: Text.PlainText
+                                text: "主动消息"
+                                color: "#e4eef7"
+                                font.pixelSize: 16
+                            }
+                            GlassSwitch {
+                                id: proactiveSwitch
+                                objectName: "settingsProactiveEnabled"
+                                readonly property bool shownValue: proactiveSettings.active
+                                text: "允许她主动发消息"
+                                checked: shownValue
+                                enabled: proactiveSettings.editable
+                                onToggled: tasks.toggleSetting(proactiveSwitch, "features", "proactive_chat_enabled", checked)
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 8
+                                Text {
+                                    objectName: "settingsProactiveStatus"
+                                    width: Math.min(implicitWidth, parent.width)
+                                    textFormat: Text.PlainText
+                                    wrapMode: Text.Wrap
+                                    text: !proactiveSettings.available ? "主动消息暂不可用"
+                                        : !proactiveSettings.active ? "未开启"
+                                        : !proactiveSettings.permissionKnown || !proactiveSettings.permission.enabled ? "已开启，还需要授权费用"
+                                        : proactiveSettings.permission.effective ? "已开启并已授权"
+                                        : "已授权但暂不生效（换过服务，需要重新授权）"
+                                    color: "#b7d5cf"
+                                    font.pixelSize: 13
+                                }
+                                GlassButton {
+                                    objectName: "settingsProactiveAuthorize"
+                                    text: "授权"
+                                    visible: proactiveSettings.available && proactiveSettings.active
+                                        && (!proactiveSettings.permissionKnown || !proactiveSettings.permission.effective)
+                                    enabled: proactiveSettings.editable && proactiveSettings.permissionKnown
+                                        && session.providerFeedback?.saving !== true && proactiveSettings.consentFeedback.status !== "pending"
+                                    onClicked: {
+                                        tasks.consentFeature = "proactive_chat";
+                                        tasks.consentDigest = proactiveSettings.permission.consent_digest;
+                                        tasks.consentEpoch = session.permissionContextEpoch;
+                                        consent.open();
+                                    }
+                                }
+                            }
+                            Text {
+                                objectName: "settingsProactiveDailyLimit"
+                                textFormat: Text.PlainText
+                                text: "每天最多：" + (proactiveSettings.features.proactive_daily_limit ?? 2) + " 条"
+                                color: "#c8dce9"
+                                font.pixelSize: 13
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 8
+                                Repeater {
+                                    model: [1, 2, 3, 5]
+                                    GlassButton {
+                                        required property int modelData
+                                        objectName: "settingsProactiveDailyLimit-" + modelData
+                                        text: modelData + " 条"
+                                        accented: proactiveSettings.features.proactive_daily_limit === modelData
+                                        enabled: proactiveSettings.editable
+                                        onClicked: if (!accented) session.saveSettings("features", {proactive_daily_limit: modelData})
+                                    }
+                                }
+                            }
+                            Text {
+                                objectName: "settingsProactiveMinInterval"
+                                textFormat: Text.PlainText
+                                readonly property real minutes: proactiveSettings.features.proactive_min_interval_minutes ?? 120
+                                text: "最短间隔：" + (minutes % 60 === 0 ? minutes / 60 + " 小时" : minutes + " 分钟")
+                                color: "#c8dce9"
+                                font.pixelSize: 13
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 8
+                                Repeater {
+                                    model: [60, 120, 240, 480]
+                                    GlassButton {
+                                        required property int modelData
+                                        objectName: "settingsProactiveMinInterval-" + modelData
+                                        text: modelData / 60 + " 小时"
+                                        accented: proactiveSettings.features.proactive_min_interval_minutes === modelData
+                                        enabled: proactiveSettings.editable
+                                        onClicked: if (!accented) session.saveSettings("features", {proactive_min_interval_minutes: modelData})
+                                    }
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                textFormat: Text.PlainText
+                                text: "只有应用开着时她才会发。每条消息调用一次模型，计入后台用量。刚认识时她更克制，实际条数可能比这里设的少。"
+                                color: "#819ab0"
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                            }
+                            Text {
+                                objectName: "settingsProactiveFeedback"
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                textFormat: Text.PlainText
+                                text: tasks.settingsReceipt("features").text || ""
+                                color: tasks.feedbackColor(tasks.settingsReceipt("features"))
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                textFormat: Text.PlainText
+                                text: proactiveSettings.consentFeedback.text || ""
+                                color: tasks.feedbackColor(proactiveSettings.consentFeedback)
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                            }
                         }
                     }
                     ColumnLayout {
@@ -5279,54 +5844,50 @@ Item {
                         }
                     }
                 }
-                ColumnLayout {
-                    visible: tasks.page === "activities"
+                Loader {
+                    id: xiangqiPage
+                    visible: active
+                    active: tasks.page === "activities" && !tasks.diaryActive && !tasks.gomokuActive && !tasks.chessActive && !tasks.goActive
                     Layout.fillWidth: true
-                    spacing: 14
-                    XiangqiPanel {
-                        Layout.fillWidth: true
-                    }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: "活动桌"
-                        color: "#e5eef8"
-                        font.pixelSize: 20
-                    }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: "这里承接棋局、日记和专注时光。所有入口共用当前人格与会话。"
-                        color: "#90a7bb"
-                        font.pixelSize: 13
-                        wrapMode: Text.Wrap
-                        Layout.fillWidth: true
-                    }
-                    GlassButton {
-                        text: "读取今日手记"
-                        enabled: tasks.writesAllowed
-                        onClicked: session.request("diary:request", {})
-                    }
-                    Text {
-                        textFormat: Text.PlainText
-                        Layout.fillWidth: true
-                        text: session.state.diary?.content || session.state.diary?.diary || "选择手记后显示当前人格的真实记录。"
-                        color: "#bed0e0"
-                        wrapMode: Text.Wrap
-                        font.pixelSize: 14
-                    }
-                    GlassButton {
-                        text: "读取共同经历"
-                        onClicked: session.request("timeline:request", {})
-                    }
-                    Repeater {
-                        model: session.state.timeline?.events || session.state.timeline?.items || []
-                        Text {
-                            textFormat: Text.PlainText
-                            required property var modelData
-                            Layout.fillWidth: true
-                            text: modelData.description || modelData.content || modelData.title || ""
-                            color: "#b9cde0"
-                            font.pixelSize: 13
-                            wrapMode: Text.Wrap
+                    sourceComponent: XiangqiPanel {}
+                }
+                Loader {
+                    id: gomokuPage
+                    visible: active
+                    active: tasks.gomokuActive
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    sourceComponent: GomokuPanel {}
+                }
+                Loader {
+                    id: chessPage
+                    visible: active
+                    active: tasks.chessActive
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    sourceComponent: ChessPanel {}
+                }
+                Loader {
+                    id: goPage
+                    visible: active
+                    active: tasks.goActive
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    sourceComponent: GoPanel {}
+                }
+                Loader {
+                    id: diaryPage
+                    visible: active
+                    active: tasks.diaryActive
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    sourceComponent: DiaryPanel {
+                        onAuthorizationRequested: {
+                            const permission = session.state.permissions?.features?.diary_generation;
+                            tasks.consentFeature = "diary_generation";
+                            tasks.consentDigest = permission?.consent_digest || "";
+                            tasks.consentEpoch = session.permissionContextEpoch;
+                            consent.open();
                         }
                     }
                 }
@@ -5342,8 +5903,9 @@ Item {
                         font.letterSpacing: 4
                     }
                     Text {
+                        objectName: "aboutPreviewDescription"
                         textFormat: Text.PlainText
-                        text: "科技与柔软，共处一个空间。\n\nQt Quick / QML 原生界面，C++ 持久控制器，现有 Python 业务内核。角色通过 Native Core 进入同一场景纹理。\n\n这是本地开发候选。项目根许可仍为 GPLv3；Apache-2.0 优先的迁移目标与第三方通知分别推进。Qt 与 Cubism 的许可边界独立保留。"
+                        text: "科技与柔软，共处一个空间。\n\nQt Quick / QML 原生界面，C++ 持久控制器，现有 Python 业务内核。角色通过 Native Core 进入同一场景纹理。\n\n这是内部预览版。项目代码按 Apache-2.0 许可；Qt 与 Cubism 的许可边界独立保留。"
                         color: "#98aec2"
                         font.pixelSize: 14
                         wrapMode: Text.Wrap
@@ -5370,7 +5932,7 @@ Item {
                             },
                             {
                                 id: "activities",
-                                label: "活动与手记"
+                                label: "中国象棋"
                             },
                             {
                                 id: "settings",

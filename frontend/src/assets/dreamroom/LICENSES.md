@@ -6,7 +6,7 @@ original procedural vector assets created for Reverie in July 2026.
 `rug.svg`, `plush-toys.svg`, `balloon.svg`, `star-lantern.svg`, and
 `star-wire.svg` are original hand-drawn vector assets created for Reverie in
 August 2026 (DreamRoom decoration batch). They are distributed under the same
-GPL-3.0 licence as the Reverie frontend.
+Apache-2.0 licence as the Reverie frontend.
 They contain no third-party artwork, fonts, model data, or remote resources.
 
 `focus-rain.ogg`, `focus-fire.ogg`, and `focus-wind.ogg` are real

@@ -1,0 +1,12 @@
+{
+  "kind": "event",
+  "frame": {
+    "type": "chat:media:result",
+    "request_id": "chat_image_thumbnail_example",
+    "payload": {
+      "media_id": "7fc97c92dd41f010302d2edb7f3cda5c7f7df51fa7fa8cdfc785b203447f38c7",
+      "mime": "image/jpeg",
+      "data_url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCAAIAAgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAAB//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJoAUx0//9k="
+    }
+  }
+}

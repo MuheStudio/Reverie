@@ -4,9 +4,9 @@ Welcome! Pull requests, forks, and modifications are all welcome.
 
 ## License
 
-Reverie is licensed under **GPL-3.0** (the client application as a whole). Any derivative works you publish must also remain open source under the same license.
+Reverie is licensed under **Apache-2.0** (see [LICENSE](LICENSE)). Contributions submitted for inclusion in Reverie are accepted under Section 5 of that license.
 
-- Client application source code: **GPL-3.0** (see `LICENSE`).
+- GPL, AGPL, and other copyleft code require separate approval before inclusion.
 - Official cloud services (data backup, AI compute hosting, network acceleration) are separate commercial proprietary services and are **not** covered by this license. See `README.md` and `AGPL_EXCLUDED.md`.
 
 When using third-party code, you must preserve the original copyright notices and licenses, and comply with the obligations of each license (Apache-2.0 modification notices, NOTICE merging, etc.). See `LICENSES_CREDITS/` and `CREDITS.md`.

@@ -330,9 +330,8 @@ class FeatureSettings(_ValidatedSettingsModel):
     web_disclaimer_acknowledged: bool = Field(default=False)
     web_native_search_enabled: bool = Field(default=False)
     surf_keyless_search_enabled: bool = Field(default=False)
-    # Video download (cat-catch-inspired sniff/HLS pipeline; disclaimer-gated, default off).
-    # Mirrors the web_surfing_enabled + web_disclaimer_acknowledged pairing: the feature
-    # stays locked until the user reads the liability disclaimer and acknowledges it.
+    # The video download pipeline is retired. These fields are retained for compatibility
+    # with saved settings and still require disclaimer acknowledgement before enabling.
     video_download_enabled: bool = Field(default=False)
     video_download_disclaimer_acknowledged: bool = Field(default=False)
     video_max_size_mb: int = Field(default=500, ge=1, le=4096)

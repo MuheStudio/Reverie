@@ -2,7 +2,7 @@
 
 本目录保留许可证原文、适用通知、资产授权材料及来源登记，随现有打包流程带入产物。**某份许可证文本在目录中存在，不等于该项目源码仍在当前应用中。** 历史移除记录与当前组件分开标记；完整依赖还应核对每次构建生成的许可证清单和 SBOM。
 
-当前整体许可仍见根 [`LICENSE`](../LICENSE)。原作者支持交接和宽松许可迁移已经确认；目标优先 Apache-2.0，MIT 备选，不自动双许可，不提前改许可证。过程见 [`docs/LICENSE-MIGRATION.md`](../docs/LICENSE-MIGRATION.md)。
+项目根 [`LICENSE`](../LICENSE) 自 2026-11-18 起为 Apache-2.0。本目录保留的 GPL 许可证原文供追溯历史来源。各第三方组件和资产沿用各自条款。迁移过程见 [`docs/LICENSE-MIGRATION.md`](../docs/LICENSE-MIGRATION.md)。
 
 ## 登记规则
 

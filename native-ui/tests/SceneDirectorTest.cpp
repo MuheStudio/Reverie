@@ -4,6 +4,8 @@
 #include <QtTest>
 #include "HeaderOpenObservation.h"
 #include "LayerCompositorScaleCases.h"
+#include "EnvironmentResolutionCases.h"
+#include "RoomQualityCases.h"
 #include <QJSValue>
 #include <QVector>
 #include <algorithm>
@@ -721,6 +723,33 @@ class SceneDirectorTest : public QObject {
     }
     void layerCompositorUsesActualScreenScale() {
         LayerCompositorScaleCases::runCase();
+    }
+    void environmentInputsReduceResolution() {
+        EnvironmentResolutionCases::runCase("inputs", 2);
+    }
+    void environmentChangesRestartQuietWindow() {
+        EnvironmentResolutionCases::runCase("restart", 2);
+    }
+    void environmentQuietRestoresFullResolution() {
+        EnvironmentResolutionCases::runCase("quiet", 2);
+    }
+    void environmentOneDprKeepsNativeResolution() {
+        EnvironmentResolutionCases::runCase("one-dpr", 1);
+    }
+    void roomQualityResolution_data() {
+        QTest::addColumn<QString>("quality");
+        QTest::addColumn<int>("dpr");
+        for (const auto &quality : {"clear", "balanced", "smooth", "unrecognized"}) {
+            for (const int dpr : {2, 1}) {
+                const auto name = QString("%1-dpr%2").arg(quality).arg(dpr);
+                QTest::newRow(qPrintable(name)) << QString(quality) << dpr;
+            }
+        }
+    }
+    void roomQualityResolution() {
+        QFETCH(QString, quality);
+        QFETCH(int, dpr);
+        RoomQualityCases::run(quality, dpr);
     }
 };
 QTEST_MAIN(SceneDirectorTest)

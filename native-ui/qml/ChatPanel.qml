@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 Item {
@@ -32,7 +33,13 @@ Item {
     readonly property real bodyOpacity: director ? director.chatBodyOpacity : Math.max(0, 1 - taskProgress)
     readonly property real surfaceOpacity: director ? 1 - director.phaseWeight(0, .30, taskProgress) : Math.max(0, 1 - taskProgress)
     readonly property real readingBodyOpacity: director ? director.readBodyOpacity : 1
+    readonly property url stagedImage: session.chatImagePreview ?? ""
+    readonly property bool hasStagedImage: stagedImage.toString() !== ""
+    readonly property string imageFeedback: session.chatImageFeedback || ""
+    property var imagePickerOverride: null
+    property var imagePickerScope: null
     readonly property real requestedComposerHeight: Math.max(68, Math.min(144, Math.ceil(composer.contentHeight) + 40))
+        + (hasStagedImage ? 52 : 0) + (imageFeedback.length > 0 ? 19 : 0)
     readonly property var operationFeedback: session.chatFeedback || ({})
     readonly property bool feedbackTerminal: ["done", "cancelled", "failed", "failed_uncertain"].includes(operationFeedback.status)
     readonly property var cancelFeedback: operationFeedback.cancel || ({})
@@ -150,6 +157,14 @@ Item {
         // Read the list directly: a replaced model creates its rows while
         // panel bindings on the same list may still hold the previous value.
         const messages = session.messages;
+        const last = messages[messages.length - 1];
+        if (last?.source === "proactive" && last.proactive_id) {
+            let first = messages.length - 1;
+            while (first > 0 && messages[first - 1].source === "proactive" &&
+                   messages[first - 1].proactive_id === last.proactive_id)
+                --first;
+            return {user: -1, assistant: messages.length - 1, first: first, proactive: true};
+        }
         let assistant = -1;
         for (let index = messages.length - 1; index >= 0; --index) {
             const role = messages[index].role;
@@ -170,6 +185,8 @@ Item {
     }
     function companionRowRole(index) {
         const exchange = companionExchange();
+        if (exchange.proactive && index >= exchange.first && index <= exchange.assistant)
+            return index === exchange.assistant ? "assistant" : "proactive";
         if (index === exchange.user)
             return "user";
         if (index === exchange.assistant)
@@ -252,10 +269,13 @@ Item {
             // A live bubble's delivery ID is replaced by a durable history ID.
             // The preceding pending user ID is the same request ID retained by
             // both durable rows, so one response turn receives one cue.
+            const proactiveId = message.source === "proactive" ? message.proactive_id : "";
             const requestId = message.request_id || (precedingUser ? precedingUser.request_id || precedingUser.id : "");
-            const key = "scope:" + presentationScopeRevision + "|" + (requestId ? "turn:" + requestId : "message:" + messageKey(message, index));
+            const key = "scope:" + presentationScopeRevision + "|" + (proactiveId ? "proactive:" + proactiveId
+                : requestId ? "turn:" + requestId : "message:" + messageKey(message, index));
             const content = String(message.content || "");
-            if (!followLatest && content.length && !observed[key])
+            if ((!followLatest || (proactiveId && (presentationMode === "task" || taskProgress > .001))) &&
+                content.length && !observed[key])
                 unread[key] = true;
             if (content.length)
                 observed[key] = true;
@@ -267,6 +287,19 @@ Item {
     function clearUnreadReplies() {
         unreadReplyIds = ({});
         unreadReplyCount = 0;
+    }
+    function acknowledgeVisibleProactiveReplies() {
+        if (!followLatest || presentationMode === "task" || taskProgress > .001 || !geometryReady)
+            return;
+        const keys = Object.keys(unreadReplyIds);
+        const remaining = keys.filter(key => !key.includes("|proactive:"));
+        if (remaining.length !== keys.length) {
+            const unread = ({});
+            for (const key of remaining)
+                unread[key] = true;
+            unreadReplyIds = unread;
+            unreadReplyCount = remaining.length;
+        }
     }
     function requestComposerHeight() {
         if (director && composer)
@@ -572,6 +605,31 @@ Item {
         captureReadingAnchor();
     }
 
+    function openChatImagePicker() {
+        imagePickerScope = { scope: session.scopeKey, generation: session.connectionGeneration };
+        if (imagePickerOverride)
+            imagePickerOverride();
+        else
+            imageFileDialog.open();
+    }
+
+    function applyChatImage(file) {
+        const picker = imagePickerScope;
+        imagePickerScope = null;
+        if (!picker || picker.scope !== session.scopeKey || picker.generation !== session.connectionGeneration)
+            return false;
+        return session.chooseChatImage(file);
+    }
+
+    FileDialog {
+        id: imageFileDialog
+        title: "选择图片"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["图片 (*.jpg *.jpeg *.png *.webp *.gif)", "所有文件 (*)"]
+        onAccepted: chat.applyChatImage(selectedFile)
+        onRejected: chat.imagePickerScope = null
+    }
+
     onHistoryRectChanged: scheduleReadingRestore()
     onComposerRectChanged: scheduleReadingRestore()
     onPresentationModeChanged: {
@@ -646,6 +704,7 @@ Item {
                 restart();
                 return;
             }
+            chat.acknowledgeVisibleProactiveReplies();
             const inputWasBlocked = chat.layoutRestorePending;
             if (inputWasBlocked || chat.pendingComposerFocus || chat.pendingChatFocus)
                 chat.restoreComposerState();
@@ -793,7 +852,21 @@ Item {
                         readonly property string companionRole: chat.companionRowRole(index)
                         readonly property bool previewUser: companionRole === "user"
                         readonly property bool previewAssistant: companionRole === "assistant"
-                        readonly property bool previewVisible: previewUser || previewAssistant
+                        readonly property bool previewVisible: previewUser || previewAssistant || companionRole === "proactive"
+                        // A page may start in the middle of a turn. Only the
+                        // durable first bubble carries the source label.
+                        readonly property bool proactiveFirst: modelData.source === "proactive" &&
+                            !!modelData.proactive_id && modelData.bubble_index === 0
+                        readonly property string imageId: {
+                            if (modelData.role !== "user")
+                                return "";
+                            if (modelData.pending_chat_image)
+                                return modelData.pending_chat_image;
+                            const media = (modelData.media || []).find(item => item.mime === "image/jpeg"
+                                && /^[0-9a-fA-F]{64}$/.test(item.media_id));
+                            return media ? media.media_id : "";
+                        }
+                        readonly property var thumbnail: imageId ? (session.chatImageThumbnails?.[imageId] || ({})) : ({})
                         readonly property int previewLineCount: previewUser ? 1 : 4
                         readonly property real previewTextHeight: chat.previewHeight(messageText, previewLineCount)
                         property alias messageEditor: messageText
@@ -807,16 +880,57 @@ Item {
                         Rectangle {
                             id: messageBox
                             width: parent.width * (messageRow.modelData.role === "user" ? .9 : 1)
-                            implicitHeight: (chat.expandedHistory ? messageText.contentHeight : messageRow.previewTextHeight) + 22 + (!chat.expandedHistory && messageRow.previewAssistant ? 37 : 0)
+                            implicitHeight: (chat.expandedHistory ? messageText.contentHeight : messageRow.previewTextHeight)
+                                + 22 + (messageRow.proactiveFirst ? proactiveSource.implicitHeight + 4 : 0)
+                                + (messageRow.imageId ? imageBody.height + 6 : 0)
+                                + (!chat.expandedHistory && messageRow.previewAssistant ? 37 : 0)
                             height: implicitHeight
                             anchors.right: messageRow.modelData.role === "user" ? parent.right : undefined
                             radius: 12
                             color: messageRow.modelData.role === "user" ? "#5a3a545c" : "#4a14232f"
                             border.color: messageRow.modelData.role === "user" ? "#286a8c90" : "#1a4a6470"
+                            Text {
+                                id: proactiveSource
+                                objectName: "proactiveSource-" + messageRow.messageId
+                                x: 12
+                                y: 11
+                                visible: messageRow.proactiveFirst
+                                text: "她主动发来"
+                                textFormat: Text.PlainText
+                                color: "#8fa7bb"
+                                font.pixelSize: 11
+                            }
+                            Item {
+                                id: imageBody
+                                visible: messageRow.imageId !== ""
+                                x: 12
+                                y: 11
+                                width: parent.width - 24
+                                height: chat.expandedHistory ? 120 : 68
+                                Image {
+                                    objectName: "chatMessageImage-" + messageRow.messageId
+                                    width: Math.min(parent.width, chat.expandedHistory ? 200 : 100)
+                                    height: parent.height
+                                    source: messageRow.thumbnail.source ?? ""
+                                    cache: false
+                                    fillMode: Image.PreserveAspectFit
+                                    visible: status === Image.Ready
+                                }
+                                Text {
+                                    objectName: "chatMessageImageError-" + messageRow.messageId
+                                    visible: messageRow.thumbnail.status === "error"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "图片读不到"
+                                    textFormat: Text.PlainText
+                                    color: "#e6b4a4"
+                                    font.pixelSize: 13
+                                }
+                            }
                             Item {
                                 id: textViewport
                                 x: 12
-                                y: 11
+                                y: 11 + (messageRow.proactiveFirst ? proactiveSource.implicitHeight + 4 : 0)
+                                    + (messageRow.imageId ? imageBody.height + 6 : 0)
                                 width: parent.width - 24
                                 height: chat.expandedHistory ? messageText.contentHeight : messageRow.previewTextHeight
                                 clip: !chat.expandedHistory
@@ -877,6 +991,23 @@ Item {
                                 padding: 5
                                 onClicked: chat.openFullMessage(messageRow.messageId, fullMessageButton)
                             }
+                        }
+                        GlassButton {
+                            objectName: "keepsakeMessage-" + messageRow.messageId
+                            visible: chat.expandedHistory
+                            x: messageRow.width - width - 4
+                            y: messageBox.height - 10
+                            width: 60
+                            height: 24
+                            padding: 0
+                            font.pixelSize: 11
+                            text: session.keepsakeMessageIds?.[messageRow.messageId] ? "已收藏" : "收藏"
+                            enabled: session.keepsakeView?.writeAvailable === true &&
+                                !session.keepsakeMessageIds?.[messageRow.messageId]
+                            onClicked: session.collectKeepsake(messageRow.messageId)
+                            ToolTip.visible: !!session.keepsakeView?.notice && session.keepsakeView?.messageId === messageRow.messageId
+                            ToolTip.text: session.keepsakeView?.notice || ""
+                            ToolTip.timeout: 5000
                         }
                     }
                     Column {
@@ -967,6 +1098,45 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 spacing: 3
+                RowLayout {
+                    visible: chat.hasStagedImage
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 48
+                    Image {
+                        objectName: "chatImagePreview"
+                        Layout.preferredWidth: 54
+                        Layout.preferredHeight: 44
+                        source: chat.stagedImage
+                        cache: false
+                        fillMode: Image.PreserveAspectFit
+                    }
+                    Text {
+                        objectName: "chatImageDisclosure"
+                        Layout.fillWidth: true
+                        text: "图片会发送给当前的模型服务。"
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: "#acbdc6"
+                        font.pixelSize: 12
+                    }
+                    GlassButton {
+                        objectName: "chatImageRemove"
+                        text: "移除"
+                        implicitHeight: 30
+                        padding: 5
+                        onClicked: session.removeChatImage()
+                    }
+                }
+                Text {
+                    objectName: "chatImageFeedback"
+                    visible: chat.imageFeedback.length > 0
+                    Layout.fillWidth: true
+                    text: chat.imageFeedback
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    color: "#e6b4a4"
+                    font.pixelSize: 12
+                }
                 ScrollView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -992,6 +1162,11 @@ Item {
                         onSelectionEndChanged: chat.captureComposerState()
                         Keys.onPressed: event => {
                             const composing = inputMethodComposing || (chat.inputContext && chat.inputContext.composing);
+                            if (!composing && event.matches(StandardKey.Paste) && typeof session.pasteChatImage === "function"
+                                && session.pasteChatImage()) {
+                                event.accepted = true;
+                                return;
+                            }
                             if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !(event.modifiers & Qt.ShiftModifier) && !composing) {
                                 if (!session.busy)
                                     chat.sendOrStop();
@@ -1010,13 +1185,24 @@ Item {
                 }
             }
             GlassButton {
+                objectName: "chatImageChoose"
+                visible: typeof session.chooseChatImage === "function"
+                Layout.alignment: Qt.AlignBottom
+                text: "图片"
+                implicitHeight: 32
+                padding: 6
+                enabled: session.chatImageCanChoose === true
+                onClicked: chat.openChatImagePicker()
+            }
+            GlassButton {
                 objectName: "sendChat"
                 Layout.alignment: Qt.AlignBottom
                 text: session.busy ? (chat.cancelPending ? "正在停止…" : "停止") : "发送  ↗"
                 implicitHeight: 32
                 padding: 6
                 accented: true
-                enabled: session.busy ? !chat.cancelPending : (session.connected && session.runtimeWritable !== false && session.draft.trim().length > 0)
+                enabled: session.busy ? !chat.cancelPending : chat.hasStagedImage ? session.chatImageCanSend === true
+                    : (session.connected && session.runtimeWritable !== false && session.draft.trim().length > 0)
                 onClicked: chat.sendOrStop()
             }
         }

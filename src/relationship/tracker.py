@@ -135,10 +135,13 @@ class RelationshipTracker:
         state_path: Path | None = None,
         document_store: PrivateDocumentStore | None = None,
         defer_startup_writes: bool = False,
+        *,
+        persona_id: str | None = None,
     ) -> None:
         self.state_path = state_path
         self.document_store = document_store
         self.defer_startup_writes = defer_startup_writes
+        self.persona_id = persona_id
         self.intimacy = max(0, initial_intimacy)
         self.interaction_count = 0
         self.positive_interactions = 0
@@ -331,6 +334,12 @@ class RelationshipTracker:
         logger.debug("Intimacy %+d → %d (%s)", delta, self.intimacy, self.stage)
 
     def _load_state(self) -> None:
+        if self.persona_id is not None:
+            if self.document_store is not None:
+                stored = self.document_store.read_persona_state_document(self.persona_id, "persona_relationship_state")
+                if stored is not None:
+                    self._apply_state(stored)
+            return
         if self.document_store is not None:
             stored = self.document_store.read_private_document(
                 "persona_relationship_state"
@@ -376,6 +385,10 @@ class RelationshipTracker:
         return duplicate
 
     def _save_state(self) -> None:
+        if self.persona_id is not None:
+            if self.document_store is not None:
+                self.document_store.write_persona_state_document(self.persona_id, "persona_relationship_state", self.to_dict())
+            return
         if self.document_store is not None:
             self.document_store.write_private_document(
                 "persona_relationship_state",

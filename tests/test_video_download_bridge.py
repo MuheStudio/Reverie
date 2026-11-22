@@ -104,3 +104,31 @@ def test_chat_send_rejects_bad_video_media_id(monkeypatch):
     assert result is not None
     assert result.get("scope") == "chat"
     assert "视频" in result.get("error", "")
+
+
+def test_video_download_retired_even_with_consent(monkeypatch):
+    from unittest.mock import Mock
+
+    ws = DummyWebSocket()
+    _authenticate(ws)
+    monkeypatch.setattr(ws_bridge.bridge_state, "settings", _make_settings(True, True))
+    schedule = Mock(side_effect=AssertionError("Retired video download must not start a task"))
+    monkeypatch.setattr(ws_bridge.asyncio, "ensure_future", schedule)
+
+    try:
+        result = asyncio.run(
+            ws_bridge.handle_video_download(
+                {"source_url": "https://example.com/v.m3u8", "request_id": "retired"}, ws
+            )
+        )
+    finally:
+        ws_bridge._client_contexts.pop(ws, None)
+
+    assert result == {
+        "ok": False,
+        "error": "视频下载功能已退役",
+        "code": "video_download_retired",
+        "request_id": "retired",
+    }
+    assert ws.sent == []
+    schedule.assert_not_called()

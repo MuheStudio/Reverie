@@ -39,6 +39,10 @@ ApplicationWindow {
             sceneNavigation.rememberFeatureFocus("settings", activeFocusItem);
         else if (belongsTo(activeFocusItem, characterTasks))
             sceneNavigation.rememberFeatureFocus("character", activeFocusItem);
+        else if (activitiesLoader.item && belongsTo(activeFocusItem, activitiesLoader.item))
+            sceneNavigation.rememberFeatureFocus("activities", activeFocusItem);
+        else if (keepsakeLoader.item && belongsTo(activeFocusItem, keepsakeLoader.item))
+            sceneNavigation.rememberFeatureFocus("keepsake", activeFocusItem);
         else if (belongsTo(activeFocusItem, chat) && activeFocusItem.cursorPosition !== undefined)
             sceneNavigation.rememberFeatureFocus("chat", activeFocusItem);
     }
@@ -58,6 +62,14 @@ ApplicationWindow {
         focusGeneration: session.connectionGeneration
         inputContext: inputPolicy
         fallbackFocusItem: chat.composerItem
+        onCurrentFeatureChanged: {
+            if (currentFeature !== "activities" &&
+                    ["activities", "diary", "gomoku", "chess", "go"].includes(session.panel))
+                session.openPanel("");
+            if (currentFeature !== "keepsake" && session.panel === "keepsake")
+                session.openPanel("");
+            session.setRelationshipPageVisible(currentFeature === "character");
+        }
         onEnteredFeature: (feature, subentry) => {
             if (feature === "memory" && !archiveEditor.initialized)
                 archiveEditor.load();
@@ -74,6 +86,16 @@ ApplicationWindow {
                 applicationWindow.raiseSurface(settingsSurface);
             if (feature === "character")
                 applicationWindow.raiseSurface(characterSurface);
+            if (feature === "keepsake") {
+                keepsakeLoader.active = true;
+                applicationWindow.raiseSurface(keepsakeLoader.item);
+                session.openPanel("keepsake");
+            }
+            if (feature === "activities") {
+                activitiesLoader.active = true;
+                applicationWindow.raiseSurface(activitiesLoader.item);
+                session.openPanel(["diary", "gomoku", "chess", "go"].includes(subentry) ? subentry : "activities");
+            }
         }
     }
     ArchiveEntryPolicy {
@@ -116,9 +138,9 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: !inputPolicy.composing && !archiveDrawer.modalOpen && !memoryTasks.modalOpen && !terminalTasks.modalOpen && !characterTasks.modalOpen
+        enabled: !inputPolicy.composing && !archiveDrawer.modalOpen && !memoryTasks.modalOpen && !terminalTasks.modalOpen && !characterTasks.modalOpen && !activitiesLoader.item?.modalOpen && !keepsakeLoader.item?.modalOpen
         onActivated: {
-            if (memorySurface.dragging || settingsSurface.dragging || characterSurface.dragging)
+            if (memorySurface.dragging || settingsSurface.dragging || characterSurface.dragging || activitiesLoader.item?.dragging || keepsakeLoader.item?.dragging)
                 sceneNavigation.cancelInteraction();
             else if (sceneNavigation.paletteOpen)
                 sceneNavigation.dismissPalette();
@@ -145,6 +167,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 director: sceneDirector
                 reducedMotion: session.reducedMotion
+                roomQuality: session.roomQuality
             }
             FrameAnimation {
                 running: applicationWindow.windowActive && !session.reducedMotion
@@ -189,6 +212,8 @@ ApplicationWindow {
         baseItem: roomWithAvatar
         lowerItem: lowerComposition
         surfaces: [memorySurface, settingsSurface, characterSurface]
+            .concat(activitiesLoader.item ? [activitiesLoader.item] : [])
+            .concat(keepsakeLoader.item ? [keepsakeLoader.item] : [])
         navigation: sceneNavigation
         effectsActive: applicationWindow.windowActive && !session.reducedTransparency
     }
@@ -297,6 +322,75 @@ ApplicationWindow {
             navigation: sceneNavigation
             avatarItem: avatarSurface.avatarItem
             page: "character"
+        }
+    }
+    Loader {
+        id: activitiesLoader
+        active: false
+        z: item ? compositor.orderOf(item) : 0
+        sourceComponent: ScenePortal {
+            id: activitiesSurface
+            objectName: "drawer-activities"
+            property int orderStamp: 0
+            readonly property bool modalOpen: activitiesTasks.modalOpen
+            navigation: sceneNavigation
+            director: sceneDirector
+            destination: "activities"
+            glyph: "◇"
+            text: sceneNavigation.currentSubentry === "diary" ? "日记"
+                : sceneNavigation.currentSubentry === "gomoku" ? "五子棋"
+                : sceneNavigation.currentSubentry === "chess" ? "国际象棋"
+                : sceneNavigation.currentSubentry === "go" ? "围棋" : "中国象棋"
+            hint: sceneNavigation.currentSubentry === "diary" ? "读她每天写的日记"
+                : ["chess", "go"].includes(sceneNavigation.currentSubentry) ? "和角色下一盘" : "和角色下一盘，或本地练习"
+            closedVisible: false
+            closedRect: sceneDirector.characterAnchor
+            expandedRect: sceneDirector.taskRect
+            reducedMotion: session.reducedMotion
+            sceneSource: compositor.sourceBefore(activitiesSurface)
+            blurredSource: compositor.blurBefore(activitiesSurface)
+            sceneRoot: lowerComposition
+            onDraggingChanged: if (dragging) applicationWindow.raiseSurface(activitiesSurface)
+            onOpened: if (desiredOpen && transitionRevision === sceneNavigation.transitionRevision)
+                sceneNavigation.deferFeatureFocus("activities", activitiesTasks.firstFocusItem, "", null, null)
+            body: TaskPanel {
+                id: activitiesTasks
+                anchors.fill: parent
+                navigation: sceneNavigation
+                avatarItem: avatarSurface.avatarItem
+                page: "activities"
+            }
+        }
+    }
+    Loader {
+        id: keepsakeLoader
+        active: false
+        z: item ? compositor.orderOf(item) : 0
+        sourceComponent: ScenePortal {
+            id: keepsakeSurface
+            objectName: "drawer-keepsake"
+            property int orderStamp: 0
+            readonly property bool modalOpen: keepsakePage.modalOpen
+            navigation: sceneNavigation
+            director: sceneDirector
+            destination: "keepsake"
+            glyph: "◇"
+            text: "收藏"
+            hint: "翻看留住的话与图片"
+            closedVisible: false
+            closedRect: sceneDirector.characterAnchor
+            expandedRect: sceneDirector.taskRect
+            reducedMotion: session.reducedMotion
+            sceneSource: compositor.sourceBefore(keepsakeSurface)
+            blurredSource: compositor.blurBefore(keepsakeSurface)
+            sceneRoot: lowerComposition
+            onDraggingChanged: if (dragging) applicationWindow.raiseSurface(keepsakeSurface)
+            onOpened: if (desiredOpen && transitionRevision === sceneNavigation.transitionRevision)
+                sceneNavigation.deferFeatureFocus("keepsake", keepsakePage.firstFocusItem, "", null, null)
+            body: KeepsakePanel {
+                id: keepsakePage
+                anchors.fill: parent
+            }
         }
     }
     RowLayout {

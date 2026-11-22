@@ -801,7 +801,7 @@ async def main():
                 post = await timeline.maybe_generate()
                 if post:
                     await social_universe.ensure_timeline_comment(post.to_dict())
-                    logger.info("Timeline post: %s", post.content[:50])
+                    logger.info("Timeline post published (characters=%d)", len(post.content))
             except asyncio.CancelledError:
                 return
             except Exception:

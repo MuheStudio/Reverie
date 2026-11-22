@@ -23,6 +23,7 @@ import secrets
 import sys
 from functools import wraps
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Awaitable
 from weakref import WeakSet
@@ -32,6 +33,9 @@ from websockets.server import WebSocketServerProtocol
 from ..kernel.contracts import (
     CommandEnvelopeV4,
     LEGACY_MESSAGE_TYPES,
+    KeepsakeCollectPayload,
+    KeepsakePagePayload,
+    KeepsakeRemovePayload,
     MemoryCandidateDecideManyPayload,
     MemoryCandidateStatusPayload,
     MemoryDeleteManyPayload,
@@ -81,6 +85,7 @@ class BridgeState:
         self.affair_manager = None   # PersonalAffairManager
         self.world_clock = None      # WorldClock
         self.keepsakes = None        # KeepsakeManager
+        self.preview_keepsakes = None  # Preview-only encrypted collection
         self.immersion = None        # ImmersionManager
         self.backup_manager = None   # LocalBackupManager
         self.ambient_presence = None # AmbientPresence
@@ -101,6 +106,10 @@ class BridgeState:
         self.recovery_state = "clean"
         self.recovery_reason = ""
         self.restore_coordinator = None
+        self.preview_pending_chat_store = None
+        self.preview_chat_images = False
+        # Preview delivery policy outlives the optional proactive module.
+        self.preview_proactive = False
 
 
 bridge_state = BridgeState()
@@ -180,6 +189,9 @@ RESPONSE_TYPE_BY_REQUEST = {
     MsgType.USER_PROFILE_UPDATE: MsgType.USER_PROFILE_RESULT,
     MsgType.KEEPSAKE_LIST: MsgType.KEEPSAKE_RESULT,
     MsgType.KEEPSAKE_ADD: MsgType.KEEPSAKE_RESULT,
+    MsgType.KEEPSAKE_COLLECT: MsgType.KEEPSAKE_PREVIEW_RESULT,
+    MsgType.KEEPSAKE_PAGE: MsgType.KEEPSAKE_PREVIEW_RESULT,
+    MsgType.KEEPSAKE_REMOVE: MsgType.KEEPSAKE_PREVIEW_RESULT,
     MsgType.BACKUP_EXPORT: MsgType.BACKUP_RESULT,
     MsgType.BACKUP_IMPORT: MsgType.BACKUP_RESULT,
     MsgType.STICKER_LIST: MsgType.STICKER_DATA,
@@ -309,17 +321,27 @@ _RECOVERY_READ_COMMANDS = frozenset({
     MsgType.PERSONA_GET, MsgType.PERSONA_LIST, MsgType.SETTINGS_GET, MsgType.API_BUDGET_GET,
     MsgType.PERSONA_PROFILE_GET,
     MsgType.SUMMARY_STATUS, MsgType.SUMMARY_GET, MsgType.ARCHIVE_GET, MsgType.MODULE_LIST,
-    MsgType.GAME_STATE_GET, MsgType.TTS_LIST, MsgType.AI_USAGE_GET,
+    MsgType.GAME_STATE_GET, MsgType.TTS_LIST, MsgType.AI_USAGE_GET, MsgType.KEEPSAKE_PAGE,
 })
 
 
-def command_preflight(msg_type: str) -> dict[str, Any] | None:
+def _preview_thumbnail_requested(msg_type: str, payload: dict[str, Any] | None) -> bool:
+    return bool(
+        msg_type == MsgType.CHAT_MEDIA and getattr(bridge_state, "preview_chat_images", False)
+        and payload and payload.get("thumbnail") is True
+    )
+
+
+def command_preflight(msg_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Run before ledger/cache lookup, including direct handler callers."""
     if msg_type == MsgType.BACKUP_IMPORT:
         return {"ok": False, "code": "BACKUP_RESTORE_DISABLED", "retryable": False,
                 "error": "Inline backup restore is disabled; use the native file restore coordinator"}
     state = recovery_status_payload()
-    if state["writes_blocked"] and msg_type not in _RECOVERY_READ_COMMANDS:
+    if (
+        state["writes_blocked"] and msg_type not in _RECOVERY_READ_COMMANDS
+        and not _preview_thumbnail_requested(msg_type, payload)
+    ):
         return {"ok": False, "code": "BACKUP_RECOVERY_REQUIRED", "retryable": False,
                 "error": "Recovery must finish before this operation can run", **state}
     return None
@@ -382,6 +404,7 @@ _PERSONA_SCOPED_COMMANDS = frozenset({
     MsgType.USER_PROFILE_GET,
     MsgType.USER_PROFILE_UPDATE,
     MsgType.DIARY_REQUEST,
+    MsgType.DIARY_WRITE,
     MsgType.TIMELINE_REQUEST,
     MsgType.AMBIENT_GET,
     MsgType.GROUP_REQUEST,
@@ -389,6 +412,9 @@ _PERSONA_SCOPED_COMMANDS = frozenset({
     MsgType.IMAGE_RANDOM,
     MsgType.KEEPSAKE_LIST,
     MsgType.KEEPSAKE_ADD,
+    MsgType.KEEPSAKE_COLLECT,
+    MsgType.KEEPSAKE_PAGE,
+    MsgType.KEEPSAKE_REMOVE,
 })
 
 
@@ -417,7 +443,7 @@ def register_handler(msg_type: str):
     def decorator(fn):
         @wraps(fn)
         async def guarded(payload, endpoint):
-            rejected = command_preflight(msg_type)
+            rejected = command_preflight(msg_type, payload)
             if rejected is not None:
                 return rejected
             return await fn(payload, endpoint)
@@ -508,21 +534,21 @@ async def _runtime_activity_loop() -> None:
             await asyncio.sleep(1)
 
 
-def _apply_proactive_result_state(payload: dict) -> None:
+def _apply_proactive_result_state(payload: dict, *, affect_relationship: bool = True) -> None:
     """Persist emotion, relationship, and diary effects of a life event."""
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     story_event = metadata.get("story_event") if isinstance(metadata, dict) else None
     emotion_changes = payload.get("emotion_changes")
     if isinstance(emotion_changes, dict) and emotion_changes and bridge_state.emotion:
         bridge_state.emotion.apply_event(emotion_changes)
-        if bridge_state.relationship and hasattr(bridge_state.relationship, "on_emotional_result"):
+        if affect_relationship and bridge_state.relationship and hasattr(bridge_state.relationship, "on_emotional_result"):
             bridge_state.relationship.on_emotional_result(emotion_changes)
     if story_event and bridge_state.diary and hasattr(bridge_state.diary, "record_external_highlight"):
         bridge_state.diary.record_external_highlight(
             str(story_event.get("date", "")),
             str(story_event.get("content", "")),
         )
-        if bridge_state.relationship and hasattr(bridge_state.relationship, "on_special_event"):
+        if affect_relationship and bridge_state.relationship and hasattr(bridge_state.relationship, "on_special_event"):
             bridge_state.relationship.on_special_event(importance=0.4)
     if story_event and bridge_state.timeline and hasattr(bridge_state.timeline, "record_event_fact"):
         bridge_state.timeline.record_event_fact(
@@ -533,14 +559,15 @@ def _apply_proactive_result_state(payload: dict) -> None:
         )
 
 
-async def _proactive_broadcast_loop() -> None:
+async def _proactive_broadcast_loop(*, sleep=asyncio.sleep) -> None:
     """Drain proactive messages and push them to connected frontends."""
     while True:
         try:
-            await asyncio.sleep(5)
+            await sleep(5)
             if recovery_status_payload()["writes_blocked"]:
                 continue
             proactive = bridge_state.proactive
+            preview_proactive = bridge_state.preview_proactive
             electron_host = os.environ.get("REVERIE_BRIDGE_MODE") == "1"
             pending_results = (
                 proactive.drain_pending()
@@ -550,6 +577,8 @@ async def _proactive_broadcast_loop() -> None:
             for result in pending_results:
                 async with _persona_effect_lock:
                     if recovery_status_payload()["writes_blocked"]:
+                        continue
+                    if preview_proactive and (proactive is not bridge_state.proactive or not proactive.accepts_pending_result()):
                         continue
                     is_current = getattr(proactive, "is_result_current", None)
                     if not callable(is_current) or not is_current(result):
@@ -573,7 +602,7 @@ async def _proactive_broadcast_loop() -> None:
                         epoch=result.persona_token.epoch,
                         fingerprint=result.persona_token.fingerprint,
                     )
-                    notifications_enabled = bool(
+                    notifications_enabled = not preview_proactive and bool(
                         getattr(
                             getattr(bridge_state.settings, "features", None),
                             "proactive_notifications_enabled",
@@ -637,13 +666,16 @@ async def _proactive_broadcast_loop() -> None:
                     continue
                 if bridge_state.kernel_store.claim_proactive_effects(proactive_id):
                     try:
-                        _apply_proactive_result_state(payload)
+                        if preview_proactive:
+                            _apply_proactive_result_state(payload, affect_relationship=False)
+                        else:
+                            _apply_proactive_result_state(payload)
                     except Exception:
                         # Claim-before-apply prevents duplicate non-idempotent
                         # effects. This boundary is intentionally at-most-once.
                         logger.exception("Failed to apply proactive state effects")
                 if not publication["notification_published"]:
-                    if payload.get("native_notification"):
+                    if payload.get("native_notification") and not preview_proactive:
                         try:
                             from src.notifications import NotificationOutbox
 
@@ -665,9 +697,13 @@ async def _proactive_broadcast_loop() -> None:
                             proactive_id, "notification"
                         )
                 if _connections and not publication["broadcast_published"]:
+                    event_payload = (
+                        {**payload, "notify": False, "native_notification": False}
+                        if preview_proactive else payload
+                    )
                     try:
                         await asyncio.wait_for(
-                            broadcast(MsgType.PROACTIVE_MESSAGE, payload),
+                            broadcast(MsgType.PROACTIVE_MESSAGE, event_payload),
                             timeout=2.0,
                         )
                     except asyncio.TimeoutError:
@@ -759,6 +795,9 @@ def _local_backup_manager():
 
 def _get_pending_chat_store():
     global _pending_chat_store
+    preview_store = getattr(bridge_state, "preview_pending_chat_store", None)
+    if preview_store is not None:
+        return preview_store
     if _pending_chat_store is None:
         from src.chat.pending import PendingChatStore
 
@@ -944,6 +983,9 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
         str(item.get("request_id") or "") for item in page["items"]
     }
     media_by_request = store.media_for_requests(committed_request_ids) or {}
+    preview_media = store.preview_images_for_messages([
+        item["message_id"] for item in page["items"] if item["role"] == "user"
+    ]) if getattr(bridge_state, "preview_chat_images", False) else {}
     items = [
         {
             "id": item["message_id"],
@@ -961,7 +1003,7 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
             "delivery_state": item["delivery_state"],
             "bubble_index": item["bubble_index"],
             **(
-                {"media": media_by_request.get(str(item["request_id"])) or []}
+                {"media": preview_media.get(item["message_id"]) or media_by_request.get(str(item["request_id"])) or []}
                 if item["role"] == "user"
                 else {}
             ),
@@ -1010,7 +1052,11 @@ async def handle_chat_history(payload: dict, _ws: WebSocketServerProtocol) -> di
     for index, committed_item in enumerate(committed_items, start=1):
         items.append(committed_item)
         items.extend(pending_by_anchor[index])
-    return {**page, "items": items}
+    result = {**page, "items": items}
+    manager = bridge_state.preview_keepsakes
+    if manager is not None and manager.persona_id == persona_scope["persona_id"]:
+        result["preview_keepsake_message_ids"] = manager.message_ids()
+    return result
 
 
 def _resolve_chat_attachment(request_payload: dict, sticker: Any) -> dict | None:
@@ -1039,6 +1085,21 @@ def _resolve_chat_attachment(request_payload: dict, sticker: Any) -> dict | None
         if sticker_url.startswith("data:image/"):
             return store_from_data_url(sticker_url)
     return None
+
+
+def _resolve_preview_chat_attachment(request_payload: dict, sticker: Any) -> dict | None:
+    from ..chat.media import normalize_preview_image
+
+    path = str(request_payload.pop("image_path", "") or "")
+    data_url = str(request_payload.pop("image_data_url", "") or "")
+    sticker_url = ""
+    if isinstance(sticker, dict):
+        sticker_url = str(sticker.pop("image_data_url", "") or "")
+        sticker["image_data_url"] = ""
+    if not (path or data_url or sticker_url.startswith(("reverie-sticker://", "data:image/"))):
+        return None
+    jpeg = normalize_preview_image(path=path, data_url=data_url, sticker=sticker_url)
+    return {"media_id": hashlib.sha256(jpeg).hexdigest(), "bytes": len(jpeg), "jpeg": jpeg}
 
 
 @register_handler(MsgType.CHAT_SEND)
@@ -1072,22 +1133,33 @@ async def handle_chat_send(payload: dict, ws: WebSocketServerProtocol) -> dict |
     request_payload["persona_fingerprint"] = persona_scope["persona_fingerprint"]
     request_payload.setdefault("model_epoch", int(getattr(bridge_state, "model_epoch", 0) or 0))
     request_payload.setdefault("model_fingerprint", _model_fingerprint())
-    # Resolve the attachment to durable stored media BEFORE the request is
-    # accepted: the coordinator only ever sees a small file path, and a crash
-    # replay can still regenerate from the same bytes on disk.
-    image_media = None
+    # Consume the selected path / data URL before the coordinator writes its ledger.
+    preview_images = getattr(bridge_state, "preview_chat_images", False)
     sticker = request_payload.pop("sticker", None)
     try:
-        image_media = _resolve_chat_attachment(request_payload, sticker)
+        if preview_images:
+            image_media = _resolve_preview_chat_attachment(request_payload, sticker)
+        else:
+            image_media = _resolve_chat_attachment(request_payload, sticker)
     except Exception as exc:
+        if preview_images:
+            from ..chat.media import ChatMediaError
+
+            code = exc.code if isinstance(exc, ChatMediaError) else "image_processing_failed"
+            request_id = str(request_payload.get("request_id") or "")
+            await send_to_frontend(
+                ws, MsgType.ERROR,
+                {"message": "图片没有发出", "code": code, "scope": "chat", "request_id": request_id},
+                request_id=request_id,
+            )
+            return None
         logger.warning("Chat attachment rejected: %s", exc)
         return {"error": f"图片处理失败：{exc}", "scope": "chat"}
     if image_media:
-        # The durable media path is the only image input that may enter the
-        # pending ledger and ChatSession. Data URLs are consumed above, so
-        # failing to write this path makes image history look correct while the
-        # provider silently receives a text-only turn.
-        request_payload["image_path"] = str(image_media.get("path") or "")
+        if preview_images:
+            request_payload["preview_jpeg"] = image_media["jpeg"]
+        else:
+            request_payload["image_path"] = str(image_media.get("path") or "")
         request_payload["media_id"] = str(image_media.get("media_id") or "")
         request_payload["media_mime"] = str(image_media.get("mime") or "image/jpeg")
         request_payload["media_bytes"] = int(image_media.get("bytes") or 0)
@@ -1125,12 +1197,20 @@ async def handle_chat_send(payload: dict, ws: WebSocketServerProtocol) -> dict |
             except TypeError:
                 bridge_state.proactive.mark_user_replied()
     except Exception as exc:
-        logger.warning("Chat request rejected: %s", exc)
+        if preview_images and image_media:
+            from ..chat.delivery import ChatDeliveryError
+            from ..local_mode import LocalModeBlocked
+
+            logger.warning("Preview image request rejected")
+            safe_message = str(exc) if type(exc) in {ChatDeliveryError, LocalModeBlocked} else "图片没有发出"
+        else:
+            logger.warning("Chat request rejected: %s", exc)
+            safe_message = str(exc)
         await send_to_frontend(
             ws,
             MsgType.ERROR,
             {
-                "message": str(exc),
+                "message": safe_message,
                 "request_id": request_payload.get("request_id"),
                 "scope": "chat",
             },
@@ -1154,9 +1234,23 @@ async def handle_chat_media(payload: dict, ws: WebSocketServerProtocol) -> dict:
     context = _client_contexts.get(ws)
     if not context or not context.authenticated:
         return {"error": "bridge authentication required"}
-    from ..chat.media import ChatMediaError, load_data_url
+    from ..chat.media import ChatMediaError, MEDIA_ID_RE, load_data_url, preview_thumbnail_data_url
 
     media_id = str(payload.get("media_id") or "")
+    if _preview_thumbnail_requested(MsgType.CHAT_MEDIA, payload):
+        if not _matches_expected_persona(payload) or not MEDIA_ID_RE.fullmatch(media_id):
+            return {"error": "图片读不到", "media_id": media_id}
+        store = bridge_state.kernel_store
+        try:
+            jpeg = store.read_preview_chat_image(
+                media_id, conversation_id=context.conversation_id or "dream-room",
+                persona_id=str(_active_persona_scope()["persona_id"]),
+            ) if store is not None else None
+            if jpeg is not None:
+                return {"media_id": media_id, "mime": "image/jpeg", "data_url": preview_thumbnail_data_url(jpeg)}
+        except (ChatMediaError, OSError):
+            pass
+        return {"error": "图片读不到", "media_id": media_id}
     try:
         data_url = load_data_url(media_id)
     except ChatMediaError as exc:
@@ -1164,122 +1258,9 @@ async def handle_chat_media(payload: dict, ws: WebSocketServerProtocol) -> dict:
     return {"media_id": media_id, "mime": "image/jpeg", "data_url": data_url}
 
 
-async def _run_video_download(
-    ws: WebSocketServerProtocol,
-    source_url: str,
-    request_id: str,
-    page_title: str,
-) -> None:
-    """Download → merge → store a video, streaming progress to the renderer.
-
-    Runs as a detached task so a multi-minute download never blocks the bridge
-    message loop. Every network fetch inside the pipeline passes the four gates
-    (consent checked first against live settings, then offline + SSRF per
-    request, then the running size/duration/quota caps). On success it emits a
-    VIDEO_DOWNLOAD_RESULT carrying the stored ``media_id``; the renderer then
-    sends a normal chat:send referencing that id.
-    """
-    import asyncio as _asyncio
-
-    from src.chat.video_media import ChatVideoError, current_store_bytes, store_from_file
-    from src.video_download import VideoDownloadDenied, download_video
-
-    loop = _asyncio.get_running_loop()
-
-    features = getattr(bridge_state.settings, "features", None) if bridge_state.settings else None
-    if features is None:
-        await send_to_frontend(
-            ws,
-            MsgType.VIDEO_DOWNLOAD_RESULT,
-            {"ok": False, "error": "settings not initialized", "request_id": request_id},
-            request_id=request_id,
-        )
-        return
-
-    last_emit = 0.0
-
-    async def _progress(done: int, total: int) -> None:
-        await send_to_frontend(
-            ws,
-            MsgType.VIDEO_DOWNLOAD_PROGRESS,
-            {
-                "request_id": request_id,
-                "completed": int(done),
-                "total": int(total),
-            },
-            request_id=request_id,
-        )
-
-    def _on_progress(done: int, total: int) -> None:
-        nonlocal last_emit
-        now = loop.time()
-        # Throttle progress to at most ~5/sec to avoid flooding the bridge.
-        if now - last_emit < 0.2 and done != total:
-            return
-        last_emit = now
-        loop.call_soon(lambda: _asyncio.ensure_future(_progress(done, total)))
-
-    temp_path = ""
-    try:
-        result = await download_video(
-            source_url,
-            features,
-            existing_bytes=current_store_bytes(),
-            on_progress=_on_progress,
-        )
-        temp_path = result.path
-        record = store_from_file(
-            temp_path,
-            features=features,
-            duration_seconds=result.duration_seconds,
-        )
-        await send_to_frontend(
-            ws,
-            MsgType.VIDEO_DOWNLOAD_RESULT,
-            {
-                "ok": True,
-                "request_id": request_id,
-                "media_id": str(record.get("media_id") or ""),
-                "mime": str(record.get("mime") or ""),
-                "bytes": int(record.get("bytes") or 0),
-                "duration_seconds": result.duration_seconds,
-                "page_title": page_title,
-            },
-            request_id=request_id,
-        )
-    except (VideoDownloadDenied, ChatVideoError) as exc:
-        await send_to_frontend(
-            ws,
-            MsgType.VIDEO_DOWNLOAD_RESULT,
-            {"ok": False, "error": str(exc), "request_id": request_id},
-            request_id=request_id,
-        )
-    except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
-        logger.exception("Video download failed")
-        await send_to_frontend(
-            ws,
-            MsgType.VIDEO_DOWNLOAD_RESULT,
-            {"ok": False, "error": f"下载失败：{exc}", "request_id": request_id},
-            request_id=request_id,
-        )
-    finally:
-        # The stored copy is content-addressed; the temp download is disposable.
-        if temp_path:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-
-
 @register_handler(MsgType.VIDEO_DOWNLOAD)
 async def handle_video_download(payload: dict, ws: WebSocketServerProtocol) -> dict | None:
-    """Start a disclaimer-gated video download; progress + result stream back.
-
-    The compliance gate is enforced twice: the fail-closed settings invariant
-    means ``video_download_enabled`` can only be true with an acknowledged
-    disclaimer, and the pipeline re-checks consent before any fetch. A disabled
-    feature is refused here immediately so no task is spawned.
-    """
+    """Keep the legacy request and its gate after retiring the download pipeline."""
     context = _client_contexts.get(ws)
     if not context or not context.authenticated:
         return {"error": "bridge authentication required"}
@@ -1287,20 +1268,20 @@ async def handle_video_download(payload: dict, ws: WebSocketServerProtocol) -> d
     features = getattr(bridge_state.settings, "features", None) if bridge_state.settings else None
     enabled = bool(getattr(features, "video_download_enabled", False))
     acknowledged = bool(getattr(features, "video_download_disclaimer_acknowledged", False))
+    request_id = str((payload or {}).get("request_id") or "")
     if not (enabled and acknowledged):
         return {
             "ok": False,
             "error": "视频下载未开启或未同意免责声明",
-            "request_id": str((payload or {}).get("request_id") or ""),
+            "request_id": request_id,
         }
 
-    source_url = str((payload or {}).get("source_url") or "")
-    request_id = str((payload or {}).get("request_id") or "")
-    page_title = str((payload or {}).get("page_title") or "")
-    # Detach the download so this handler returns immediately; results arrive
-    # as VIDEO_DOWNLOAD_PROGRESS / VIDEO_DOWNLOAD_RESULT events.
-    asyncio.ensure_future(_run_video_download(ws, source_url, request_id, page_title))
-    return None
+    return {
+        "ok": False,
+        "error": "视频下载功能已退役",
+        "code": "video_download_retired",
+        "request_id": request_id,
+    }
 
 
 @register_handler(MsgType.CHAT_STOP)
@@ -2656,8 +2637,9 @@ async def handle_tts_synthesize(payload: dict, _ws: WebSocketServerProtocol) -> 
 
 @register_handler(MsgType.DIARY_REQUEST)
 async def handle_diary_request(payload: dict, ws: WebSocketServerProtocol) -> dict:
-    """获取日记列表。"""
-    if not bridge_state.diary:
+    """Read a diary entry or list dates for the current persona."""
+    diary = bridge_state.diary
+    if not diary:
         return {"entries": [], "error": "日记系统未初始化"}
     try:
         scheduler = getattr(bridge_state.session, "scheduler", None)
@@ -2686,13 +2668,29 @@ async def handle_diary_request(payload: dict, ws: WebSocketServerProtocol) -> di
                     )
                 except (ValueError, PermissionError) as exc:
                     return {"ok": False, "error": str(exc)}
-            return {"ok": False, "error": "日记读取系统未初始化"}
-        entries = bridge_state.diary.list_entries_with_metadata(
+            date_str = str(payload.get("date", ""))
+            try:
+                valid_date = date.fromisoformat(date_str).isoformat() == date_str
+            except ValueError:
+                valid_date = False
+            if not valid_date:
+                return {"ok": False, "code": "diary_invalid_date", "error": "日记日期无效"}
+            entry = diary.load_entry(date_str)
+            if entry is None or entry.date != date_str:
+                return {"ok": False, "code": "diary_not_found", "error": "日记暂时读不到"}
+            return {"ok": True, "entry": entry.to_dict()}
+        entries = diary.list_entries_with_metadata(
             status=getattr(scheduler, "status", "online"),
             late_night_active=late_night_active,
         )
         if bridge_state.diary_keys:
             entries = bridge_state.diary_keys.decorate_entries(entries)
+        else:
+            from src.diary import DiaryManager
+
+            if isinstance(diary, DiaryManager):
+                today = diary.today()
+                return {"entries": entries or [], "today": today, "writing": diary.is_writing(today)}
         return {
             "entries": entries or [],
             "writing": bool(getattr(work_manager, "diary_writing", False)),
@@ -2741,19 +2739,46 @@ async def handle_game_move(payload: dict, ws: WebSocketServerProtocol) -> dict:
 
 @register_handler(MsgType.DIARY_WRITE)
 async def handle_diary_write(payload: dict, _ws: WebSocketServerProtocol) -> dict:
-    """User-requested diary generation ("去写日记"). Same consent gates as the
-    daily trigger apply inside DiaryManager."""
-    diary = bridge_state.diary
+    """Write one diary for the active persona using the existing consent gates."""
+    return await _write_diary(bridge_state.diary)
+
+
+async def _write_diary(diary: Any) -> dict[str, Any]:
+    from src.config.usage_policy import UsagePolicyDenied
+    from src.diary import DiaryWriteRejected
+
     if diary is None:
-        return {"ok": False, "error": "日记系统未初始化"}
+        return {"ok": False, "code": "diary_write_failed", "error": "日记系统未初始化"}
     try:
-        entry = await diary.generate_daily_entry(trigger="user_request")
-    except Exception as exc:
-        logger.exception("用户催写日记失败")
-        return {"ok": False, "error": str(exc)}
-    if entry is None:
-        return {"ok": False, "error": "她暂时还不能写日记（检查日记开关与 AI 授权）"}
+        entry = await diary.write_daily_entry_once(diary.today(), trigger="user_request")
+    except DiaryWriteRejected as exc:
+        return {"ok": False, "code": exc.code, "error": str(exc)}
+    except UsagePolicyDenied:
+        return {"ok": False, "code": "diary_not_allowed", "error": "日记未开启或未授权"}
+    except Exception:
+        logger.warning("User-requested diary write failed")
+        return {"ok": False, "code": "diary_write_failed", "error": "没写成，没有保存任何内容。可以稍后再试。"}
     return {"ok": True, "entry": entry.to_dict()}
+
+
+async def _send_diary_write_result(
+    diary: Any, endpoint: WebSocketServerProtocol, request_id: str, scope: dict[str, Any],
+) -> None:
+    try:
+        result = await _write_diary(diary)
+    except asyncio.CancelledError:
+        # Consent invalidation cancels leased work while keeping the active
+        # connection. Runtime shutdown, restore and remount do not need a reply.
+        policy = diary.usage_policy
+        if policy is None or policy.allowed("diary_generation") or command_preflight(MsgType.DIARY_WRITE):
+            raise
+        result = {"ok": False, "code": "diary_not_allowed", "error": "日记未开启或未授权"}
+    if scope != _active_persona_scope():
+        return
+    try:
+        await send_to_frontend(endpoint, MsgType.DIARY_RESULT, {**result, **scope}, request_id=request_id)
+    except (EOFError, OSError, ValueError):
+        logger.warning("Diary write receipt could not be sent")
 
 
 @register_handler(MsgType.TIMELINE_REQUEST)
@@ -3308,6 +3333,51 @@ async def handle_backup_import(payload: dict, _ws: WebSocketServerProtocol) -> d
     return command_preflight(MsgType.BACKUP_IMPORT)
 
 
+def _preview_keepsake_result(operation: str, payload: dict, ws: WebSocketServerProtocol) -> dict:
+    from ..keepsakes.preview import PreviewKeepsakeError
+
+    scope = _active_persona_scope()
+    result = {"ok": False, "operation": operation, **scope}
+    manager = bridge_state.preview_keepsakes
+    if not _profile_controller_allowed(ws) or not _matches_expected_persona(payload):
+        return {**result, "code": "forbidden", "error": "没有收藏成功"}
+    if manager is None or manager.persona_id != scope["persona_id"]:
+        return {**result, "code": "KEEPSAKE_UNAVAILABLE", "error": "没有收藏成功"}
+    clean = {key: value for key, value in payload.items() if not key.startswith("expected_persona_")}
+    try:
+        if operation == "collect":
+            values = KeepsakeCollectPayload.model_validate(clean)
+            data = manager.collect(values.message_id)
+        elif operation == "remove":
+            values = KeepsakeRemovePayload.model_validate(clean)
+            data = manager.remove(values.keepsake_id)
+        else:
+            values = KeepsakePagePayload.model_validate(clean)
+            data = manager.page(**values.model_dump())
+        return {**result, "ok": True, **data}
+    except PreviewKeepsakeError as exc:
+        message = "收藏已满，请先移除一些" if exc.code == "KEEPSAKE_FULL" else "没有收藏成功"
+        return {**result, "code": exc.code, "error": message}
+    except Exception:
+        # Neither private text nor storage exception details leave this boundary.
+        return {**result, "code": "KEEPSAKE_UNAVAILABLE", "error": "没有收藏成功"}
+
+
+@register_handler(MsgType.KEEPSAKE_COLLECT)
+async def handle_keepsake_collect(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    return _preview_keepsake_result("collect", payload, ws)
+
+
+@register_handler(MsgType.KEEPSAKE_PAGE)
+async def handle_keepsake_page(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    return _preview_keepsake_result("page", payload, ws)
+
+
+@register_handler(MsgType.KEEPSAKE_REMOVE)
+async def handle_keepsake_remove(payload: dict, ws: WebSocketServerProtocol) -> dict:
+    return _preview_keepsake_result("remove", payload, ws)
+
+
 @register_handler(MsgType.KEEPSAKE_LIST)
 async def handle_keepsake_list(payload: dict, _ws: WebSocketServerProtocol) -> dict:
     """List collected keepsakes."""
@@ -3730,6 +3800,8 @@ async def handle_settings_get(_payload: dict, _ws: WebSocketServerProtocol) -> d
         "llm": _provider_settings_snapshot(),
         "emotionRuntime": _emotion_runtime_snapshot(),
         "budgetRuntime": _budget_runtime_snapshot(),
+        **({"proactive_available": bridge_state.proactive is not None}
+           if bridge_state.restore_coordinator is not None else {}),
     }
 
 
@@ -3858,6 +3930,28 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                     return value.strip().lower() in {"1", "true", "yes", "on"}
                 return bool(value)
 
+            supplied_fields = payload.keys() - {
+                "section", "expected_persona_id", "expected_persona_epoch", "expected_persona_fingerprint",
+            }
+            if supplied_fields == {"diary_enabled"}:
+                staged = bridge_state.settings.model_copy(deep=True)
+                staged.features.diary_enabled = as_bool(payload["diary_enabled"])
+                _commit_staged_settings(staged, "features")
+                return {"ok": True, "features": bridge_state.settings.features.model_dump()}
+
+            proactive = bridge_state.proactive
+            proactive_fields = {"proactive_chat_enabled", "proactive_daily_limit", "proactive_min_interval_minutes"}
+            preview_proactive = bridge_state.preview_proactive
+            if preview_proactive and supplied_fields and supplied_fields <= proactive_fields:
+                staged = bridge_state.settings.model_copy(deep=True)
+                for key in supplied_fields:
+                    setattr(staged.features, key, payload[key])
+                _commit_staged_settings(staged, "features")
+                if proactive is not None:
+                    proactive.apply_preview_settings(bridge_state.settings.features,
+                                                     start_allowed=not recovery_status_payload()["writes_blocked"])
+                return {"ok": True, "features": bridge_state.settings.features.model_dump()}
+
             features = bridge_state.settings.features
             bool_fields = {
                 "hypa_compression_enabled",
@@ -3927,7 +4021,7 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                 if callable(persist_preferences) and {"diary_privacy_enabled", "diary_peek_enabled"} & payload.keys():
                     persist_preferences()
 
-            if bridge_state.proactive:
+            if bridge_state.proactive and not preview_proactive:
                 bridge_state.proactive.late_night_enabled = features.late_night_enabled
                 bridge_state.proactive.late_night_probability = features.late_night_probability
                 if hasattr(bridge_state.proactive, "manage_status"):
@@ -3953,6 +4047,8 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
             # Persist the owner's off switch before potentially failing cleanup.
             # An uncooperative provider must not re-enable work after restart.
             save_settings(bridge_state.settings)
+            if preview_proactive and proactive is not None:
+                proactive.apply_preview_settings(features, start_allowed=not recovery_status_payload()["writes_blocked"])
             if "hypa_compression_enabled" in payload and not features.hypa_compression_enabled:
                 summary_runtime = getattr(bridge_state.session, "conversation_summary", None)
                 if summary_runtime is not None:
@@ -4503,7 +4599,10 @@ async def handle_settings_update(payload: dict, ws: WebSocketServerProtocol) -> 
                         if features.web_surfing_enabled
                         else None
                     )
-            if bridge_state.proactive:
+            if bridge_state.preview_proactive and bridge_state.proactive is not None:
+                bridge_state.proactive.apply_preview_settings(features,
+                                                              start_allowed=not recovery_status_payload()["writes_blocked"])
+            elif bridge_state.proactive:
                 bridge_state.proactive.daily_limit = features.proactive_daily_limit
                 bridge_state.proactive.min_interval_minutes = features.proactive_min_interval_minutes
                 if hasattr(bridge_state.proactive, "wake_min_minutes"):
@@ -4749,6 +4848,187 @@ async def _apply_runtime_credentials(value: Any) -> dict[str, bool]:
     return {"llm": True, "imageGen": False}
 
 
+_WORLDBOOK_FILE_BASE_FIELDS = frozenset({
+    "path", "persona_id", "persona_epoch", "persona_fingerprint", "archive_revision",
+})
+_WORLDBOOK_FILE_FIELDS = {
+    "inspect": _WORLDBOOK_FILE_BASE_FIELDS,
+    "import": _WORLDBOOK_FILE_BASE_FIELDS | {"sha256", "file_bytes"},
+    "export": _WORLDBOOK_FILE_BASE_FIELDS | {"world_book_id"},
+}
+_WORLDBOOK_FILE_CONTROLS = frozenset(f"worldbook:file:{operation}" for operation in _WORLDBOOK_FILE_FIELDS)
+
+
+def _worldbook_file_failure(code: str) -> dict[str, Any]:
+    from src.worldbook.file_format import WorldbookFileError
+
+    # The file module owns the fixed public explanation for every R6 code.
+    return WorldbookFileError(code).result()
+
+
+def _worldbook_file_archive_candidate(record: dict[str, Any], book: dict[str, Any],
+                                     persona_id: str) -> dict[str, Any]:
+    """Bound the saved archive and its real framed read-back before any put.
+
+    A new revision has empty runtime diagnostics. Construct that read-only
+    view here: asking the runtime for diagnostics on an uncommitted candidate
+    would invalidate the running revision's diagnostics during inspection.
+    """
+    from src.archive.store import MAX_WORLD_BOOKS, normalize_archive
+    from src.bridge.stdio_transport import FrameProtocolError, encode_frame
+    from src.worldbook.file_format import WorldbookFileError
+
+    archive = record.get("archive") or {"characters": [], "activeCharacterIds": [], "worldBooks": []}
+    books = archive.get("worldBooks", [])
+    if len(books) >= MAX_WORLD_BOOKS:
+        raise WorldbookFileError("archive_too_large")
+    proposed = {**archive, "worldBooks": [*books, book]}
+    if len(json.dumps(proposed, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")) > 900_000:
+        raise WorldbookFileError("archive_too_large")
+    candidate = normalize_archive(proposed)
+    encoded = json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > 900_000:
+        raise WorldbookFileError("archive_too_large")
+    revision = record["revision"] + 1
+    result = _with_author_prompts({
+        "ok": True, "exists": True, "revision": revision, "archive": candidate,
+        "checksum": hashlib.sha256(encoded).hexdigest(),
+        # ArchiveStore's ISO timestamp is at most this many characters.
+        "updated_at_utc": "2000-01-01T00:00:00.000000+00:00",
+        "persona_id": persona_id,
+        "world_book_diagnostics": {"persona_id": persona_id, "revision": revision,
+                                   "request_id": "", "entries": [], "truncated": 0},
+    })
+    try:
+        encode_frame({"kind": "event", "frame": {
+            "type": "archive:result", "request_id": "x" * 128, "payload": result,
+        }})
+    except FrameProtocolError:
+        raise WorldbookFileError("archive_too_large") from None
+    return candidate
+
+
+async def _run_native_worldbook_file(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Private-owner file controls; never a renderer or WebSocket command."""
+    from src.persona.identity import GLOBAL_PERSONA_EPOCH, StalePersonaEpoch
+    from src.worldbook.file_format import (
+        WorldbookFileError, parse_worldbook_file, read_worldbook_file,
+        serialize_worldbook_file, validate_worldbook_file_path, write_worldbook_file,
+    )
+
+    try:
+        if (operation not in _WORLDBOOK_FILE_FIELDS
+                or os.getenv("REVERIE_BRIDGE_MODE", "").strip() != "1"
+                or not isinstance(payload, dict) or set(payload) != _WORLDBOOK_FILE_FIELDS[operation]):
+            raise WorldbookFileError("invalid_request")
+        if (not isinstance(payload["persona_id"], str) or not payload["persona_id"]
+                or not isinstance(payload["persona_fingerprint"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["persona_fingerprint"])
+                or type(payload["persona_epoch"]) is not int or payload["persona_epoch"] < 1):
+            raise WorldbookFileError("persona_changed")
+        if type(payload["archive_revision"]) is not int or payload["archive_revision"] < 0:
+            raise WorldbookFileError("archive_changed")
+        if operation == "import" and (
+                not isinstance(payload["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["sha256"])
+                or type(payload["file_bytes"]) is not int or not 0 < payload["file_bytes"] <= 5 * 1024 * 1024):
+            raise WorldbookFileError("invalid_request")
+        if operation == "export" and (
+                not isinstance(payload["world_book_id"], str) or not payload["world_book_id"]):
+            raise WorldbookFileError("world_book_not_found")
+
+        def require_scope() -> None:
+            active = _active_persona_scope()
+            if (payload["persona_id"] != active["persona_id"]
+                    or payload["persona_epoch"] != active["persona_epoch"]
+                    or not hmac.compare_digest(payload["persona_fingerprint"], active["persona_fingerprint"])):
+                raise WorldbookFileError("persona_changed")
+
+        async with _persona_effect_lock:
+            # Keep the normal recovery gate, but project its failure inside
+            # this domain boundary instead of leaking generic recovery fields.
+            control_preflight(f"worldbook:file:{operation}")
+            require_scope()
+            token = GLOBAL_PERSONA_EPOCH.token()
+            persona = bridge_state.persona
+            if persona is None or not getattr(persona, "identity_sealed", False):
+                raise WorldbookFileError("persona_changed")
+            identity = persona.identity_envelope
+            if identity.persona_id != token.persona_id or identity.fingerprint != token.fingerprint:
+                raise WorldbookFileError("persona_changed")
+            store = bridge_state.archive_store
+            if store is None or _archive_module_snapshot().get("ok") is not True:
+                raise WorldbookFileError("archive_unavailable")
+            record = store.get(token.persona_id)
+            if record["revision"] != payload["archive_revision"]:
+                raise WorldbookFileError("archive_changed")
+            path = validate_worldbook_file_path(payload["path"], must_exist=operation != "export")
+            if operation == "export":
+                books = (record.get("archive") or {}).get("worldBooks", [])
+                book = next((item for item in books if item["id"] == payload["world_book_id"]), None)
+                if book is None:
+                    raise WorldbookFileError("world_book_not_found")
+                if not book["entries"]:
+                    raise WorldbookFileError("empty_book")
+                encoded = serialize_worldbook_file(book)
+
+                def write_current() -> dict[str, Any]:
+                    with store._lock:  # noqa: SLF001 -- same atomic revision binding as card export
+                        require_scope()
+                        if bridge_state.persona is not persona or bridge_state.archive_store is not store:
+                            raise WorldbookFileError("persona_changed")
+                        control_preflight("worldbook:file:export")
+                        if store.get(token.persona_id)["revision"] != payload["archive_revision"]:
+                            raise WorldbookFileError("archive_changed")
+                        return write_worldbook_file(path, encoded)
+
+                written = GLOBAL_PERSONA_EPOCH.commit_if_current(token, write_current)
+                return {"ok": True, "world_book_id": book["id"], "book_name": book["name"],
+                        "entry_count": len(book["entries"]), "file_name": written["file_name"],
+                        "bytes": written["bytes"], "sha256": written["sha256"]}
+
+            raw = read_worldbook_file(path)
+            if operation == "import" and (len(raw) != payload["file_bytes"]
+                    or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), payload["sha256"])):
+                raise WorldbookFileError("file_changed")
+            books = (record.get("archive") or {}).get("worldBooks", [])
+            parsed = parse_worldbook_file(raw, filename=path.name, persona_name=persona.name,
+                                         existing_names=[book["name"] for book in books])
+            candidate = _worldbook_file_archive_candidate(record, parsed.book, token.persona_id)
+            require_scope()
+            if bridge_state.persona is not persona or bridge_state.archive_store is not store:
+                raise WorldbookFileError("persona_changed")
+            if store.get(token.persona_id)["revision"] != payload["archive_revision"]:
+                raise WorldbookFileError("archive_changed")
+            control_preflight(f"worldbook:file:{operation}")
+            if operation == "inspect":
+                inspected = parsed.inspection()
+                return {key: inspected[key] for key in (
+                    "ok", "book_name", "importable_entry_count", "skipped", "dropped_fields",
+                    "disabled_regex_entry_count", "cleaned_entry_count", "sha256", "file_bytes",
+                )}
+
+            # R10: the persona lock owns identity; store.put owns revision
+            # conflict protection. Do not wrap this await in commit_if_current.
+            committed = await _commit_archive({"archive": candidate,
+                "expected_revision": payload["archive_revision"]}, None, migrate_only=False)
+            if committed.get("ok") is not True:
+                raise WorldbookFileError("archive_changed" if committed.get("code") == "conflict"
+                                        else "archive_unavailable")
+            return {"ok": True, "revision": committed["revision"],
+                    "world_book_id": parsed.book["id"], "book_name": parsed.book["name"],
+                    "imported_entry_count": parsed.entry_count}
+    except WorldbookFileError as exc:
+        return exc.result()
+    except StalePersonaEpoch:
+        return _worldbook_file_failure("persona_changed")
+    except Exception:
+        # Includes the recovery preflight and unavailable runtime/storage.
+        # Neither exception text nor an archive snapshot is a public receipt.
+        return _worldbook_file_failure("archive_unavailable")
+
+
 async def _run_native_card_export(payload: dict[str, Any]) -> dict[str, Any]:
     """Only private controls call this file writer; no WebSocket handler exists."""
     from src.config.settings import PERSONA_DIR
@@ -4903,13 +5183,19 @@ async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> N
             message = json.loads(line)
             if not isinstance(message, dict):
                 raise ValueError("control frame must be an object")
+            if message.get("type") in _WORLDBOOK_FILE_CONTROLS:
+                # Preserve the closed R6 failure shape even when this new
+                # command's transport envelope is malformed.
+                control_type = str(message["type"])
+                request_id = str(message.get("requestId") or "")
             if message.get("schema") != "reverie.bridge.control.v1":
                 raise ValueError("invalid control schema")
             control_type = str(message.get("type") or "")
             request_id = str(message.get("requestId") or "")
             if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", request_id):
                 raise ValueError("invalid requestId")
-            control_preflight(control_type)
+            if control_type not in _WORLDBOOK_FILE_CONTROLS:
+                control_preflight(control_type)
             if control_type == "local_mode:set":
                 active = message.get("active")
                 if not isinstance(active, bool):
@@ -4954,6 +5240,15 @@ async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> N
                 _write_bridge_control({**export_result,
                     "schema": "reverie.bridge.control.ack.v1", "type": control_type,
                     "requestId": request_id})
+            elif control_type in _WORLDBOOK_FILE_CONTROLS:
+                envelope_fields = {"kind", "schema", "type", "requestId"}
+                file_result = await _run_native_worldbook_file(
+                    control_type.rsplit(":", 1)[-1],
+                    {key: value for key, value in message.items() if key not in envelope_fields},
+                )
+                _write_bridge_control({**file_result,
+                    "schema": "reverie.bridge.control.ack.v1", "type": control_type,
+                    "requestId": request_id})
             elif control_type in {"backup:file:export", "backup:file:import", "backup:file:inspect"}:
                 operation = control_type.rsplit(":", 1)[-1]
                 backup_result = await _run_native_backup(
@@ -4973,6 +5268,11 @@ async def _bridge_control_loop(shutdown_event: asyncio.Event | None = None) -> N
             else:
                 raise ValueError("unsupported control type")
         except Exception as exc:
+            if control_type in _WORLDBOOK_FILE_CONTROLS:
+                _write_bridge_control({**_worldbook_file_failure("invalid_request"),
+                    "schema": "reverie.bridge.control.ack.v1", "type": control_type,
+                    "requestId": request_id})
+                continue
             if control_type == "local_mode:set":
                 from src.local_mode import get_local_mode_gate
 
@@ -5162,7 +5462,7 @@ async def dispatch_authenticated_message(
             request_id = candidate_request_id
 
         handler = _handlers.get(msg_type)
-        rejected = command_preflight(msg_type)
+        rejected = command_preflight(msg_type, payload)
         if rejected is not None:
             if emit_result:
                 await send_to_frontend(endpoint, response_type_for_request(msg_type), rejected, request_id=request_id)
@@ -5176,7 +5476,7 @@ async def dispatch_authenticated_message(
             )
             return None
         context = _client_contexts.get(endpoint)
-        persona_scoped = msg_type in _PERSONA_SCOPED_COMMANDS
+        persona_scoped = msg_type in _PERSONA_SCOPED_COMMANDS or _preview_thumbnail_requested(msg_type, payload)
         if (
             context is not None
             and context.protocol_version >= 3
@@ -5206,18 +5506,26 @@ async def dispatch_authenticated_message(
             }
         elif persona_scoped:
             # Linearize persona-scoped local reads/writes against privileged
-            # identity activation. Chat generation itself remains asynchronous
-            # and carries its own epoch/fingerprint rejection barrier.
+            # identity activation. Provider work carries its own epoch barrier.
             async with _persona_effect_lock:
                 # Activation may have committed while this request waited.
                 # Revalidate inside the same lock that protects the side effect.
-                rejected = command_preflight(msg_type)
+                rejected = command_preflight(msg_type, payload)
                 if rejected is not None:
                     result = rejected
                 elif context is not None and context.protocol_version >= 3 and not _matches_expected_persona(payload):
                     result = {"ok": False, "error": "Persona changed while the command was waiting",
                               "code": "stale_persona", "retryable": False, **_active_persona_scope()}
                 else:
+                    if msg_type == MsgType.DIARY_WRITE and emit_result and bridge_state.diary_keys is None:
+                        from src.mvp_runtime import get_active_desktop_runtime
+
+                        runtime = get_active_desktop_runtime()
+                        if runtime is not None:
+                            runtime.start_diary_write(_send_diary_write_result(
+                                bridge_state.diary, endpoint, request_id, _active_persona_scope(),
+                            ))
+                            return None
                     result = await handler(payload, endpoint)
         else:
             result = await handler(payload, endpoint)
@@ -5354,7 +5662,7 @@ async def websocket_handler(ws: WebSocketServerProtocol):
                 )
 
                 handler = _handlers.get(msg_type)
-                rejected = command_preflight(msg_type)
+                rejected = command_preflight(msg_type, payload)
                 if rejected is not None:
                     await send_to_frontend(ws, response_type_for_request(msg_type), rejected, request_id=request_id)
                     continue

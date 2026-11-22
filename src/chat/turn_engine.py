@@ -37,6 +37,7 @@ class TurnRequest:
     persona_fingerprint: str
     # Durable path of a stored chat-media attachment (empty when text-only).
     image_path: str = ""
+    image_data_url: str = ""
 
     def __post_init__(self) -> None:
         for name in ("conversation_id", "turn_id", "generation_id", "persona_id"):
@@ -83,6 +84,8 @@ class LegacySessionTurnGenerator:
             kwargs["conversation_id"] = request.conversation_id
         if "image_path" in parameters and request.image_path:
             kwargs["image_path"] = request.image_path
+        if "image_data_url" in parameters and request.image_data_url:
+            kwargs["image_data_url"] = request.image_data_url
 
         result = await send(request.text, **kwargs)
         if not isinstance(result, dict):

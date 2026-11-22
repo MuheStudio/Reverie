@@ -13,6 +13,8 @@ import logging
 import random
 import re
 
+from .kaomoji import kaomoji_spans
+
 logger = logging.getLogger("reverie.chat.typo")
 
 # Per-message typo probability (0.0 - 1.0)
@@ -44,6 +46,8 @@ def apply_typos(text: str, rate: float = TYPO_RATE) -> str:
     protected: set[int] = set()
     for match in _PROTECTED_PATTERN.finditer(text):
         protected.update(range(match.start(), match.end()))
+    for start, end in kaomoji_spans(text):
+        protected.update(range(start, end))
 
     confusion_candidates = [
         index for index, char in enumerate(text)

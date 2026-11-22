@@ -268,6 +268,9 @@ class ChatDeliveryCoordinator:
         if model_epoch < 0:
             raise ChatDeliveryError("Invalid model epoch")
         model_fingerprint = _scope_value(payload.get("model_fingerprint"))
+        image_media_id = str(payload["media_id"]) if payload.get("preview_jpeg") is not None else ""
+        if image_media_id and self.kernel_store is None:
+            raise ChatDeliveryError("图片无法安全保存，未请求 API")
         now = self.clock()
         existing = self.store.get_item(request_id)
         if existing:
@@ -289,7 +292,10 @@ class ChatDeliveryCoordinator:
                 "model_epoch": model_epoch,
                 "model_fingerprint": model_fingerprint,
             }
-            if any(existing.get(key) != proposed[key] for key in immutable):
+            if (
+                any(existing.get(key) != proposed[key] for key in immutable)
+                or str(existing.get("image_media_id") or "") != image_media_id
+            ):
                 raise ChatDeliveryError("request_id was already used with different content or scope")
             await self._emit_state(existing)
             if existing.get("state") in ACTIVE_STATES:
@@ -324,6 +330,8 @@ class ChatDeliveryCoordinator:
                 "mime": str(payload.get("media_mime") or "image/jpeg"),
                 "bytes": int(payload.get("media_bytes") or 0),
             }
+            if image_media_id:
+                media["jpeg"] = payload["preview_jpeg"]
         self.store.enqueue(
             text,
             due_at=now,
@@ -338,6 +346,7 @@ class ChatDeliveryCoordinator:
             client_id=client_id,
             sent_at_utc=sent_at,
             image_path=image_path,
+            **({"image_media_id": image_media_id} if image_media_id else {}),
         )
         # Write-through: the user's words must become durable before any
         # provider work starts. A storage failure is fail-closed: spending API
@@ -354,7 +363,10 @@ class ChatDeliveryCoordinator:
                     media=media,
                 )
             except Exception as error:
-                logger.exception("Could not persist accepted user message %s", request_id)
+                if image_media_id:
+                    logger.warning("Could not persist accepted preview image message")
+                else:
+                    logger.exception("Could not persist accepted user message %s", request_id)
                 self.store.mark_failed(request_id, "storage_unavailable")
                 if kernel_command is not None:
                     try:
@@ -363,10 +375,13 @@ class ChatDeliveryCoordinator:
                             error_code="STORAGE_UNAVAILABLE",
                         )
                     except Exception:
-                        logger.exception("Could not fail storage-blocked command %s", request_id)
+                        if image_media_id:
+                            logger.warning("Could not settle storage-blocked preview image command")
+                        else:
+                            logger.exception("Could not fail storage-blocked command %s", request_id)
                 item = self.store.get_item(request_id) or {}
                 await self._emit_state(item, label="消息未保存，未请求 API")
-                raise ChatDeliveryError("消息无法安全保存，未请求 API") from error
+                raise ChatDeliveryError("消息无法安全保存，未请求 API") from (None if image_media_id else error)
         self.anchors[request_id] = (self.monotonic(), utc_to_epoch(sent_at, fallback=now))
         item = self.store.get_item(request_id) or {}
         await self._cancel_superseded_turns(
@@ -614,11 +629,16 @@ class ChatDeliveryCoordinator:
             if item and item.get("state") == "delivering":
                 self.store.set_state(request_id, "ready_waiting")
         except Exception as exc:
-            logger.exception("Chat request %s failed", request_id)
             item = self.store.get_item(request_id)
+            preview_image = bool(item and item.get("image_media_id"))
+            if preview_image:
+                logger.warning("Preview image request failed")
+            else:
+                logger.exception("Chat request %s failed", request_id)
             if item and item.get("state") in ACTIVE_STATES:
                 uncertain = item.get("provider_state") == "started"
-                self.store.mark_failed(request_id, str(exc), uncertain=uncertain)
+                failure = "图片消息未能完成" if preview_image else str(exc)
+                self.store.mark_failed(request_id, failure, uncertain=uncertain)
                 if self.kernel_store is not None:
                     try:
                         self.kernel_store.fail_command(
@@ -627,8 +647,21 @@ class ChatDeliveryCoordinator:
                             provider_outcome_unknown=uncertain,
                         )
                     except Exception:
-                        logger.exception("Could not persist failed kernel command")
-                await self._emit_state(self.store.get_item(request_id) or item)
+                        if preview_image:
+                            logger.warning("Could not persist failed preview image command")
+                        else:
+                            logger.exception("Could not persist failed kernel command")
+                failure_code = getattr(exc, "cause_code", None)
+                if not isinstance(failure_code, str) or not re.fullmatch(r"PROVIDER_[A-Z_]{1,48}", failure_code):
+                    failure_code = None
+                http_status = getattr(exc, "status_code", None)
+                if type(http_status) is not int or not 100 <= http_status <= 599:
+                    http_status = None
+                await self._emit_state(
+                    self.store.get_item(request_id) or item,
+                    failure_code=failure_code,
+                    http_status=http_status,
+                )
         finally:
             # The typing indicator must never outlive its request, whatever
             # the exit path (done, failure, cancel, scope change, disconnect).
@@ -657,6 +690,19 @@ class ChatDeliveryCoordinator:
             return
         if item.get("state") != "queued":
             return
+        image_data_url = ""
+        if item.get("image_media_id"):
+            from .media import jpeg_data_url
+
+            jpeg = self.kernel_store.read_preview_chat_image(
+                str(item["image_media_id"]),
+                conversation_id=str(item["conversation_id"]),
+                persona_id=str(item["persona_id"]),
+                request_id=request_id,
+            ) if self.kernel_store is not None else None
+            if jpeg is None:
+                raise ChatDeliveryError("图片无法安全读取，未请求 API")
+            image_data_url = jpeg_data_url(jpeg)
         self.store.mark_generating(request_id)
         if self.kernel_store is not None:
             self.kernel_store.mark_provider_dispatched(request_id)
@@ -677,6 +723,7 @@ class ChatDeliveryCoordinator:
             persona_epoch=int(item.get("persona_epoch") or 0),
             persona_fingerprint=str(item.get("persona_fingerprint") or ""),
             image_path=str(item.get("image_path") or ""),
+            image_data_url=image_data_url,
         )
         try:
             outcome = await self.turn_engine.generate(

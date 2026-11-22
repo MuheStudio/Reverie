@@ -71,6 +71,7 @@ class EmotionSystem:
     defer_startup_writes: bool = False
     _last_updated: str = field(default="", init=False)
     world_clock: Any = field(default=None, init=True, repr=False)
+    persona_id: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self):
         self._normalise_all()
@@ -162,9 +163,12 @@ class EmotionSystem:
         if not self.enabled:
             return
         self.apply_daily_carryover()
+        previous = self.values.copy() if self.persona_id is not None and not self._last_updated else None
         for name, delta in changes.items():
             if name in self.values:
                 self.values[name] = max(0.0, min(100.0, self.values[name] + delta))
+        if previous == self.values:
+            return
         self._last_updated = self._now_local().isoformat()
         self._save_state()
         logger.debug("Emotion event → %s", self.get_dominant(2))
@@ -172,6 +176,8 @@ class EmotionSystem:
     def tick(self) -> None:
         """Advance one time step — apply inertia drift toward baseline."""
         if not self.enabled:
+            return
+        if self.persona_id is not None and not self._last_updated and self.values == self.baseline:
             return
         for name in EMOTION_NAMES:
             current = self.values[name]
@@ -232,6 +238,8 @@ class EmotionSystem:
             return
         now = now or self._now_local()
         if not self._last_updated:
+            if self.persona_id is not None:
+                return
             self._last_updated = now.isoformat()
             self._save_state()
             return
@@ -269,6 +277,12 @@ class EmotionSystem:
         self.carryover_days = max(1, min(7, int(self.carryover_days)))
 
     def _load_state(self) -> None:
+        if self.persona_id is not None:
+            if self.document_store is not None:
+                stored = self.document_store.read_persona_state_document(self.persona_id, "persona_emotion_state")
+                if stored is not None:
+                    self._apply_state(stored)
+            return
         if self.document_store is not None:
             stored = self.document_store.read_private_document("persona_emotion_state")
             if stored is not None:
@@ -293,6 +307,10 @@ class EmotionSystem:
             logger.exception("Failed to load emotion state from %s", self.state_path)
 
     def _save_state(self) -> None:
+        if self.persona_id is not None:
+            if self.document_store is not None:
+                self.document_store.write_persona_state_document(self.persona_id, "persona_emotion_state", self._state_payload())
+            return
         if self.document_store is not None:
             self.document_store.write_private_document(
                 "persona_emotion_state",

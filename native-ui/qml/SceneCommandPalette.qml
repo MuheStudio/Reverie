@@ -56,7 +56,9 @@ FocusScope {
         x: (parent.width - width) / 2
         y: Math.max(86, Math.min(130, parent.height * .14))
         width: Math.min(620, parent.width - 48)
-        height: Math.min(parent.height - y - 110, 128 + Math.max(59, commandPalette.navigation.filteredEntries.length * 64 - 5))
+        height: Math.min(parent.height - y - 110,
+            topPadding + bottomPadding + paletteTitle.implicitHeight + search.implicitHeight +
+            2 * paletteContent.spacing + Math.max(59, commandPalette.navigation.filteredEntries.length * 64 - 5))
         padding: 20
         sceneSource: commandPalette.sceneSource
         blurredSource: commandPalette.blurredSource
@@ -69,9 +71,11 @@ FocusScope {
             acceptedButtons: Qt.AllButtons
         }
         ColumnLayout {
+            id: paletteContent
             anchors.fill: parent
             spacing: 14
             RowLayout {
+                id: paletteTitle
                 Layout.fillWidth: true
                 Text {
                     textFormat: Text.PlainText

@@ -68,6 +68,11 @@ struct ProbeResult {
     bool hasCandidate() const { return candidate.isValid(); }
 };
 
+inline QString acquisitionTimeoutCode(const QVariantMap &lastDiagnostic, const QString &fallback) {
+    return lastDiagnostic.value("reason").toString() == "row-position-inconsistent"
+        ? QStringLiteral("MOONROOM_READING_SELECTION_LAYOUT_INCONSISTENT") : fallback;
+}
+
 namespace detail {
 inline const QString Prefix = QStringLiteral("chatMessage-");
 
@@ -102,12 +107,15 @@ struct Queries {
     qint64 deadline;
     int count = 0;
     bool deadlineReached = false;
+    qint64 lastLiveMs = -1;
     bool live() {
         if (deadlineReached) return false;
-        if (!clock || clock() >= deadline) {
+        const qint64 now = clock ? clock() : deadline;
+        if (now >= deadline) {
             deadlineReached = true;
             return false;
         }
+        lastLiveMs = now;
         return true;
     }
     template <typename Object, typename Value, typename Reader>
@@ -249,6 +257,78 @@ inline QStringList gateReasons(const ItemState &s, bool ready) {
     return reasons;
 }
 
+struct RowPosition {
+    int index = -1;
+    QPointer<QQuickItem> item;
+    qreal y = 0;
+    qreal height = 0;
+
+    QVariantMap record() const {
+        QVariantMap value{{"index", index}, {"instantiated", !item.isNull()}};
+        if (item) {
+            value.insert("y", y);
+            value.insert("height", height);
+        }
+        return value;
+    }
+};
+
+inline bool readRowPosition(Queries &q, const QPointer<QQuickItem> &history, int index, int count,
+                            RowPosition &row) {
+    row.index = index;
+    if (index < 0 || index >= count) return true;
+    bool invoked = false;
+    if (!q.read(history, invoked, [&](auto *list) {
+            QQuickItem *item = nullptr;
+            const bool ok = QMetaObject::invokeMethod(list, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, item),
+                                                       Q_ARG(int, index));
+            row.item = item;
+            return ok;
+        }) || !invoked) return false;
+    return !row.item ||
+           (q.read(row.item, row.y, [](auto *item) { return item->y(); }) &&
+            q.read(row.item, row.height, [](auto *item) { return item->height(); }) &&
+            std::isfinite(row.y) && std::isfinite(row.height) && row.height >= 0);
+}
+
+inline bool readRowAdjacency(Queries &q, const QPointer<QQuickItem> &history, const ItemState &state,
+                             QVariantMap &record) {
+    const QString rowName = QStringLiteral("chatMessageRow-") + state.messageId;
+    auto ancestor = state.item;
+    while (ancestor && ancestor != history) {
+        QString name;
+        if (!q.read(ancestor, name, [](auto *item) { return item->objectName(); })) return false;
+        if (name == rowName) break;
+        QPointer<QQuickItem> parent;
+        if (!q.read(ancestor, parent, [](auto *item) { return QPointer<QQuickItem>(item->parentItem()); }))
+            return false;
+        ancestor = parent;
+    }
+    if (!ancestor || ancestor == history) return false;
+
+    bool indexKnown = false;
+    int index = -1, count = 0;
+    qreal spacing = 0;
+    if (!q.read(ancestor, index, [&](auto *row) { return row->property("index").toInt(&indexKnown); }) || !indexKnown ||
+        !q.read(history, count, [](auto *list) { return list->property("count").toInt(); }) ||
+        !q.read(history, spacing, [](auto *list) { return list->property("spacing").toReal(); }) ||
+        index < 0 || index >= count || !std::isfinite(spacing)) return false;
+
+    RowPosition previous, target, next;
+    if (!readRowPosition(q, history, index, count, target) || target.item != ancestor ||
+        !readRowPosition(q, history, index - 1, count, previous) ||
+        !readRowPosition(q, history, index + 1, count, next) || !target.item || !state.item)
+        return false;
+
+    const bool inconsistent = (previous.item && std::abs(target.y - (previous.y + previous.height + spacing)) >= 1) ||
+                              (next.item && std::abs(next.y - (target.y + target.height + spacing)) >= 1);
+    const bool hasNeighbor = previous.item || next.item;
+    const QString status = inconsistent ? "inconsistent" : hasNeighbor ? "consistent" : "unavailable";
+    record = {{"status", status}, {"observedAtMs", q.lastLiveMs}, {"spacing", spacing}, {"previous", previous.record()},
+              {"target", target.record()}, {"next", next.record()}};
+    return true;
+}
+
 inline bool positionAt(Queries &q, const QPointer<QQuickItem> &item, const QPointF &local,
                         int &position) {
     bool invoked = false;
@@ -377,7 +457,7 @@ inline Candidate findLine(Queries &q, const ItemState &state, QVariantMap &recor
 } // namespace detail
 
 inline ProbeResult probe(QQuickItem *history, QQuickWindow *window, bool readingReady,
-                          const Clock &clock, qint64 deadline) {
+                         const Clock &clock, qint64 deadline, bool checkRowAdjacency = false) {
     ProbeResult result;
     const QPointer<QQuickItem> guardedHistory(history);
     const QPointer<QQuickWindow> guardedWindow(window);
@@ -385,6 +465,8 @@ inline ProbeResult probe(QQuickItem *history, QQuickWindow *window, bool reading
     bool countComplete = false;
     const auto found = detail::collect(q, guardedHistory, countComplete);
     QVariantList records;
+    QVariantMap rowAdjacency;
+    bool rowInconsistent = false;
     bool anyLinesTruncated = false;
     for (int i = 0; i < qMin(CandidateLimit, int(found.size())); ++i) {
         if (!q.live() || !guardedHistory || !guardedWindow) break;
@@ -405,12 +487,23 @@ inline ProbeResult probe(QQuickItem *history, QQuickWindow *window, bool reading
                 result.candidate = detail::findLine(q, state, record);
                 if (!result.hasCandidate())
                     reasons.append(q.deadlineReached ? "deadline-reached" : "no-complete-visible-line-span");
+                else if (checkRowAdjacency) {
+                    if (!detail::readRowAdjacency(q, guardedHistory, state, rowAdjacency)) {
+                        result.candidate = {};
+                        reasons.append(q.deadlineReached ? "deadline-reached" : "candidate-geometry-unavailable");
+                    } else if (rowAdjacency.value("status").toString() == "inconsistent") {
+                        result.candidate = {};
+                        rowInconsistent = true;
+                        reasons.append("row-position-inconsistent");
+                    }
+                    if (!rowAdjacency.isEmpty()) record.insert("rowAdjacency", rowAdjacency);
+                }
             }
         }
         record.insert("reasons", reasons);
         anyLinesTruncated = anyLinesTruncated || record.value("linesTruncated").toBool();
         records.append(record);
-        if (result.hasCandidate() || q.deadlineReached) break;
+        if (result.hasCandidate() || rowInconsistent || q.deadlineReached) break;
     }
     if (!q.live() || !guardedHistory || !guardedWindow) result.candidate = {};
     result.diagnostic = {{"readingReady", readingReady}, {"candidateCount", found.size()},
@@ -419,14 +512,21 @@ inline ProbeResult probe(QQuickItem *history, QQuickWindow *window, bool reading
         {"lineLimitPerItem", LineLimit}, {"anyLinesTruncated", anyLinesTruncated},
         {"deadlineReached", q.deadlineReached}, {"queryCount", q.count}, {"items", records},
         {"reason", result.hasCandidate() ? "candidate-found" :
-            q.deadlineReached ? "deadline-reached" : "no-candidate"}};
+            rowInconsistent ? "row-position-inconsistent" : q.deadlineReached ? "deadline-reached" : "no-candidate"}};
+    if (!rowAdjacency.isEmpty()) result.diagnostic.insert("rowAdjacency", rowAdjacency);
     if (result.hasCandidate()) result.diagnostic.insert("selected", detail::candidateMap(result.candidate));
     return result;
 }
 
+inline ProbeResult probeBeforePress(QQuickItem *history, QQuickWindow *window, bool readingReady,
+                                    const Clock &clock, qint64 deadline) {
+    return probe(history, window, readingReady, clock, deadline, true);
+}
+
 inline bool revalidate(const Candidate &requested, QQuickItem *history, QQuickWindow *window,
                        bool readingReady, const Clock &clock, qint64 deadline,
-                       Candidate *liveCandidate = nullptr, QVariantMap *diagnostic = nullptr) {
+                       Candidate *liveCandidate = nullptr, QVariantMap *diagnostic = nullptr,
+                       bool checkRowAdjacency = false) {
     const Candidate expected = requested; // Input and output may be the same object.
     if (liveCandidate) *liveCandidate = {};
     const QPointer<QQuickItem> guardedHistory(history);
@@ -434,6 +534,7 @@ inline bool revalidate(const Candidate &requested, QQuickItem *history, QQuickWi
     detail::Queries q{clock, deadline};
     QString reason;
     QVariantMap record;
+    QVariantMap rowAdjacency;
     Candidate live;
     bool countComplete = false;
     const auto found = detail::collect(q, guardedHistory, countComplete);
@@ -464,10 +565,19 @@ inline bool revalidate(const Candidate &requested, QQuickItem *history, QQuickWi
                      !live.isValid()) reason = "rounded-hit-no-longer-valid";
             else if (live.firstPosition != expected.firstPosition || live.lastPosition != expected.lastPosition ||
                      live.trimmedLength != expected.trimmedLength) reason = "rounded-hit-span-changed";
-            else record.insert("bestSpan", detail::candidateMap(live));
+            else {
+                record.insert("bestSpan", detail::candidateMap(live));
+                if (checkRowAdjacency) {
+                    if (!detail::readRowAdjacency(q, guardedHistory, state, rowAdjacency))
+                        reason = "candidate-geometry-unavailable";
+                    else if (rowAdjacency.value("status").toString() == "inconsistent")
+                        reason = "row-position-inconsistent";
+                    if (!rowAdjacency.isEmpty()) record.insert("rowAdjacency", rowAdjacency);
+                }
+            }
         }
     }
-    if (!q.live()) reason = "deadline-reached";
+    if (!q.live() && reason != "row-position-inconsistent") reason = "deadline-reached";
     if (!guardedHistory || !guardedWindow || !target || !expected.item || target != expected.item) {
         if (reason.isEmpty()) reason = "stable-target-unavailable";
     }
@@ -479,6 +589,13 @@ inline bool revalidate(const Candidate &requested, QQuickItem *history, QQuickWi
         {"candidateLimit", CandidateLimit}, {"candidatesTruncated", found.size() > CandidateLimit},
         {"lineLimitPerItem", LineLimit},
         {"item", record}};
+    if (diagnostic && !rowAdjacency.isEmpty()) diagnostic->insert("rowAdjacency", rowAdjacency);
     return valid;
+}
+
+inline bool revalidateBeforePress(const Candidate &requested, QQuickItem *history, QQuickWindow *window,
+                                  bool readingReady, const Clock &clock, qint64 deadline,
+                                  Candidate *liveCandidate = nullptr, QVariantMap *diagnostic = nullptr) {
+    return revalidate(requested, history, window, readingReady, clock, deadline, liveCandidate, diagnostic, true);
 }
 } // namespace ReadingSelectionProbe

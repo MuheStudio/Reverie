@@ -8,8 +8,8 @@
  * https://html.spec.whatwg.org/multipage/embedded-content.html#dom-img-naturalwidth
  * https://url.spec.whatwg.org/#dom-url-pathname
  * Synthetic DOM fixtures only; no prior/upstream extraction code consulted.
- * This is not a legal clean-room claim. The repository remains GPL pending
- * completion of its license migration.
+ * This is not a legal clean-room claim. The repository is licensed under
+ * Apache-2.0.
  */
 
 // Keep the function self-contained: its exact source is the static browser

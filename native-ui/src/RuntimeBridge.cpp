@@ -34,6 +34,156 @@ static bool pinCount(const QJsonValue &value) {
         value.toDouble() <= std::numeric_limits<int>::max() &&
         value.toDouble() == std::floor(value.toDouble());
 }
+static QVariantMap relationshipDisplay(const QJsonObject &snapshot, const QString &id) {
+    const auto intimacy = snapshot["intimacy"].toInteger(-1);
+    const auto number = snapshot["stage_number"].toInteger(-1);
+    const auto stage = snapshot["stage"].toString();
+    const auto key = snapshot["stage_key"].toString();
+    const auto detail = snapshot["stage_detail"];
+    const auto thresholds = snapshot["thresholds"].toArray();
+    if (intimacy < 0 || snapshot["interaction_count"].toInteger(-1) < 0 ||
+        number <= 0 || number > thresholds.size() || stage.isEmpty() || key.isEmpty() ||
+        !detail.isString())
+        return {};
+
+    QSet<QString> keys;
+    qint64 previousMax = -1;
+    for (qsizetype i = 0; i < thresholds.size(); ++i) {
+        const auto threshold = thresholds[i].toObject();
+        const auto minimum = threshold["min"].toInteger(-1);
+        const auto maximum = threshold["max"];
+        const bool last = i + 1 == thresholds.size();
+        const auto thresholdKey = threshold["key"].toString();
+        if (thresholdKey.isEmpty() || keys.contains(thresholdKey) ||
+            threshold["label"].toString().isEmpty() || minimum < 0 || minimum - 1 != previousMax ||
+            (last ? !maximum.isNull() : maximum.toInteger(-1) < minimum))
+            return {};
+        keys.insert(thresholdKey);
+        previousMax = maximum.toInteger(-1);
+    }
+
+    // The service supplies the stage. Its own row must describe the snapshot;
+    // the next row supplies the distance only.
+    const auto current = thresholds[number - 1].toObject();
+    if (current["key"] != key || current["label"] != stage ||
+        intimacy < current["min"].toInteger() ||
+        (!current["max"].isNull() && intimacy > current["max"].toInteger()))
+        return {};
+    auto intimacyText = QString("亲密度 %1").arg(intimacy);
+    if (number < thresholds.size()) {
+        const auto next = thresholds[number].toObject();
+        intimacyText += QString("，到「%1」还差 %2")
+                            .arg(next["label"].toString()).arg(next["min"].toInteger() - intimacy);
+    }
+    return {{"status", "ready"}, {"requestId", id}, {"stage", "关系：" + stage},
+            {"detail", detail.toString()}, {"intimacy", intimacyText},
+            {"note", "随聊天慢慢变化，离开多久都不会减少。"}};
+}
+
+QVariantMap RuntimeBridge::relationshipStatus() const {
+    if (personaChanging())
+        return {{"status", "loading"}, {"message", "正在读取…"}};
+    if (!m_relationshipDisplay.isEmpty())
+        return m_relationshipDisplay;
+    if (!m_relationshipReadId.isEmpty())
+        return {{"status", "loading"}, {"message", "正在读取…"}};
+    return {{"status", "unavailable"}, {"message", "关系状态暂时读不到"}};
+}
+
+QVariantMap RuntimeBridge::moodDisplay(const QJsonObject &snapshot, const QString &id) {
+    static const QHash<QString, QString> emotions{{"joy", "喜悦"}, {"calm", "平静"},
+        {"excitement", "兴奋"}, {"sadness", "难过"}, {"anger", "生气"}, {"anxiety", "焦虑"},
+        {"grievance", "委屈"}, {"touched", "感动"}};
+    const auto label = moodLabel(snapshot["mood"].toString());
+    const auto values = snapshot["emotions"].toObject();
+    const auto dominant = snapshot["dominant"].toArray();
+    const auto validNumber = [](const QJsonValue &value, double maximum) {
+        return value.isDouble() && std::isfinite(value.toDouble()) &&
+            value.toDouble() >= 0 && value.toDouble() <= maximum;
+    };
+    if (label.isEmpty() || values.size() != emotions.size() || dominant.size() < 2 ||
+        dominant.size() > emotions.size() || !validNumber(snapshot["intensity"], 1))
+        return {};
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        if (!emotions.contains(it.key()) || !validNumber(it.value(), 100))
+            return {};
+    }
+    QSet<QString> names;
+    QStringList lines;
+    double previousScore = 100;
+    for (const auto &value : dominant) {
+        const auto row = value.toObject();
+        const auto name = row["name"].toString();
+        const auto score = row["value"];
+        if (!emotions.contains(name) || names.contains(name) || !validNumber(score, previousScore) ||
+            score != values.value(name))
+            return {};
+        names.insert(name);
+        previousScore = score.toDouble();
+        if (lines.size() < 2)
+            lines.append(QString("%1 %2").arg(emotions.value(name)).arg(qRound(score.toDouble())));
+    }
+    return {{"status", "ready"}, {"requestId", id}, {"label", "心情：" + label},
+            {"dominant", "现在最明显的是" + lines.join("、")}};
+}
+
+bool RuntimeBridge::moodDisabled() const {
+    return m_moodEnabled.isBool() && !m_moodEnabled.toBool();
+}
+
+QVariantMap RuntimeBridge::moodStatus() const {
+    if (moodDisabled())
+        return {{"status", "disabled"}, {"message", "情绪变化已关闭"}};
+    if (personaChanging())
+        return {{"status", "loading"}, {"message", "正在读取…"}};
+    if (!m_moodDisplay.isEmpty())
+        return m_moodDisplay;
+    if (!m_moodReadId.isEmpty())
+        return {{"status", "loading"}, {"message", "正在读取…"}};
+    return {{"status", "unavailable"}, {"message", "心情暂时读不到"}};
+}
+
+void RuntimeBridge::setRelationshipPageVisible(bool visible) {
+    if (visible == m_relationshipPageVisible)
+        return;
+    m_relationshipPageVisible = visible;
+    refreshVisiblePersonaStatus();
+}
+
+void RuntimeBridge::refreshVisiblePersonaStatus() {
+    if (m_relationshipPageVisible && m_connected && !m_stopping && !personaChanging()) {
+        request("relationship:get");
+        request("emotion:get");
+    }
+}
+
+void RuntimeBridge::cancelRelationshipRead() {
+    m_pending.remove(m_relationshipReadId);
+    m_relationshipReadId.clear();
+    m_relationshipReadPersona = {};
+}
+
+void RuntimeBridge::failRelationshipRead() {
+    cancelRelationshipRead();
+    m_relationshipDisplay = m_lastRelationshipDisplay;
+    if (!m_relationshipDisplay.isEmpty())
+        m_relationshipDisplay["refreshNote"] = "没能更新，显示的是上一次读到的";
+    emit changed();
+}
+
+void RuntimeBridge::cancelMoodRead() {
+    m_pending.remove(m_moodReadId);
+    m_moodReadId.clear();
+    m_moodReadPersona = {};
+}
+
+void RuntimeBridge::failMoodRead() {
+    cancelMoodRead();
+    m_moodDisplay = m_lastMoodDisplay;
+    if (!m_moodDisplay.isEmpty())
+        m_moodDisplay["refreshNote"] = "没能更新，显示的是上一次读到的";
+    emit changed();
+}
 static int profileTextLength(const QString &text) { return text.toUcs4().size(); }
 static QString personaProfileFieldName(const QString &key) {
     static const QHash<QString, QString> names{{"description", "档案正文"},
@@ -389,6 +539,25 @@ static QJsonObject summaryMetadata(const QJsonObject &offered, bool detail = fal
 }
 static const QStringList emotionSettingKeys{"emotion_system_enabled", "emotion_carryover_days",
                                             "emotion_inertia_factor"};
+static const QString ProactiveEnabled = "proactive_chat_enabled";
+static const QHash<QString, QList<double>> proactivePresets{
+    {"proactive_daily_limit", {1, 2, 3, 5}}, {"proactive_min_interval_minutes", {60, 120, 240, 480}}};
+static bool proactiveSettingsPayload(const QVariantMap &payload) {
+    if (payload.value("section") != QVariant(QString("features")) || payload.size() < 2)
+        return false;
+    for (auto it = payload.cbegin(); it != payload.cend(); ++it)
+        if (it.key() != "section" && it.key() != ProactiveEnabled && !proactivePresets.contains(it.key()))
+            return false;
+    return true;
+}
+
+static bool proactiveSettingsMatch(const QVariantMap &snapshot, const QVariantMap &fields) {
+    const auto features = obj(snapshot)["features"].toObject();
+    for (auto it = fields.cbegin(); it != fields.cend(); ++it)
+        if (features.value(it.key()) != QJsonValue::fromVariant(it.value())) return false;
+    return true;
+}
+
 static bool touchesEmotion(const QVariantMap &fields) {
     for (const auto &key : emotionSettingKeys)
         if (fields.contains(key))
@@ -473,6 +642,7 @@ static QString settingsSavedText(const QString &section, const QVariantMap &fiel
     return section == "chat"         ? "聊天设置已保存。"
            : section == "memory"     ? "记忆设置已保存。"
            : section == "onboarding" ? "首次设置已完成。"
+           : section == "features"   ? "主动消息设置已保存。"
            : touchesBudget(fields)   ? "用量上限已保存。"
            : touchesEmotion(fields)  ? "情绪设置已保存。"
                                      : "性格设置已保存。";
@@ -518,10 +688,22 @@ RuntimeBridge::RuntimeBridge(QString root, QString data, QString python, QObject
     QFile rules(":/logic/rules.js");
     if (rules.open(QIODevice::ReadOnly))
         m_xiangqi = m_rules.evaluate(QString::fromUtf8(rules.readAll()));
+    QFile gomokuRules(":/logic/gomoku-rules.js");
+    if (gomokuRules.open(QIODevice::ReadOnly))
+        m_gomoku = m_rules.evaluate(QString::fromUtf8(gomokuRules.readAll()));
+    QFile chessRules(":/logic/chess-rules.js");
+    if (chessRules.open(QIODevice::ReadOnly))
+        m_chess = m_rules.evaluate(QString::fromUtf8(chessRules.readAll()));
+    QFile goRules(":/logic/go-rules.js");
+    if (goRules.open(QIODevice::ReadOnly))
+        m_go = m_rules.evaluate(QString::fromUtf8(goRules.readAll()));
     auto appearance = readJson(m_data + "/qt-appearance.json");
     m_reducedMotion = appearance["reducedMotion"].toBool();
     m_reducedTransparency = appearance["reducedTransparency"].toBool();
     m_offline = appearance["offline"].toBool();
+    const auto roomQuality = appearance.value("roomQuality").toString();
+    if (roomQuality == "clear" || roomQuality == "balanced" || roomQuality == "smooth")
+        m_roomQuality = roomQuality;
     m_state["offline"] = m_offline;
     // Only owned private copies from an interrupted native selection are cleaned.
     const QString staging = m_data + "/backup-staging";
@@ -554,6 +736,12 @@ RuntimeBridge::RuntimeBridge(QString root, QString data, QString python, QObject
     connect(&m_process, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         if (m_previewMode) emit previewEvent("backend_exit", "OK", code);
         m_connected = false;
+        clearDiary();
+        clearKeepsakes();
+        clearProactiveHistory();
+        resetChatImages(false);
+        if (m_opponentPending)
+            cancelOpponent();
         invalidatePersonaProfile();
         invalidateMemoryPinConnection(false);
         invalidateCandidateBatchConnection(false);
@@ -569,6 +757,7 @@ RuntimeBridge::RuntimeBridge(QString root, QString data, QString python, QObject
         clearPersonaCardCandidate();
         forgetPersonaCardImport("连接中断，角色卡导入结果未确认；重新连接后请核对当前人格和列表。");
         unknownPersonaCardExport();
+        unknownWorldbookFile();
         m_runtimeWritable = false;
         m_recoveryState = "unknown";
         invalidatePermissions();
@@ -585,6 +774,9 @@ RuntimeBridge::RuntimeBridge(QString root, QString data, QString python, QObject
         if (m_busy)
             finishChat("failed_uncertain");
         m_pending.clear();
+        if (m_gamePhase == GamePhase::Ready)
+            m_gamePhase = GamePhase::ReadFailed;
+        emit gameChanged();
         m_networkRequestId.clear();
         m_networkFeedback = {{"status", "unknown"}, {"known", false},
                              {"text", "本地服务已断开，网络调用状态未知。"}};
@@ -698,11 +890,22 @@ void RuntimeBridge::applyBudgetRead(const QString &type, const QJsonObject &payl
         {"live", true}, {"stale", false}, {"snapshot", snapshot}});
 }
 void RuntimeBridge::resetPersonaState() {
+    unknownWorldbookFile();
     invalidatePersonaProfile();
     // Avatars are app-wide and re-listed only by avatar actions; the avatar
     // does not change with the persona, so a new identity keeps the list.
     const auto avatars = m_state.value("avatars");
     m_state.clear();
+    clearDiary();
+    clearKeepsakes();
+    clearProactiveHistory();
+    resetChatImages(true);
+    cancelRelationshipRead();
+    m_relationshipDisplay.clear();
+    m_lastRelationshipDisplay.clear();
+    cancelMoodRead();
+    m_moodDisplay.clear();
+    m_lastMoodDisplay.clear();
     m_profileClearState.clear();
     m_profileClearProfile = {};
     m_profileClearReceipt = {};
@@ -728,6 +931,9 @@ void RuntimeBridge::resetPersonaState() {
     m_state["offline"] = m_offline;
     if (avatars.isValid())
         m_state["avatars"] = avatars;
+    clearGame();
+    if (gamePanelOpen())
+        gameRead();
 }
 void RuntimeBridge::setPersonaFeedback(const QString &status, const QString &text,
                                        const QString &requestId) {
@@ -762,7 +968,7 @@ void RuntimeBridge::forgetPersonaCardImport(const QString &text) {
     setPersonaCardFeedback("unknown", text, id, details);
 }
 bool RuntimeBridge::personaCardActionAllowed() {
-    if (!m_personaImport.isEmpty() || !m_personaSwitch.isEmpty() || personaCardExportPending() || personaProfilePending())
+    if (!m_personaImport.isEmpty() || !m_personaSwitch.isEmpty() || personaCardExportPending() || personaProfilePending() || worldbookFileBusy())
         return false;
     if (!m_connected) {
         setPersonaCardFeedback("error", "本地服务尚未连接，角色卡操作未能发送。");
@@ -780,6 +986,7 @@ bool RuntimeBridge::personaCardActionAllowed() {
 }
 void RuntimeBridge::observePersonaCardIdentity(const QJsonObject &proof, const QJsonObject &payload) {
     unknownPersonaCardExport();
+    unknownWorldbookFile();
     clearPersonaCardCandidate();
     if (m_personaImport.isEmpty())
         return;
@@ -858,6 +1065,7 @@ void RuntimeBridge::settlePersonaCardReceipt() {
         clearOperation();
         setPersonaCardFeedback("error", "这张角色卡已在本地列表中；请从列表选择并切换。", id, details);
         refreshPersonas();
+        refreshVisiblePersonaStatus();
         return;
     }
     if (saved && !activated) {
@@ -874,7 +1082,9 @@ void RuntimeBridge::settlePersonaCardReceipt() {
         clearOperation();
         setPersonaCardFeedback("error", "角色卡导入被拒绝：" + reason, id, details);
         if (code == "identity_conflict")
-            refresh();
+            refresh(m_relationshipPageVisible);
+        else
+            refreshVisiblePersonaStatus();
         return;
     }
     const QJsonObject receiptProof{{"persona_id", payload["persona_id"]},
@@ -1860,7 +2070,10 @@ void RuntimeBridge::unsettleSettingsSaves(const QString &text) {
         if (feedback.value("status").toString() != "pending")
             continue;
         // A confirmed save that only awaited its read-back stays confirmed.
-        if (feedback.contains("readId") && touchesBudget(feedback.value("fields").toMap()))
+        if (feedback.contains("readId") && key == "features")
+            setSettingsFeedback(key, "unknown", "主动消息设置已写入，但读回未获确认。",
+                                feedback.value("requestId").toString(), feedback.value("fields").toMap());
+        else if (feedback.contains("readId") && touchesBudget(feedback.value("fields").toMap()))
             setSettingsFeedback(key, "unknown", "设置已写入，但运行中的用量上限尚未确认同步；请重新读取当前设置。",
                                 feedback.value("requestId").toString(), feedback.value("fields").toMap());
         else if (feedback.contains("readId"))
@@ -1878,7 +2091,10 @@ void RuntimeBridge::settleSettingsRead(const QString &readId) {
             feedback.value("readId").toString() != readId)
             continue;
         const auto fields = feedback.value("fields").toMap();
-        if (touchesBudget(fields) &&
+        if (key == "features" && (!settingsKnown() || !proactiveSettingsMatch(m_state.value("settings").toMap(), fields)))
+            setSettingsFeedback(key, "unknown", "主动消息设置未能核对，显示的是后端读回的值。",
+                                feedback.value("requestId").toString(), fields);
+        else if (touchesBudget(fields) &&
             (!settingsKnown() || !budgetRuntimeMatches(m_state.value("settings").toMap(), fields)))
             setSettingsFeedback(key, "unknown", budgetUnconfirmedText,
                                 feedback.value("requestId").toString(), fields);
@@ -1890,7 +2106,38 @@ void RuntimeBridge::settleSettingsRead(const QString &readId) {
                                 fields);
     }
 }
-void RuntimeBridge::finishChat(const QString &status) {
+static QString chatFailureCode(const QJsonObject &payload) {
+    const auto value = payload.value("failure_code");
+    static const QRegularExpression format("\\APROVIDER_[A-Z_]{1,48}\\z");
+    if (!value.isString() || !format.match(value.toString()).hasMatch()) return {};
+    return value.toString();
+}
+static QString chatFailureText(const QJsonObject &payload, const QString &fallback) {
+    const auto code = chatFailureCode(payload);
+    const auto value = payload.value("http_status");
+    const double number = value.toDouble();
+    const bool hasHttp = value.isDouble() && number >= 100 && number <= 599 && number == int(number);
+    static const QHash<QString, QString> labels{
+        {"PROVIDER_UNAUTHORIZED", "服务拒绝了密钥，请检查 API Key。"},
+        {"PROVIDER_AUTH_FAILED", "服务拒绝了密钥，请检查 API Key。"},
+        {"PROVIDER_RATE_LIMITED", "服务暂时限流；未自动重试。"},
+        {"PROVIDER_TIMEOUT", "无法连接到服务或连接超时；结果未知，未自动重试。"},
+        {"PROVIDER_UNREACHABLE", "无法连接到服务或连接超时；结果未知，未自动重试。"},
+        {"PROVIDER_CONNECTION_FAILED", "无法连接到服务或连接超时；结果未知，未自动重试。"},
+        {"PROVIDER_INVALID_RESPONSE", "服务返回的内容无法显示；未自动重试。"},
+        {"PROVIDER_INVALID_RESPONSE_SCHEMA", "服务返回的内容无法显示；未自动重试。"},
+        {"PROVIDER_EMPTY_RESPONSE", "服务返回的内容无法显示；未自动重试。"},
+        {"PROVIDER_REASONING_ONLY_RESPONSE", "服务返回的内容无法显示；未自动重试。"},
+        {"PROVIDER_TOOL_ONLY_RESPONSE", "服务返回的内容无法显示；未自动重试。"},
+        {"PROVIDER_OUTPUT_TRUNCATED", "服务返回的内容无法显示；未自动重试。"},
+        {"PROVIDER_CONTENT_FILTERED", "服务返回的内容无法显示；未自动重试。"}};
+    QString text = labels.value(code, fallback);
+    if (code == "PROVIDER_REJECTED" && hasHttp)
+        text = number < 500 ? "服务拒绝了这次请求；未自动重试。" : "服务出错；结果未知，未自动重试。";
+    if (hasHttp) text += QString("（HTTP %1）").arg(int(number));
+    return text;
+}
+void RuntimeBridge::finishChat(const QString &status, const QJsonObject &failure) {
     const auto completed = m_chatId;
     m_pending.remove(completed);
     for (auto it = m_pending.begin(); it != m_pending.end();) {
@@ -1902,16 +2149,60 @@ void RuntimeBridge::finishChat(const QString &status) {
             ++it;
     }
     m_busy = false;
+    m_chatImageInFlight = false;
+    m_chatImageSentDraft.clear();
     m_chatFeedback.remove("cancel");
     const QHash<QString, QString> labels{{"done", "已回复"},
                                          {"cancelled", "本次回复已停止"},
                                          {"failed", "本次回复失败，可检查回复服务后重新发送。"},
                                          {"failed_uncertain", "回复结果未知；未自动重试。"}};
-    setChatFeedback(status, labels.value(status, "本次回复已结束。"));
+    setChatFeedback(status, chatFailureText(failure, labels.value(status, "本次回复已结束。")));
     m_chatId.clear();
     m_chatGeneration = -1;
     m_chatPersona = {};
 }
+
+void RuntimeBridge::observeProactiveMessage(const QJsonObject &frame, const QJsonObject &payload) {
+    static const QRegularExpression stableId("\\Aproactive_[0-9a-f]{32}\\z");
+    const auto id = payload["proactive_id"].toString();
+    const auto time = QDateTime::fromString(payload["created_at_utc"].toString(), Qt::ISODateWithMs);
+    if (!m_connected || m_stopping || personaChanging() || frame.contains("request_id") || payload.contains("request_id") ||
+        m_persona["persona_id"].toString().isEmpty() || payload["conversation_id"] != "dream-room" ||
+        payload["persona_id"] != m_persona["persona_id"] || payload["persona_epoch"] != m_persona["epoch"] ||
+        payload["persona_fingerprint"] != m_persona["fingerprint"] || !stableId.match(id).hasMatch() ||
+        !time.isValid() || time.timeSpec() == Qt::LocalTime || time.offsetFromUtc() != 0 ||
+        payload["trigger"].toString().isEmpty() || !payload["emotion_changes"].isObject() ||
+        !payload["metadata"].isObject() || !payload["notify"].isBool() || !payload["native_notification"].isBool() ||
+        !payload["notification_title"].isString() || m_proactiveAnnouncements.contains(id))
+        return;
+    QStringList bubbles;
+    for (const auto &value : payload["messages"].toArray()) {
+        if (value.toString().trimmed().isEmpty()) return;
+        bubbles.append(value.toString());
+    }
+    if (bubbles.isEmpty() || payload["text"] != bubbles.join('\n'))
+        return;
+    m_proactiveAnnouncements.insert(id);
+    m_proactiveHistoryQueued.insert(id);
+    m_proactiveHistoryDirty = true;
+    readProactiveHistory();
+}
+
+void RuntimeBridge::readProactiveHistory() {
+    if (m_proactiveHistoryDirty && m_proactiveHistoryId.isEmpty() && m_connected && !m_stopping &&
+        !personaChanging() && !m_busy)
+        request("chat:history");
+}
+
+void RuntimeBridge::clearProactiveHistory() {
+    m_proactiveAnnouncements.clear();
+    m_proactiveHistoryQueued.clear();
+    m_proactiveHistoryBatch.clear();
+    m_proactiveHistoryDirty = false;
+    m_proactiveHistoryId.clear();
+    m_chatHistoryApplied = 0;
+}
+
 void RuntimeBridge::expirePending(const QString &id) {
     if (!m_pending.contains(id))
         return;
@@ -1923,6 +2214,12 @@ void RuntimeBridge::expirePending(const QString &id) {
           p.command == "persona:import") && m_connected))
         return;
     m_pending.remove(id);
+    if (p.command == "chat:media") {
+        if (id == m_chatImageReadId)
+            settleChatImageThumbnail();
+        emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        return;
+    }
     if (p.command == "persona:profile:get" || p.command == "persona:profile:update") {
         if (id == m_personaProfileState.value("requestId").toString()) {
             if (p.command == "persona:profile:update")
@@ -1935,6 +2232,11 @@ void RuntimeBridge::expirePending(const QString &id) {
         emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
         return;
     }
+    if (p.command.startsWith("worldbook:file:")) {
+        unknownWorldbookFile();
+        emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        return;
+    }
     if (p.command == "persona:card:export") {
         unknownPersonaCardExport();
         emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
@@ -1942,6 +2244,41 @@ void RuntimeBridge::expirePending(const QString &id) {
     }
     if (p.generation != m_generation)
         return;
+    if (p.command == "chat:history" && id == m_proactiveHistoryId) {
+        m_proactiveHistoryId.clear();
+        for (const auto &announcement : m_proactiveHistoryBatch)
+            m_proactiveAnnouncements.remove(announcement);
+        m_proactiveHistoryBatch.clear();
+        m_proactiveHistoryDirty = true;
+    }
+    if (expireKeepsake(id)) {
+        emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        return;
+    }
+    if (expireDiary(id)) {
+        emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        return;
+    }
+    if (p.command == "relationship:get") {
+        if (id == m_relationshipReadId && m_relationshipReadPersona == m_persona) {
+            failRelationshipRead();
+            emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        }
+        return;
+    }
+    if (p.command == "emotion:get") {
+        if (id == m_moodReadId && m_moodReadPersona == m_persona) {
+            failMoodRead();
+            emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        }
+        return;
+    }
+    if (!id.isEmpty() && (id == m_gameReadId || id == m_gameSaveId || id == m_gameMoveId)) {
+        if (p.gameEpoch == m_gameGeneration)
+            failGameRequest(p.command);
+        emit requestFailed(id, m_connected ? "timeout" : "disconnected", p.generation);
+        return;
+    }
     if (p.command == "api:budget:get") {
         if (id != m_budgetReadId)
             return;
@@ -2141,13 +2478,23 @@ void RuntimeBridge::persistAppearance() {
     try {
         atomicJson(m_data + "/qt-appearance.json", {{"reducedMotion", m_reducedMotion},
                                                     {"reducedTransparency", m_reducedTransparency},
-                                                    {"offline", m_offline}});
+                                                    {"offline", m_offline},
+                                                    {"roomQuality", m_roomQuality}});
     } catch (...) {
         setNotice("外观偏好未能保存。");
     }
 }
 void RuntimeBridge::setReducedMotion(bool v) {
     m_reducedMotion = v;
+    persistAppearance();
+    emit changed();
+}
+void RuntimeBridge::setRoomQuality(const QString &value) {
+    if (value != "clear" && value != "balanced" && value != "smooth")
+        return;
+    if (value == m_roomQuality)
+        return;
+    m_roomQuality = value;
     persistAppearance();
     emit changed();
 }
@@ -2453,7 +2800,22 @@ void RuntimeBridge::acceptFrame(const QJsonObject &f) {
         if (personaChanged)
             m_memoryBatchDelete.clear();
         m_persona = persona;
+        clearDiary();
+        clearKeepsakes();
+        clearProactiveHistory();
+        resetChatImages(personaChanged);
+        cancelRelationshipRead();
+        m_relationshipDisplay.clear();
+        m_state.remove("relationship");
+        if (personaChanged)
+            m_lastRelationshipDisplay.clear();
+        cancelMoodRead();
+        m_moodDisplay.clear();
+        m_moodEnabled = {};
+        if (personaChanged)
+            m_lastMoodDisplay.clear();
         unknownPersonaCardExport();
+        unknownWorldbookFile();
         invalidatePersonaProfile();
         m_generation++;
         ++m_memoryListRevision;
@@ -2481,6 +2843,9 @@ void RuntimeBridge::acceptFrame(const QJsonObject &f) {
         if (runtimeWritable())
             setOffline(m_offline);
         refresh();
+        clearGame();
+        if (gamePanelOpen())
+            gameRead();
         if (m_previewMode && recoveryValid)
             emit validatedReady({{"backendPid", m_process.processId()},
                                  {"recoveryState", m_recoveryState}, {"runtimeWritable", runtimeWritable()}});
@@ -2493,9 +2858,10 @@ void RuntimeBridge::acceptFrame(const QJsonObject &f) {
         if (!m_pending.contains(id))
             return;
         auto p = m_pending.value(id);
-        if (p.command == "persona:card:export" && p.generation != m_generation) {
+        if ((p.command == "persona:card:export" || p.command.startsWith("worldbook:file:")) && p.generation != m_generation) {
             m_pending.remove(id);
-            unknownPersonaCardExport();
+            if (p.command.startsWith("worldbook:file:")) unknownWorldbookFile();
+            else unknownPersonaCardExport();
             return;
         }
         if (p.generation != m_generation)
@@ -2522,6 +2888,8 @@ void RuntimeBridge::acceptFrame(const QJsonObject &f) {
     }
 }
 QString RuntimeBridge::request(const QString &command, const QVariantMap &payload) {
+    if (command == "emotion:get" && moodDisabled())
+        return {};
     if (command == "backup:import" || command == "backup:file:import" || command == "backup:file:inspect") {
         rejectBackupRestore();
         return {};
@@ -2555,7 +2923,7 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
         "memory:reinforce", "memory:candidates:confirm", "memory:candidates:reject",
         "memory:candidates:decide_many",
         "settings:update", "summary:legacy:import", "ai_usage:grant", "ai_usage:revoke",
-        "user:profile:update", "game_state:put", "game:move", "diary:request"};
+        "user:profile:update", "game_state:put", "game:move", "diary:write", "keepsake:collect", "keepsake:remove"};
     if (mutations.contains(command) && !runtimeWritable()) {
         setNotice(recoveryWarning());
         return {};
@@ -2564,6 +2932,7 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
                                         "chat:cancel",
                                         "chat:reveal",
                                         "chat:history",
+                                        "chat:media",
                                         "persona:get",
                                         "persona:list",
                                         "persona:activate",
@@ -2598,7 +2967,9 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
                                         "user:profile:get",
                                         "user:profile:update",
                                         "relationship:get",
+                                        "emotion:get",
                                         "diary:request",
+                                        "diary:write",
                                         "timeline:request",
                                         "api:budget:get",
                                         "module:list",
@@ -2606,11 +2977,25 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
                                         "game_state:put",
                                         "game:move",
                                         "keepsake:list",
+                                        "keepsake:collect", "keepsake:page", "keepsake:remove",
                                         "backup:export"};
     if (!allowed.contains(command)) {
         setNotice("该操作还未接入原生控制器。");
         return {};
     }
+    if (command == "chat:media" &&
+        (m_chatImageReadMedia.isEmpty() || !m_chatImageReadId.isEmpty() || personaChanging() ||
+         payload.size() != 2 || payload.value("media_id") != m_chatImageReadMedia ||
+         payload.value("thumbnail").metaType().id() != QMetaType::Bool || !payload.value("thumbnail").toBool()))
+        return {};
+    if (QStringList{"keepsake:collect", "keepsake:page", "keepsake:remove"}.contains(command) && !m_keepsakeSending)
+        return {};
+    if (command == "diary:write" &&
+        (m_diarySending != DiaryOperation::Write || !payload.isEmpty() || !diaryWriteBlocker().isEmpty()))
+        return {};
+    if (command == "diary:request" &&
+        m_diarySending != DiaryOperation::List && m_diarySending != DiaryOperation::Read)
+        return {};
     if (command == "summary:status" && !payload.isEmpty() &&
         (payload.keys() != QStringList{"conversation_id"} ||
          payload.value("conversation_id").metaType().id() != QMetaType::QString ||
@@ -2702,7 +3087,7 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
         return {};
     if ((command == "persona:profile:get" || command == "persona:profile:update") && !m_personaProfileSending)
         return {};
-    if (command == "persona:activate" && (!m_personaImport.isEmpty() || personaCardExportPending() || personaProfilePending()))
+    if (command == "persona:activate" && (!m_personaImport.isEmpty() || personaCardExportPending() || personaProfilePending() || worldbookFileBusy()))
         return {};
     if (command == "chat:send" && (!m_personaImport.isEmpty() || !m_personaSwitch.isEmpty())) {
         setNotice("人格操作仍在核对中，请等待确认后再发送。");
@@ -2713,6 +3098,15 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
             setNotice(gate.value("text").toString());
             return {};
         }
+    }
+    if (command == "settings:update" &&
+        (payload.contains(ProactiveEnabled) || payload.contains("proactive_daily_limit") ||
+         payload.contains("proactive_min_interval_minutes"))) {
+        auto fields = payload;
+        fields.remove("section");
+        QString error;
+        if (!proactiveSettingsPayload(payload) || settingsUpdate("features", fields, &error).isEmpty())
+            return {};
     }
     if (command == "ai_usage:grant") {
         const auto feature = payload.value("feature").toString();
@@ -2789,11 +3183,27 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
     // obsolete requests waiting for timeout after their replies are ignored.
     if (command == "api:budget:get" && !m_budgetReadId.isEmpty())
         m_pending.remove(m_budgetReadId);
+    if (command == "relationship:get")
+        cancelRelationshipRead();
+    if (command == "emotion:get")
+        cancelMoodRead();
     auto id = uid();
     m_pending.insert(
         id, {command, m_generation, {}, m_gameGeneration, payload.value("request_id").toString(),
              payload.value("feature").toString()});
     m_pending[id].memoryAdjustment = memoryAdjustment;
+    if (command == "chat:history") {
+        m_pending[id].chatHistorySequence = ++m_chatHistorySequence;
+        m_pending[id].keepsakeRevision = m_keepsakeRevision;
+    }
+    if (command == "relationship:get") {
+        m_relationshipReadId = id;
+        m_relationshipReadPersona = m_persona;
+    }
+    if (command == "emotion:get") {
+        m_moodReadId = id;
+        m_moodReadPersona = m_persona;
+    }
     if (command == "api:budget:get") {
         m_budgetReadId = id;
         m_budgetReadGeneration = m_generation;
@@ -2854,6 +3264,10 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
                           payload.value("request_id").toString());
     if (!write(rendererFrame(command, obj(payload), id, m_persona))) {
         m_pending.remove(id);
+        if (command == "relationship:get")
+            failRelationshipRead();
+        if (command == "emotion:get")
+            failMoodRead();
         if (command == "api:budget:get" && m_budgetReadId == id) {
             invalidateBudget("用量请求未能发送，请核对连接后刷新。");
             emit changed();
@@ -2884,6 +3298,31 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
         return {};
     }
     m_commands++;
+    if (command == "chat:history" && m_proactiveHistoryDirty && !m_busy && m_proactiveHistoryId.isEmpty()) {
+        m_proactiveHistoryDirty = false;
+        m_proactiveHistoryId = id;
+        m_proactiveHistoryBatch.swap(m_proactiveHistoryQueued);
+    }
+    if (command == "persona:activate" || command == "persona:import") {
+        cancelRelationshipRead();
+        cancelMoodRead();
+        clearDiary();
+        clearKeepsakes();
+    }
+    emit commandSent(id, command, scopeKey(), m_generation);
+    if (command == "relationship:get" || command == "emotion:get")
+        emit changed();
+    if (command == "game_state:get" || command == "game_state:put" || command == "game:move")
+        emit gameCommandSent(id, command);
+    if (command == "game_state:get" || command == "game_state:put")
+        emit gameStateDispatched(id, payload);
+    if (command == "settings:update" && proactiveSettingsPayload(payload))
+        emit proactiveSettingsDispatched(id, payload);
+    if (command == "ai_usage:grant" && payload.value("feature") == "proactive_chat") {
+        emit proactiveSettingsDispatched(id, {{"feature", "proactive_chat"},
+            {"api_cost_acknowledged", payload.value("api_cost_acknowledged").toBool()},
+            {"user_confirmed", payload.value("user_confirmed").toBool()}});
+    }
     if (command == "api:budget:get") {
         if (m_budgetDispatchGeneration != m_generation) {
             m_budgetDispatchGeneration = m_generation;
@@ -2905,7 +3344,7 @@ QString RuntimeBridge::request(const QString &command, const QVariantMap &payloa
     if (command == "chat:send")
         clearPersonaCardCandidate();
     if (command != "chat:send" && command != "persona:import" && command != "persona:activate")
-        QTimer::singleShot(command == "summary:get" ? 10000 : 30000, this,
+        QTimer::singleShot(command == "diary:write" ? DiaryWriteTimeoutMs : command == "summary:get" ? 10000 : 30000, this,
                            [this, id] { expirePending(id); });
     return id;
 }
@@ -2929,13 +3368,16 @@ QString RuntimeBridge::control(const QString &type, QJsonObject fields,
     }
     if (timeoutMs > 0)
         QTimer::singleShot(timeoutMs, this, [this, id] { expirePending(id); });
+    emit commandSent(id, type, scopeKey(), m_generation);
     return id;
 }
-void RuntimeBridge::refresh() {
+void RuntimeBridge::refresh(bool readPersonaStatus) {
     for (const QString c :
-         {"persona:get", "persona:list", "settings:get", "chat:history", "relationship:get", "archive:get",
-          "summary:status", "ai_usage:get", "api:budget:get", "user:profile:get", "module:list"})
-        request(c);
+         {"persona:get", "persona:list", "settings:get", "chat:history", "relationship:get", "emotion:get",
+          "archive:get", "summary:status", "ai_usage:get", "api:budget:get", "user:profile:get", "module:list"}) {
+        if (readPersonaStatus || (c != "relationship:get" && c != "emotion:get"))
+            request(c);
+    }
     const int epoch = m_permissionContextEpoch;
     control("provider:get", {}, [this, epoch](QJsonObject r) {
         if (epoch != m_permissionContextEpoch)
@@ -2951,6 +3393,8 @@ void RuntimeBridge::refresh() {
         }
         emit changed();
     });
+    if (m_panel == "diary")
+        refreshDiary();
 }
 void RuntimeBridge::invalidatePermissions() {
     ++m_permissionContextEpoch;
@@ -3021,9 +3465,75 @@ void RuntimeBridge::markProviderUnconfigured() {
 void RuntimeBridge::event(const QJsonObject &f) {
     const auto type = f["type"].toString();
     const auto payload = f["payload"].toObject();
+    if (type == "proactive:message") {
+        observeProactiveMessage(f, payload);
+        return;
+    }
     auto id = f["request_id"].toString();
     if (id.isEmpty())
         id = payload["request_id"].toString();
+    if (acceptChatImageThumbnail(f, payload, id))
+        return;
+    if (diaryOperation(id) != DiaryOperation::None && f.contains("request_id") && f["request_id"] != id)
+        return;
+    if (acceptKeepsakeResponse(id, type, payload))
+        return;
+    if (acceptDiaryResponse(id, type, payload))
+        return;
+    if (m_pending.value(id).command == "relationship:get") {
+        if (!m_connected || id != m_relationshipReadId ||
+            m_pending.value(id).generation != m_generation || m_relationshipReadPersona != m_persona ||
+            (type != "relationship:data" && type != "error") ||
+            (f.contains("request_id") && f["request_id"] != id) ||
+            (payload.contains("request_id") && payload["request_id"] != id) ||
+            (payload.contains("persona_id") && payload["persona_id"] != m_persona["persona_id"]) ||
+            (payload.contains("persona_epoch") && payload["persona_epoch"] != m_persona["epoch"]) ||
+            (payload.contains("persona_fingerprint") && payload["persona_fingerprint"] != m_persona["fingerprint"]))
+            return;
+        if (type == "error" || payload.contains("error") || payload["ok"] == false) {
+            failRelationshipRead();
+        } else {
+            cancelRelationshipRead();
+            m_relationshipDisplay = relationshipDisplay(payload, id);
+            if (m_relationshipDisplay.isEmpty()) {
+                m_state.remove("relationship");
+            } else {
+                m_lastRelationshipDisplay = m_relationshipDisplay;
+                m_state["relationship"] = payload.toVariantMap();
+            }
+            emit changed();
+        }
+        emit responseReceived(id, "relationship:get", payload.toVariantMap(), m_generation);
+        emit commandResult("relationship:get", payload.toVariantMap());
+        return;
+    }
+    if (type == "relationship:data")
+        return;
+    if (m_pending.value(id).command == "emotion:get") {
+        if (!m_connected || moodDisabled() || id != m_moodReadId ||
+            m_pending.value(id).generation != m_generation || m_moodReadPersona != m_persona ||
+            (type != "emotion:update" && type != "error") ||
+            (f.contains("request_id") && f["request_id"] != id) ||
+            (payload.contains("request_id") && payload["request_id"] != id) ||
+            (payload.contains("persona_id") && payload["persona_id"] != m_persona["persona_id"]) ||
+            (payload.contains("persona_epoch") && payload["persona_epoch"] != m_persona["epoch"]) ||
+            (payload.contains("persona_fingerprint") && payload["persona_fingerprint"] != m_persona["fingerprint"]))
+            return;
+        if (type == "error" || payload.contains("error") || payload["ok"] == false) {
+            failMoodRead();
+        } else {
+            cancelMoodRead();
+            m_moodDisplay = moodDisplay(payload, id);
+            if (!m_moodDisplay.isEmpty())
+                m_lastMoodDisplay = m_moodDisplay;
+            emit changed();
+        }
+        emit responseReceived(id, "emotion:get", payload.toVariantMap(), m_generation);
+        emit commandResult("emotion:get", payload.toVariantMap());
+        return;
+    }
+    if (type == "emotion:update")
+        return;
     const auto pinCommand = m_pending.value(id).command;
     const bool pinList = pinCommand == "memory:list" &&
         id == m_memoryBatchPin.value("listReadId").toString() &&
@@ -3176,6 +3686,15 @@ void RuntimeBridge::event(const QJsonObject &f) {
         const bool wasWritable = runtimeWritable();
         const bool startupReplay = m_recoveryState == "recovering" && !m_backupRestoring;
         applyRecoverySnapshot(payload);
+        if (wasWritable && !runtimeWritable() && m_opponentPending)
+            cancelOpponent();
+        if (!wasWritable && runtimeWritable() && gamePanelOpen() &&
+            m_gamePhase == GamePhase::Ready) {
+            if (m_gameRevision == 0)
+                gameRead();
+            else
+                scheduleOpponent();
+        }
         if (!wasWritable && runtimeWritable() && !m_networkFeedback.value("known").toBool() &&
             m_networkFeedback.value("status").toString() != "pending")
             setOffline(m_offline);
@@ -3195,6 +3714,8 @@ void RuntimeBridge::event(const QJsonObject &f) {
         finishPersonaCardImport(type, payload, id);
         return;
     }
+    if (type == "diary:result")
+        return;
     const bool hasPending = m_pending.contains(id);
     const auto pending = m_pending.value(id);
     if (hasPending && pending.generation != m_generation)
@@ -3339,8 +3860,15 @@ void RuntimeBridge::event(const QJsonObject &f) {
         m_pending.remove(id);
         return;
     }
-    if (command == "game:move" && pending.gameEpoch != m_gameGeneration)
+    if (!id.isEmpty() && (id == m_gameReadId || id == m_gameSaveId || id == m_gameMoveId)) {
+        m_pending.remove(id);
+        if (pending.gameEpoch != m_gameGeneration)
+            return;
+        finishGameRequest(command, type, payload);
+        emit responseReceived(id, command, payload.toVariantMap(), m_generation);
+        emit commandResult(command, payload.toVariantMap());
         return;
+    }
     const bool chatEvent = type.startsWith("chat:") && type != "chat:history:result";
     const auto subject = payload["request_id"].toString(
         pending.subjectRequestId.isEmpty() ? id : pending.subjectRequestId);
@@ -3382,6 +3910,10 @@ void RuntimeBridge::event(const QJsonObject &f) {
     if (hasPending && !chatProgress && !cancelProgress)
         m_pending.remove(id);
     if (type == "chat:error" || type == "error") {
+        if (currentChat && id == m_chatId && type == "error" &&
+            f["request_id"] == id && (!payload.contains("request_id") || payload["request_id"] == id) &&
+            rejectSentChatImage(payload))
+            return;
         if (m_previewMode && currentChat) {
             const auto provider = m_state.value("provider").toMap().value("provider").toString();
             const QStringList providers{"openai", "anthropic", "gemini", "grok", "deepseek", "kimi", "glm", "ollama", "custom"};
@@ -3389,18 +3921,37 @@ void RuntimeBridge::event(const QJsonObject &f) {
         }
         if (currentChat && id == m_chatId) {
             finishChat(payload["provider_outcome_unknown"].toBool() ? "failed_uncertain" : "failed");
+            readProactiveHistory();
             // Legacy notice remains available to existing diagnostics. The
             // panel feedback above deliberately excludes raw backend errors.
             setNotice(payload["error"].toString(payload["message"].toString("操作被服务拒绝。")));
         } else
             setNotice(payload["error"].toString(payload["message"].toString("操作被服务拒绝。")));
     }
+    if (currentChat && m_chatImageInFlight &&
+        (type == "chat:bubble" || type == "chat:done" ||
+         ((type == "chat:status" || type == "chat:state") &&
+          QStringList{"queued", "generating", "ready_waiting", "delivering", "done"}.contains(chatState)))) {
+        if (m_draft == m_chatImageSentDraft)
+            setDraft("");
+        m_chatImageInFlight = false;
+        m_chatImageSentDraft.clear();
+    }
     if ((type == "chat:status" || type == "chat:state") && currentChat) {
         if (terminalState) {
-            finishChat(chatState == "error" ? "failed" : chatState);
+            const bool hasFailure = type == "chat:state" && (chatState == "failed" || chatState == "failed_uncertain");
+            const auto failureCode = hasFailure ? chatFailureCode(payload) : QString();
+            if (m_previewMode && !failureCode.isEmpty()) {
+                const auto provider = m_state.value("provider").toMap().value("provider").toString();
+                const QStringList providers{"openai", "anthropic", "gemini", "grok", "deepseek", "kimi", "glm", "ollama", "custom"};
+                emit previewEvent("service_failure", failureCode, providers.indexOf(provider) + 1);
+            }
+            finishChat(chatState == "error" ? "failed" : chatState, hasFailure ? payload : QJsonObject{});
             request("chat:history");
-            if (chatState == "done")
+            if (chatState == "done") {
                 request("summary:status");
+                refreshVisiblePersonaStatus();
+            }
         } else {
             const QHash<QString, QString> labels{{"queued", "已收到，正在等待回复…"},
                                                  {"generating", "正在生成回复…"},
@@ -3430,24 +3981,45 @@ void RuntimeBridge::event(const QJsonObject &f) {
         finishChat("done");
         request("chat:history");
         request("summary:status");
+        refreshVisiblePersonaStatus();
     }
     if ((type == "chat:cancelled" || type == "chat:stop:result") && currentChat &&
         payload["ok"].toBool(true)) {
         finishChat("cancelled");
         request("chat:history");
     }
-    if (type == "chat:history:result") {
+    const bool proactiveRead = !id.isEmpty() && id == m_proactiveHistoryId && command == "chat:history";
+    const bool validHistory = type == "chat:history:result" && payload["items"].isArray() &&
+        (!proactiveRead || (!payload.contains("error") && payload["ok"].toBool(true)));
+    if (proactiveRead) {
+        m_proactiveHistoryId.clear();
+        if (!validHistory) {
+            for (const auto &announcement : m_proactiveHistoryBatch)
+                m_proactiveAnnouncements.remove(announcement);
+        }
+        m_proactiveHistoryBatch.clear();
+        m_proactiveHistoryDirty |= m_busy || !validHistory;
+    }
+    const bool freshHistory = !m_chatHistoryApplied || !pending.chatHistorySequence ||
+        pending.chatHistorySequence >= m_chatHistoryApplied;
+    if (validHistory && freshHistory &&
+        !(m_busy && (proactiveRead || m_proactiveHistoryDirty || !m_proactiveHistoryId.isEmpty()))) {
+        if (proactiveRead || m_chatHistoryApplied || !m_proactiveHistoryId.isEmpty())
+            m_chatHistoryApplied = pending.chatHistorySequence;
         m_messages = payload["items"].toArray().toVariantList();
+        if (pending.keepsakeRevision == m_keepsakeRevision)
+            applyKeepsakeMessageIds(payload["preview_keepsake_message_ids"]);
+        discoverChatImageThumbnails();
         emit messagesChanged();
     }
+    if (proactiveRead && validHistory)
+        readProactiveHistory();
     static const QHash<QString, QString> keys = {{"persona:data", "persona"},
                                                  {"persona:list:result", "personas"},
                                                  {"settings:get:result", "settings"},
                                                  {"settings:update:result", "settingsSave"},
-                                                 {"relationship:data", "relationship"},
                                                  {"archive:result", "archive"},
                                                  {"summary:result", "summary"},
-                                                 {"diary:result", "diary"},
                                                  {"timeline:result", "timeline"},
                                                  {"module:result", "modules"},
                                                  {"game_state:result", "game"}};
@@ -3689,8 +4261,16 @@ void RuntimeBridge::event(const QJsonObject &f) {
                 feedback.value("requestId").toString() != id || feedback.contains("readId"))
                 continue;
             const bool budgetSave = touchesBudget(feedback.value("fields").toMap());
+            const bool proactiveSave = section == "features";
             const bool ok = type == "settings:update:result" && !failedResult && !payload.contains("error") &&
-                (!budgetSave || (payload["ok"].isBool() && payload["ok"].toBool()));
+                (!(budgetSave || proactiveSave) || (payload["ok"].isBool() && payload["ok"].toBool()));
+            if (proactiveSave && !ok) {
+                const auto reason = payload["error"].toString().simplified().left(240);
+                setSettingsFeedback(section, "error", reason.isEmpty() ? "主动消息设置未能保存，原设置保留。"
+                                    : "主动消息设置未能保存：" + reason,
+                                    id, feedback.value("fields").toMap());
+                continue;
+            }
             // The pages show only what the runtime reports back. A confirmed save
             // stays pending until that read arrives, so its controls never fall
             // back to the snapshot taken before the save.
@@ -3716,11 +4296,28 @@ void RuntimeBridge::event(const QJsonObject &f) {
     }
     if (command == "settings:get") {
         const bool valid = type == "settings:get:result" && validSettingsSnapshot(payload);
-        if (valid)
+        const auto proactive = m_settingsFeedback.value("features").toMap();
+        if (valid) {
             m_settingsFeedback.remove("read");
-        else
+            const auto enabled = payload["features"].toObject().value("emotion_system_enabled");
+            const bool wasDisabled = moodDisabled();
+            m_moodEnabled = enabled.isBool() ? enabled : QJsonValue();
+            if (moodDisabled()) {
+                cancelMoodRead();
+                m_moodDisplay.clear();
+                m_lastMoodDisplay.clear();
+            } else if (wasDisabled && enabled.toBool() && m_relationshipPageVisible) {
+                request("emotion:get");
+            }
+        } else {
             setSettingsFeedback("read", "error", "当前设置读取失败，显示的是上次确认的值；暂不能修改。", id);
+        }
         settleSettingsRead(id);
+        if (valid && proactive.value("status") == QVariant(QString("pending")) &&
+            proactive.value("readId").toString() == id &&
+            proactive.value("fields").toMap().contains(ProactiveEnabled) &&
+            proactiveSettingsMatch(m_state.value("settings").toMap(), proactive.value("fields").toMap()))
+            refreshPermissions();
         if (valid)
             emit settingsRead();
     }
@@ -3765,11 +4362,22 @@ void RuntimeBridge::event(const QJsonObject &f) {
     emit changed();
 }
 void RuntimeBridge::openPanel(const QString &s) {
-    if (!QStringList{"", "chat", "character", "memory", "activities", "settings", "about",
-                     "palette"}
+    if (!QStringList{"", "chat", "character", "memory", "activities", "gomoku", "chess", "go", "diary", "settings", "about",
+                     "palette", "keepsake"}
              .contains(s))
         return;
+    if (m_panel == "keepsake" && s != "keepsake") cancelKeepsakeRemoval();
+    const bool leavingGame = m_panel == "activities" && s != "activities";
+    const auto nextGame = gameIdForPanel(s);
+    const bool changingGame = gomokuGame() != (s == "gomoku") ||
+        chessGame() != (s == "chess") || goGame() != (s == "go");
     m_panel = s;
+    if (changingGame) {
+        clearGame();
+    } else if (leavingGame && m_opponentPending) {
+        cancelOpponent();
+        emit gameChanged();
+    }
     emit panelChanged();
     if (!m_connected)
         return;
@@ -3779,12 +4387,17 @@ void RuntimeBridge::openPanel(const QString &s) {
         request("summary:status");
         refreshPermissions();
     }
-    if (s == "activities")
-        request("game_state:get", {{"game_id", "xiangqi"}});
+    if (!nextGame.isEmpty())
+        gameRead();
+    if (s == "diary")
+        refreshDiary();
+    if (s == "keepsake")
+        refreshKeepsakes();
 }
 void RuntimeBridge::sendChat() {
     clearPersonaCardCandidate();
-    if (m_draft.trimmed().isEmpty() || m_busy)
+    const bool hasImage = !m_chatImagePreview.isEmpty();
+    if ((!hasImage && m_draft.trimmed().isEmpty()) || m_busy)
         return;
     if (!m_connected) {
         setChatFeedback("disconnected", "本地服务尚未连接，输入已保留。");
@@ -3813,16 +4426,30 @@ void RuntimeBridge::sendChat() {
         emit changed();
         return;
     }
-    const auto text = m_draft.trimmed();
-    m_chatId = request("chat:send", {{"text", text}, {"conversation_id", "dream-room"}});
+    if (hasImage && !chatImageCanSend())
+        return;
+    const auto trimmed = m_draft.trimmed();
+    const auto text = trimmed.isEmpty() && hasImage ? QString("[图片]") : trimmed;
+    QVariantMap fields{{"text", text}, {"conversation_id", "dream-room"}};
+    appendChatImageFields(fields);
+    m_chatId = request("chat:send", fields);
     if (m_chatId.isEmpty())
         return;
     m_chatGeneration = m_generation;
     m_chatPersona = m_persona;
     m_busy = true;
     m_chatFeedback.remove("cancel");
-    m_messages.append(QVariantMap{{"id", m_chatId}, {"role", "user"}, {"content", text}});
-    setDraft("");
+    QVariantMap user{{"id", m_chatId}, {"role", "user"}, {"content", text}};
+    if (hasImage) {
+        m_chatImageInFlight = true;
+        m_chatImageSentDraft = m_draft;
+        user["pending_chat_image"] = m_chatId;
+        m_chatImageThumbnails[m_chatId] = QVariantMap{{"status", "ready"}, {"source", m_chatImagePreview}};
+        removeChatImage();
+    }
+    m_messages.append(user);
+    if (!hasImage)
+        setDraft("");
     setChatFeedback("queued", "正在倾听…");
     emit messagesChanged();
 }
@@ -4953,7 +5580,7 @@ void RuntimeBridge::cancelBackupRestore() {
     setMemoryFeedback("backup", "cancelled", "已取消恢复，未改动数据。");
 }
 void RuntimeBridge::confirmBackupRestore(bool knownGood) {
-    if (m_backupRestoring || memoryRequestPending("backup") || personaCardExportPending() || personaProfilePending() || m_backupStaged.isEmpty() || m_backupInspection.isEmpty()) return;
+    if (m_backupRestoring || memoryRequestPending("backup") || personaCardExportPending() || personaProfilePending() || worldbookFileBusy() || m_backupStaged.isEmpty() || m_backupInspection.isEmpty()) return;
     if (!m_connected || (!m_backupRescue && !runtimeWritable()) || (m_backupRescue && (m_recoveryState != "recovery_required" || !knownGood))) return;
     QString error;
     const auto source = backupFileBinding(m_backupSource, &error);
@@ -5089,7 +5716,7 @@ void RuntimeBridge::closePersonaProfile() {
     emit changed();
 }
 void RuntimeBridge::loadPersonaProfile(const QString &profileId) {
-    if (personaProfilePending() || personaChanging() || personaCardExportPending() ||
+    if (personaProfilePending() || personaChanging() || personaCardExportPending() || worldbookFileBusy() ||
         !m_connected || !runtimeWritable() || m_stopping) return;
     QVariantMap row;
     for (const auto &value : m_state.value("personas").toMap().value("profiles").toList())
@@ -5115,7 +5742,7 @@ void RuntimeBridge::loadPersonaProfile(const QString &profileId) {
 }
 void RuntimeBridge::savePersonaProfile(const QVariantMap &fields, bool confirmed) {
     if (!confirmed || personaProfilePending() || !m_personaProfileState.value("open").toBool() ||
-        !m_connected || !runtimeWritable() || m_stopping || personaChanging() || personaCardExportPending()) return;
+        !m_connected || !runtimeWritable() || m_stopping || personaChanging() || personaCardExportPending() || worldbookFileBusy()) return;
     if (m_personaProfileGeneration != m_generation || m_personaProfileProof != m_persona) {
         invalidatePersonaProfile(); return;
     }
@@ -5201,7 +5828,7 @@ void RuntimeBridge::finishPersonaProfile(const QString &type, const QJsonObject 
     if (saving) refreshPersonas();
 }
 void RuntimeBridge::selectPersona(const QString &id) {
-    if (!m_personaSwitch.isEmpty() || !m_personaImport.isEmpty() || personaCardExportPending() || personaProfilePending())
+    if (!m_personaSwitch.isEmpty() || !m_personaImport.isEmpty() || personaCardExportPending() || personaProfilePending() || worldbookFileBusy())
         return;
     QVariantMap target;
     for (const auto &value : m_state.value("personas").toMap().value("profiles").toList())
@@ -5324,7 +5951,7 @@ bool RuntimeBridge::personaCardExportBuiltin() const {
 bool RuntimeBridge::personaCardExportAvailable() const {
     const auto format = personaCardExportProfile().value("source_format").toString();
     return m_connected && !m_stopping && runtimeWritable() &&
-        !personaChanging() && !personaCardExportPending() && !personaProfilePending() &&
+        !personaChanging() && !personaCardExportPending() && !personaProfilePending() && !worldbookFileBusy() &&
         personaCardExportArchiveKnown() &&
         QStringList{"tavern_card_v1", "chara_card_v2", "chara_card_v3"}.contains(format);
 }
@@ -5496,6 +6123,248 @@ void RuntimeBridge::exportPersonaCard(const QUrl &target, const QString &worldBo
         m_personaCardExportState["requestId"] = id;
         emit changed();
     }
+}
+bool RuntimeBridge::worldbookFileBusy() const {
+    return QStringList{"inspecting", "confirmation", "importing", "imported", "exporting"}
+        .contains(m_worldbookFileState.value("status").toString());
+}
+bool RuntimeBridge::worldbookFileContextMatches(int revision) const {
+    return m_connected && !m_stopping && runtimeWritable() && !personaChanging() &&
+        !personaCardExportPending() && !personaProfilePending() &&
+        personaCardExportArchiveKnown() && revision >= 0 && m_archive.value("revision").toInt() == revision;
+}
+bool RuntimeBridge::worldbookFileAvailable() const {
+    return !worldbookFileBusy() && worldbookFileContextMatches(m_archive.value("revision", -1).toInt());
+}
+void RuntimeBridge::setWorldbookFileState(const QString &status, const QString &text, const QVariantMap &details) {
+    m_worldbookFileState = details;
+    if (!m_worldbookFileState.contains("scopeKey")) m_worldbookFileState["scopeKey"] = scopeKey();
+    if (!m_worldbookFileState.contains("generation")) m_worldbookFileState["generation"] = m_generation;
+    m_worldbookFileState.insert({{"status", status}, {"text", text}});
+    emit changed();
+}
+void RuntimeBridge::unknownWorldbookFile() {
+    if (!worldbookFileBusy()) return;
+    auto details = m_worldbookFileState;
+    m_pending.remove(details.value("requestId").toString());
+    ++m_worldbookFileSerial;
+    m_worldbookFilePath.clear();
+    setWorldbookFileState("unknown", "文件操作结果未确认，请重新读取世界书或检查目标文件；未自动重试。", details);
+}
+QUrl RuntimeBridge::suggestedWorldbookFile(const QString &worldBookId) const {
+    QString name = "世界书";
+    for (const auto &value : m_archive.value("archive").toMap().value("worldBooks").toList())
+        if (value.toMap().value("id").toString() == worldBookId) name = value.toMap().value("name").toString();
+    name.replace(QRegularExpression("[\\x00-\\x1f\\x7f<>:\"/\\\\|?*]"), "_");
+    if (name.isEmpty()) name = "世界书";
+    return QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/" + name + ".json");
+}
+void RuntimeBridge::inspectWorldbookFile(const QUrl &source, int revision) {
+    if (worldbookFileBusy()) return;
+    if (!worldbookFileContextMatches(revision)) {
+        setWorldbookFileState("error", "当前人格或已保存的档案尚未确认，请先重新读取。");
+        return;
+    }
+    const QFileInfo info(source.toLocalFile());
+    if (!source.isLocalFile() || !info.isAbsolute() || info.suffix().toLower() != "json" ||
+        !info.isFile() || info.isSymLink()) {
+        setWorldbookFileState("error", "请选择一个本地 JSON 世界书文件。", {{"code", "invalid_path"}});
+        return;
+    }
+    runWorldbookFileControl("inspect", info.absoluteFilePath(), {}, revision);
+}
+void RuntimeBridge::confirmWorldbookFileImport(int revision) {
+    if (m_worldbookFileState.value("status") != "confirmation") return;
+    if (!worldbookFileContextMatches(revision) || m_worldbookFilePersona != m_persona ||
+        m_worldbookFileState.value("generation").toInt() != m_generation ||
+        m_worldbookFileState.value("scopeKey").toString() != scopeKey() ||
+        m_worldbookFileState.value("archiveRevision").toInt() != revision) {
+        const auto details = m_worldbookFileState;
+        ++m_worldbookFileSerial;
+        m_worldbookFilePath.clear();
+        setWorldbookFileState("error", "人格或档案已变化，请重新选择文件并预览；没有发送导入。", details);
+        return;
+    }
+    runWorldbookFileControl("import", m_worldbookFilePath, {}, revision);
+}
+void RuntimeBridge::cancelWorldbookFileImport() {
+    if (m_worldbookFileState.value("status") != "confirmation") return;
+    ++m_worldbookFileSerial;
+    m_worldbookFilePath.clear();
+    setWorldbookFileState("idle", "");
+}
+void RuntimeBridge::exportWorldbookFile(const QUrl &target, const QString &bookId, int revision) {
+    if (worldbookFileBusy()) return;
+    if (!worldbookFileContextMatches(revision)) {
+        setWorldbookFileState("error", "当前人格或已保存的档案尚未确认，请先重新读取。");
+        return;
+    }
+    QVariantMap selected;
+    for (const auto &value : m_archive.value("archive").toMap().value("worldBooks").toList())
+        if (value.toMap().value("id").toString() == bookId) selected = value.toMap();
+    if (bookId.isEmpty() || selected.isEmpty() || selected.value("entries").toList().isEmpty()) {
+        setWorldbookFileState("error", selected.isEmpty() ? "请先选择一本已保存的世界书。" : "这本书还没有条目，没有写出文件。",
+                             {{"code", selected.isEmpty() ? "world_book_not_found" : "empty_book"}});
+        return;
+    }
+    const QFileInfo info(target.toLocalFile());
+    if (!target.isLocalFile() || !info.isAbsolute() || info.suffix().toLower() != "json" ||
+        !QFileInfo(info.absolutePath()).isDir() || info.isDir() || info.isSymLink()) {
+        setWorldbookFileState("error", "请选择一个以 .json 结尾的本地保存位置。", {{"code", "invalid_path"}});
+        return;
+    }
+    runWorldbookFileControl("export", info.absoluteFilePath(), bookId, revision);
+}
+void RuntimeBridge::runWorldbookFileControl(const QString &operation, const QString &path,
+                                           const QString &bookId, int revision) {
+    const auto proof = m_persona;
+    const int generation = m_generation;
+    const quint64 serial = ++m_worldbookFileSerial;
+    const auto previous = m_worldbookFileState;
+    QVariantMap exportedBook;
+    if (operation == "export")
+        for (const auto &value : m_archive.value("archive").toMap().value("worldBooks").toList())
+            if (value.toMap().value("id").toString() == bookId) exportedBook = value.toMap();
+    m_worldbookFilePersona = proof;
+    m_worldbookFilePath = path;
+    QVariantMap details{{"operation", operation}, {"requestId", ""}, {"scopeKey", scopeKey()},
+                        {"generation", generation}, {"archiveRevision", revision}};
+    if (operation == "import")
+        for (const auto *key : {"sha256", "file_bytes", "book_name", "importable_entry_count"})
+            details[key] = previous.value(key);
+    if (operation == "export") details["world_book_id"] = bookId;
+    const auto status = operation == "inspect" ? "inspecting" : operation == "import" ? "importing" : "exporting";
+    setWorldbookFileState(status, operation == "inspect" ? "正在检查世界书文件…" :
+        operation == "import" ? "正在导入世界书…" : "正在导出世界书…", details);
+    if (serial != m_worldbookFileSerial || generation != m_generation || proof != m_persona) return;
+    QJsonObject fields{{"path", path}, {"persona_id", proof["persona_id"]}, {"persona_epoch", proof["epoch"]},
+                       {"persona_fingerprint", proof["fingerprint"]}, {"archive_revision", revision}};
+    if (operation == "import") {
+        fields["sha256"] = QJsonValue::fromVariant(previous.value("sha256"));
+        fields["file_bytes"] = QJsonValue::fromVariant(previous.value("file_bytes"));
+    }
+    if (operation == "export") fields["world_book_id"] = bookId;
+    const auto id = control("worldbook:file:" + operation, fields,
+        [this, operation, path, bookId, revision, proof, generation, serial, exportedBook](const QJsonObject &r) {
+            if (serial != m_worldbookFileSerial) return;
+            if (generation != m_generation || proof != m_persona || !m_connected || m_stopping) {
+                unknownWorldbookFile();
+                return;
+            }
+            if (operation != "import" && !worldbookFileContextMatches(revision)) {
+                unknownWorldbookFile();
+                return;
+            }
+            auto details = m_worldbookFileState;
+            details["requestId"] = r["requestId"].toString();
+            if (r["not_sent"].toBool() && !r.contains("kind")) {
+                m_worldbookFilePath.clear();
+                setWorldbookFileState("error", "文件操作请求未能发送，没有执行；请重新选择。", details);
+                return;
+            }
+            const auto exactKeys = [&r](QStringList keys) {
+                keys += QStringList{"kind", "schema", "type", "requestId", "ok"};
+                keys.sort();
+                return r.keys() == keys;
+            };
+            const auto count = [](const QJsonValue &v, qint64 maximum = 10000) {
+                return v.isDouble() && v.toDouble() >= 0 && v.toDouble() <= maximum &&
+                    v.toDouble() == double(v.toInteger(-1));
+            };
+            const auto digest = [](const QJsonValue &v) {
+                return v.isString() && QRegularExpression("^[0-9a-f]{64}$").match(v.toString()).hasMatch();
+            };
+            static const QHash<QString, QString> errors{
+                {"invalid_request", "文件操作参数无效"}, {"invalid_path", "文件位置无效"},
+                {"file_too_large", "世界书文件超过 5 MiB"}, {"invalid_encoding", "文件不是 UTF-8"},
+                {"invalid_json", "JSON 文件无效"}, {"unsupported_format", "不支持这个世界书格式"},
+                {"too_many_entries", "条目超过 10,000 条"}, {"no_importable_entries", "没有可以导入的条目"},
+                {"archive_too_large", "导入后档案超过大小上限"}, {"file_changed", "文件已变化，请重新预览"},
+                {"persona_changed", "当前人格已变化"}, {"archive_changed", "档案已变化，请重新读取"},
+                {"world_book_not_found", "所选世界书已不存在"}, {"empty_book", "这本书还没有条目"},
+                {"write_failed", "文件写入失败"}, {"archive_unavailable", "档案当前不可用"}};
+            if (exactKeys({"code", "error"}) && r["ok"].isBool() && !r["ok"].toBool() &&
+                r["code"].isString() && errors.contains(r["code"].toString()) && r["error"].isString()) {
+                details["code"] = r["code"].toString();
+                if (operation == "import" && r["code"] == "archive_unavailable") {
+                    m_worldbookFileState["code"] = r["code"].toString();
+                    unknownWorldbookFile();
+                    return;
+                }
+                m_worldbookFilePath.clear();
+                setWorldbookFileState("error", errors.value(r["code"].toString()) + "。", details);
+                return;
+            }
+            bool valid = r["ok"].isBool() && r["ok"].toBool();
+            if (operation == "inspect") {
+                valid = valid && exactKeys({"book_name", "importable_entry_count", "skipped", "dropped_fields",
+                    "disabled_regex_entry_count", "cleaned_entry_count", "sha256", "file_bytes"}) &&
+                    r["book_name"].isString() && count(r["importable_entry_count"]) &&
+                    r["importable_entry_count"].toInt() > 0 && count(r["disabled_regex_entry_count"]) &&
+                    count(r["cleaned_entry_count"]) && digest(r["sha256"]) &&
+                    count(r["file_bytes"], 5 * 1024 * 1024) && r["file_bytes"].toInt() > 0 &&
+                    r["skipped"].isObject() && r["dropped_fields"].isObject();
+                const QStringList droppedFields{"vectorized", "ignoreBudget", "excludeRecursion", "preventRecursion",
+                    "groupOverride", "matchPersonaDescription", "matchCharacterDescription", "matchCharacterPersonality",
+                    "matchCharacterDepthPrompt", "matchScenario", "matchCreatorNotes", "delayUntilRecursion",
+                    "probability", "groupWeight", "useProbability", "outletName", "group", "automationId",
+                    "matchWholeWords", "useGroupScoring", "sticky", "cooldown", "delay", "triggers",
+                    "characterFilter", "characterFilterNames", "characterFilterTags", "characterFilterExclude",
+                    "position", "selectiveLogic", "keysecondary"};
+                const auto skipped = r["skipped"].toObject(), dropped = r["dropped_fields"].toObject();
+                for (auto it = skipped.begin(); it != skipped.end(); ++it)
+                    valid = valid && QStringList{"invalid", "empty", "unsafe", "oversized"}.contains(it.key()) && count(it.value());
+                for (auto it = dropped.begin(); it != dropped.end(); ++it)
+                    valid = valid && droppedFields.contains(it.key()) && count(it.value());
+            } else if (operation == "import") {
+                valid = valid && exactKeys({"revision", "world_book_id", "book_name", "imported_entry_count"}) &&
+                    count(r["revision"], 2147483647) && r["revision"].toInt() == revision + 1 &&
+                    r["world_book_id"].isString() && !r["world_book_id"].toString().isEmpty() &&
+                    r["book_name"].isString() && r["book_name"].toString() == details.value("book_name").toString() &&
+                    count(r["imported_entry_count"]) && r["imported_entry_count"].toInt() == details.value("importable_entry_count").toInt();
+            } else {
+                valid = valid && exactKeys({"world_book_id", "book_name", "entry_count", "file_name", "bytes", "sha256"}) &&
+                    r["world_book_id"] == bookId && r["book_name"].isString() &&
+                    r["book_name"].toString() == exportedBook.value("name").toString() &&
+                    count(r["entry_count"]) && r["entry_count"].toInt() > 0 &&
+                    r["entry_count"].toInt() == exportedBook.value("entries").toList().size() &&
+                    r["file_name"].isString() && r["file_name"].toString() == QFileInfo(path).fileName() &&
+                    count(r["bytes"], 5 * 1024 * 1024) && r["bytes"].toInt() > 0 && digest(r["sha256"]);
+            }
+            if (!valid) { unknownWorldbookFile(); return; }
+            for (auto it = r.begin(); it != r.end(); ++it)
+                if (!QStringList{"kind", "schema", "type", "requestId", "ok"}.contains(it.key()))
+                    details[it.key()] = it.value().toVariant();
+            if (operation == "inspect")
+                setWorldbookFileState("confirmation", "请确认导入内容。", details);
+            else if (operation == "import") {
+                m_worldbookFilePath.clear();
+                setWorldbookFileState("imported", "世界书已导入，正在重新读取并选择新书…", details);
+            } else {
+                m_worldbookFilePath.clear();
+                setWorldbookFileState("success", QString("已导出到 %1，共 %2 条，%3 字节。")
+                    .arg(r["file_name"].toString()).arg(r["entry_count"].toInt()).arg(r["bytes"].toInt()), details);
+            }
+        }, 30000);
+    if (serial == m_worldbookFileSerial && !id.isEmpty() && m_worldbookFileState.value("status") == status) {
+        m_worldbookFileState["requestId"] = id;
+        emit changed();
+    }
+}
+void RuntimeBridge::acknowledgeWorldbookFileImportReadback(const QString &bookId, int revision, bool confirmed) {
+    if (m_worldbookFileState.value("status") != "imported") return;
+    bool found = false;
+    for (const auto &value : m_archive.value("archive").toMap().value("worldBooks").toList())
+        found = found || value.toMap().value("id").toString() == bookId;
+    const bool valid = confirmed && found && worldbookFileContextMatches(revision) &&
+        m_worldbookFilePersona == m_persona && m_worldbookFileState.value("generation").toInt() == m_generation &&
+        m_worldbookFileState.value("world_book_id").toString() == bookId &&
+        m_worldbookFileState.value("revision").toInt() == revision;
+    if (!valid) { unknownWorldbookFile(); return; }
+    auto details = m_worldbookFileState;
+    details["readbackRevision"] = revision;
+    details["selectedWorldBookId"] = bookId;
+    setWorldbookFileState("success", "世界书已导入并重新读取，当前已选中新书。", details);
 }
 void RuntimeBridge::importPersonaCard() {
     if (!personaCardActionAllowed())
@@ -6499,6 +7368,7 @@ QVariantMap RuntimeBridge::settingsUpdate(const QString &section, const QVariant
     // Only settings whose effect the native runtime delivers are offered.
     static const QHash<QString, QStringList> switches{
         {"chat", {"split_messages", "allow_environment_description"}},
+        {"features", {ProactiveEnabled}},
         {"memory", {"forgetting_enabled", "long_term_forgetting_enabled", "short_term_forgetting_enabled",
                     "misremembering_enabled", "long_term_misremembering_enabled",
                     "short_term_misremembering_enabled"}},
@@ -6535,6 +7405,11 @@ QVariantMap RuntimeBridge::settingsUpdate(const QString &section, const QVariant
             if (type != QMetaType::Bool)
                 return {};
             body[it.key()] = it.value().toBool();
+        } else if (section == "features" && proactivePresets.contains(it.key())) {
+            const double value = it.value().toDouble();
+            if (!numeric.contains(type) || !proactivePresets.value(it.key()).contains(value))
+                return {};
+            body[it.key()] = int(value);
         } else if (section == "memory" && it.key() == "retention_days") {
             const double days = it.value().toDouble();
             if (!numeric.contains(type) || !QList<double>{365, 730, 1095}.contains(days))
@@ -6598,7 +7473,7 @@ QVariantMap RuntimeBridge::settingsUpdate(const QString &section, const QVariant
     return body;
 }
 void RuntimeBridge::saveSettings(const QString &section, const QVariantMap &fields, bool confirmed) {
-    if (!QStringList{"chat", "memory", "personality", "onboarding"}.contains(section) ||
+    if (!QStringList{"chat", "memory", "personality", "onboarding", "features"}.contains(section) ||
         m_settingsFeedback.value(section).toMap().value("status").toString() == "pending")
         return;
     QString error;
@@ -6647,13 +7522,53 @@ void RuntimeBridge::saveSettings(const QString &section, const QVariantMap &fiel
     requested.remove("section");
     setSettingsFeedback(section, "pending", "正在保存…", id, requested);
 }
-void RuntimeBridge::avatarJob(const QJsonObject &job, std::function<void(QJsonObject)> done) {
+void RuntimeBridge::avatarJob(const QJsonObject &job, std::function<void(QJsonObject)> done,
+                              std::function<void()> failed) {
     if (m_avatarBusy) {
         setNotice("请等待当前模型操作完成。");
         return;
     }
+    const auto safeAvatarId = [](const QString &value) {
+        return QRegularExpression("^[0-9a-f]{8}-[0-9a-f-]{27}$", QRegularExpression::CaseInsensitiveOption)
+            .match(value).hasMatch() ? value : QString();
+    };
+    const auto safeImportId = [](const QString &value) {
+        return QRegularExpression("^[A-Za-z0-9_-]{1,128}$").match(value).hasMatch() ? value : QString();
+    };
+    const auto action = job["action"].toString();
+    const qulonglong serial = ++m_avatarJobDispatched;
+    if (m_avatarJobRecords.size() < 64)
+        m_avatarJobRecords.append(QVariantMap{{"serial", serial}, {"action", action},
+            {"id", safeAvatarId(job["id"].toString())}, {"importId", safeImportId(job["importId"].toString())},
+            {"status", "dispatched"}, {"started", false}, {"exitCode", QVariant::fromValue(nullptr)},
+            {"ok", QVariant::fromValue(nullptr)}, {"activeId", ""}, {"recordIds", QStringList{}}});
+    else
+        m_avatarJobTraceTruncated = true;
+    const auto completeDiagnostic = [this, serial, safeAvatarId, safeImportId](const QJsonObject &result,
+                                                                              const QVariant &exitCode, const QString &status) {
+        ++m_avatarJobCompleted;
+        for (auto &value : m_avatarJobRecords) {
+            auto record = value.toMap();
+            if (record.value("serial").toULongLong() != serial) continue;
+            record["status"] = status; record["exitCode"] = exitCode;
+            record["ok"] = status == "completed" && exitCode.toInt() == 0 && result["ok"].toBool();
+            if (record.value("importId").toString().isEmpty())
+                record["importId"] = safeImportId(result["candidate"].toObject()["importId"].toString());
+            const auto list = result["list"].toObject();
+            record["activeId"] = safeAvatarId(list["activeId"].toString());
+            QStringList ids;
+            for (const auto &row : list["records"].toArray()) {
+                const auto id = safeAvatarId(row.toObject()["id"].toString());
+                if (!id.isEmpty()) ids.append(id);
+            }
+            record["recordIds"] = ids;
+            value = record;
+            break;
+        }
+    };
     m_avatarBusy = true;
-    emit avatarChanged();
+    if ((action != "select" && action != "scan") || !dismissAvatarRemovalSuccess())
+        emit avatarChanged();
     auto *p = new QProcess(this);
     p->setWorkingDirectory(m_root);
     auto env = QProcessEnvironment::systemEnvironment();
@@ -6668,18 +7583,47 @@ void RuntimeBridge::avatarJob(const QJsonObject &job, std::function<void(QJsonOb
     }
     env.insert("PYTHON_DOTENV_DISABLED", "1");
     p->setProcessEnvironment(env);
-    connect(p, &QProcess::finished, this, [this, p, done](int code, QProcess::ExitStatus) {
+    const auto settled = std::make_shared<bool>(false);
+    connect(p, &QProcess::started, this, [this, serial] {
+        ++m_avatarJobStarted;
+        for (auto &value : m_avatarJobRecords) {
+            auto record = value.toMap();
+            if (record.value("serial").toULongLong() != serial) continue;
+            record["started"] = true;
+            value = record;
+            break;
+        }
+    });
+    connect(p, &QProcess::finished, this, [this, p, done, failed, settled, completeDiagnostic](int code, QProcess::ExitStatus) {
+        if (*settled) return;
+        *settled = true;
         m_avatarBusy = false;
         emit avatarChanged();
         auto result = QJsonDocument::fromJson(p->readAllStandardOutput()).object();
         if (code != 0 || !result["ok"].toBool()) {
-            m_avatarState = result["error"].toString("模型操作未完成。");
-            emit avatarChanged();
+            if (failed)
+                failed();
+            else {
+                m_avatarState = result["error"].toString("模型操作未完成。");
+                emit avatarChanged();
+            }
         } else
             done(result);
+        completeDiagnostic(result, code, "completed");
         p->deleteLater();
     });
+    if (failed)
+        connect(p, &QProcess::errorOccurred, this, [this, p, failed, settled, completeDiagnostic](QProcess::ProcessError error) {
+            if (error != QProcess::FailedToStart || *settled) return;
+            *settled = true;
+            m_avatarBusy = false;
+            emit avatarChanged();
+            failed();
+            completeDiagnostic({}, QVariant::fromValue(nullptr), "failed-to-start");
+            p->deleteLater();
+        });
     p->start(m_root + "/.tools/node/bin/node", {m_root + "/native-ui/avatar-host.cjs"});
+    if (*settled) return;
     QJsonObject config = job;
     config["storageDir"] = m_data + "/avatars";
     config["python"] = m_python;
@@ -6773,6 +7717,78 @@ void RuntimeBridge::selectModel(const QString &id) {
         rememberAvatar(r);
     });
 }
+bool RuntimeBridge::dismissAvatarRemovalSuccess() {
+    // Leaving the page also dismisses a successful result still in flight.
+    m_avatarRemovalSuccessDismissed = true;
+    if (m_avatarRemovalFeedback.value("status").toString() != "success")
+        return false;
+    m_avatarRemovalFeedback.clear();
+    emit avatarChanged();
+    return true;
+}
+QString RuntimeBridge::modelRemovalBlocker(const QString &id) const {
+    if (!QRegularExpression("^[0-9a-f]{8}-[0-9a-f-]{27}$", QRegularExpression::CaseInsensitiveOption).match(id).hasMatch())
+        return "这个形象不在当前列表中。";
+    const auto avatars = m_state.value("avatars").toMap();
+    QVariantMap selected;
+    int matches = 0;
+    for (const auto &value : avatars.value("records").toList())
+        if (value.toMap().value("id").toString() == id) {
+            selected = value.toMap();
+            ++matches;
+        }
+    if (matches != 1)
+        return "这个形象不在当前列表中。";
+    if (avatars.value("activeId").toString() == id)
+        return "先切换到其他形象，再删除。";
+    if (selected.value("status").toString() != "ready")
+        return "这个形象的记录已损坏，暂时不能删除。";
+    if (m_avatarBusy || !m_candidate.isEmpty() || !runtimeWritable() || m_stopping ||
+        QStringList{"pending", "refreshing"}.contains(m_avatarRemovalFeedback.value("status").toString()))
+        return "请等待当前操作完成。";
+    return {};
+}
+void RuntimeBridge::removeModel(const QString &id) {
+    const auto blocker = modelRemovalBlocker(id);
+    if (!blocker.isEmpty()) {
+        if (!QStringList{"pending", "refreshing"}.contains(m_avatarRemovalFeedback.value("status").toString())) {
+            m_avatarRemovalFeedback = {{"status", "blocked"}, {"text", blocker}, {"id", id}, {"listReloaded", false}};
+            emit avatarChanged();
+        }
+        return;
+    }
+    QString name;
+    for (const auto &value : m_state.value("avatars").toMap().value("records").toList())
+        if (value.toMap().value("id").toString() == id) name = value.toMap().value("name").toString();
+    if (name.isEmpty()) name = "未命名形象";
+    // avatarJob publishes this receipt together with its busy flag, so a
+    // reentrant click cannot send a second removal before that flag is set.
+    m_avatarRemovalSuccessDismissed = false;
+    m_avatarRemovalFeedback = {{"status", "pending"}, {"text", "正在删除形象…"}, {"id", id},
+                              {"name", name}, {"listReloaded", false}};
+    avatarJob({{"action", "remove"}, {"id", id}}, [this, id, name](QJsonObject result) {
+        rememberAvatar(result);
+        if (m_avatarRemovalSuccessDismissed)
+            m_avatarRemovalFeedback.clear();
+        else
+            m_avatarRemovalFeedback = {{"status", "success"}, {"text", QString("已删除「%1」。").arg(name)},
+                                      {"id", id}, {"name", name}, {"listReloaded", true}};
+        emit avatarChanged();
+    }, [this, id, name] {
+        m_avatarRemovalFeedback = {{"status", "refreshing"}, {"text", "形象删除未确认，正在重新读取列表；未自动重试。"},
+                                  {"id", id}, {"name", name}, {"listReloaded", false}};
+        avatarJob({{"action", "list"}}, [this, id, name](QJsonObject result) {
+            rememberAvatar(result);
+            m_avatarRemovalFeedback = {{"status", "error"}, {"text", "形象没有删除，列表已重新读取。"},
+                                      {"id", id}, {"name", name}, {"listReloaded", true}};
+            emit avatarChanged();
+        }, [this, id, name] {
+            m_avatarRemovalFeedback = {{"status", "error"}, {"text", "形象删除未确认，列表重新读取失败；请重新打开核对。"},
+                                      {"id", id}, {"name", name}, {"listReloaded", false}};
+            emit avatarChanged();
+        });
+    });
+}
 QVariantMap RuntimeBridge::diagnostics() const {
     QVariantList pendingCommands;
     for (auto it = m_pending.cbegin(); it != m_pending.cend(); ++it)
@@ -6814,6 +7830,9 @@ QVariantMap RuntimeBridge::diagnostics() const {
             {"backendPid", m_process.processId()},
             {"avatarPath", m_avatarPath},
             {"avatarState", m_avatarState},
+            {"avatarJobs", QVariantMap{{"dispatched", m_avatarJobDispatched}, {"started", m_avatarJobStarted},
+                {"completed", m_avatarJobCompleted}, {"truncated", m_avatarJobTraceTruncated},
+                {"records", m_avatarJobRecords}}},
             // Non-secret: whether a key is saved, sent and for which record.
             {"providerKey", m_state.value("providerKey")},
             {"providerKeyAccount", m_keyStore ? m_keyStore->account() : QString()}};
@@ -6830,6 +7849,7 @@ void RuntimeBridge::shutdown() {
     clearPersonaCardCandidate();
     forgetPersonaCardImport("本地服务正在关闭，角色卡导入结果未确认；重新打开后请核对当前人格和列表。");
     unknownPersonaCardExport();
+    unknownWorldbookFile();
     m_readyTimer.stop();
     if (m_process.state() == QProcess::NotRunning) {
         emit shutdownComplete();
@@ -6844,140 +7864,791 @@ void RuntimeBridge::shutdown() {
     });
 }
 void RuntimeBridge::quit() { shutdown(); }
-void RuntimeBridge::rebuildGame() {
-    auto replay = m_xiangqi.property("replayXiangqi").call({m_rules.toScriptValue(m_moves)});
-    if (replay.isError() || !replay.property("valid").toBool()) {
-        m_gameReady = false;
-        m_gameStatus = "棋谱无法完整重放；原记录保留。可明确选择重新开始。";
+static constexpr int GomokuSide = 15;
+static constexpr int GomokuSquares = GomokuSide * GomokuSide;
+static constexpr int GoSide = 9;
+static constexpr int GoPoints = GoSide * GoSide;
+
+QString RuntimeBridge::gameIdForPanel(const QString &panel) {
+    if (panel == "activities")
+        return "xiangqi";
+    return panel == "gomoku" || panel == "chess" || panel == "go" ? panel : QString();
+}
+
+bool RuntimeBridge::gameCompanion() const {
+    if (goGame())
+        return m_goCompanion;
+    if (chessGame())
+        return m_chessCompanion;
+    return gomokuGame() ? m_gomokuCompanion : m_companion;
+}
+
+bool &RuntimeBridge::gameCompanionMode() {
+    if (goGame())
+        return m_goCompanion;
+    if (chessGame())
+        return m_chessCompanion;
+    return gomokuGame() ? m_gomokuCompanion : m_companion;
+}
+
+static QString chessSquareName(int square) {
+    return QString(QLatin1Char(char('a' + square % 8))) + QString::number(8 - square / 8);
+}
+
+static bool isWhiteChessPiece(const QString &piece) {
+    return !piece.isEmpty() && piece.front().isUpper();
+}
+
+static bool legalGoMove(const QJSValue &rules, const QJSValue &position, const QJSValue &point) {
+    const auto next = rules.property("playGo").call({position, point});
+    return next.isObject() && !next.isError() && !next.strictlyEquals(position);
+}
+
+QString RuntimeBridge::gamePersonaName() const {
+    const auto persona = m_state.value("persona").toMap();
+    return persona.value("name", persona.value("persona").toMap().value("name", "当前人格")).toString();
+}
+
+QString RuntimeBridge::gameStatus() const {
+    switch (m_gamePhase) {
+    case GamePhase::Unloaded:
+    case GamePhase::Reading:
+        return "正在读取棋局…";
+    case GamePhase::InvalidRecord:
+        return "棋谱无法完整重放；原记录保留。可以选择重新开始。";
+    case GamePhase::ReadFailed:
+        return "棋局读取失败，原记录没有改动。";
+    case GamePhase::Saving:
+        return "正在保存…";
+    case GamePhase::SaveUnknown:
+        return "这一步的保存结果未确认，没有自动重复提交。请重新读取。";
+    case GamePhase::Ready:
+        break;
+    }
+    if (!runtimeWritable())
+        return recoveryWarning();
+    if (chessGame()) {
+        if (m_gameOutcome.isObject()) {
+            static const QHash<QString, QString> reasons{
+                {"checkmate", "将死"}, {"stalemate", "逼和"}, {"material", "子力不足"},
+                {"repetition", "三次重复"}, {"fifty-move", "五十回合"}};
+            const auto winner = m_gameOutcome.property("winner");
+            const QString result = winner.isNull() ? "和棋" : winner.toString() == "w" ? "你赢了" : "你输了";
+            return "本局结束：" + result + "（" + reasons.value(m_gameOutcome.property("reason").toString()) + "）";
+        }
+        if (gameOpponentTurn())
+            return gameCompanion() ? "「" + gamePersonaName() + "」正在想…" : "陪练思考中…";
+        return m_chess.property("chessInCheck").call({m_position}).toBool() ? "将军，轮到你" : "轮到你执白走棋";
+    }
+    if (goGame()) {
+        if (m_gameOutcome.isObject()) {
+            const auto winner = m_gameOutcome.property("winner").toInt() == 1 ? "黑" : "白";
+            return QString("本局结束：%1胜 %2 目（数子法，白贴 6.5，未判死子）")
+                .arg(winner, QString::number(m_gameOutcome.property("margin").toNumber()));
+        }
+        if (gameOpponentTurn())
+            return gameCompanion() ? "「" + gamePersonaName() + "」正在想…" : "陪练思考中…";
+        return QString("轮到你执黑落子 · 提子 黑 %1：白 %2")
+            .arg(m_position.property("blackCaptures").toInt()).arg(m_position.property("whiteCaptures").toInt());
+    }
+    if (gomokuGame()) {
+        if (m_gameOutcome.isObject()) {
+            const int winner = m_gameOutcome.property("winner").toInt();
+            if (winner == 0)
+                return "本局结束：和棋（棋盘已满）";
+            return winner == 1 ? "本局结束：你赢了（五子连珠）" : "本局结束：你输了（五子连珠）";
+        }
+        if (gameOpponentTurn())
+            return gameCompanion() ? "「" + gamePersonaName() + "」正在想…" : "陪练思考中…";
+        return "轮到你执黑落子";
+    }
+    if (m_gameOutcome.isObject()) {
+        static const QHash<QString, QString> reasons{
+            {"checkmate", "将死"}, {"stalemate", "困毙"}, {"king-missing", "将帅被吃"},
+            {"quiet-limit", "50 个半回合没有吃子，判和"}, {"material", "双方都无法取胜，判和"},
+        };
+        const auto winner = m_gameOutcome.property("winner");
+        const QString result = winner.isNull() ? "和棋" : winner.toString() == "red" ? "你赢了" : "你输了";
+        return "本局结束：" + result + "（" + reasons.value(m_gameOutcome.property("reason").toString()) + "）";
+    }
+    if (m_position.property("turn").toString() == "black")
+        return m_companion ? "「" + gamePersonaName() + "」正在想…" : "陪练思考中…";
+    const bool inCheck = m_xiangqi.property("xiangqiInCheck").call({m_position}).toBool();
+    return inCheck ? "将军，轮到你执红落子" : "轮到你执红落子";
+}
+
+bool RuntimeBridge::gameReady() const {
+    return m_gamePhase == GamePhase::Ready && runtimeWritable() && m_gameOutcome.isNull() &&
+        gameUserTurn();
+}
+
+bool RuntimeBridge::gameCanEnd() const {
+    return goGame() && m_gamePhase == GamePhase::Ready && runtimeWritable() && m_gameOutcome.isNull();
+}
+
+bool RuntimeBridge::gameLastPass() const {
+    return goGame() && !m_moves.isEmpty() && m_moves.size() % 2 == 0 && m_moves.last().isNull();
+}
+
+bool RuntimeBridge::gameUserTurn() const {
+    const auto turn = m_position.property("turn");
+    if (chessGame())
+        return turn.toString() == "w";
+    if (goGame())
+        return turn.toInt() == 1;
+    return gomokuGame() ? turn.toInt() == 1 : turn.toString() == "red";
+}
+
+bool RuntimeBridge::gameOpponentTurn() const {
+    const auto turn = m_position.property("turn");
+    if (chessGame())
+        return turn.toString() == "b";
+    if (goGame())
+        return turn.toInt() == -1;
+    return gomokuGame() ? turn.toInt() == 2 : turn.toString() == "black";
+}
+
+bool RuntimeBridge::gameCanUndo() const {
+    return m_gamePhase == GamePhase::Ready && runtimeWritable() && !m_moves.isEmpty();
+}
+
+bool RuntimeBridge::gameCanReset() const {
+    return runtimeWritable() && (m_gamePhase == GamePhase::Ready || m_gamePhase == GamePhase::InvalidRecord);
+}
+
+bool RuntimeBridge::gameCanRead() const {
+    return m_connected && (m_gamePhase == GamePhase::ReadFailed || m_gamePhase == GamePhase::SaveUnknown);
+}
+
+void RuntimeBridge::cancelOpponent() {
+    ++m_gameGeneration;
+    if (!m_gameMoveId.isEmpty())
+        m_pending.remove(m_gameMoveId);
+    m_gameMoveId.clear();
+    m_opponentPending = false;
+    m_opponentRetried = false;
+}
+
+void RuntimeBridge::clearGame() {
+    cancelOpponent();
+    if (!m_gameReadId.isEmpty())
+        m_pending.remove(m_gameReadId);
+    if (!m_gameSaveId.isEmpty())
+        m_pending.remove(m_gameSaveId);
+    m_gameReadId.clear();
+    m_gameSaveId.clear();
+    m_moves.clear();
+    m_gameBoard.clear();
+    m_position = {};
+    m_gameOutcome = {};
+    m_gameRevision = 0;
+    m_goEnded = false;
+    m_confirmedGameRecord = emptyGameRecord();
+    m_gameFeedback.clear();
+    m_selection = -1;
+    m_gamePhase = GamePhase::Unloaded;
+    emit gameChanged();
+}
+
+void RuntimeBridge::gameRead() {
+    if (!m_connected || !gamePanelOpen() ||
+        m_gamePhase == GamePhase::Reading || m_gamePhase == GamePhase::Saving)
+        return;
+    cancelOpponent();
+    m_gamePhase = GamePhase::Reading;
+    m_gameFeedback.clear();
+    m_gameReadId = request("game_state:get", {{"game_id", gameId()}});
+    if (m_gameReadId.isEmpty())
+        failGameRequest("game_state:get");
+    else
+        emit gameChanged();
+}
+
+bool RuntimeBridge::replayGomoku(const QJsonArray &moves) {
+    if (moves.size() > GomokuSquares)
+        return false;
+    auto position = m_gomoku.property("newGomokuState").call();
+    const auto board = position.property("board");
+    if (!board.isArray() || board.property("length").toInt() != GomokuSquares)
+        return false;
+    const auto play = m_gomoku.property("playGomoku");
+    for (const auto &move : moves) {
+        const auto index = move.toInteger(-1);
+        if (index < 0 || index >= GomokuSquares)
+            return false;
+        auto next = play.call({position, QJSValue(int(index))});
+        // The shared rule engine returns the same state for an occupied
+        // square or an attempt to move after the game has ended.
+        if (!next.isObject() || next.isError() || next.strictlyEquals(position))
+            return false;
+        position = next;
+    }
+    m_position = position;
+    m_gameOutcome = QJSValue(QJSValue::NullValue);
+    const int winner = position.property("winner").toInt();
+    if (winner || position.property("draw").toBool()) {
+        m_gameOutcome = m_rules.newObject();
+        m_gameOutcome.setProperty("winner", winner);
+    }
+    return true;
+}
+
+bool RuntimeBridge::replayGo(const QJsonObject &record) {
+    const auto moves = record.value("moves");
+    const auto ended = record.value("ended");
+    if (record.size() != 2 || !moves.isArray() || !ended.isBool())
+        return false;
+    auto position = m_go.property("createGo").call();
+    const auto board = position.property("board");
+    if (!board.isArray() || board.property("length").toInt() != GoPoints)
+        return false;
+    const auto play = m_go.property("playGo");
+    for (const auto &move : moves.toArray()) {
+        const auto index = move.toInteger(-1);
+        if (!move.isNull() && (index < 0 || index >= GoPoints))
+            return false;
+        const auto point = move.isNull() ? QJSValue(QJSValue::NullValue) : QJSValue(int(index));
+        const auto next = play.call({position, point});
+        if (!next.isObject() || next.isError() || next.strictlyEquals(position))
+            return false;
+        position = next;
+    }
+    if (ended.toBool())
+        position = m_go.property("endGo").call({position});
+    const auto outcome = m_go.property("goOutcome").call({position, m_gomoku.property("scoreChineseArea")});
+    if (!outcome.isObject() && !outcome.isNull())
+        return false;
+    if (outcome.isError())
+        return false;
+    m_position = position;
+    m_gameOutcome = outcome;
+    return true;
+}
+
+QJsonValue RuntimeBridge::emptyGameRecord() const {
+    if (goGame())
+        return QJsonObject{{"moves", QJsonArray{}}, {"ended", false}};
+    return QJsonArray{};
+}
+
+QJsonValue RuntimeBridge::gameRecord() const {
+    const auto moves = QJsonArray::fromVariantList(m_moves);
+    if (goGame())
+        return QJsonObject{{"moves", moves}, {"ended", m_goEnded}};
+    return moves;
+}
+
+void RuntimeBridge::showGameRecord(const QJsonValue &record) {
+    bool valid = false;
+    if (goGame()) {
+        valid = record.isObject() && replayGo(record.toObject());
+    } else if (record.isArray() && chessGame()) {
+        const auto replay = m_chess.property("replayChess").call({m_rules.toScriptValue(record.toArray())});
+        valid = replay.isObject() && !replay.isError();
+        if (valid) {
+            m_position = replay;
+            m_gameOutcome = m_chess.property("chessOutcome").call({m_position});
+        }
+    } else if (record.isArray() && gomokuGame()) {
+        valid = replayGomoku(record.toArray());
+    } else if (record.isArray()) {
+        const auto json = QString::fromUtf8(QJsonDocument(record.toArray()).toJson(QJsonDocument::Compact));
+        const auto moves = m_rules.globalObject().property("JSON").property("parse").call({json});
+        const auto replay = m_xiangqi.property("replayXiangqi").call({moves});
+        valid = replay.property("valid").toBool();
+        if (valid) {
+            m_position = replay.property("position");
+            m_gameOutcome = m_xiangqi.property("xiangqiOutcome").call({m_position});
+        }
+    }
+    m_selection = -1;
+    if (!valid) {
+        m_goEnded = false;
+        m_moves.clear();
+        m_gameBoard.clear();
+        m_position = {};
+        m_gameOutcome = {};
+        m_gamePhase = GamePhase::InvalidRecord;
+        return;
+    }
+    m_goEnded = goGame() && record.toObject().value("ended").toBool();
+    m_moves = (goGame() ? record.toObject().value("moves").toArray() : record.toArray()).toVariantList();
+    m_gamePhase = GamePhase::Ready;
+    rebuildGameBoard();
+}
+
+void RuntimeBridge::rebuildGameBoard() {
+    if (goGame()) {
+        const auto board = m_position.property("board");
+        const auto last = m_position.property("last");
+        m_gameBoard.clear();
+        for (int i = 0; i < GoPoints; ++i) {
+            const int stone = board.property(i).toInt();
+            const QString color = stone == 1 ? "black" : stone == -1 ? "white" : "";
+            const QString label = stone == 1 ? "黑子" : stone == -1 ? "白子" : "";
+            m_gameBoard.append(QVariantMap{{"color", color}, {"label", label}, {"last", last.isNumber() && i == last.toInt()}});
+        }
+        return;
+    }
+    if (chessGame()) {
+        const auto board = m_position.property("board");
+        const auto origin = m_selection < 0 ? QString() : chessSquareName(m_selection);
+        const auto last = m_moves.isEmpty() ? QString() : m_moves.last().toString();
+        const bool check = m_chess.property("chessInCheck").call({m_position}).toBool();
+        const QString king = gameUserTurn() ? "K" : "k";
+        static const QHash<QString, QString> names{
+            {"k", "王"}, {"q", "后"}, {"r", "车"}, {"b", "象"}, {"n", "马"}, {"p", "兵"}};
+        static const QHash<QString, QString> glyphs{
+            {"K", "♔"}, {"Q", "♕"}, {"R", "♖"}, {"B", "♗"}, {"N", "♘"}, {"P", "♙"},
+            {"k", "♚"}, {"q", "♛"}, {"r", "♜"}, {"b", "♝"}, {"n", "♞"}, {"p", "♟︎"}};
+        QSet<QString> destinations;
+        if (!origin.isEmpty()) {
+            const auto legal = m_chess.property("chessMoves").call({m_position}).toVariant().toList();
+            for (const auto &value : legal) {
+                const auto move = value.toMap();
+                if (move.value("from").toString() == origin)
+                    destinations.insert(move.value("to").toString());
+            }
+        }
+        m_gameBoard.clear();
+        for (int i = 0; i < 64; ++i) {
+            const auto square = chessSquareName(i);
+            const auto piece = board.property(i).toString();
+            const bool white = isWhiteChessPiece(piece);
+            const QString color = piece.isEmpty() ? "" : white ? "white" : "black";
+            const QString label = piece.isEmpty() ? "" : (white ? QString("白") : QString("黑")) + names.value(piece.toLower());
+            m_gameBoard.append(QVariantMap{{"square", square}, {"color", color}, {"label", label},
+                {"glyph", glyphs.value(piece)}, {"selected", i == m_selection}, {"destination", destinations.contains(square)},
+                {"last", square == last.left(2) || square == last.mid(2, 2)}, {"check", check && piece == king}});
+        }
+        return;
+    }
+    if (gomokuGame()) {
+        const auto board = m_position.property("board");
+        const int last = m_moves.isEmpty() ? -1 : m_moves.last().toInt();
+        m_gameBoard.clear();
+        for (int i = 0; i < GomokuSquares; ++i) {
+            const int stone = board.property(i).toInt();
+            const QString color = stone == 1 ? "black" : stone == 2 ? "white" : "";
+            const QString label = stone == 1 ? "黑子" : stone == 2 ? "白子" : "";
+            m_gameBoard.append(QVariantMap{{"color", color}, {"label", label}, {"last", i == last}});
+        }
+        return;
+    }
+    static const QHash<QString, QString> red{{"king", "帅"}, {"advisor", "仕"}, {"elephant", "相"},
+        {"horse", "马"}, {"chariot", "车"}, {"cannon", "炮"}, {"pawn", "兵"}};
+    static const QHash<QString, QString> black{{"king", "将"}, {"advisor", "士"}, {"elephant", "象"},
+        {"horse", "马"}, {"chariot", "车"}, {"cannon", "炮"}, {"pawn", "卒"}};
+    QSet<int> destinations;
+    if (m_selection >= 0) {
+        const auto legal = m_xiangqi.property("xiangqiLegalMoves").call({m_position}).toVariant().toList();
+        for (const auto &value : legal) {
+            const auto move = value.toMap();
+            if (move.value("from").toInt() == m_selection)
+                destinations.insert(move.value("to").toInt());
+        }
+    }
+    const auto board = m_position.property("board");
+    m_gameBoard.clear();
+    for (int i = 0; i < 90; ++i) {
+        const auto piece = board.property(i);
+        const auto color = piece.isNull() ? QString() : piece.property("color").toString();
+        const auto label = color.isEmpty() ? QString() : (color == "red" ? red : black).value(piece.property("role").toString());
+        m_gameBoard.append(QVariantMap{{"label", label}, {"color", color},
+            {"selected", i == m_selection}, {"destination", destinations.contains(i)}});
+    }
+}
+
+void RuntimeBridge::saveGame() {
+    m_gamePhase = GamePhase::Saving;
+    m_gameSaveId = request("game_state:put",
+        {{"game_id", gameId()}, {"state", gameRecord().toVariant()}, {"expected_revision", m_gameRevision}});
+    if (m_gameSaveId.isEmpty())
+        failGameRequest("game_state:put");
+    else
+        emit gameChanged();
+}
+
+void RuntimeBridge::failGameRequest(const QString &command) {
+    if (command == "game:move") {
+        m_gameMoveId.clear();
+        fallbackOpponent(false);
+        return;
+    }
+    m_gameFeedback.clear();
+    if (command == "game_state:put") {
+        m_gameSaveId.clear();
+        showGameRecord(m_confirmedGameRecord);
+        m_gamePhase = GamePhase::SaveUnknown;
+    } else {
+        m_gameReadId.clear();
+        m_gamePhase = GamePhase::ReadFailed;
+    }
+    emit gameChanged();
+}
+
+void RuntimeBridge::finishGameRequest(const QString &command, const QString &type, const QJsonObject &payload) {
+    const bool ok = payload["ok"] == QJsonValue(true) && !payload.contains("error");
+    if (command == "game:move") {
+        m_gameMoveId.clear();
+        if (!m_opponentPending || !runtimeWritable() || !gamePanelOpen())
+            return;
+        if (type != "game:move:result" || !ok) {
+            fallbackOpponent(false);
+            return;
+        }
+        QVariant move;
+        QString retryNote;
+        if (goGame()) {
+            const auto text = payload["move"].toString().trimmed();
+            static const QRegularExpression coordinates(R"(\A([0-8])(?:\s*[,，]\s*| +)([0-8])\z)");
+            const auto match = coordinates.match(text);
+            if (text.compare("pass", Qt::CaseInsensitive) == 0 || text == "停一手") {
+                move = QJsonValue(QJsonValue::Null).toVariant();
+            } else if (!match.hasMatch()) {
+                retryNote = "走法需要 列,行 两个 0–8 的整数，或 pass";
+            } else {
+                const int point = match.captured(1).toInt() + GoSide * match.captured(2).toInt();
+                if (legalGoMove(m_go, m_position, point))
+                    move = point;
+                else
+                    retryNote = "这步棋因打劫、自杀或已有棋子而不合法";
+            }
+        } else if (chessGame()) {
+            const auto choice = m_chess.property("parseChessMove").call({m_position, payload["move"].toString()});
+            if (choice.isString())
+                move = choice.toString();
+            else
+                retryNote = "这不是当前局面的合法走法，请用 SAN，例如 Nf6";
+        } else if (gomokuGame()) {
+            static const QRegularExpression decimal("^[0-9]+$");
+            const auto text = payload["move"].toString().trimmed();
+            bool parsed = false;
+            const int index = text.toInt(&parsed);
+            if (!parsed || !decimal.match(text).hasMatch() || index < 0 || index >= GomokuSquares)
+                retryNote = "格子编号要是 0–224 的整数";
+            else if (m_position.property("board").property(index).toInt() != 0)
+                retryNote = "那个位置已经有棋子";
+            else
+                move = index;
+        } else {
+            const auto parsed = m_xiangqi.property("parseXiangqiMove").call({payload["move"].toString(), m_position});
+            const auto candidate = parsed.property("move").toVariant().toMap();
+            if (candidate.isEmpty())
+                retryNote = parsed.property("error").toString();
+            else
+                move = candidate;
+        }
+        if (!move.isValid()) {
+            if (m_opponentRetried)
+                fallbackOpponent(true);
+            else {
+                m_opponentRetried = true;
+                requestOpponent(retryNote);
+            }
+            return;
+        }
+        const auto comment = payload["comment"].toString().trimmed();
+        m_gameFeedback = comment.isEmpty() ? QString() : gamePersonaName() + "：" + comment;
+        applyGameMove(move);
+        return;
+    }
+    const bool saving = command == "game_state:put";
+    const bool conflict = saving && payload["ok"] == QJsonValue(false) && payload["code"] == "conflict";
+    const auto exists = payload["exists"];
+    const auto revision = payload["revision"].toInteger(-1);
+    const auto record = payload["state"];
+    if (type != "game_state:result" || (!ok && !conflict) || !exists.isBool() ||
+        (exists.toBool() ? revision < 1 || record.isUndefined() : revision != 0 || !record.isNull()) ||
+        (saving && !conflict && (!exists.toBool() || revision <= m_gameRevision ||
+                                  record != gameRecord()))) {
+        failGameRequest(command);
+        return;
+    }
+    m_gameReadId.clear();
+    m_gameSaveId.clear();
+    m_gameRevision = revision;
+    m_confirmedGameRecord = exists.toBool() ? record : emptyGameRecord();
+    showGameRecord(m_confirmedGameRecord);
+    if (conflict)
+        m_gameFeedback = "棋局已在别处改动，已读取当前棋局。";
+    if (!saving && !exists.toBool() && runtimeWritable()) {
+        saveGame();
+        return;
+    }
+    scheduleOpponent();
+    emit gameChanged();
+}
+
+void RuntimeBridge::applyMove(const QVariantMap &move) {
+    applyGameMove(move);
+}
+
+void RuntimeBridge::applyGameMove(const QVariant &move) {
+    cancelOpponent();
+    m_moves.append(move);
+    showGameRecord(gameRecord());
+    if (m_gamePhase != GamePhase::Ready) {
+        showGameRecord(m_confirmedGameRecord);
+        m_gameFeedback = "这一步无法重放，原棋谱保留。";
         emit gameChanged();
         return;
     }
-    m_position = replay.property("position");
-    auto board = m_position.property("board");
-    m_gameBoard.clear();
-    const QHash<QString, QString> red{{"king", "帅"},  {"advisor", "仕"}, {"elephant", "相"},
-                                      {"horse", "马"}, {"chariot", "车"}, {"cannon", "炮"},
-                                      {"pawn", "兵"}};
-    const QHash<QString, QString> black{{"king", "将"},  {"advisor", "士"}, {"elephant", "象"},
-                                        {"horse", "马"}, {"chariot", "车"}, {"cannon", "炮"},
-                                        {"pawn", "卒"}};
-    for (int i = 0; i < 90; i++) {
-        auto p = board.property(i);
-        auto role = p.property("role").toString(), color = p.property("color").toString();
-        m_gameBoard.append(QVariantMap{
-            {"label", p.isNull() ? QString() : (color == "red" ? red : black).value(role)},
-            {"color", color},
-            {"selected", i == m_selection}});
-    }
-    m_gameReady = true;
-    auto outcome = m_xiangqi.property("xiangqiOutcome").call({m_position});
-    m_gameStatus =
-        outcome.isNull()
-            ? (m_position.property("turn").toString() == "red" ? "轮到你执红落子" : "等待黑方回应")
-            : ("本局结束 · " + outcome.property("reason").toString());
-    emit gameChanged();
-}
-void RuntimeBridge::saveGame() {
-    m_gameSaving = true;
-    emit gameChanged();
-    request("game_state:put",
-            {{"game_id", "xiangqi"}, {"state", m_moves}, {"expected_revision", m_gameRevision}});
-}
-void RuntimeBridge::applyMove(const QVariantMap &move) {
-    auto value = m_rules.toScriptValue(move);
-    if (!m_xiangqi.property("xiangqiIsLegal").call({m_position, value}).toBool())
-        return;
-    m_moves.append(move);
-    m_selection = -1;
-    ++m_gameGeneration;
-    rebuildGame();
     saveGame();
 }
+
 void RuntimeBridge::gameClick(int square) {
-    if (!gameReady() || square < 0 || square >= 90 ||
-        m_position.property("turn").toString() != "red")
+    if (goGame()) {
+        if (gameReady() && square >= 0 && square < GoPoints && legalGoMove(m_go, m_position, square)) {
+            m_gameFeedback.clear();
+            applyGameMove(square);
+        }
+        return;
+    }
+    if (chessGame()) {
+        if (!gameReady() || square < 0 || square >= 64)
+            return;
+        if (m_selection >= 0) {
+            const auto origin = chessSquareName(m_selection);
+            const auto destination = chessSquareName(square);
+            const auto legal = m_chess.property("chessMoves").call({m_position}).toVariant().toList();
+            for (const auto &value : legal) {
+                const auto move = value.toMap();
+                const auto coordinate = move.value("coordinate").toString();
+                if (move.value("from").toString() == origin && move.value("to").toString() == destination &&
+                    (coordinate.size() == 4 || coordinate.endsWith('q'))) {
+                    m_gameFeedback.clear();
+                    applyGameMove(coordinate);
+                    return;
+                }
+            }
+        }
+        const auto piece = m_position.property("board").property(square).toString();
+        m_selection = isWhiteChessPiece(piece) ? square : -1;
+        rebuildGameBoard();
+        emit gameChanged();
+        return;
+    }
+    if (gomokuGame()) {
+        if (!gameReady() || square < 0 || square >= GomokuSquares ||
+            m_position.property("board").property(square).toInt() != 0)
+            return;
+        m_gameFeedback.clear();
+        applyGameMove(square);
+        return;
+    }
+    if (!gameReady() || square < 0 || square >= 90)
         return;
     if (m_selection >= 0) {
-        QVariantMap move{{"from", m_selection}, {"to", square}};
-        if (m_xiangqi.property("xiangqiIsLegal")
-                .call({m_position, m_rules.toScriptValue(move)})
-                .toBool()) {
+        const QVariantMap move{{"from", m_selection}, {"to", square}};
+        if (m_xiangqi.property("xiangqiIsLegal").call({m_position, m_rules.toScriptValue(move)}).toBool()) {
+            m_gameFeedback.clear();
             applyMove(move);
             return;
         }
     }
-    auto piece = m_position.property("board").property(square);
+    const auto piece = m_position.property("board").property(square);
     m_selection = piece.property("color").toString() == "red" ? square : -1;
-    rebuildGame();
+    rebuildGameBoard();
+    emit gameChanged();
 }
+
+void RuntimeBridge::gamePass() {
+    if (!goGame() || !gameReady())
+        return;
+    m_gameFeedback.clear();
+    applyGameMove(QJsonValue(QJsonValue::Null).toVariant());
+}
+
+void RuntimeBridge::gameEnd() {
+    if (!gameCanEnd())
+        return;
+    cancelOpponent();
+    m_gameFeedback.clear();
+    m_goEnded = true;
+    showGameRecord(gameRecord());
+    saveGame();
+}
+
 void RuntimeBridge::gameUndo() {
-    if (!gameReady())
+    if (!gameCanUndo())
         return;
-    ++m_gameGeneration;
-    m_opponentPending = false;
-    const auto count = m_moves.size();
-    if (count)
+    cancelOpponent();
+    const bool userTurn = gameUserTurn();
+    m_moves.removeLast();
+    if (userTurn && !m_moves.isEmpty())
         m_moves.removeLast();
-    if (count >= 2)
-        m_moves.removeLast();
-    rebuildGame();
+    m_gameFeedback.clear();
+    m_goEnded = false;
+    showGameRecord(gameRecord());
     saveGame();
 }
+
 void RuntimeBridge::gameReset() {
-    if (!runtimeWritable() || m_gameSaving)
+    if (!gameCanReset())
         return;
-    ++m_gameGeneration;
-    m_opponentPending = false;
-    m_moves.clear();
-    m_selection = -1;
-    rebuildGame();
+    cancelOpponent();
+    m_gameFeedback.clear();
+    showGameRecord(emptyGameRecord());
     saveGame();
 }
+
 void RuntimeBridge::gameModeChanged(bool companion) {
-    if (!runtimeWritable()) return;
-    if (m_companion == companion)
+    auto &mode = gameCompanionMode();
+    if (!runtimeWritable() || mode == companion)
         return;
-    m_companion = companion;
-    ++m_gameGeneration;
-    m_opponentPending = false;
+    // A mode change during a save can apply only after its receipt.
+    if (m_opponentPending)
+        cancelOpponent();
+    mode = companion;
+    m_gameFeedback.clear();
     scheduleOpponent();
+    emit gameChanged();
 }
+
 void RuntimeBridge::scheduleOpponent() {
-    if (!gameReady() || m_position.property("turn").toString() != "black" || m_opponentPending ||
-        !m_xiangqi.property("xiangqiOutcome").call({m_position}).isNull())
+    if (!gamePanelOpen() || m_gamePhase != GamePhase::Ready || !runtimeWritable() ||
+        m_opponentPending || !m_gameOutcome.isNull() || !gameOpponentTurn())
         return;
     m_opponentPending = true;
     const int epoch = m_gameGeneration;
     QTimer::singleShot(300, this, [this, epoch] {
-        if (epoch != m_gameGeneration || !gameReady())
+        if (epoch != m_gameGeneration)
             return;
-        auto moves =
-            m_xiangqi.property("xiangqiLegalMoves").call({m_position}).toVariant().toList();
-        if (moves.isEmpty())
-            return;
-        if (!m_companion) {
-            m_opponentPending = false;
-            applyMove(moves.first().toMap());
+        if (!runtimeWritable() || !gamePanelOpen()) {
+            cancelOpponent();
+            emit gameChanged();
             return;
         }
-        QStringList rows;
-        auto board = m_position.property("board");
-        for (int rank = 9; rank >= 0; --rank) {
-            QStringList cells;
-            for (int file = 0; file < 9; ++file) {
-                auto p = board.property(rank * 9 + file);
-                cells << QString("(%1,%2)=%3")
-                             .arg(file)
-                             .arg(rank)
-                             .arg(p.isNull() ? "empty"
-                                             : p.property("color").toString() + " " +
-                                                   p.property("role").toString());
-            }
-            rows << cells.join(" ");
-        }
-        request("game:move", {{"game", "xiangqi"},
-                              {"state", QVariantMap{{"board_text", rows.join("\n")},
-                                                    {"player_color", "black"},
-                                                    {"legal_moves", moves}}}});
+        if (gameCompanion())
+            requestOpponent();
+        else
+            practiceMove();
     });
+}
+
+QString RuntimeBridge::gameBoardText() const {
+    if (chessGame())
+        return m_chess.property("chessBoardText").call({m_position}).toString();
+    if (goGame()) {
+        QStringList lines{
+            "坐标：列 0–8 从左到右，行 0–8 从上到下；回复「列,行」，或 pass 表示停一手。",
+            "△ 为用户的黑子，▲ 为你的白子，· 为空格。",
+            "列 0 1 2 3 4 5 6 7 8"};
+        const auto board = m_position.property("board");
+        for (int row = 0; row < GoSide; ++row) {
+            QStringList cells;
+            for (int column = 0; column < GoSide; ++column) {
+                const int stone = board.property(row * GoSide + column).toInt();
+                cells.append(stone == 1 ? "△" : stone == -1 ? "▲" : "·");
+            }
+            lines.append(QString("行%1 ").arg(row) + cells.join(" "));
+        }
+        return lines.join("\n");
+    }
+    if (gomokuGame()) {
+        QStringList lines{
+            "坐标：行 0–14 从上到下，列 0–14 从左到右，格子编号 = 行 × 15 + 列。",
+            "△ 为用户的黑子，▲ 为你的白子，· 为空格。",
+            "列 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14"};
+        const auto board = m_position.property("board");
+        for (int row = 0; row < GomokuSide; ++row) {
+            QStringList cells;
+            for (int column = 0; column < GomokuSide; ++column) {
+                const int stone = board.property(row * GomokuSide + column).toInt();
+                cells.append(stone == 1 ? "△" : stone == 2 ? "▲" : "·");
+            }
+            lines.append(QString("行%1 ").arg(row) + cells.join(" "));
+        }
+        return lines.join("\n");
+    }
+    static const QHash<QString, QString> names{{"king", "将帅"}, {"advisor", "士"}, {"elephant", "象"},
+        {"horse", "马"}, {"chariot", "车"}, {"cannon", "炮"}, {"pawn", "兵卒"}};
+    QStringList lines{"坐标：x=0…8从左到右，y=0为红方底线，y=9为黑方底线。",
+        "每格显示颜色和棋种，·为空格。", "x  0 1 2 3 4 5 6 7 8"};
+    const auto board = m_position.property("board");
+    for (int y = 9; y >= 0; --y) {
+        QStringList cells;
+        for (int x = 0; x < 9; ++x) {
+            const auto piece = board.property(9 * y + x);
+            cells.append(piece.isNull() ? QString("·")
+                : (piece.property("color").toString() == "red" ? QString("红") : QString("黑")) +
+                    names.value(piece.property("role").toString()));
+        }
+        lines.append(QString("y=%1 ").arg(y) + cells.join(" "));
+    }
+    return lines.join("\n");
+}
+
+void RuntimeBridge::requestOpponent(const QString &retryNote) {
+    auto history = QString("%1 手").arg(m_moves.size());
+    if (chessGame()) {
+        history = m_chess.property("chessHistoryText").call({m_position}).toString();
+    } else if (goGame()) {
+        history = QString("共 %1 手；黑提子 %2，白提子 %3").arg(m_moves.size())
+            .arg(m_position.property("blackCaptures").toInt()).arg(m_position.property("whiteCaptures").toInt());
+        if (!m_moves.isEmpty() && m_moves.last().isNull())
+            history += "；用户上一手停一手";
+    }
+    QVariantMap payload{{"game", gameId()},
+        {"state", QVariantMap{{"board_text", gameBoardText()}, {"side", gomokuGame() || goGame() ? "白棋" : "黑棋"},
+                              {"history_text", history}}}};
+    if (!retryNote.isEmpty())
+        payload["retry_note"] = retryNote;
+    m_gameMoveId = request("game:move", payload);
+    if (m_gameMoveId.isEmpty())
+        fallbackOpponent(false);
+}
+
+void RuntimeBridge::practiceMove() {
+    if (goGame()) {
+        const auto choice = m_go.property("chooseGoMove").call({m_position});
+        if (choice.isNumber())
+            applyGameMove(choice.toInt());
+        else if (choice.isNull())
+            applyGameMove(QJsonValue(QJsonValue::Null).toVariant());
+        else {
+            cancelOpponent();
+            emit gameChanged();
+        }
+        return;
+    }
+    if (chessGame()) {
+        const auto choice = m_chess.property("chooseChessMove").call({m_position});
+        if (choice.isString())
+            applyGameMove(choice.toString());
+        else {
+            cancelOpponent();
+            emit gameChanged();
+        }
+        return;
+    }
+    if (gomokuGame()) {
+        const auto choice = m_gomoku.property("chooseGomokuMove").call({m_position});
+        if (choice.isNumber()) {
+            applyGameMove(choice.toInt());
+        } else {
+            cancelOpponent();
+            emit gameChanged();
+        }
+        return;
+    }
+    const auto move = m_xiangqi.property("chooseXiangqiPracticeMove").call({m_position}).toVariant().toMap();
+    if (!move.isEmpty())
+        applyMove(move);
+    else {
+        cancelOpponent();
+        emit gameChanged();
+    }
+}
+
+void RuntimeBridge::fallbackOpponent(bool invalidMove) {
+    if (!m_opponentPending || !runtimeWritable() || !gamePanelOpen()) {
+        cancelOpponent();
+        emit gameChanged();
+        return;
+    }
+    m_gameFeedback = "「" + gamePersonaName() + "」" + (invalidMove ? "这步没走成，由陪练代走。"
+                                                            : "暂时不能走子，由陪练代走。");
+    practiceMove();
 }

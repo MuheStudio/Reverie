@@ -1,6 +1,6 @@
 """Private stdlib-only regex subprocess, independently authored for this engine.
 
-No legacy implementation was consulted. Repository GPL-3.0 terms apply.
+No legacy implementation was consulted. Repository Apache-2.0 terms apply.
 This script is launched by the supervisor with the current Python and -I -B.
 Only fixed-size framed status records leave stdout. Patterns and messages are
 received through private pipes, never argv, files, logs or exception messages.

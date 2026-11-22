@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Dialogs
 import Reverie.Archive 1.0
 
 Item {
@@ -9,6 +10,14 @@ Item {
     property var navigation
     readonly property Item firstFocusItem: archiveEditor.hasBook ? titleField : bookSelector.count > 1 ? bookSelector : newBookButton
     readonly property bool modalOpen: reloadConfirm.visible || navigationConfirm.visible || deleteConfirm.visible
+        || worldbookImportConfirm.visible || worldbookOpenDialog.visible || worldbookSaveDialog.visible
+    readonly property var worldbookFileState: session.worldbookFileState || ({})
+    readonly property bool worldbookFileBusy: session.worldbookFileBusy === true
+    readonly property var selectedFileBook: (archiveEditor.bookRows || []).find(row => row.key === archiveEditor.selectedBookKey) || ({})
+    readonly property bool worldbookFileReady: session.worldbookFileAvailable === true && archiveEditor.initialized
+        && archiveEditor.archiveScope === personaScope && !archiveEditor.busy && !archiveEditor.dirty
+        && !archiveEditor.newLocal && !archiveEditor.writesBlocked && !modalOpen
+    property string worldbookReadbackRequest: ""
     property bool saveAcknowledged: false
     property int lastSavedRevision: -1
     property bool detailsExpanded: false
@@ -652,6 +661,72 @@ Item {
         else
             deleteConfirm.close();
     }
+    function worldbookImportSummary() {
+        const state = worldbookFileState;
+        const skipped = state.skipped || ({});
+        const reasons = {invalid: "无效条目", empty: "空正文", unsafe: "不安全内容", oversized: "超出条目上限"};
+        let skippedCount = 0;
+        const skippedText = [];
+        for (const key of Object.keys(reasons)) {
+            const count = Number(skipped[key] || 0);
+            skippedCount += count;
+            if (count > 0) skippedText.push(reasons[key] + " " + count + " 条");
+        }
+        const dropped = state.dropped_fields || ({});
+        const droppedText = Object.keys(dropped).sort().map(key => key + "（" + dropped[key] + " 条）");
+        return "《" + (state.book_name || "") + "》\n将导入 " + Number(state.importable_entry_count || 0) + " 条"
+            + "\n跳过 " + skippedCount + " 条" + (skippedText.length ? "（" + skippedText.join("、") + "）" : "")
+            + "\n未保留的设置：" + (droppedText.length ? droppedText.join("、") : "无")
+            + "\n" + Number(state.disabled_regex_entry_count || 0) + " 条正则已关闭"
+            + "\n" + Number(state.cleaned_entry_count || 0) + " 条文字被清理。";
+    }
+    function syncWorldbookFile() {
+        const state = worldbookFileState;
+        const sameScope = state.scopeKey === personaScope && state.generation === focusRuntimeRevision;
+        if (worldbookOpenDialog.visible && (worldbookOpenDialog.boundScope !== personaScope
+                || worldbookOpenDialog.boundGeneration !== focusRuntimeRevision))
+            worldbookOpenDialog.close();
+        if (worldbookSaveDialog.visible && (worldbookSaveDialog.boundScope !== personaScope
+                || worldbookSaveDialog.boundGeneration !== focusRuntimeRevision))
+            worldbookSaveDialog.close();
+        if (state.status === "confirmation" && sameScope)
+            worldbookImportConfirm.open();
+        else
+            worldbookImportConfirm.close();
+        if (!sameScope) {
+            worldbookReadbackTimer.stop();
+            worldbookReadbackRequest = "";
+            return;
+        }
+        if (state.status !== "imported") {
+            worldbookReadbackTimer.stop();
+            worldbookReadbackRequest = "";
+            return;
+        }
+        if (archiveEditor.dirty) {
+            session.acknowledgeWorldbookFileImportReadback(state.world_book_id || "", archiveEditor.revision, false);
+            return;
+        }
+        if (worldbookReadbackRequest !== state.requestId) {
+            worldbookReadbackRequest = state.requestId;
+            worldbookReadbackTimer.restart();
+            archiveEditor.load();
+            return;
+        }
+        if (archiveEditor.busy)
+            return;
+        let selected = false;
+        if (archiveEditor.initialized && !archiveEditor.dirty && archiveEditor.archiveScope === personaScope
+                && archiveEditor.revision === state.revision) {
+            const row = (archiveEditor.bookRows || []).find(value => value.id === state.world_book_id);
+            if (row) {
+                archiveEditor.selectBook(row.key);
+                archiveEditor.selectEntry("");
+                selected = archiveEditor.selectedBookKey === row.key && !archiveEditor.hasEntry;
+            }
+        }
+        session.acknowledgeWorldbookFileImportReadback(state.world_book_id || "", archiveEditor.revision, selected);
+    }
     function requestReload() {
         if (archiveEditor.busy)
             return;
@@ -766,6 +841,7 @@ Item {
         observeSaveStatus();
         syncSelectors();
         syncDialogs();
+        syncWorldbookFile();
     }
     Connections {
         target: archiveEditor
@@ -797,7 +873,18 @@ Item {
             editor.observeSaveStatus();
             Qt.callLater(editor.syncSelectors);
             Qt.callLater(editor.syncDialogs);
+            Qt.callLater(editor.syncWorldbookFile);
         }
+    }
+    Connections {
+        target: session
+        ignoreUnknownSignals: true
+        function onChanged() { Qt.callLater(editor.syncWorldbookFile); }
+    }
+    Timer {
+        id: worldbookReadbackTimer
+        interval: 30000
+        onTriggered: session.acknowledgeWorldbookFileImportReadback(editor.worldbookFileState.world_book_id || "", archiveEditor.revision, false)
     }
     Timer {
         id: successHold
@@ -950,6 +1037,84 @@ Item {
             topPadding: 18
         }
         Overlay.modal: Rectangle { color: "#99050b0e" }
+    }
+    FileDialog {
+        id: worldbookOpenDialog
+        property string boundScope: ""
+        property int boundGeneration: -1
+        property int boundRevision: -1
+        title: "选择 JSON 世界书"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["JSON 世界书 (*.json)"]
+        onAccepted: {
+            if (boundScope === editor.personaScope && boundGeneration === editor.focusRuntimeRevision
+                    && boundRevision === archiveEditor.revision && !archiveEditor.dirty && !archiveEditor.busy)
+                session.inspectWorldbookFile(selectedFile, boundRevision);
+        }
+    }
+    FileDialog {
+        id: worldbookSaveDialog
+        property string boundScope: ""
+        property int boundGeneration: -1
+        property int boundRevision: -1
+        property string worldBookId: ""
+        title: "导出 SillyTavern 世界书"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: ["JSON 世界书 (*.json)"]
+        onAccepted: {
+            if (boundScope === editor.personaScope && boundGeneration === editor.focusRuntimeRevision
+                    && boundRevision === archiveEditor.revision && !archiveEditor.dirty && !archiveEditor.busy)
+                session.exportWorldbookFile(selectedFile, worldBookId, boundRevision);
+        }
+    }
+    ArchiveDialog {
+        id: worldbookImportConfirm
+        objectName: "worldbookFileImportConfirmation"
+        title: "导入为一本新世界书？"
+        closePolicy: Popup.NoAutoClose
+        contentItem: ScrollView {
+            id: worldbookImportSummaryScroll
+            implicitHeight: Math.min(worldbookImportSummaryText.implicitHeight,
+                Math.max(100, (Overlay.overlay ? Overlay.overlay.height : 650) - 220))
+            contentWidth: availableWidth
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            Text {
+                id: worldbookImportSummaryText
+                objectName: "worldbookFileImportSummary"
+                width: worldbookImportSummaryScroll.availableWidth
+                text: editor.worldbookImportSummary()
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                color: "#d9e9ef"
+                font.pixelSize: 13
+            }
+        }
+        footer: Item {
+            implicitHeight: 56
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                Item { Layout.fillWidth: true }
+                GlassButton {
+                    objectName: "worldbookFileImportCancel"
+                    text: "取消"
+                    implicitHeight: 34
+                    onClicked: session.cancelWorldbookFileImport()
+                }
+                GlassButton {
+                    objectName: "worldbookFileImportConfirm"
+                    text: "导入新书"
+                    implicitHeight: 34
+                    accented: true
+                    enabled: editor.worldbookFileState.status === "confirmation" && !archiveEditor.dirty && !archiveEditor.busy
+                        && archiveEditor.revision === editor.worldbookFileState.archiveRevision
+                    onClicked: session.confirmWorldbookFileImport(archiveEditor.revision)
+                }
+            }
+        }
+        onRejected: session.cancelWorldbookFileImport()
     }
     ArchiveDialog {
         id: reloadConfirm
@@ -1108,6 +1273,7 @@ Item {
         anchors.fill: parent
         ColumnLayout {
             id: formLayout
+            enabled: !editor.worldbookFileBusy
             anchors.fill: parent
             spacing: 6
             RowLayout {
@@ -1158,7 +1324,7 @@ Item {
                     Layout.minimumWidth: 60
                     model: editor.bookChoices
                     emptyText: archiveEditor.hasBook ? archiveEditor.title + " · 草稿" : "全部世界书"
-                    enabled: archiveEditor.canNavigate && !editor.modalOpen
+                    enabled: archiveEditor.canNavigate && !editor.modalOpen && !editor.worldbookFileBusy
                     onActivated: index => {
                         archiveEditor.selectBook(model[index].key);
                         editor.syncSelectors();
@@ -1172,7 +1338,7 @@ Item {
                     text: "新建书"
                     implicitHeight: 32
                     padding: 7
-                    enabled: archiveEditor.canCreateBook && !editor.modalOpen
+                    enabled: archiveEditor.canCreateBook && !editor.modalOpen && !editor.worldbookFileBusy
                     onClicked: archiveEditor.newBook()
                 }
                 GlassButton {
@@ -1180,11 +1346,56 @@ Item {
                     text: "删书"
                     implicitHeight: 32
                     padding: 7
-                    enabled: archiveEditor.canDeleteBook && !editor.modalOpen
+                    enabled: archiveEditor.canDeleteBook && !editor.modalOpen && !editor.worldbookFileBusy
                     onClicked: archiveEditor.requestDelete("book")
                     ToolTip.visible: hovered && !enabled
                     ToolTip.text: archiveEditor.dirty ? "先保存或放弃草稿，再删除已保存的世界书。" : "当前没有可删除的已保存世界书。"
                 }
+                GlassButton {
+                    objectName: "worldbookFileImport"
+                    text: "导入"
+                    implicitHeight: 32
+                    padding: 7
+                    enabled: editor.worldbookFileReady
+                    onClicked: {
+                        worldbookOpenDialog.boundScope = editor.personaScope;
+                        worldbookOpenDialog.boundGeneration = editor.focusRuntimeRevision;
+                        worldbookOpenDialog.boundRevision = archiveEditor.revision;
+                        worldbookOpenDialog.open();
+                    }
+                    ToolTip.visible: hovered && !enabled
+                    ToolTip.text: archiveEditor.dirty ? "先保存或放弃草稿，再导入世界书。" : "请等待当前操作完成并重新读取档案。"
+                }
+                GlassButton {
+                    objectName: "worldbookFileExport"
+                    text: "导出"
+                    implicitHeight: 32
+                    padding: 7
+                    enabled: editor.worldbookFileReady && archiveEditor.hasBook && Number(editor.selectedFileBook.entryCount || 0) > 0
+                    onClicked: {
+                        worldbookSaveDialog.boundScope = editor.personaScope;
+                        worldbookSaveDialog.boundGeneration = editor.focusRuntimeRevision;
+                        worldbookSaveDialog.boundRevision = archiveEditor.revision;
+                        worldbookSaveDialog.worldBookId = editor.selectedFileBook.id || "";
+                        worldbookSaveDialog.selectedFile = session.suggestedWorldbookFile(worldbookSaveDialog.worldBookId);
+                        worldbookSaveDialog.open();
+                    }
+                    ToolTip.visible: hovered && !enabled
+                    ToolTip.text: archiveEditor.dirty ? "先保存或放弃草稿，再导出世界书。"
+                        : archiveEditor.hasBook && Number(editor.selectedFileBook.entryCount || 0) === 0 ? "这本书还没有条目。"
+                        : "请先选择一本已保存的世界书，并等待当前操作完成。"
+                }
+            }
+            Text {
+                objectName: "worldbookFileFeedback"
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: editor.worldbookFileState.scopeKey === editor.personaScope
+                    && editor.worldbookFileState.generation === editor.focusRuntimeRevision ? editor.worldbookFileState.text || "" : ""
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: 12
+                color: ["error", "unknown"].includes(editor.worldbookFileState.status) ? "#e6b4a4" : "#bdd0de"
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -1197,7 +1408,7 @@ Item {
                     Layout.minimumWidth: 60
                     model: editor.entryChoices
                     emptyText: archiveEditor.hasEntry ? (archiveEditor.comment || "未命名条目") + " · 草稿" : archiveEditor.hasBook ? "这本书还没有条目" : "先选择世界书"
-                    enabled: archiveEditor.canNavigate && archiveEditor.hasBook && count > 1 && !editor.modalOpen
+                    enabled: archiveEditor.canNavigate && archiveEditor.hasBook && count > 1 && !editor.modalOpen && !editor.worldbookFileBusy
                     onActivated: index => {
                         archiveEditor.selectEntry(model[index].key);
                         editor.syncSelectors();
@@ -1210,7 +1421,7 @@ Item {
                     text: "新建条目"
                     implicitHeight: 32
                     padding: 7
-                    enabled: archiveEditor.canCreateEntry && !editor.modalOpen
+                    enabled: archiveEditor.canCreateEntry && !editor.modalOpen && !editor.worldbookFileBusy
                     onClicked: archiveEditor.newEntry()
                 }
                 GlassButton {
@@ -1218,7 +1429,7 @@ Item {
                     text: "删条目"
                     implicitHeight: 32
                     padding: 7
-                    enabled: archiveEditor.canDeleteEntry && !editor.modalOpen
+                    enabled: archiveEditor.canDeleteEntry && !editor.modalOpen && !editor.worldbookFileBusy
                     onClicked: archiveEditor.requestDelete("entry")
                     ToolTip.visible: hovered && !enabled
                     ToolTip.text: archiveEditor.dirty ? "先保存或放弃草稿，再删除已保存的条目。" : "当前没有可删除的已保存条目。"
@@ -1259,6 +1470,7 @@ Item {
             }
             ScrollView {
                 id: formScroll
+                enabled: !editor.worldbookFileBusy
                 objectName: "worldbook-form-scroll"
                 Layout.fillWidth: true
                 Layout.fillHeight: true

@@ -2,7 +2,7 @@
 
 // Independently authored from the requested interface, synthetic fixtures, and
 // public Node API / IANA registry documentation. No legacy downloader bodies
-// were consulted. This file is distributed under the repository's GPL-3.0 terms.
+// were consulted. This file is distributed under the repository's Apache-2.0 terms.
 // References: https://nodejs.org/api/{http,https,dns,fs}.html
 // https://www.iana.org/assignments/iana-ipv4-special-registry/
 // https://www.iana.org/assignments/iana-ipv6-special-registry/

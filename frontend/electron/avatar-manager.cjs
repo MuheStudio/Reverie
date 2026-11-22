@@ -1256,6 +1256,23 @@ class AvatarManager {
     fs.mkdirSync(this.motionStagingDir, { recursive: true });
     fs.mkdirSync(this.recordsDir, { recursive: true });
     this.cleanupStaging();
+    this.cleanupRemoving();
+  }
+
+  cleanupRemoving() {
+    // A renamed record is already logically deleted. A crash or an earlier
+    // cleanup failure must not put it back into the public record list.
+    let names;
+    try { names = fs.readdirSync(this.recordsDir); } catch { return; }
+    for (const name of names) {
+      if (!name.endsWith('.removing') || !AVATAR_ID_RE.test(name.slice(0, -'.removing'.length))) continue;
+      const target = path.join(this.recordsDir, name);
+      if (!isInside(this.recordsDir, target)) continue;
+      try {
+        const stat = fs.lstatSync(target);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) fs.rmSync(target, { recursive: true, force: true });
+      } catch {}
+    }
   }
 
   cleanupStaging(now = Date.now()) {
@@ -1729,7 +1746,11 @@ class AvatarManager {
     }
     const target = path.join(this.recordsDir, avatarId);
     if (!isInside(this.recordsDir, target)) throw avatarError('AVATAR_ID', 'Invalid avatar identifier');
-    fs.rmSync(target, { recursive: true, force: false });
+    const removing = path.join(this.recordsDir, `${avatarId}.removing`);
+    // The same-directory rename is the logical commit. It either fails with
+    // the original record intact, or makes list() stop recognizing the ID.
+    fs.renameSync(target, removing);
+    try { fs.rmSync(removing, { recursive: true, force: true }); } catch {}
     return { removed: true };
   }
 

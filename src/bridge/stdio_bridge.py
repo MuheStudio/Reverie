@@ -78,6 +78,12 @@ def _control_failure(
     control_type: str,
     error: Exception,
 ) -> dict[str, Any]:
+    if control_type in ws_bridge._WORLDBOOK_FILE_CONTROLS:  # noqa: SLF001
+        # Invalid transport envelopes still use the file command's closed
+        # failure shape; generic recovery metadata is not part of R6.
+        return {**ws_bridge._worldbook_file_failure("invalid_request"),  # noqa: SLF001
+                "kind": "control_result", "schema": CONTROL_SCHEMA,
+                "requestId": request_id, "type": control_type}
     result: dict[str, Any] = {
         **ws_bridge.recovery_status_payload(),
         "kind": "control_result",
@@ -129,13 +135,21 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
         "backup:file:import": {"path", "mode", "sha256", "file_bytes", "known_good_confirmed"},
         "persona:card:export": {"path", "world_book_id", "persona_id", "persona_epoch",
                                 "persona_fingerprint", "archive_revision"},
+        "worldbook:file:inspect": {"path", "persona_id", "persona_epoch",
+                                   "persona_fingerprint", "archive_revision"},
+        "worldbook:file:import": {"path", "persona_id", "persona_epoch",
+                                  "persona_fingerprint", "archive_revision", "sha256", "file_bytes"},
+        "worldbook:file:export": {"path", "persona_id", "persona_epoch",
+                                  "persona_fingerprint", "archive_revision", "world_book_id"},
     }.get(control_type)
     if allowed_fields is None:
         raise ValueError("unsupported control type")
     envelope_fields = {"kind", "schema", "type", "requestId"}
-    if set(message) - envelope_fields - allowed_fields and control_type != "persona:card:export":
+    if (set(message) - envelope_fields - allowed_fields and control_type != "persona:card:export"
+            and control_type not in ws_bridge._WORLDBOOK_FILE_CONTROLS):  # noqa: SLF001
         raise ValueError("control message has unsupported fields")
-    ws_bridge.control_preflight(control_type)
+    if control_type not in ws_bridge._WORLDBOOK_FILE_CONTROLS:  # noqa: SLF001
+        ws_bridge.control_preflight(control_type)
     result: dict[str, Any] = {"ok": True}
     if control_type == "local_mode:set":
         active = message.get("active")
@@ -186,6 +200,11 @@ async def _handle_control(message: dict[str, Any]) -> dict[str, Any]:
         result.update(await ws_bridge._run_native_card_export({  # noqa: SLF001
             key: value for key, value in message.items() if key not in envelope_fields
         }))
+    elif control_type in ws_bridge._WORLDBOOK_FILE_CONTROLS:  # noqa: SLF001
+        result.update(await ws_bridge._run_native_worldbook_file(  # noqa: SLF001
+            control_type.rsplit(":", 1)[-1],
+            {key: value for key, value in message.items() if key not in envelope_fields},
+        ))
     elif control_type in {"backup:file:export", "backup:file:inspect", "backup:file:import"}:
         if message.get("mode") not in {None, "normal", "rescue"}:
             raise ValueError("unsupported restore mode")
@@ -330,7 +349,7 @@ async def start_stdio_bridge() -> None:
                     expected_persona_epoch=envelope.persona.epoch,
                     expected_persona_fingerprint=envelope.persona.fingerprint,
                 )
-                rejected = ws_bridge.command_preflight(envelope.command)
+                rejected = ws_bridge.command_preflight(envelope.command, scoped_payload)
                 if rejected is not None:
                     await ws_bridge.send_to_frontend(
                         controller, ws_bridge.response_type_for_request(envelope.command),

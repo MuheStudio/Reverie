@@ -241,7 +241,7 @@ function prepareDesktopApp() {
     description: 'Local-first digital companion',
     author: 'Muhe Studio contributors',
     main: 'electron/main.js',
-    license: 'GPL-3.0-only',
+    license: 'Apache-2.0',
   });
 }
 
@@ -306,7 +306,7 @@ function prepareSourceBundle() {
     path.join(sourceStage, 'SOURCE-CODE-README.txt'),
     [
       'Reverie source code corresponding to this Windows build.',
-      'License: GNU GPL version 3.',
+      'License: Apache License, Version 2.0.',
       'The Electron application is packaged in integrity-checked app.asar.',
       'Original TypeScript/Python production sources and locked build inputs are included.',
       'Reference projects, tests, local data, caches and virtual environments are omitted.',
@@ -458,7 +458,7 @@ function writeArtifactHash(sourceMigration) {
     version: onboardingTestInstaller ? '0.1.0' : '0.5.5',
     architecture: 'x64',
     installer: path.basename(installer), sha256: hash,
-    license: 'GPL-3.0-only', asar: true, sourceIncludedInRuntime: false,
+    license: 'Apache-2.0', asar: true, sourceIncludedInRuntime: false,
     publishable: !onboardingTestInstaller,
     isolatedUserData: onboardingTestInstaller,
     bundledCharacter: false,

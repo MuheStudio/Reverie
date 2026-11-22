@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
+from src.bridge import ws_bridge
 from src.games.companion import (
     GameCompanionError,
     build_move_messages,
     choose_move,
     parse_move_reply,
 )
+from src.kernel.contracts import CommandEnvelopeV4, GameMovePayload, PersonaScopeV4
 
 
 class FakeResponse:
@@ -99,3 +102,62 @@ async def test_xiangqi_prompt_delivers_piece_identity_and_coordinates_to_adapter
     assert "颜色和棋种" in messages[1]["content"]
     assert "▲" not in messages[1]["content"]
     assert "0 为红方底线" in messages[0]["content"]
+
+
+def test_game_move_retry_note_defaults_to_empty() -> None:
+    payload = GameMovePayload(game="xiangqi", state={"board_text": "棋盘"})
+    assert payload.retry_note == ""
+
+
+@pytest.mark.parametrize("note", ["", "棋" * 200], ids=["empty", "limit"])
+def test_game_move_accepts_bounded_retry_note(note: str) -> None:
+    payload = GameMovePayload(game="xiangqi", state={"board_text": "棋盘"}, retry_note=note)
+    assert payload.retry_note == note
+
+
+@pytest.mark.parametrize(
+    ("extra", "field", "code"),
+    [
+        ({"retry_note": "棋" * 201}, "retry_note", "string_too_long"),
+        ({"retry_note": 1}, "retry_note", "string_type"),
+        ({"retry_note": None}, "retry_note", "string_type"),
+        ({"retry_note": b"note"}, "retry_note", "string_type"),
+        ({"extra_note": ""}, "extra_note", "extra_forbidden"),
+    ],
+    ids=["too-long", "number", "null", "bytes", "unknown-field"],
+)
+def test_game_move_rejects_invalid_retry_note_or_extra_field(extra, field, code) -> None:
+    with pytest.raises(ValidationError) as rejected:
+        GameMovePayload(game="xiangqi", state={"board_text": "棋盘"}, **extra)
+    assert [(error["loc"], error["type"]) for error in rejected.value.errors()] == [((field,), code)]
+
+
+@pytest.mark.asyncio
+async def test_xiangqi_retry_note_reaches_prompt_after_v4_validation(monkeypatch) -> None:
+    note = "黑车不能越过另一枚棋子"
+    scope = PersonaScopeV4(persona_id="fixture", epoch=1, fingerprint="a" * 64)
+    command = CommandEnvelopeV4(
+        command="game:move",
+        persona=scope,
+        payload={"game": "xiangqi", "state": {"board_text": "棋盘", "side": "黑棋"}, "retry_note": note},
+    )
+    state = ws_bridge.BridgeState()
+    state.adapter = adapter = FakeAdapter('{"move":"0,6,0,5","comment":""}')
+    endpoint = object()
+    monkeypatch.setattr(ws_bridge, "bridge_state", state)
+    monkeypatch.setattr(ws_bridge, "_client_contexts", {
+        endpoint: ws_bridge.BridgeClientContext("xiangqi-test", 4, True),
+    })
+
+    reply = await ws_bridge.dispatch_authenticated_message(
+        {"type": command.command, "request_id": command.request_id, "payload": command.payload},
+        endpoint,
+        emit_result=False,
+    )
+
+    assert reply == {"ok": True, "move": "0,6,0,5", "comment": ""}
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0]["messages"][-1] == {
+        "role": "user",
+        "content": f"你上一步的走法不合法（{note}）。请重新观察棋盘，只输出一个新的合法 JSON 走法。",
+    }

@@ -328,9 +328,14 @@ class LocalBackupManager:
             if store is not None and hasattr(store,"path"):
                 with closing(connect_database(store.path,timeout=5.0,isolation_level=None,read_only=True)) as connection:
                     connection.execute("PRAGMA query_only=ON")
+                    persona_id = getattr(manager, "persona_id", None)
                     for name,value in documents.items():
-                        row = connection.execute("SELECT payload_json FROM private_documents WHERE document_name=?",(name,)).fetchone()
-                        if row is None or json.loads(str(row[0])) != value:
+                        if persona_id is None:
+                            row = connection.execute("SELECT payload_json FROM private_documents WHERE document_name=?",(name,)).fetchone()
+                            stored = json.loads(str(row[0])) if row is not None else None
+                        else:
+                            stored = store.read_persisted_persona_state_document(connection, persona_id, name)
+                        if stored != value:
                             raise BackupRestoreError(f"Durable document {name} was not restored",code="BACKUP_RECOVERY_REQUIRED")
             elif manager in (self.emotion,self.relationship):
                 path = getattr(manager,"state_path",None)

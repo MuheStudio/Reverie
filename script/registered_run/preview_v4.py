@@ -19,7 +19,28 @@ TIMEOUT_SECONDS = 1200
 SELECTION = ("version-upgrade", "snapshot-restore", "format-protection", "sanitized-diagnostics")
 CHECKS = (*base.CHECKS, *((name, name) for name in SELECTION))
 CATEGORIES = ("chat", "persona", "memory", "worldbook", "settings", "avatar")
-PUBLIC_RESULT = "docs/evidence/preview-m1-formal-r1-20261102.json"
+PREVIOUS_RESULTS = {
+    "docs/evidence/preview-m1-formal-r1-20261102.json": {
+        "schema": "reverie.preview.m1.formal.r1.result.v1", "buildSource": "adoption",
+    },
+    "docs/evidence/preview-m2-formal-r2-20261104.json": {
+        "schema": "reverie.preview.m2.formal.r2.result.v1", "buildSource": "artifacts",
+    },
+    "docs/evidence/preview-m3-formal-r1-20261107.json": {
+        "schema": "reverie.preview.m3.formal.r1.result.v1", "buildSource": "artifacts",
+    },
+    "docs/evidence/preview-m4-formal-r1-20261110.json": {
+        "schema": "reverie.preview.m4.formal.r1.result.v1", "buildSource": "artifacts",
+    },
+    "docs/evidence/preview-m5-formal-r2-20261111.json": {
+        "schema": "reverie.preview.m5.formal.r2.result.v1", "buildSource": "artifacts",
+    },
+    "docs/evidence/preview-m6-formal-r1-20261117.json": {
+        "schema": "reverie.preview.m6.formal.r1.result.v1", "buildSource": "artifacts",
+    },
+}
+# Historical M1 through M5 bindings remain readable. New runs bind M6.
+PUBLIC_RESULT = "docs/evidence/preview-m6-formal-r1-20261117.json"
 INPUT_COPIES = {"evidence": "previous-formal-result.json", "runtimeMetadata": "previous-runtime-metadata.json",
                 "runtimeManifest": "previous-runtime-manifest.json"}
 PERSONA_NAME = "W5 isolated persona"
@@ -83,7 +104,7 @@ def previous_binding(value):
     for role in INPUT_COPIES:
         reference(value[role])
     v3.identity({key: value[key] for key in ("candidate", "sourceHead", "buildManifestSha256")})
-    base.need(value["evidence"]["path"] == PUBLIC_RESULT and
+    base.need(value["evidence"]["path"] in PREVIOUS_RESULTS and
               value["runtimeRoot"] == ".tools/preview-runtime/" + value["candidate"] and
               value["runtimeMetadata"]["path"] == value["runtimeRoot"] + "/preview-runtime.json" and
               value["runtimeManifest"]["path"] == value["runtimeRoot"] + "/preview-manifest.json",
@@ -91,6 +112,18 @@ def previous_binding(value):
     base._relative(value["model"])
     base.need(value["model"].startswith(".tools/live2d/"), "PREVIEW_V4_MODEL_SCOPE")
     return value
+
+
+def _previous_build_sha(public, result_path):
+    rule = PREVIOUS_RESULTS[result_path]
+    if rule["buildSource"] == "adoption":
+        return public.get("adoption", {}).get("build", {}).get("sha256")
+    artifacts = public.get("artifacts")
+    expected = ".tools/qt-candidates/" + str(public.get("adoption", {}).get("candidate")) + "/build.json"
+    base.need(isinstance(artifacts, list), "PREVIEW_V4_FORMAL_IDENTITY")
+    matches = [row for row in artifacts if isinstance(row, dict) and row.get("path") == expected]
+    base.need(len(matches) == 1 and base._sha(matches[0].get("sha256")), "PREVIEW_V4_FORMAL_IDENTITY")
+    return matches[0]["sha256"]
 
 
 def _validate_previous_documents(binding, documents):
@@ -101,11 +134,14 @@ def _validate_previous_documents(binding, documents):
         base.need(len(payload) == expected["bytes"] and sha(payload) == expected["sha256"], "PREVIEW_V4_PREVIOUS_BYTES")
         values[role] = load_json_bytes(payload)
     public, metadata = values["evidence"], values["runtimeMetadata"]
-    base.need(public.get("schema") == "reverie.preview.m1.formal.r1.result.v1" and
+    rule = PREVIOUS_RESULTS[binding["evidence"]["path"]]
+    public_build_sha = _previous_build_sha(public, binding["evidence"]["path"])
+    base.need(public.get("schema") == rule["schema"] and
               public.get("overallPassed") is True and public.get("formalAcceptance") is True and
               public.get("sourceHead") == binding["sourceHead"] and
               public.get("adoption", {}).get("candidate") == binding["candidate"] and
-              public.get("adoption", {}).get("build", {}).get("sha256") == binding["buildManifestSha256"],
+              public_build_sha == binding["buildManifestSha256"] and
+              (rule["buildSource"] != "artifacts" or public_build_sha == metadata.get("buildManifestSha256")),
               "PREVIEW_V4_FORMAL_IDENTITY")
     base.need(metadata.get("schema") == "reverie.qt.preview-runtime.v1" and
               metadata.get("installation", {}).get("kind") == "adopted" and
@@ -136,7 +172,7 @@ def bind_previous(root, model=".tools/live2d/yumi-local-validation/原模型测�
     paths = {"evidence": PUBLIC_RESULT, "runtimeMetadata": runtime + "/preview-runtime.json", "runtimeManifest": runtime + "/preview-manifest.json"}
     result = {role: {"path": paths[role], "bytes": len(payload), "sha256": sha(payload)} for role, payload in documents.items()}
     result.update(runtimeRoot=runtime, candidate=candidate, sourceHead=public.get("sourceHead"),
-                  buildManifestSha256=public.get("adoption", {}).get("build", {}).get("sha256"), model=model)
+                  buildManifestSha256=_previous_build_sha(public, PUBLIC_RESULT), model=model)
     previous_binding(result)
     _validate_previous_documents(result, documents)
     return result
@@ -467,7 +503,8 @@ def verify_observations_v4(result, *, expected_source, expected_candidate, expec
         children = base._pids(row["descendantPids"])
         # The launcher verifies the signed old installation before its format
         # gate. codesign is a verifier, never the old host or Python backend.
-        allowed = ["/usr/bin/codesign"] if role == "launcher" else []
+        # The process snapshot can record that verifier as (codesign).
+        allowed = ["/usr/bin/codesign", "(codesign)"] if role == "launcher" else []
         base.need(isinstance(row["descendantExecutables"], list) and
                   all(path in allowed for path in row["descendantExecutables"]) and
                   bool(children) == bool(row["descendantExecutables"]), "PREVIEW_V4_FORMAT_STARTED_BACKEND")

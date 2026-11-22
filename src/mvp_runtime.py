@@ -8,18 +8,21 @@ the developer TUI, but are not loaded into the packaged desktop process.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 import logging
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.api.adapter import LLMAdapter
 from src.api.budget import ApiBudgetTracker
 from src.bridge.ws_bridge import attach_bridge_state
+from src.chat.encrypted_pending import EncryptedPendingChatStore
 from src.chat.scheduler import MessageScheduler
+from src.chat.proactive import ProactiveChat
 from src.chat.session import ChatSession
 from src.emotion.system import EmotionSystem
+from src.kernel.storage import PersonaStateMigrationError
 from src.memory.manager import MemoryManager
 from src.relationship.tracker import RelationshipTracker
 from src.user import UserManager
@@ -67,22 +70,22 @@ DIARY_CHECK_INTERVAL_S = 30 * 60
 
 
 async def _diary_maintenance_loop(diary: Any, settings: Any, kernel_store: Any, logger: logging.Logger) -> None:
+    from src.diary import DiaryWriteRejected
+
     while True:
         try:
             await asyncio.sleep(DIARY_CHECK_INTERVAL_S)
-            if diary is None or not getattr(settings.features, "diary_enabled", False):
+            if diary is None or kernel_store is None or not settings.features.diary_enabled:
                 continue
-            today = datetime.now().strftime("%Y-%m-%d")
-            if diary.load_entry(today) is not None:
+            today = diary.today()
+            persona_id = diary.persona.seal_identity().persona_id
+            if kernel_store.count_persona_user_messages_on_local_date(persona_id, today) < DIARY_MIN_EXCHANGES:
                 continue
-            if kernel_store is None or kernel_store.count_user_messages_on_date(today) < DIARY_MIN_EXCHANGES:
-                continue
-            logger.info("Diary: generating the daily entry for %s", today)
-            entry = await diary.generate_daily_entry(today, trigger="daily_auto")
-            if entry is not None:
-                logger.info("Diary: daily entry saved for %s", today)
+            await diary.write_daily_entry_once(today, trigger="daily_auto")
         except asyncio.CancelledError:
             return
+        except DiaryWriteRejected:
+            continue
         except Exception:
             logger.exception("Diary maintenance loop error")
 
@@ -140,6 +143,17 @@ def get_active_desktop_runtime() -> "MvpDesktopRuntime | None":
 class MvpDesktopRuntime:
     """Own the minimal desktop object graph and its lifecycle."""
 
+    def start_diary_write(self, write: Coroutine[Any, Any, None]) -> None:
+        """Keep a manual writer in the same lifecycle as automatic writers."""
+        task = asyncio.create_task(write)
+        self._tasks.append(task)
+
+        def forget(finished: asyncio.Task[Any]) -> None:
+            if finished in self._tasks:
+                self._tasks.remove(finished)
+
+        task.add_done_callback(forget)
+
     def __init__(
         self,
         *,
@@ -156,6 +170,7 @@ class MvpDesktopRuntime:
         self._logger = logger
         self._settings = settings
         self._kernel_store = kernel_store
+        self._pending_chat_store = EncryptedPendingChatStore(kernel_store)
         self._module_registry = module_registry
         self._tasks: list[asyncio.Task[Any]] = []
         self._closed = False
@@ -175,6 +190,119 @@ class MvpDesktopRuntime:
             relationship_state=relationship_state,
             persona_state=persona_state,
         )
+
+    def _persona_state_managers(self, persona, *, scoped, emotion_state=None, relationship_state=None):
+        features = self._settings.features
+        persona_id = persona.identity_envelope.persona_id if scoped else None
+        emotion = EmotionSystem(
+            values=dict(persona.emotions),
+            state_path=emotion_state.file("state.json") if emotion_state is not None else None,
+            document_store=self._kernel_store,
+            enabled=features.emotion_system_enabled,
+            carryover_days=features.emotion_carryover_days,
+            inertia_factor=features.emotion_inertia_factor,
+            pause_intervals=list(features.emotion_pause_intervals),
+            defer_startup_writes=True,
+            persona_id=persona_id,
+        )
+        relationship = RelationshipTracker(
+            initial_intimacy=50,
+            state_path=relationship_state.file("state.json") if relationship_state is not None else None,
+            document_store=self._kernel_store,
+            defer_startup_writes=True,
+            persona_id=persona_id,
+        )
+        return emotion, relationship
+
+    @staticmethod
+    def _validate_legacy_persona_document(name, document):
+        if name == "persona_emotion_state":
+            EmotionSystem(defer_startup_writes=True)._apply_state(document)
+        else:
+            RelationshipTracker()._apply_state(document)
+
+    def _migrate_persona_state(self, persona, session, diary, backup_manager):
+        emotion: EmotionSystem
+        relationship: RelationshipTracker
+
+        def prepare_current():
+            nonlocal emotion, relationship
+            emotion, relationship = self._persona_state_managers(persona, scoped=True)
+
+        # Load the current persona while the copies and marker can still roll back.
+        migrated = self._kernel_store.migrate_persona_state(
+            persona.identity_envelope.persona_id, self._validate_legacy_persona_document,
+            prepare_current=prepare_current,
+        )
+        emotion.world_clock = session.world_clock
+        session.emotion, session.relationship = emotion, relationship
+        session._last_safe_emotions = dict(emotion.values)
+        session._last_safe_intimacy = relationship.intimacy
+        if diary is not None:
+            diary.emotion = emotion
+        backup_manager.emotion, backup_manager.relationship = emotion, relationship
+        self._persona_state_migration_pending = False
+        if migrated:
+            self._logger.info("Persona state migration completed")
+        return emotion, relationship
+
+    def _finish_recovered_persona_state(self) -> None:
+        if self._recovery_state != "clean" or not getattr(self, "_persona_state_migration_pending", False):
+            return
+        from src.bridge import ws_bridge
+
+        try:
+            emotion, relationship = self._migrate_persona_state(
+                self._session.persona, self._session, self._diary, self._backup_manager,
+            )
+        except PersonaStateMigrationError as exc:
+            self._recovery_state = "recovery_required"
+            self._recovery_reason = exc.code
+            self._backup_manager._lock_recovery(exc.code)
+            self._logger.error("%s", exc.code)
+        else:
+            ws_bridge.bridge_state.emotion = emotion
+            ws_bridge.bridge_state.relationship = relationship
+            emotion.defer_startup_writes = False
+
+    def _mount_proactive(self) -> ProactiveChat | None:
+        from src.bridge import ws_bridge
+        from src.conversation_summary.runtime import current_runtime_settings
+        from src.persona.identity import GLOBAL_PERSONA_EPOCH
+
+        session = self._session
+        features = current_runtime_settings(self._settings).features
+        try:
+            return ProactiveChat(
+                session.persona, session.adapter, session.emotion, session.scheduler,
+                relationship=session.relationship,
+                daily_limit=features.proactive_daily_limit,
+                min_interval_minutes=features.proactive_min_interval_minutes,
+                memory=self._memory, user_manager=self._user_manager, world_clock=session.world_clock,
+                speech_habit_engine=session.speech_habits, persona_epoch_registry=GLOBAL_PERSONA_EPOCH,
+                kernel_store=self._kernel_store, chat_busy=lambda: bool(self._pending_chat_store.list_active()),
+                preview_mode=True, writes_blocked=lambda: ws_bridge.recovery_status_payload()["writes_blocked"],
+            )
+        except Exception:
+            self._logger.warning("Preview proactive capability could not be initialized")
+            return None
+
+    def _refresh_proactive_after_restore(self) -> None:
+        if not hasattr(self, "_proactive"):
+            return
+        from src.bridge import ws_bridge
+
+        self._proactive = self._mount_proactive()
+        ws_bridge.bridge_state.proactive = self._proactive
+
+    async def _stop_proactive(self) -> None:
+        proactive = getattr(self, "_proactive", None)
+        if proactive is None:
+            return
+        task = proactive._task
+        proactive.stop()
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
 
     def _mount_graph(
         self,
@@ -223,6 +351,18 @@ class MvpDesktopRuntime:
             self._recovery_state = "recovery_required"
             self._recovery_reason = str(exc)
         deferred = deferred or self._recovery_state != "clean"
+        scoped_state = kernel_store.persona_state_migrated()
+        self._persona_state_migration_pending = not scoped_state
+        try:
+            emotion, relationship = self._persona_state_managers(
+                persona, scoped=scoped_state,
+                emotion_state=None if scoped_state else emotion_state,
+                relationship_state=None if scoped_state else relationship_state,
+            )
+        except Exception:
+            if not scoped_state and not deferred:
+                raise PersonaStateMigrationError() from None
+            raise
         # Constructors load existing state first. Derived projection/seed work
         # is allowed only after the journal decision has been replayed.
         from src.conversation_summary.runtime import current_runtime_settings
@@ -248,22 +388,6 @@ class MvpDesktopRuntime:
         # extraction remains outside the packaged composition root, including
         # after a memory settings update re-applies the feature switches.
         memory.pin_autonomous_gate_off()
-        emotion = EmotionSystem(
-            values=dict(persona.emotions),
-            state_path=emotion_state.file("state.json"),
-            document_store=kernel_store,
-            enabled=settings.features.emotion_system_enabled,
-            carryover_days=settings.features.emotion_carryover_days,
-            inertia_factor=settings.features.emotion_inertia_factor,
-            pause_intervals=list(settings.features.emotion_pause_intervals),
-            defer_startup_writes=True,
-        )
-        relationship = RelationshipTracker(
-            initial_intimacy=50,
-            state_path=relationship_state.file("state.json"),
-            document_store=kernel_store,
-            defer_startup_writes=True,
-        )
         scheduler = MessageScheduler(
             reply_delay_min=settings.chat.reply_delay_min,
             reply_delay_max=settings.chat.reply_delay_max,
@@ -384,6 +508,7 @@ class MvpDesktopRuntime:
             thought_engine=thought_engine,
             worldbook_runtime=worldbook_runtime,
             conversation_summary=conversation_summary,
+            kaomoji_hints=True,
         )
 
         stickers = None
@@ -460,6 +585,12 @@ class MvpDesktopRuntime:
             self._logger.exception("Keepsake manager failed during startup; isolating it")
             keepsakes = None
 
+        from src.keepsakes.preview import PreviewKeepsakes
+
+        preview_keepsakes = PreviewKeepsakes(kernel_store, identity.persona_id, require_writable=self.require_writable)
+        session.keepsakes = preview_keepsakes
+        self._legacy_keepsakes = keepsakes
+
         # The diary is one of the product's core artifacts: the LLM-written,
         # encrypted daily entry behind the DreamRoom diary panel. Isolated so a
         # diary failure can never take chat down with it.
@@ -514,10 +645,13 @@ class MvpDesktopRuntime:
                 self._recovery_state = status.get("recovery_state", status.get("state", "recovery_required"))
                 self._startup_recovery_pending = pending is not None and self._recovery_state != "recovery_required"
             if self._recovery_state == "clean" and not deferred:
+                emotion.defer_startup_writes = False
+                if self._persona_state_migration_pending:
+                    emotion, relationship = self._migrate_persona_state(persona, session, diary, backup_manager)
+                    emotion.defer_startup_writes = False
+                emotion.apply_daily_carryover()
                 memory.store.initialize_derivatives()
                 memory.layers._sync_permanent_identity()
-                emotion.defer_startup_writes = False
-                emotion.apply_daily_carryover()
                 user_manager.on_session_start()
                 memory.sync_user_profile(user_manager)
                 if social_universe is not None:
@@ -529,6 +663,8 @@ class MvpDesktopRuntime:
                     )
                     social_universe._ensure_default_thread()
                     social_universe.sync_persona_registry(PERSONA_DIR)
+        except PersonaStateMigrationError:
+            raise
         except Exception:
             self._logger.exception("Backup manager failed during startup; isolating it")
             backup_manager = None
@@ -560,10 +696,14 @@ class MvpDesktopRuntime:
         self._web_surfing = web_surfing
         self._thought_engine = thought_engine
         self._world_clock = world_clock
+        if self._recovery_state == "clean":
+            self._pending_chat_store.initialize_writable()
+        self._proactive = self._mount_proactive()
         session.restore_generation = self._restore_generation
         session.require_runtime_writable = self.require_writable
         attach_bridge_state(
             session=session,
+            proactive=self._proactive,
             adapter=adapter,
             emotion=emotion,
             memory=memory,
@@ -578,7 +718,8 @@ class MvpDesktopRuntime:
             social_universe=social_universe,
             immersion=immersion,
             game_state_store=game_state_store,
-            keepsakes=keepsakes,
+            keepsakes=None,
+            preview_keepsakes=preview_keepsakes,
             stickers=stickers,
             diary=diary,
             web_surfing=web_surfing,
@@ -590,6 +731,9 @@ class MvpDesktopRuntime:
             recovery_state=self._recovery_state,
             recovery_reason=self._recovery_reason,
             restore_coordinator=self,
+            preview_pending_chat_store=self._pending_chat_store,
+            preview_chat_images=True,
+            preview_proactive=True,
         )
         try:
             from src.bridge.ws_bridge import _apply_imported_prompt_opts_from_archive
@@ -601,6 +745,11 @@ class MvpDesktopRuntime:
     def _start_background_tasks(self) -> None:
         if self._recovery_state != "clean" or getattr(self, "_closed", False):
             return
+        self._pending_chat_store.initialize_writable()
+        if getattr(self, "_proactive", None) is not None:
+            from src.conversation_summary.runtime import current_runtime_settings
+
+            self._proactive.apply_preview_settings(current_runtime_settings(self._settings).features)
         self._tasks.extend([
             asyncio.create_task(_memory_maintenance_loop(self._memory, self._logger)),
             asyncio.create_task(_memory_reembedding_loop(self._memory, self._logger)),
@@ -649,9 +798,11 @@ class MvpDesktopRuntime:
             self._recovery_state = "recovery_required"
             self._recovery_reason = str(exc)
         self._startup_recovery_pending = False
+        self._finish_recovered_persona_state()
         ws_bridge.bridge_state.recovery_state = self._recovery_state
         ws_bridge.bridge_state.recovery_reason = self._recovery_reason
         if self._recovery_state == "clean":
+            self._refresh_proactive_after_restore()
             if self._diary is not None:
                 self._diary.read_only_crypto = False
             self._start_background_tasks()
@@ -660,6 +811,7 @@ class MvpDesktopRuntime:
     async def _quiesce_restore_writers(self) -> None:
         from src.bridge import ws_bridge
 
+        await self._stop_proactive()
         tasks = set(self._tasks)
         for task in tasks:
             task.cancel()
@@ -771,9 +923,11 @@ class MvpDesktopRuntime:
                 status = self._backup_manager.recovery_status()
                 self._recovery_state = status.get("recovery_state", status.get("state", "recovery_required"))
                 self._recovery_reason = str(status.get("reason", "") or "")
+                self._finish_recovered_persona_state()
                 ws_bridge.bridge_state.recovery_state = self._recovery_state
                 ws_bridge.bridge_state.recovery_reason = self._recovery_reason
                 if self._recovery_state == "clean":
+                    self._refresh_proactive_after_restore()
                     self._memory._pending_injection = []
                     if self._diary is not None:
                         self._diary.read_only_crypto = False
@@ -783,6 +937,7 @@ class MvpDesktopRuntime:
     async def _stop_persona_graph(self) -> None:
         worldbook_cleanup_error = None
         summary_cleanup_error = None
+        await self._stop_proactive()
         for task in self._tasks:
             task.cancel()
         if self._tasks:
@@ -907,6 +1062,7 @@ class MvpDesktopRuntime:
         self._closed = True
         worldbook_cleanup_error = None
         summary_cleanup_error = None
+        await self._stop_proactive()
         for task in self._tasks:
             task.cancel()
         if self._tasks:

@@ -6,7 +6,7 @@
  * model in development mode.
  *
  * The Cubism Core (Live2DCubismCore.js) is Live2D Inc. software. It is not
- * committed to the GPLv3 source tree; it only lands in the local dev cache.
+ * committed to the source tree; it only lands in the local dev cache.
  * The release pipeline stages its own copy from REVERIE_LIVE2D_CORE_PATH and
  * refuses to ship it without a valid Live2D publication license.
  *

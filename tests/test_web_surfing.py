@@ -166,6 +166,7 @@ def test_trafilatura_extraction_is_serialized_by_global_lock() -> None:
             with guard:
                 concurrent -= 1
 
+    original_lock = evidence._TRAFILATURA_LOCK
     trafilatura.extract = wrapped
     evidence._TRAFILATURA_LOCK = threading.Lock()  # fresh lock per test
     try:
@@ -189,4 +190,4 @@ def test_trafilatura_extraction_is_serialized_by_global_lock() -> None:
         assert max_concurrent == 1, f"extract() overlapped: {max_concurrent} concurrent"
     finally:
         trafilatura.extract = original_extract
-        del evidence._TRAFILATURA_LOCK
+        evidence._TRAFILATURA_LOCK = original_lock

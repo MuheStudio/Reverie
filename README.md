@@ -40,11 +40,11 @@ TA不会主动声称自己是人工智能。只有用户直接追问身份时，
 
 ## 开源协议
 
-**当前单机客户端整体仍以 GNU GPLv3 开源。** 许可证全文见 [`LICENSE`](LICENSE)。原作者已支持交接与宽松许可迁移；目标优先 Apache-2.0，MIT 为备选，不自动双许可。正式切换须完成具体来源和授权覆盖核验，见 [许可迁移记录](docs/LICENSE-MIGRATION.md)。
+**Reverie 的项目代码自 2026-11-18 起按 Apache-2.0 许可。** 此次切换依据原作者交接时给予的授权。许可证全文见 [`LICENSE`](LICENSE)，授权范围和第三方条款见 [许可迁移记录](docs/LICENSE-MIGRATION.md)。
 
 Apache-2.0 上游的通知合并在 [`NOTICE`](NOTICE)。第三方许可证原件在 [`LICENSES_CREDITS/`](LICENSES_CREDITS/)，逐项说明在 [`CREDITS.md`](CREDITS.md)。AGPL 组件的排除清单见 [`AGPL_EXCLUDED.md`](AGPL_EXCLUDED.md)。
 
-预留的云端接口（备份、算力托管、联机）是独立的商业服务，**不在 GPLv3 源码范围内**。单机必须在完全离线、只用用户自己的 API Key 或 Ollama 时可用。
+预留的云端接口（备份、算力托管、联机）是独立的商业服务，**不在本仓库源码范围内**。单机必须在完全离线、只用用户自己的 API Key 或 Ollama 时可用。
 
 ## 来源致谢：代码、依赖与参考
 
@@ -54,7 +54,7 @@ Reverie 由 [hoshinohatsuka](https://github.com/hoshinohatsuka)发起，现由�
 
 | 项目 | 许可证 | 范围与处理 |
 | --- | --- | --- |
-| [cat-catch](https://github.com/xifangczy/cat-catch) | GPL-3.0 | 旧 `src/download_service/` 已移除，现有有限下载 IPC 改用第一方媒体服务；保留历史来源，新包验收状态见迁移登记 |
+| [cat-catch](https://github.com/xifangczy/cat-catch) | GPL-3.0 | 旧 `src/download_service/` 已移除，现有有限下载 IPC 改用第一方媒体服务；保留历史来源，新包验收状态见迁移登记。Python 聊天视频下载也已退役。 |
 | [Kazumi](https://github.com/Predidit/Kazumi) | GPL-3.0 | 旧 `src/anime_service/` 是未集成工程，原生产 staging 已排除；已在本地首批提交 `e84c994` 移除，不作为可用追番功能 |
 | [Risuai](https://github.com/kwaroran/Risuai) | GPL-3.0 | 旧世界书与 Hypa 源码已分别由独立世界书、对话摘要模块替换；历史来源记录保留，当前摘要边界与验收见 `docs/CONVERSATION-SUMMARY.md` |
 | [elephantops](https://github.com/lucaferranti/elephantops) 0.1.1 | GPL-3.0-or-later | 历史象棋依赖已由独立90格引擎替换，已从锁、生产图和新应用退役；见第四阶段验收 |
@@ -63,7 +63,7 @@ Reverie 由 [hoshinohatsuka](https://github.com/hoshinohatsuka)发起，现由�
 | [foxgirls.club](https://github.com/foxgirlsorg/foxgirls.club) | MIT | `src/image_service/` 为 vendored 服务及包装；图片版权另论 |
 | [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) 0.4.0 | MIT | `frontend/vendor/pixi-live2d-display` 保留 Cubism 4 所需运行文件；合规保留，不属于必须重写项 |
 
-Python 聊天视频链路 `src/video_download/` 与 Electron 下载服务分离，现有头部声明独立实现但引用旧适配器结构。本轮保留功能并单独核对来源，不仅凭“运行时未共享代码”认定审查完成。
+Python 聊天视频下载已退役，`src/video_download/` 的六个文件已删除。旧协议命令和已保存的设置仍可识别，下载请求会被拒绝。聊天仍可引用已保存的视频。
 
 ### 合规保留的运行依赖
 

@@ -6,6 +6,18 @@
 #include "../tests/WorldbookEntrySettingsCheck.h"
 #include "../tests/WorldbookRegexCheck.h"
 #include "../tests/WorldbookInjectionCheck.h"
+#include "../tests/WorldbookFileCheck.h"
+#include "../tests/AvatarManageCheck.h"
+#include "../tests/XiangqiCheck.h"
+#include "../tests/RelationshipStatusCheck.h"
+#include "../tests/PersonaStateCheck.h"
+#include "../tests/ProactiveSettingsCheck.h"
+#include "../tests/ChatImageCheck.h"
+#include "../tests/KeepsakeCheck.h"
+#include "../tests/RoomQualityCheck.h"
+#include "../tests/DiaryCheck.h"
+#include "../tests/GomokuCheck.h"
+#include "../tests/StrategicGameCheck.h"
 #include "../tests/MoonroomInteractionCheck.h"
 #include "../tests/SceneSurfaceCheck.h"
 #include "PreviewWorkspace.h"
@@ -55,6 +67,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSaveFile>
+#include <QSignalBlocker>
 #include <QSurfaceFormat>
 #include <QTest>
 #include <QTimer>
@@ -1325,13 +1338,34 @@ Window { width: 560; height: 200; visible: true; title: "Reverie 预览未启动
                     window->grabWindow().save(args.value("test-report") + ".reduced.png");
                     click("nav-settings");
                     *step = 94;
+                    *inputGateStep = *step;
+                    inputGate->resetForNextStep();
+                    inputGateClock->start();
                     *ticks = 0;
                     return;
                 }
-                if (*step == 94 && *ticks > 3) {
-                    click("reduceMotion");
-                    click("reduceTransparency");
-                    click("settings-close");
+                if (*step == 94) {
+                    const auto elapsedMs = inputGateClock->elapsed();
+                    const auto outcome = inputGate->poll(elapsedMs, 4000, [&] {
+                        const auto *control = visualItem(window->contentItem(), "reduceMotion");
+                        const bool found = control != nullptr;
+                        const bool visible = control && control->isVisible();
+                        const bool enabled = control && control->isEnabled();
+                        auto samples = (*result)["settingsReopenReadiness"].toArray();
+                        samples.append(QJsonObject{{"found", found}, {"visible", visible},
+                                                   {"enabled", enabled}, {"elapsedMs", elapsedMs}});
+                        (*result)["settingsReopenReadiness"] = samples;
+                        return QVariantMap{{"ready", found && visible && enabled}};
+                    }, [&] {
+                        const QSignalBlocker blockTimer(timer);
+                        click("reduceMotion");
+                        click("reduceTransparency");
+                        click("settings-close");
+                    });
+                    if (outcome == NativeControlReadiness::OnceGate::Expired)
+                        throw std::runtime_error("SETTINGS_REOPEN_READINESS_DEADLINE:reduceMotion");
+                    if (outcome != NativeControlReadiness::OnceGate::Performed)
+                        return;
                     *step = 13;
                     *ticks = 0;
                     return;
@@ -1501,7 +1535,22 @@ Window { width: 560; height: 200; visible: true; title: "Reverie 预览未启动
                     if (p1PersonaEntry && result->contains("cardEdit")) {
                         const auto edit = (*result)["cardEdit"].toObject();
                         if (!edit["passed"].toBool()) { finish(false, edit["error"].toString()); *step = 99; return; }
+                        const int cycle = args.value("test-cycle").toInt();
+                        const auto moonId = cycle == 1
+                            ? (*result)["archiveInteraction"].toObject()["cardImport"].toObject()["moonPersona"].toString()
+                            : (*result)["startupPersona"].toObject()["activeId"].toString();
+                        *step = 77; timer->stop();
+                        PersonaStateCheck::run(window, &session, cycle, moonId, [result, step, timer](QVariantMap data) {
+                            (*result)["personaState"] = QJsonObject::fromVariantMap(data);
+                            *step = 100; timer->start();
+                        });
+                        return;
                     }
+                    finish(checks["passed"].toBool(), checks["error"].toString());
+                    *step = 99; return;
+                }
+                if (*step == 100) {
+                    const auto checks = (*result)["personaState"].toObject();
                     finish(checks["passed"].toBool(), checks["error"].toString());
                     *step = 99; return;
                 }
@@ -1522,8 +1571,179 @@ Window { width: 560; height: 200; visible: true; title: "Reverie 预览未启动
                 }
                 if (*step == 28) {
                     const auto checks = (*result)["settingsSections"].toObject();
-                    finish(checks["passed"].toBool(), checks["error"].toString());
-                    *step = 99;
+                    if (!checks["passed"].toBool()) {
+                        finish(false, checks["error"].toString()); *step = 99; return;
+                    }
+                    // A separate read-only file tail follows the unchanged
+                    // settings restart evidence and its original deadline.
+                    *step = 61; timer->stop();
+                    WorldbookFileCheck::run(window, &session, &archiveEditor, true, args.value("test-report"),
+                        [result, step, timer](QVariantMap data) {
+                            (*result)["worldbookFile"] = QJsonObject::fromVariantMap(data);
+                            *step = 62; timer->start();
+                        });
+                    return;
+                }
+                if (*step == 62) {
+                    const auto checks = (*result)["worldbookFile"].toObject();
+                    if (!checks["passed"].toBool()) {
+                        finish(false, checks["error"].toString()); *step = 99; return;
+                    }
+                    // W10 follows the unchanged W9 file proof on settings
+                    // only, with its own evidence and bounded phase clock.
+                    *step = 63; timer->stop();
+                    AvatarManageCheck::run(window, &session, &archiveEditor, args.value("test-cycle") == "2",
+                        args.value("test-model"), [result, step, timer](QVariantMap data) {
+                            (*result)["avatarManage"] = QJsonObject::fromVariantMap(data);
+                            *step = 64; timer->start();
+                        });
+                    return;
+                }
+                if (*step == 64) {
+                    const auto checks = (*result)["avatarManage"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 65; timer->stop();
+                        XiangqiCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["xiangqi"] = QJsonObject::fromVariantMap(data);
+                                *step = 66; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 66) {
+                    const auto checks = (*result)["xiangqi"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 67; timer->stop();
+                        RelationshipStatusCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["relationshipStatus"] = QJsonObject::fromVariantMap(data);
+                                *step = 68; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 68) {
+                    const auto checks = (*result)["relationshipStatus"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 69; timer->stop();
+                        DiaryCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["diary"] = QJsonObject::fromVariantMap(data);
+                                *step = 70; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 70) {
+                    const auto checks = (*result)["diary"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 71; timer->stop();
+                        GomokuCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["gomoku"] = QJsonObject::fromVariantMap(data);
+                                *step = 72; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 72) {
+                    const auto checks = (*result)["gomoku"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 73; timer->stop();
+                        StrategicGameCheck::run(window, &session, StrategicGameCheck::Kind::Chess,
+                            args.value("test-cycle") == "2", args.value("test-report"),
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["chess"] = QJsonObject::fromVariantMap(data);
+                                *step = 74; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 74) {
+                    const auto checks = (*result)["chess"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 75; timer->stop();
+                        StrategicGameCheck::run(window, &session, StrategicGameCheck::Kind::Go,
+                            args.value("test-cycle") == "2", args.value("test-report"),
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["go"] = QJsonObject::fromVariantMap(data);
+                                *step = 76; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 76) {
+                    const auto checks = (*result)["go"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 101; timer->stop();
+                        ProactiveSettingsCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["proactiveSettings"] = QJsonObject::fromVariantMap(data);
+                                *step = 102; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 102) {
+                    const auto checks = (*result)["proactiveSettings"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 103; timer->stop();
+                        ChatImageCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["chatImage"] = QJsonObject::fromVariantMap(data);
+                                *step = 104; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 104) {
+                    const auto checks = (*result)["chatImage"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 105; timer->stop();
+                        KeepsakeCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["keepsake"] = QJsonObject::fromVariantMap(data);
+                                *step = 106; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 106) {
+                    const auto checks = (*result)["keepsake"].toObject();
+                    if (checks["passed"].toBool()) {
+                        *step = 107; timer->stop();
+                        RoomQualityCheck::run(window, &session, args.value("test-cycle") == "2",
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["roomQuality"] = QJsonObject::fromVariantMap(data);
+                                *step = 108; timer->start();
+                            });
+                        return;
+                    }
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
+                    return;
+                }
+                if (*step == 108) {
+                    const auto checks = (*result)["roomQuality"].toObject();
+                    finish(checks["passed"].toBool(), checks["error"].toString()); *step = 99;
                     return;
                 }
                 if (*step == 15) {
@@ -1675,6 +1895,17 @@ Window { width: 560; height: 200; visible: true; title: "Reverie 预览未启动
                     *ticks = 0;
                 }
                 if (*step == 24 && *ticks > 6) {
+                    if (p1SettingsEntry) {
+                        // Keep file evidence out of settingsSections and the
+                        // previously accepted ordinary archive checks.
+                        *step = 61; timer->stop();
+                        WorldbookFileCheck::run(window, &session, &archiveEditor, false, args.value("test-report"),
+                            [result, step, timer](QVariantMap data) {
+                                (*result)["worldbookFile"] = QJsonObject::fromVariantMap(data);
+                                *step = 62; timer->start();
+                            });
+                        return;
+                    }
                     if (p1PersonaEntry) {
                         *step = 45; timer->stop();
                         WorldbookPriorityCheck::run(window, &session, &archiveEditor, false, args.value("test-report"),

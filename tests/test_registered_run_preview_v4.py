@@ -24,8 +24,10 @@ def previous_input():
         "candidate": candidate, "sourceHead": "f" * 40, "buildManifestSha256": "e" * 64,
         "manifestSha256": preview_v4.sha(manifest_bytes), "hostExecutable": "candidate/Reverie Scene.app/Contents/MacOS/Reverie Scene",
         "python": ".venv/bin/python", "node": ".tools/node/bin/node"}
-    public = {"schema": "reverie.preview.m1.formal.r1.result.v1", "overallPassed": True, "formalAcceptance": True,
-        "sourceHead": "f" * 40, "adoption": {"candidate": candidate, "build": {"sha256": "e" * 64}}}
+    public = {"schema": preview_v4.PREVIOUS_RESULTS[preview_v4.PUBLIC_RESULT]["schema"],
+        "overallPassed": True, "formalAcceptance": True,
+        "sourceHead": "f" * 40, "adoption": {"candidate": candidate},
+        "artifacts": [{"path": ".tools/qt-candidates/" + candidate + "/build.json", "bytes": 123, "sha256": "e" * 64}]}
     documents = {"evidence": json.dumps(public).encode(), "runtimeMetadata": json.dumps(metadata).encode(), "runtimeManifest": manifest_bytes}
     paths = {"evidence": preview_v4.PUBLIC_RESULT, "runtimeMetadata": root + "/preview-runtime.json", "runtimeManifest": root + "/preview-manifest.json"}
     binding = {role: {"path": paths[role], "bytes": len(payload), "sha256": preview_v4.sha(payload)} for role, payload in documents.items()}
@@ -495,3 +497,289 @@ def test_m2_local_prerequisite_rehashes_subdirectory_file_after_reader(workspace
     _m2_observed_after_reader(value, monkeypatch, observed)
     with pytest.raises(registration.RegistrationError, match="LOCAL_PREREQUISITE_REFERENCE_HASH_CHANGED:seed.json"):
         _m2_call_preview_prerequisite(value)
+
+
+# M3 keeps historical inputs readable while new invocations use M2 only.
+def _m3_store_previous(root, binding, documents):
+    for role, payload in documents.items():
+        target = root / binding[role]["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+
+
+def _m3_legacy_previous_input():
+    binding, documents = previous_input()
+    public = json.loads(documents["evidence"])
+    public["schema"] = "reverie.preview.m1.formal.r1.result.v1"
+    public["adoption"]["build"] = {"sha256": binding["buildManifestSha256"]}
+    del public["artifacts"]
+    documents["evidence"] = json.dumps(public).encode()
+    binding["evidence"] = {"path": "docs/evidence/preview-m1-formal-r1-20261102.json",
+        "bytes": len(documents["evidence"]), "sha256": preview_v4.sha(documents["evidence"])}
+    return binding, documents
+
+
+def test_m3_previous_binder_uses_one_exact_m2_build_artifact_without_reading_default_pointer(tmp_path):
+    binding, documents = previous_input()
+    _m3_store_previous(tmp_path, binding, documents)
+    pointer = tmp_path / ".tools/qt-candidates/last-local-sdk.json"
+    pointer.parent.mkdir(parents=True); pointer.write_text("must remain unread")
+    assert preview_v4.bind_previous(tmp_path, binding["model"]) == binding
+    assert binding["evidence"]["path"] == "docs/evidence/preview-m6-formal-r1-20261117.json"
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "wrong-hash", "malformed-hash", "wrong-path", "not-a-list"])
+def test_m3_previous_binder_rejects_missing_ambiguous_or_inconsistent_m2_artifact(tmp_path, change):
+    binding, documents = previous_input()
+    _m3_store_previous(tmp_path, binding, documents)
+    assert preview_v4.bind_previous(tmp_path, binding["model"]) == binding
+    public = json.loads(documents["evidence"])
+    if change == "missing": public["artifacts"] = []
+    elif change == "duplicate": public["artifacts"].append(deepcopy(public["artifacts"][0]))
+    elif change == "wrong-hash": public["artifacts"][0]["sha256"] = "0" * 64
+    elif change == "malformed-hash": public["artifacts"][0]["sha256"] = "invalid"
+    elif change == "wrong-path": public["artifacts"][0]["path"] = ".tools/qt-candidates/not-the-bound-candidate/build.json"
+    else: public["artifacts"] = {}
+    (tmp_path / binding["evidence"]["path"]).write_text(json.dumps(public))
+    with pytest.raises(preview.PreviewError, match="^PREVIEW_V4_FORMAL_IDENTITY$"):
+        preview_v4.bind_previous(tmp_path, binding["model"])
+
+
+@pytest.mark.parametrize("version", ["m1", "m2"])
+def test_m3_saved_previous_documents_dispatch_schema_and_hash_rules_by_path(tmp_path, version):
+    binding, documents = _m3_legacy_previous_input() if version == "m1" else previous_input()
+    assert preview_v4.previous_binding(binding) == binding
+    for role, filename in preview_v4.INPUT_COPIES.items(): (tmp_path / filename).write_bytes(documents[role])
+    assert len(preview_v4.verify_saved_inputs(tmp_path, binding)) == 3
+    public = json.loads(documents["evidence"])
+    public["schema"] = "reverie.preview.m2.formal.r2.result.v1" if version == "m1" else "reverie.preview.m1.formal.r1.result.v1"
+    if version == "m2": public["adoption"]["build"] = {"sha256": binding["buildManifestSha256"]}
+    documents["evidence"] = json.dumps(public).encode()
+    binding["evidence"].update(bytes=len(documents["evidence"]), sha256=preview_v4.sha(documents["evidence"]))
+    (tmp_path / preview_v4.INPUT_COPIES["evidence"]).write_bytes(documents["evidence"])
+    with pytest.raises(preview.PreviewError, match="^PREVIEW_V4_FORMAL_IDENTITY$"):
+        preview_v4.verify_saved_inputs(tmp_path, binding)
+
+
+def test_m3_new_binder_does_not_fall_back_to_m1_when_m2_is_missing(tmp_path):
+    binding, documents = _m3_legacy_previous_input()
+    _m3_store_previous(tmp_path, binding, documents)
+    assert preview_v4.previous_binding(binding) == binding
+    with pytest.raises(FileNotFoundError):
+        preview_v4.bind_previous(tmp_path, binding["model"])
+
+
+def test_m3_upgrade_runtime_rejects_legacy_binding_before_creating_isolation(tmp_path, monkeypatch):
+    from script import check_preview_upgrade as producer
+    current, documents = previous_input()
+    _m3_store_previous(tmp_path, current, documents)
+    assert preview_v4.bind_previous(tmp_path, current["model"]) == current
+    legacy, _ = _m3_legacy_previous_input()
+    monkeypatch.setattr(producer.smoke, "ROOT", tmp_path)
+    before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+    with pytest.raises(RuntimeError, match="^PREVIEW_V4_PREVIOUS_INPUT_CHANGED$"):
+        producer._run(SimpleNamespace(previous_binding=json.dumps(legacy)), None)
+    assert sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")) == before
+
+
+def test_m3_cmake_previous_result_matches_runtime_binder():
+    import re
+    cmake = (Path(__file__).resolve().parents[1] / "native-ui/CMakeLists.txt").read_text()
+    paths = re.findall(r'set\(\s*REVERIE_PREVIOUS_RESULT\s+"\$\{CMAKE_CURRENT_SOURCE_DIR\}/\.\./([^"]+)"\s*\)', cmake)
+    assert paths == [preview_v4.PUBLIC_RESULT]
+
+
+def _m4_legacy_m2_previous_input():
+    binding, documents = previous_input()
+    public = json.loads(documents["evidence"])
+    public["schema"] = "reverie.preview.m2.formal.r2.result.v1"
+    documents["evidence"] = json.dumps(public).encode()
+    binding["evidence"] = {
+        "path": "docs/evidence/preview-m2-formal-r2-20261104.json",
+        "bytes": len(documents["evidence"]),
+        "sha256": preview_v4.sha(documents["evidence"]),
+    }
+    return binding, documents
+
+
+def test_m4_saved_m2_previous_inputs_remain_readable(tmp_path):
+    binding, documents = _m4_legacy_m2_previous_input()
+    expected = []
+    for role, filename in preview_v4.INPUT_COPIES.items():
+        (tmp_path / filename).write_bytes(documents[role])
+        expected.append({"path": filename, "bytes": binding[role]["bytes"], "sha256": binding[role]["sha256"]})
+
+    assert preview_v4.verify_saved_inputs(tmp_path, binding) == expected
+
+
+def test_m4_upgrade_runtime_rejects_m2_binding_before_creating_isolation(tmp_path, monkeypatch):
+    from script import check_preview_upgrade as producer
+
+    current, current_documents = previous_input()
+    legacy, legacy_documents = _m4_legacy_m2_previous_input()
+    _m3_store_previous(tmp_path, current, current_documents)
+    _m3_store_previous(tmp_path, legacy, legacy_documents)
+    assert preview_v4.bind_previous(tmp_path, current["model"]) == current
+    config = v4_config()
+    config["previewUpgradeBaseline"] = legacy
+    assert validate_config(config)["previewUpgradeBaseline"] == legacy
+    monkeypatch.setattr(producer.smoke, "ROOT", tmp_path)
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(RuntimeError, match="^PREVIEW_V4_PREVIOUS_INPUT_CHANGED$"):
+        producer._run(SimpleNamespace(previous_binding=json.dumps(legacy)), None)
+
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before
+
+
+def _m5_legacy_m3_previous_input():
+    binding, documents = previous_input()
+    public = json.loads(documents["evidence"])
+    public["schema"] = "reverie.preview.m3.formal.r1.result.v1"
+    documents["evidence"] = json.dumps(public).encode()
+    binding["evidence"] = {
+        "path": "docs/evidence/preview-m3-formal-r1-20261107.json",
+        "bytes": len(documents["evidence"]),
+        "sha256": preview_v4.sha(documents["evidence"]),
+    }
+    return binding, documents
+
+
+def test_m5_saved_m3_previous_inputs_remain_readable(tmp_path):
+    binding, documents = _m5_legacy_m3_previous_input()
+    expected = []
+    for role, filename in preview_v4.INPUT_COPIES.items():
+        (tmp_path / filename).write_bytes(documents[role])
+        expected.append({"path": filename, "bytes": binding[role]["bytes"], "sha256": binding[role]["sha256"]})
+
+    assert preview_v4.verify_saved_inputs(tmp_path, binding) == expected
+
+
+def test_m5_upgrade_runtime_rejects_m3_binding_before_creating_isolation(tmp_path, monkeypatch):
+    from script import check_preview_upgrade as producer
+
+    current, current_documents = previous_input()
+    legacy, legacy_documents = _m5_legacy_m3_previous_input()
+    _m3_store_previous(tmp_path, current, current_documents)
+    _m3_store_previous(tmp_path, legacy, legacy_documents)
+    assert preview_v4.bind_previous(tmp_path, current["model"]) == current
+    config = v4_config()
+    config["previewUpgradeBaseline"] = legacy
+    validated = validate_config(config)
+    assert validated["previewUpgradeBaseline"] == legacy
+    monkeypatch.setattr(producer.smoke, "ROOT", tmp_path)
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(RuntimeError, match="^PREVIEW_V4_PREVIOUS_INPUT_CHANGED$"):
+        producer._run(SimpleNamespace(previous_binding=json.dumps(validated["previewUpgradeBaseline"])), None)
+
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before
+
+
+def _m6_legacy_m4_previous_input():
+    binding, documents = previous_input()
+    public = json.loads(documents["evidence"])
+    public["schema"] = "reverie.preview.m4.formal.r1.result.v1"
+    documents["evidence"] = json.dumps(public).encode()
+    binding["evidence"] = {
+        "path": "docs/evidence/preview-m4-formal-r1-20261110.json",
+        "bytes": len(documents["evidence"]),
+        "sha256": preview_v4.sha(documents["evidence"]),
+    }
+    return binding, documents
+
+
+def test_m6_saved_m4_previous_inputs_remain_readable(tmp_path):
+    binding, documents = _m6_legacy_m4_previous_input()
+    expected = []
+    for role, filename in preview_v4.INPUT_COPIES.items():
+        (tmp_path / filename).write_bytes(documents[role])
+        expected.append({"path": filename, "bytes": binding[role]["bytes"], "sha256": binding[role]["sha256"]})
+
+    assert preview_v4.verify_saved_inputs(tmp_path, binding) == expected
+
+
+def test_m6_upgrade_runtime_rejects_m4_binding_before_creating_isolation(tmp_path, monkeypatch):
+    from script import check_preview_upgrade as producer
+
+    current, current_documents = previous_input()
+    legacy, legacy_documents = _m6_legacy_m4_previous_input()
+    _m3_store_previous(tmp_path, current, current_documents)
+    _m3_store_previous(tmp_path, legacy, legacy_documents)
+    assert preview_v4.bind_previous(tmp_path, current["model"]) == current
+    config = v4_config()
+    config["previewUpgradeBaseline"] = legacy
+    validated = validate_config(config)
+    assert validated["previewUpgradeBaseline"] == legacy
+    monkeypatch.setattr(producer.smoke, "ROOT", tmp_path)
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(RuntimeError, match="^PREVIEW_V4_PREVIOUS_INPUT_CHANGED$"):
+        producer._run(SimpleNamespace(previous_binding=json.dumps(validated["previewUpgradeBaseline"])), None)
+
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before
+
+
+def _m7_legacy_m5_previous_input():
+    binding, documents = previous_input()
+    public = json.loads(documents["evidence"])
+    public["schema"] = "reverie.preview.m5.formal.r2.result.v1"
+    documents["evidence"] = json.dumps(public).encode()
+    binding["evidence"] = {
+        "path": "docs/evidence/preview-m5-formal-r2-20261111.json",
+        "bytes": len(documents["evidence"]),
+        "sha256": preview_v4.sha(documents["evidence"]),
+    }
+    return binding, documents
+
+
+def test_m7_saved_m5_previous_inputs_remain_readable(tmp_path):
+    binding, documents = _m7_legacy_m5_previous_input()
+    expected = []
+    for role, filename in preview_v4.INPUT_COPIES.items():
+        (tmp_path / filename).write_bytes(documents[role])
+        expected.append({"path": filename, "bytes": binding[role]["bytes"], "sha256": binding[role]["sha256"]})
+
+    assert preview_v4.verify_saved_inputs(tmp_path, binding) == expected
+
+
+def test_m7_upgrade_runtime_rejects_m5_binding_before_creating_isolation(tmp_path, monkeypatch):
+    from script import check_preview_upgrade as producer
+
+    current, current_documents = previous_input()
+    legacy, legacy_documents = _m7_legacy_m5_previous_input()
+    _m3_store_previous(tmp_path, current, current_documents)
+    _m3_store_previous(tmp_path, legacy, legacy_documents)
+    assert preview_v4.bind_previous(tmp_path, current["model"]) == current
+    config = v4_config()
+    config["previewUpgradeBaseline"] = legacy
+    validated = validate_config(config)
+    assert validated["previewUpgradeBaseline"] == legacy
+    monkeypatch.setattr(producer.smoke, "ROOT", tmp_path)
+    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+
+    with pytest.raises(RuntimeError, match="^PREVIEW_V4_PREVIOUS_INPUT_CHANGED$"):
+        producer._run(SimpleNamespace(previous_binding=json.dumps(validated["previewUpgradeBaseline"])), None)
+
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before
+
+
+def test_v4_format_refusal_scopes_codesign_short_name_to_launcher(tmp_path):
+    value = value_v4(tmp_path.resolve())
+    launcher = value["observations"]["formatProtection"]["launcher"]
+    launcher.update(descendantPids=[301], descendantExecutables=["(codesign)"])
+    assert derive(value)["formatProtectionVerified"]
+
+    invalid_cases = (
+        ("launcher", ["(python3.12)"]),
+        ("launcher", ["(codesign)", "(python3.12)"]),
+        ("host", ["(codesign)"]),
+    )
+    for role, executables in invalid_cases:
+        invalid = deepcopy(value)
+        invalid["observations"]["formatProtection"][role].update(
+            descendantPids=list(range(302, 302 + len(executables))),
+            descendantExecutables=executables,
+        )
+        with pytest.raises(preview.PreviewError, match="^PREVIEW_V4_FORMAT_STARTED_BACKEND$"):
+            derive(invalid)

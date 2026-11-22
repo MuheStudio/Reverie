@@ -60,6 +60,7 @@ Removal/replacement records (not a blanket inclusion claim):
    cat-catch by xifangczy & contributors (GPL-3.0), legacy download adapter
    Kazumi by Predidit & contributors (GPL-3.0), unintegrated source tree
    Risuai worldbook and Hypa by Kwaroran & contributors (GPL-3.0), former implementations
+   The Python chat video download pipeline has been retired.
    Their notices are retained with metadata-only pre-removal inventories.
    Actual removal and build-verification status is recorded in
    LICENSES_CREDITS/source-provenance.json.
@@ -68,10 +69,7 @@ Historical credit:
    NachoBot by NachoBot contributors (GPLv3).
    No current integrated source path was identified in the 2026-10-05 audit.
 
-The current project license remains the root LICENSE. The original author
-supports continued development and a permissive-license migration;
-Apache-2.0 is the preferred target, MIT an alternative, not an automatic
-dual license. No overall license switch is made by this NOTICE.
+Reverie is licensed under the Apache License, Version 2.0; see LICENSE.
 
 For full license texts and original notices, see LICENSES_CREDITS/.
 For current paths, historical removals and provenance review status, see

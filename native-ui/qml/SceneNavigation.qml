@@ -93,7 +93,7 @@ QtObject {
             available: true,
             showInRail: true,
             label: "终端 · 回复服务",
-            detail: "连接与测试本地回复服务",
+            detail: "连接与测试回复服务",
             keywords: "终端 设置 服务 模型 连接 settings provider"
         },
         {
@@ -121,13 +121,68 @@ QtObject {
         {
             feature: "activities",
             subentry: "xiangqi",
-            shortLabel: "活动",
+            shortLabel: "象棋",
             glyph: "◇",
-            available: false,
+            available: true,
             showInRail: false,
-            label: "活动桌",
-            detail: "原生活动桌尚未开放",
-            keywords: "活动 棋 象棋 手记 日记 activities"
+            label: "中国象棋",
+            detail: "和角色下一盘，或本地练习",
+            keywords: "棋 象棋 xiangqi"
+        },
+        {
+            feature: "activities",
+            subentry: "gomoku",
+            shortLabel: "五子棋",
+            glyph: "◇",
+            available: true,
+            showInRail: false,
+            label: "五子棋",
+            detail: "和角色下一盘，或本地练习",
+            keywords: "棋 五子棋 gomoku"
+        },
+        {
+            feature: "activities",
+            subentry: "chess",
+            shortLabel: "国际象棋",
+            glyph: "◇",
+            available: true,
+            showInRail: false,
+            label: "国际象棋",
+            detail: "和角色下一盘，或本地练习",
+            keywords: "棋 国际象棋 chess"
+        },
+        {
+            feature: "activities",
+            subentry: "go",
+            shortLabel: "围棋",
+            glyph: "◇",
+            available: true,
+            showInRail: false,
+            label: "围棋",
+            detail: "九路，和角色下一盘，或本地练习",
+            keywords: "棋 围棋 weiqi"
+        },
+        {
+            feature: "activities",
+            subentry: "diary",
+            shortLabel: "日记",
+            glyph: "◇",
+            available: true,
+            showInRail: false,
+            label: "日记",
+            detail: "读她每天写的日记",
+            keywords: "日记 手记 diary"
+        },
+        {
+            feature: "keepsake",
+            subentry: "list",
+            shortLabel: "收藏",
+            glyph: "◇",
+            available: true,
+            showInRail: false,
+            label: "收藏",
+            detail: "翻看留住的话与图片",
+            keywords: "收藏 keepsake"
         }
     ]
     readonly property var filteredEntries: {
@@ -144,7 +199,8 @@ QtObject {
                 chat: "companion",
                 memory: "worldbook",
                 settings: "provider",
-                activities: "xiangqi"
+                activities: "xiangqi",
+                keepsake: "list"
             })[feature] || "";
     }
     function entryFor(feature, subentry) {
